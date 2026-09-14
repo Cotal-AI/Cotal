@@ -31,7 +31,7 @@ import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   isReachable, createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig,
-  setupSpaceStreams, startMembershipFeed, credsFingerprint, idFromCreds, membershipBucket,
+  setupSpaceStreams, startMembershipFeed, credsFingerprint, credsClaims, idFromCreds, membershipBucket,
   MEMBERSHIP_FEED_KEY, type MembershipFeedHandle,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -89,9 +89,11 @@ const probeJwt = await encodeUser(
   { signer: fromSeed(enc(auth.sys.signingSeed as string)) },
 );
 const probeCreds = `-----BEGIN NATS USER JWT-----\n${probeJwt}\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${probeId.seed}\n------END USER NKEY SEED------\n`;
-// The broker's own connection table. Scenario 8 grades a leak by what the BROKER still holds, not by
-// anything the feed reports about itself.
-const countObserverConns = async (): Promise<number> => {
+// The broker's own connection table. Scenarios 8 and 10 grade a leak by what the BROKER still holds,
+// not by anything the feed reports about itself. Keyed by the connection NAME the feed sets, so each
+// half of the startup record can be counted on its own: conn A alone would pass scenario 10 whether
+// or not conn B was drained.
+const countConnsNamed = async (name: string): Promise<number> => {
   const probe = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(enc(probeCreds)),
@@ -105,10 +107,30 @@ const countObserverConns = async (): Promise<number> => {
       { timeout: 3_000 },
     );
     const body = reply.json<{ data?: { connections?: Array<{ name?: string }> } }>();
-    return (body.data?.connections ?? []).filter((c) => c.name === "cotal-membership-observer").length;
+    return (body.data?.connections ?? []).filter((c) => c.name === name).length;
   } finally {
     await probe.drain();
   }
+};
+const countObserverConns = (): Promise<number> => countConnsNamed("cotal-membership-observer");
+const countRwConns = (): Promise<number> => countConnsNamed("cotal-membership-rw");
+// Re-sign a creds file with its `exp` claim removed and EVERY other claim carried over verbatim.
+// Scenario 10 needs a cred the broker still accepts and still permissions identically, differing from
+// a working one in exactly the claim the renewal-window computation reads. Building one by hand
+// instead drops the permission block, which moves the failure to an earlier step under a cell name
+// that says otherwise.
+const stripExpClaim = async (creds: string, id: ReturnType<typeof newIdentity>): Promise<string> => {
+  const c = credsClaims(creds);
+  const { exp: _dropped, ...kept } = c as Record<string, unknown> & { exp?: number };
+  void _dropped;
+  const jwt = await encodeUser(
+    (kept.name as string) ?? "membership-rw",
+    fromPublic(id.id),
+    fromPublic(auth.account.pub),
+    (c.nats ?? {}) as Parameters<typeof encodeUser>[3],
+    { signer: fromSeed(enc(auth.account.signingSeed)) },
+  );
+  return `-----BEGIN NATS USER JWT-----\n${jwt}\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${id.seed}\n------END USER NKEY SEED------\n`;
 };
 const feedId = newIdentity(); // conn B's stable nkey — every rw cred below re-signs THIS id
 let feed: MembershipFeedHandle | undefined;
@@ -459,6 +481,98 @@ try {
   );
   await feed6.stop();
   feed = undefined;
+
+  // ---- Scenario 10: the rollback covers conn B too, not just conn A (#1573) ----
+  // Scenario 8 rejects at the rw SOURCE, which is awaited BEFORE conn B is recorded, so at the
+  // moment it rejects `opened` holds conn A alone. That makes it structurally unable to grade the
+  // conn B arm: deleting the conn B record changes nothing it can observe, so a mutation on that
+  // line does not go red, it goes SILENT. Measured, not argued: with only scenario 8 present, a
+  // mutant dropping `opened.push(connB)` SURVIVED while a mutant emptying the drain was KILLED in
+  // the same run, so the suite provably reached the file and still could not see the conn B gap.
+  //
+  // This scenario rejects LATER, with BOTH connections already recorded. The site is the first
+  // renewal-timer arm: `credsRenewalDelayMs` is fail-loud on a cred with no numeric `exp`, and its
+  // argument is evaluated before `armRwRefresh` runs, so the throw lands after conn B is open and
+  // recorded but before any timer exists. The cred is broker-ACCEPTED (it dials fine) so the
+  // rejection is the renewal-window computation and not an auth failure, and it is SOURCE-fed
+  // because a literal string skips the arm entirely.
+  //
+  // Graded on the BROKER's connection table, like scenario 8, and on conn B's OWN name, because
+  // the conn A count alone passes whether or not conn B was drained.
+  const bothBeforeA = await countObserverConns();
+  const bothBeforeB = await countRwConns();
+  // ACCEPT CONTROL: the counters must be able to SEE a live conn B, or "back to baseline" below is
+  // vacuous - zero before and zero after passes whether or not anything was drained.
+  const liveFeed = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
+    rwCreds: await mintCreds(auth, newIdentity(), "membership-rw", { expiresInSeconds: 600 }),
+  });
+  feed = liveFeed;
+  const liveA = await countObserverConns();
+  const liveB = await countRwConns();
+  check("the CONNZ probe sees BOTH feed connections live (accept control)", liveA > bothBeforeA && liveB > bothBeforeB, { liveA, bothBeforeA, liveB, bothBeforeB });
+  await liveFeed.stop();
+  feed = undefined;
+
+  // Broker-ACCEPTED and FULLY PERMISSIONED, with the `exp` claim and nothing else removed.
+  //
+  // My first attempt hand-rolled this cred with `pub: { deny: [">"] }`, which would have rejected at
+  // THE WRONG SITE and still printed a passing-looking cell. Measured on the AST rather than assumed:
+  // TWO steps sit between the conn B record (:223) and the arm (:320), the feed KV open (:227) and
+  // the members registry open (:228), and a KV open is a JetStream API REQUEST, so a deny-all publish
+  // grant fails there FIRST. The cell would then have graded a KV failure while its name claimed the
+  // renewal arm, and the drain assertion under it would have passed for a reason the cell misnames.
+  //
+  // So the cred is minted by the SAME `mintCreds(..., "membership-rw")` path as the live one above,
+  // and only its `exp` is stripped, re-signed on the same nkey. That makes the renewal-window
+  // computation the first thing that can fail, which is what the cell claims.
+  const noExpId = newIdentity();
+  const boundedRw = await mintCreds(auth, noExpId, "membership-rw", { expiresInSeconds: 600 });
+  const noExpCred = await stripExpClaim(boundedRw, noExpId);
+  // ASSERT THE INPUT, both directions, before anything is graded on it: the bounded cred must carry a
+  // numeric `exp` and the stripped one must not, or this scenario proves nothing about the arm.
+  check("the bounded rw cred carries a numeric exp (accept control on the stripper's input)", typeof credsClaims(boundedRw).exp === "number", credsClaims(boundedRw).exp);
+  check("stripping removed the exp and kept the same subject (the only difference is the claim)", credsClaims(noExpCred).exp === undefined && credsClaims(noExpCred).sub === credsClaims(boundedRw).sub, { exp: credsClaims(noExpCred).exp, sameSub: credsClaims(noExpCred).sub === credsClaims(boundedRw).sub });
+  // And the PERMISSIONS survived the re-sign, so a failure below is about the missing exp rather than
+  // about a grant this rewrite dropped.
+  check("the stripped cred keeps the membership-rw permission block", JSON.stringify(credsClaims(noExpCred).nats?.pub) === JSON.stringify(credsClaims(boundedRw).nats?.pub) && JSON.stringify(credsClaims(noExpCred).nats?.sub) === JSON.stringify(credsClaims(boundedRw).nats?.sub), true);
+
+  const lateBeforeA = await countObserverConns();
+  const lateBeforeB = await countRwConns();
+  const lateFailure = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
+    rwCreds: async () => noExpCred,
+  }).then(() => ({ ok: true, e: "" }), (e: Error) => ({ ok: false, e: e.message }));
+  check(
+    "startup rejects at the renewal-timer arm, AFTER both connections are recorded",
+    !lateFailure.ok && /without a numeric exp/.test(lateFailure.e),
+    lateFailure,
+  );
+  // ORDERING MATTERS HERE AND I GOT IT WRONG FIRST. The drain check below must run IMMEDIATELY after
+  // the rejecting startup, before anything else opens a connection. My first draft ran the refuse
+  // control in between, which opens a feed (two connections) and stops it; its drain and the drain
+  // under test would then have been racing into the SAME counters, and a count that failed to return
+  // to baseline could not be attributed to either one. A confounded counter is not a measurement.
+  let lateAfterA = lateBeforeA, lateAfterB = lateBeforeB;
+  const bothDrained = await until(async () => {
+    lateAfterA = await countObserverConns();
+    lateAfterB = await countRwConns();
+    return lateAfterA === lateBeforeA && lateAfterB === lateBeforeB;
+  }, 5_000, 100);
+  check(
+    "conn B is drained too when startup rejects after it was recorded - no orphaned rw connection on the broker",
+    bothDrained,
+    { lateBeforeA, lateAfterA, lateBeforeB, lateAfterB },
+  );
+
+  // REFUSE CONTROL, run LAST so it cannot perturb the counters above: the same bytes as a STATIC
+  // string skip the arm (`rwIsSource` is false), so that startup must NOT reject. Without it,
+  // "rejects" above could be any unrelated failure of this cred rather than the renewal window.
+  const staticOk = await startMembershipFeed({
+    servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000, rwCreds: noExpCred,
+  }).then((h) => ({ ok: true, h }), () => ({ ok: false, h: undefined }));
+  check("the SAME cred as a static string does NOT reject (refuse control: the arm is the site)", staticOk.ok, staticOk.ok);
+  if (staticOk.h) await staticOk.h.stop();
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-RW RENEWAL ${pass}/${pass + fail}`);
   process.exitCode = fail ? 1 : 0;
