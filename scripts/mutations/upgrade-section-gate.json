@@ -239,6 +239,15 @@
       "cell": "adding a second major package beside an existing major is a new breaking signal",
       "expectRed": "adding a second major package beside an existing major is a new breaking signal",
       "note": "Exact-head review found the file-level boolean comparison stayed true at both ends when core was already major, hiding a newly major auth package. The package-name set difference is load-bearing even when the file was already breaking for another package."
+    },
+    {
+      "name": "quoted major values accepted by Changesets are silently ignored",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return Object.entries(parsed).filter(([, bump]) => bump === \"major\").map(([pkg]) => pkg);",
+      "replace": "  return Object.entries(parsed).filter(([, bump]) => bump === \"zz-not-major\").map(([pkg]) => pkg);",
+      "cell": "a valid quoted-major changeset refuses through the production CLI",
+      "expectRed": "a valid quoted-major changeset refuses through the production CLI",
+      "note": "Exact-head review used the repository's authoritative Changesets parser to show quoted YAML values and inline maps are valid major declarations while the hand regex returned no signal. The production CLI cell makes parser agreement load-bearing."
     }
   ]
 }

@@ -41,6 +41,7 @@ import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 
 export const UPGRADING_PATH = join("docs", "UPGRADING.md");
 
@@ -67,12 +68,10 @@ export function isBreakingCommit(subject, body = "") {
 export function majorChangesetPackages(text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   if (!m) return [];
-  const packages = [];
-  for (const line of m[1].split(/\r?\n/)) {
-    const row = /^\s*(?:"([^"]+)"|'([^']+)'|([^:#][^:]*?))\s*:\s*major\s*$/.exec(line);
-    if (row) packages.push((row[1] ?? row[2] ?? row[3]).trim());
-  }
-  return packages;
+  const parsed = parseYaml(m[1]);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("changeset front matter must be a YAML mapping of package names to bump levels");
+  return Object.entries(parsed).filter(([, bump]) => bump === "major").map(([pkg]) => pkg);
 }
 
 /** Is this changeset front-matter a `major` bump for any package? */
@@ -327,6 +326,14 @@ if (process.argv.includes("--self-test")) {
   cell("REFUSE CONTROL: a patch changeset is not", isBreakingChangeset('---\n"@cotal-ai/core": patch\n---\n\nbody') === false);
   cell("REFUSE CONTROL: the word major in a changeset BODY is not a bump",
     isBreakingChangeset('---\n"@cotal-ai/core": patch\n---\n\nthis is a major improvement') === false);
+  cell("a double-quoted major value is read the same way release tooling reads it",
+    majorChangesetPackages('---\n"@cotal-ai/core": "major"\n---\n').join() === "@cotal-ai/core");
+  cell("a single-quoted package and major value are accepted YAML",
+    majorChangesetPackages("---\n'@cotal-ai/core': 'major'\n---\n").join() === "@cotal-ai/core");
+  cell("an inline YAML map declaring major is a breaking changeset",
+    majorChangesetPackages('---\n{"@cotal-ai/core": major}\n---\n').join() === "@cotal-ai/core");
+  cell("malformed changeset YAML refuses loudly rather than becoming a clean no-signal",
+    (() => { try { majorChangesetPackages('---\n"@cotal-ai/core": [\n---\n'); return false; } catch { return true; } })());
 
   // CHANGESET SIGNALS ARE RANGE-LOCAL, just like commits and upgrade sections. A major file that
   // already exists at the base is pending work from another range, not a new breaking declaration
@@ -379,6 +386,9 @@ if (process.argv.includes("--self-test")) {
     const unchangedMajor = run(build("unchanged-major", "major", null));
     const noMajor = run(build("no-major", null, null));
     const newMajor = run(build("new-major", null, "major"));
+    const quotedMajor = run(build("quoted-major", null, '---\n"@cotal-ai/core": "major"\n---\n\nhead\n'));
+    const inlineMajor = run(build("inline-major", null, '---\n{"@cotal-ai/core": major}\n---\n\nhead\n'));
+    const malformedMajor = run(build("malformed-major", null, '---\n"@cotal-ai/core": [\n---\n\nhead\n'));
     const raisedMajor = run(build("patch-to-major", "patch", "major"));
     const baseOnlyCoreMajor = '---\n"@cotal-ai/core": major\n---\n\nbase\n';
     const baseCoreMajorAuthPatch = '---\n"@cotal-ai/core": major\n"@cotal-ai/auth": patch\n---\n\nbase\n';
@@ -401,6 +411,13 @@ if (process.argv.includes("--self-test")) {
       noMajor.status === 0, { status: noMajor.status });
     cell("a newly introduced major changeset is a breaking signal for this range",
       newMajor.status === 1 && /new major packages/.test(newMajor.stdout), { status: newMajor.status, stdout: newMajor.stdout });
+    cell("a valid quoted-major changeset refuses through the production CLI",
+      quotedMajor.status === 1 && /new major packages/.test(quotedMajor.stdout), { status: quotedMajor.status, stdout: quotedMajor.stdout });
+    cell("a valid inline-map major changeset refuses through the production CLI",
+      inlineMajor.status === 1 && /new major packages/.test(inlineMajor.stdout), { status: inlineMajor.status, stdout: inlineMajor.stdout });
+    cell("malformed changeset YAML is a misuse, never a clean no-signal",
+      malformedMajor.status === 2 && /could not run/.test(malformedMajor.stderr),
+      { status: malformedMajor.status, stdout: malformedMajor.stdout, stderr: malformedMajor.stderr });
     cell("changing an existing changeset from patch to major is a breaking signal",
       raisedMajor.status === 1 && /new major packages/.test(raisedMajor.stdout), { status: raisedMajor.status, stdout: raisedMajor.stdout });
     cell("adding a second major package beside an existing major is a new breaking signal",
@@ -796,7 +813,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 81;
+  const EXPECTED = 88;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
