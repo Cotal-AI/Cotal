@@ -503,6 +503,56 @@ const CASES = [
  * Every cell must land in one partition and every partition must be accounted for, so a cell added
  * in either style fails loudly rather than joining an ungraded remainder.
  */
+/**
+ * THE FACTORY CONTRACTS, declared rather than inferred.
+ *
+ * `arity` is the exact argument count the product's signature takes, and `readerIndex` is the
+ * position at which that factory RECEIVES its discriminator, or null when it OWNS one. Both are
+ * transcribed from scripts/check-operator-literals.mjs:
+ *   matchCell(id, text, rule, expectedPrimary, secondaryReader, expectedSecondary)
+ *   scanCell(id, expectedStatus, metric, expectedCount, measure)
+ *   cidrBoundaryCell(id, positive, control, rule)
+ *
+ * Arity is checked as well as the index because a signature change that inserts a parameter would
+ * otherwise silently move the reader while this table kept reading the old slot and reporting a
+ * confident wrong class. A mismatch here makes every cell of that factory a singleton, so the
+ * coverage row goes RED and names them, rather than quietly re-partitioning the census.
+ */
+const FACTORY_CONTRACTS = new Map([
+  ["matchCell", { arity: 6, readerIndex: 4 }],
+  ["scanCell", { arity: 5, readerIndex: 4 }],
+  ["cidrBoundaryCell", { arity: 4, readerIndex: null }],
+]);
+
+/**
+ * The reader class a cell carries, read at its factory's contract position.
+ *
+ * Returns one of:
+ *   `<identifier>`      a SHARED class: every cell naming that function dies together when it is
+ *                       hollowed, so one case covering any of them covers all of them.
+ *   `owned@<factory>`   the factory owns its discriminator and takes none, so its cells are one
+ *                       class by construction.
+ *   `inline@<cellId>`   a SINGLETON: a direct function literal is a distinct function object no
+ *                       other cell uses, so only a case naming this cell covers it.
+ *   `opaque@<cellId>`   a SINGLETON by REFUSAL: an unknown factory, a mismatched arity, or any
+ *                       other expression at the reader position (a wrapper call, a conditional, a
+ *                       member access). We cannot prove what function this cell ends up carrying,
+ *                       so we never let it share a class. It is covered only by its own case.
+ *
+ * The two singleton forms are distinct in the detail string so a red row says whether a cell is
+ * genuinely inline or is a shape this census refused to classify.
+ */
+const readerIdentity = (factoryName, cellId, args) => {
+  const contract = FACTORY_CONTRACTS.get(factoryName);
+  if (!contract || args.length !== contract.arity) return `opaque@${cellId}`;
+  if (contract.readerIndex === null) return `owned@${factoryName}`;
+  const arg = args[contract.readerIndex];
+  if (!arg) return `opaque@${cellId}`;
+  if (ts.isIdentifier(arg)) return arg.text;
+  if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) return `inline@${cellId}`;
+  return `opaque@${cellId}`;
+};
+
 const readCellInventory = (source) => {
   const sf = ts.createSourceFile("scanner.mjs", source, ts.ScriptTarget.Latest, true);
   const factories = new Set();
@@ -543,27 +593,35 @@ const readCellInventory = (source) => {
           // since every cell naming it dies together when it is hollowed. An inline function
           // expression is its OWN class, because it is a distinct function object no other cell
           // uses, which is what the case list must then cover.
-          // The discriminator is found by SHAPE, scanning from the end, not at a fixed index.
-          // Factories differ: `matchCell` takes its reader fifth, `scanCell` fifth of five, and
-          // `cidrBoundaryCell` takes none at all because it OWNS its logic. A fixed index reported
-          // the cidr cells as having no reader and made them unaccounted, which is a reader census
-          // that cannot read some of its subjects. Scanning from the end also avoids the opposite
-          // error: several cells pass an identifier as their SUBJECT TEXT in an early argument,
-          // and a forward scan would class the cell by its input instead of by its discriminator.
+          // The discriminator is read AT THE FACTORY'S OWN PARAMETER POSITION, never by searching
+          // the argument list for something that looks like a reader.
+          //
+          // This scanned backward from the end and took the first identifier or function
+          // expression it met. Review defeated it in one line by WRAPPING the reader:
+          //   matchCell('wrapped', shapeIPv4Count, 'host-name', 0, ((r) => r)((t) => ...), 1)
+          // The wrapper is a CallExpression, so the scan skipped it, walked back into argument 1,
+          // found the SUBJECT identifier `shapeIPv4Count`, and recorded that as the cell's reader.
+          // `ip-loopback` has a case on that named class, so the wrapped cell inherited coverage it
+          // did not have: hollowing its real inner reader left the suite green at 119/119. A search
+          // for a plausible shape will always answer with the wrong argument for some spelling,
+          // which is this file's recurring defect one level in.
+          //
+          // So the contract is declared rather than inferred. Each factory states its arity and the
+          // index at which it RECEIVES its discriminator, taken from the product's own signatures:
+          //   matchCell(id, text, rule, expectedPrimary, secondaryReader, expectedSecondary)
+          //   scanCell(id, expectedStatus, metric, expectedCount, measure)
+          //   cidrBoundaryCell(id, positive, control, rule)   <- receives none, OWNS its logic
+          // A factory that owns its discriminator is one equivalence class, so its cells share
+          // `owned@<factory>` and one case grades them all.
+          //
+          // Everything else FAILS CLOSED to a singleton named for the cell. An unknown factory, an
+          // arity that does not match the contract, or any expression at the reader position that
+          // is not a bare identifier or a direct function literal is its own class and can be
+          // covered only by a case naming that cell. A singleton can make a cell report UNCOVERED,
+          // which is a loud red; it can never hand a cell someone else's coverage, which is the
+          // silent direction the wrapper exploited.
           if (id) {
-            let reader = `owned@${name}`;
-            for (let i = element.arguments.length - 1; i >= 1; i -= 1) {
-              const arg = element.arguments[i];
-              if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
-                reader = `inline@${id}`;
-                break;
-              }
-              if (ts.isIdentifier(arg)) {
-                reader = arg.text;
-                break;
-              }
-            }
-            readerById.set(id, reader);
+            readerById.set(id, readerIdentity(name, id, element.arguments));
           }
         } else if (ts.isObjectLiteralExpression(element)) {
           total += 1;
@@ -841,6 +899,44 @@ try {
     inventory.unclassified.length === 0 && plantedUnclassified.unclassified.length === 1
       && plantedUnclassified.unclassified[0] === "SpreadElement",
     `unclassified=${inventory.unclassified.length}/0${inventory.unclassified.length ? ` [${inventory.unclassified.join(", ")}]` : ""} planted_control=${plantedUnclassified.unclassified.length}/1 [${plantedUnclassified.unclassified.join(", ")}]`,
+  );
+
+  // THE READER POSITION MUST NOT BE SEARCHED FOR, AND THIS IS WHERE THAT IS GRADED.
+  //
+  // An earlier census found the discriminator by scanning arguments from the end for the first
+  // identifier or function literal. Review wrapped a reader in a call:
+  //
+  //     matchCell('wrapped', shapeIPv4Count, 'host-name', 0, ((r) => r)((t) => ...), 1)
+  //
+  // the scan skipped the CallExpression, walked back into the SUBJECT argument, and recorded
+  // `shapeIPv4Count` as this cell's reader. A case on `ip-loopback` covers that named class, so the
+  // cell was handed coverage it did not have and hollowing its real reader left the suite green.
+  //
+  // The planted source below carries all three outcomes at once, so this control fails if the
+  // positional read regresses in EITHER direction: `shared` must still resolve to its named class
+  // (a refusal that classed everything as a singleton would also produce a green "no false
+  // coverage" row, and would be useless), while `wrapped` must be `opaque@wrapped` rather than
+  // `shapeIPv4Count`. The wrapped row is the one that matters: the subject argument it would have
+  // stolen is present and is the same identifier the shared cell legitimately uses, so attribution
+  // to an earlier argument is observable here rather than merely absent.
+  const plantedReaders = readCellInventory([
+    "const SELFTEST_CELLS = [",
+    "  matchCell('shared', subjectText, 'host-name', 0, shapeIPv4Count, 1),",
+    "  matchCell('own-inline', subjectText, 'host-name', 0, (t) => Number(t.length), 1),",
+    "  matchCell('wrapped', shapeIPv4Count, 'host-name', 0, ((r) => r)((t) => Number(t.length)), 1),",
+    "  matchCell('short-arity', subjectText, shapeIPv4Count),",
+    "  cidrBoundaryCell('owns-it', 'a', 'b', 'rule'),",
+    "];",
+  ].join("\n"));
+  const plantedReaderRow = (id) => plantedReaders.readerById.get(id);
+  check(
+    "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+    plantedReaderRow("shared") === "shapeIPv4Count"
+      && plantedReaderRow("own-inline") === "inline@own-inline"
+      && plantedReaderRow("wrapped") === "opaque@wrapped"
+      && plantedReaderRow("short-arity") === "opaque@short-arity"
+      && plantedReaderRow("owns-it") === "owned@cidrBoundaryCell",
+    `shared=${plantedReaderRow("shared")}/shapeIPv4Count own-inline=${plantedReaderRow("own-inline")}/inline@own-inline wrapped=${plantedReaderRow("wrapped")}/opaque@wrapped short-arity=${plantedReaderRow("short-arity")}/opaque@short-arity owns-it=${plantedReaderRow("owns-it")}/owned@cidrBoundaryCell`,
   );
 
   // A THIRD INPUT THAT IS NOT A READING OF THE SOURCE AT ALL: THE CELLS THAT ACTUALLY RAN.
