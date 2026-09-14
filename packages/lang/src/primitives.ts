@@ -87,13 +87,13 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
   spawn: {
     kind: "spawn",
     nameRequired: false,
-    options: ["name", "worktree", "join", "role", "permits", "supervise", "onFork"],
+    options: ["name", "cwd", "worktree", "join", "role", "permits", "supervise", "onFork"],
     optionsAt: 1,
-    hashedOptions: ["worktree", "join", "role"],
+    hashedOptions: ["cwd", "worktree", "join", "role"],
     hashesSubject: true,
     opensScope: false,
     signature:
-      "spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork? }) -> AgentHandle",
+      "spawn(persona, { name?, cwd?, worktree?, join?, role?, permits?, supervise?, onFork? }) -> AgentHandle",
     doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy.",
     example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },

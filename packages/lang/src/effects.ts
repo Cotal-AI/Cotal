@@ -101,6 +101,8 @@ export interface SpawnRequest {
   readonly persona: string;
   readonly model?: string;
   readonly variant?: string;
+  /** Existing absolute directory on the serving manager's host. Separate from logical worktree identity. */
+  readonly cwd?: string;
   readonly worktree?: string;
   readonly join?: readonly ChannelHandleValue[];
   readonly role?: string;

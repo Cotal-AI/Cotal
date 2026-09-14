@@ -17,6 +17,7 @@
  * again.
  */
 import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
 import {
   mintCheckpoint,
   heartbeatCheckpoint,
@@ -1173,6 +1174,13 @@ export class MeshHandler {
   async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const goalId = ctx.requestId;
+
+    // Placement is explicit and host-local. Refuse malformed values before manager discovery or
+    // submission, so an invalid request can never turn into an omitted `cwd` and inherit the
+    // manager's workspace root. Existence and launch authority stay with the serving manager.
+    if (req.cwd !== undefined && (typeof req.cwd !== "string" || req.cwd.length === 0 || !isAbsolute(req.cwd)))
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) cwd must be a non-empty absolute directory on the serving manager's host; refusing ${JSON.stringify(req.cwd)} rather than falling back`);
 
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
     // identity was bound before the crash. Go straight back to the terminal. An entry that says
@@ -2401,6 +2409,7 @@ export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
     name: req.persona,
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
+    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
     ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),

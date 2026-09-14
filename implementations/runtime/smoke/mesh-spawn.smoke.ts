@@ -19,7 +19,8 @@
  * Run: pnpm smoke:runtime-mesh-spawn   (needs nats-server on PATH)
  */
 import { spawn as spawnProc } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -92,6 +93,20 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-meshspawn-"));
+const managerRoot = join(sd, "manager-root");
+const preparedRoot = join(sd, "prepared-writer");
+const makeRepo = (dir: string, marker: string): string => {
+  mkdirSync(dir);
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "mesh-spawn@example.invalid"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "mesh-spawn smoke"], { cwd: dir });
+  writeFileSync(join(dir, "marker"), marker);
+  execFileSync("git", ["add", "marker"], { cwd: dir });
+  execFileSync("git", ["commit", "-qm", marker], { cwd: dir });
+  return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+};
+const managerHead = makeRepo(managerRoot, "manager");
+const preparedHead = makeRepo(preparedRoot, "prepared");
 const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
@@ -127,6 +142,7 @@ const SPAWN_INPUT = {
   properties: {
     name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
     model: { type: "string" }, variant: { type: "string" },
+    cwd: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
   },
 } as const;
@@ -208,6 +224,7 @@ const acceptances = new Map<string, Record<string, unknown>>();
 const spawnInvokes: string[] = [];                       // every spawn submission's goalId, in order
 const allocations: Array<{ goalId: string; name: string; owner: string; actor: string; uid: string; persona: string }> = [];
 const despawns: Array<{ owner: string; actor: string; lifecycleUid: string; graceful: unknown }> = [];
+const placements: Array<{ goalId: string; cwd: string; head: string }> = [];
 const mappings = new Map<string, { lifecycleUid: string; mappingRevision: number }>();
 const gone = new Set<string>();                          // despawned lifecycleUids → not-found on re-despawn
 /** Scripted per-persona outcome; default is a prompt `succeeded`. `readinessMs` narrows the
@@ -234,6 +251,20 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
     throw new EpEnvelopeError("failed-precondition", `no persona "${persona}" in the catalog`);
   if (OUTCOME[persona] === undefined && persona.startsWith("crowded"))
     throw new EpEnvelopeError("resource-exhausted", `the endpoint's seat capacity is full`);
+  if (args.cwd !== undefined &&
+      (typeof args.cwd !== "string" || !existsSync(args.cwd) || !statSync(args.cwd).isDirectory()))
+    throw new EpEnvelopeError("failed-precondition", `cwd is not an existing directory: ${JSON.stringify(args.cwd)}`);
+  if (persona === "placed") {
+    const observed = join(sd, `placement-${goalId}.json`);
+    const child = spawnProc(process.execPath, ["-e", `const {execFileSync}=require('node:child_process');const {writeFileSync}=require('node:fs');writeFileSync(${JSON.stringify(observed)},JSON.stringify({cwd:process.cwd(),head:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()}))`], {
+      cwd: typeof args.cwd === "string" ? args.cwd : managerRoot,
+      stdio: "ignore",
+    });
+    const exit = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+    if (exit !== 0) throw new EpEnvelopeError("failed-precondition", `placement probe exited ${String(exit)}`);
+    const actual = JSON.parse(readFileSync(observed, "utf8")) as { cwd: string; head: string };
+    placements.push({ goalId, ...actual });
+  }
   const ref = goalRefOf(ctx.subject, goalId);
   const b = await bindGoal(goalCtx, ref, fingerprint);
   if (!b.bound) throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound (SPEC 13.6)`);
@@ -368,6 +399,50 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     JSON.stringify(bound?.external));
 }
 
+// ── 3b) explicit placement launches in the prepared repository and resumes in place ───────────
+{
+  console.log("• 3b — explicit cwd places the child and is recovered, not repeated");
+  const T = token("p");
+  const handler = mk("sp-3b");
+  const firstCtx = stepCtx(T);
+  const first = await withDeadline(handler.spawn({ persona: "placed", cwd: preparedRoot }, firstCtx.ctx), 20_000, "the placed spawn");
+  const placed = placements.find((p) => p.goalId === T);
+  c("the child process cwd is the prepared clone, distinct from the manager root",
+    first !== undefined && placed !== undefined && realpathSync(placed.cwd) === realpathSync(preparedRoot)
+      && realpathSync(placed.cwd) !== realpathSync(managerRoot),
+    { placed, managerRoot });
+  c("the child repository head is the requested prepared revision, not the manager revision",
+    placed?.head === preparedHead && placed.head !== managerHead,
+    { placed: placed?.head, preparedHead, managerHead });
+  const invokesBefore = spawnInvokes.length;
+  const launchesBefore = placements.length;
+  const resumed = await withDeadline(handler.spawn({ persona: "placed", cwd: preparedRoot }, stepCtx(T, firstCtx.bound).ctx), 20_000, "the placed resume");
+  c("resume returns the same lifecycle without another submission or child process",
+    resumed?.agent === first?.agent && spawnInvokes.length === invokesBefore && placements.length === launchesBefore,
+    { first: first?.agent, resumed: resumed?.agent, invokes: spawnInvokes.length - invokesBefore, launches: placements.length - launchesBefore });
+}
+
+// ── 3c) malformed and missing placement refuse before allocation, never falling back ──────────
+{
+  console.log("• 3c — bad cwd values refuse without fallback");
+  const handler = mk("sp-3c");
+  const invokesBefore = spawnInvokes.length;
+  const allocationsBefore = allocations.length;
+  const launchesBefore = placements.length;
+  const malformed = await handler.spawn({ persona: "placed", cwd: "relative/writer" }, stepCtx(token("v")).ctx)
+    .then(() => undefined, (e: unknown) => e as EffectError);
+  c("a malformed cwd is an explicit catchable refusal before manager submission",
+    malformed instanceof EffectError && malformed.code === "L4000" && /absolute directory/.test(malformed.message), malformed?.message);
+  const absent = join(sd, "does-not-exist");
+  const missing = await handler.spawn({ persona: "placed", cwd: absent }, stepCtx(token("x")).ctx)
+    .then(() => undefined, (e: unknown) => e as EffectError);
+  c("a missing cwd is explicitly refused by the serving manager",
+    missing instanceof EffectError && missing.code === "L4000" && /not an existing directory/.test(missing.message), missing?.message);
+  c("neither bad path leaves a fallback seat, partial allocation, or child",
+    spawnInvokes.length === invokesBefore + 1 && allocations.length === allocationsBefore && placements.length === launchesBefore,
+    { invokes: spawnInvokes.length - invokesBefore, allocations: allocations.length - allocationsBefore, launches: placements.length - launchesBefore });
+}
+
 // ── 2) an idempotent resubmission is served, never re-allocated ───────────────────────────────
 {
   console.log("• 2 — the same pinned id resubmitted is served, not re-allocated");
@@ -472,11 +547,16 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   // The other half: no durable trace at all. The raised error is the infrastructure's, never a
   // fabricated L4002 — nothing was accepted, and saying "the spawn failed" would blame the program.
   const T2 = token("f");
+  const allocationsBeforeUnavailable = allocations.length;
+  const placementsBeforeUnavailable = placements.length;
   const e = await withDeadline(
-    handler.spawn({ persona: "ghost" }, stepCtx(T2).ctx).then(() => null, (x: unknown) => x as Error),
+    handler.spawn({ persona: "ghost", cwd: preparedRoot }, stepCtx(T2).ctx).then(() => null, (x: unknown) => x as Error),
     40_000, "the no-trace spawn");
-  c("with no durable trace the invoke's own failure is raised",
+  c("an unavailable manager raises the invoke's own explicit failure for a cwd request",
     e !== null && e !== undefined && !(e instanceof EffectError), e === null ? "resolved" : e?.name);
+  c("the unavailable-manager refusal leaves no fallback allocation or placement child",
+    allocations.length === allocationsBeforeUnavailable && placements.length === placementsBeforeUnavailable,
+    { allocations: allocations.length - allocationsBeforeUnavailable, placements: placements.length - placementsBeforeUnavailable });
 }
 console.log("  (restarting the suite endpoint for the discharge cells)");
 const serve2 = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
@@ -716,7 +796,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 43;
+const EXPECTED_CELLS = 50;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

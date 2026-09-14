@@ -19,6 +19,15 @@
   ],
   "mutations": [
     {
+      "name": "workflow spawn drops explicit cwd forwarding",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),",
+      "replace": "    ...(false ? { cwd: req.cwd } : {}),",
+      "expectRed": "the child process cwd is the prepared clone, distinct from the manager root",
+      "cell": "the child process cwd is the prepared clone, distinct from the manager root",
+      "note": "The request still parses and the fake serving manager really launches a child. Without forwarding it applies its legacy manager-root fallback, so the physical cwd and repository-head assertions fail."
+    },
+    {
       "name": "core mints a nonce instead of honoring the pinned envelope id",
       "file": "packages/core/src/endpoint-verbs.ts",
       "find": "  const requestId = op.id !== undefined ? assertIdToken(op.id, \"pinned envelope id\") : nonce();",

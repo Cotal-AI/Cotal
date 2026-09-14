@@ -108,7 +108,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   // One program per primitive, passing every option the validator accepts.
   const CASES: Readonly<Record<string, { src: string; method: string }>> = {
     spawn: {
-      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt" });\n',
+      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", cwd: "/prepared/writer", worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt" });\n',
       method: "spawn",
     },
     turn: {
@@ -305,6 +305,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   const PROBES: readonly Probe[] = [
     // spawn: identity is hashed, policy is not. `permits` is a budget and `supervise` a restart
     // rule; both decide how a recorded fact is ACTED ON, so they are reapplied from current source.
+    { prim: "spawn", opt: "cwd", a: "/prepared/a", b: "/prepared/b", bagA: 'name: "a", cwd: "/prepared/a"', bagB: 'name: "a", cwd: "/prepared/b"' },
     { prim: "spawn", opt: "worktree", a: "wt-1", b: "wt-2", bagA: 'name: "a", worktree: "wt-1"', bagB: 'name: "a", worktree: "wt-2"' },
     { prim: "spawn", opt: "join", a: "t", b: "u", bagA: 'name: "a", join: [t]', bagB: 'name: "a", join: [u]' },
     { prim: "spawn", opt: "role", a: "r1", b: "r2", bagA: 'name: "a", role: "r1"', bagB: 'name: "a", role: "r2"' },
