@@ -171,7 +171,7 @@
     {
       "name": "the stale-claim detector returns nothing, so every page reads as clean",
       "file": "scripts/upgrade-section-gate.mjs",
-      "find": "  return candidates.filter((j) => j !== hostJob\n    && new RegExp(`(runs?|grades?|grading path is|step in|in) the .${j}. job`).test(text));",
+      "find": "  return candidates.filter((j) => j !== hostJob\n    && new RegExp(`(runs?|grades?|grading path is|step (?:in|of)|in) the .${j}. job`).test(text));",
       "replace": "  return [];",
       "cell": "ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
       "expectRed": "ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
@@ -194,6 +194,24 @@
       "cell": "REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
       "expectRed": "REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
       "note": "Found by review end to end: with a hard-coded pair, a page naming the CORRECT host AND ALSO a false third job passes everything, because the positive check is satisfied while the refuse leg never looks at the third. A silent default is how that list stops tracking the workflows, so the absence must throw rather than guess."
+    },
+    {
+      "name": "the detector misses the docs' own `step of` grammar for a false third job",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "step (?:in|of)",
+      "replace": "step in",
+      "cell": "the docs' own `step of` grammar cannot hide a false third job",
+      "expectRed": "the docs' own `step of` grammar cannot hide a false third job",
+      "note": "Found by exact-head review using the grammar the committed design itself uses. The page can name the correct host as a step of attribution and also falsely name live as another step of the gate; recognizing only `step in` makes that simultaneous truth and falsehood pass."
+    },
+    {
+      "name": "workflow candidate extraction includes top-level triggers as though they were jobs",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "        if (!inJobs) continue;",
+      "replace": "        if (false) continue;",
+      "cell": "workflow candidates are job keys, not top-level trigger or configuration keys",
+      "expectRed": "workflow candidates are job keys, not top-level trigger or configuration keys",
+      "note": "Exact-head review measured 32 regex candidates against 27 actual job keys: pull_request, push, release, schedule, and workflow_dispatch leaked in from other top-level mappings. This mutant restores that over-wide extraction and must red the candidate-set cell."
     }
   ]
 }

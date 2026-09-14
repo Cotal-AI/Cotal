@@ -192,7 +192,7 @@ export function staleJobClaims(text, hostJob, candidates) {
   if (!Array.isArray(candidates) || candidates.length === 0)
     throw new Error("staleJobClaims: candidates must be a non-empty array of job names read from the workflows");
   return candidates.filter((j) => j !== hostJob
-    && new RegExp(`(runs?|grades?|grading path is|step in|in) the .${j}. job`).test(text));
+    && new RegExp(`(runs?|grades?|grading path is|step (?:in|of)|in) the .${j}. job`).test(text));
 }
 
 export function verdict({ breaking, addedSections }) {
@@ -570,13 +570,22 @@ if (process.argv.includes("--self-test")) {
   const allJobNames = (() => {
     const names = new Set();
     if (!existsSync(workflowDir)) return names;
-    for (const f of readdirSync(workflowDir).filter((n) => n.endsWith(".yml")))
+    for (const f of readdirSync(workflowDir).filter((n) => n.endsWith(".yml"))) {
+      let inJobs = false;
       for (const l of readFileSync(join(workflowDir, f), "utf8").split("\n")) {
+        if (/^jobs:\s*$/.test(l)) { inJobs = true; continue; }
+        if (inJobs && /^\S/.test(l)) inJobs = false;
+        if (!inJobs) continue;
         const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(l);
         if (m) names.add(m[1]);
       }
+    }
     return names;
   })();
+  cell("workflow candidates are job keys, not top-level trigger or configuration keys",
+    allJobNames.has("attribution") && allJobNames.has("live")
+      && !["pull_request", "push", "release", "schedule", "workflow_dispatch"].some((n) => allJobNames.has(n)),
+    { count: allJobNames.size, names: [...allJobNames].sort() });
 
   const hostJob = (() => {
     if (!existsSync(workflowDir)) return null;
@@ -651,6 +660,9 @@ if (process.argv.includes("--self-test")) {
   cell("a page that names the right job AND a false third job is still NAMED",
     staleJobClaims("as a step of the `attribution` job, and the grading path is the `live` job",
       "attribution", ["unit", "ci-ok", "live", "smoke"]).join() === "live");
+  cell("the docs' own `step of` grammar cannot hide a false third job",
+    staleJobClaims("as a step of the `attribution` job, and as a step of the `live` job",
+      "attribution", ["unit", "ci-ok", "live", "smoke"]).join() === "live");
   cell("…and the same page with only the right job is silent",
     staleJobClaims("as a step of the `attribution` job", "attribution",
       ["unit", "ci-ok", "live", "smoke"]).length === 0);
@@ -671,7 +683,7 @@ if (process.argv.includes("--self-test")) {
     staleJobClaims('"body": "CI runs it as a step of the `attribution` job, grading each\\nPR."',
       "attribution", ["unit", "ci-ok"]).length === 0);
 
-  const EXPECTED = 66;
+  const EXPECTED = 68;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
