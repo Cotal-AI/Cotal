@@ -312,6 +312,14 @@
       "replace": "    if (extra.length) void extra;\n",
       "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
       "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "a fourth status-specific census outcome is added, escaping the three-value domain the verdict ladder buckets on",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 404) return \"absent\";\n",
+      "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\";\n",
+      "expectRed": "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed",
+      "cell": "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed"
     }
   ]
 }

@@ -528,9 +528,12 @@ check(
 
 // The `incomplete` rung is a backstop for a registry state the current status domain cannot
 // produce: with no unknown rows, zero present rows forces absent === rows, which the earlier
-// all-absent rung already claims. This cell pins that domain. If a later change adds a fourth
-// readExactVersion outcome, or lets a row carry a value outside this set, the backstop becomes
-// reachable and this cell reds to say the ladder needs a fixture rather than a deletion.
+// all-absent rung already claims. Two cells pin that domain, and they pin different halves of
+// it. The first drives three registry answers and records what the census actually carried. It
+// is an OBSERVATION over the statuses it happens to send, so on its own it cannot see a fourth
+// outcome that only fires on a status it never sends: a branch returning something new on HTTP
+// 418 escapes it completely. The second cell closes that hole by reading the shipped source and
+// enumerating EVERY return in readExactVersion rather than sampling its behaviour.
 const domainProbe: Array<{ label: string; exact: (name: string) => number | undefined }> = [
   { label: "all-200", exact: () => 200 },
   { label: "all-404", exact: () => 404 },
@@ -546,10 +549,37 @@ for (const probe of domainProbe) {
   }
 }
 check(
-  "every census row value stays inside the present, absent, unknown domain the verdict ladder covers",
+  "the census values observed across the 200, 404 and 503 answers are present, absent and unknown only",
   observedRegistryValues.size > 0
     && [...observedRegistryValues].every((value) => value === "present" || value === "absent" || value === "unknown:*"),
   [...observedRegistryValues],
+);
+
+// Structural half of the domain pin. Every `return` inside readExactVersion must produce one of
+// the three values the verdict ladder buckets on. Enumerating the returns rather than sampling
+// statuses is what makes a fourth outcome unmissable: a new branch is a new return whatever
+// status guards it. The extractor is written to fail RED rather than quietly green if it ever
+// stops finding the function or its returns, because an extractor that reports nothing is
+// indistinguishable from a source with nothing wrong.
+const preflightSource = readFileSync(join(ROOT, "scripts/preflight-npm-publish.mjs"), "utf8");
+function readExactVersionReturns(source: string): string[] | null {
+  const start = source.indexOf("async function readExactVersion(");
+  if (start === -1) return null;
+  const end = source.indexOf("\n}\n", start);
+  if (end === -1) return null;
+  return [...source.slice(start, end).matchAll(/\breturn\s+([^;]+);/g)].map((match) => match[1].trim());
+}
+function isCensusDomainValue(expression: string): boolean {
+  return expression === '"present"'
+    || expression === '"absent"'
+    || (expression.startsWith("`unknown:") && expression.endsWith("`"));
+}
+const censusReturns = readExactVersionReturns(preflightSource);
+const outOfDomainReturns = (censusReturns ?? []).filter((expression) => !isCensusDomainValue(expression));
+check(
+  "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed",
+  censusReturns !== null && censusReturns.length >= 4 && outOfDomainReturns.length === 0,
+  censusReturns === null ? "readExactVersion or its body was not found in the shipped source" : outOfDomainReturns,
 );
 
 // The three census buckets are disjoint, which is why the inconclusive rung may sit either
