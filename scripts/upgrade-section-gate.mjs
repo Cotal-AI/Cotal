@@ -335,6 +335,17 @@ if (process.argv.includes("--self-test")) {
   };
   cell("EXIT 2 on an unresolvable ref: misuse is never reported as a refusal", runSelf(["--range", "qqzzNoSuchRef77..HEAD"]) === 2);
   cell("EXIT 2 on missing arguments", runSelf([]) === 2);
+  // `--merge-snapshot` EXISTS TO STOP THE RANGE'S TWO ENDS COMING FROM DIFFERENT SNAPSHOTS, and
+  // these cells grade the refusals rather than the happy path, because the happy path is what a
+  // caller notices and a missing refusal is what nobody notices. On a single-parent checkout
+  // `HEAD^1` is the previous commit rather than the merge base, so the range shrinks to one
+  // commit and a breaking change behind it reads as absent: a clean green meaning "I looked at
+  // the wrong thing". The tool must refuse that itself and not rely on its caller checking,
+  // because a local hook or a future workflow inherits none of the caller's care.
+  cell("EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+    runSelf(["--merge-snapshot"]) === 2);
+  cell("EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
+    runSelf(["--merge-snapshot", "--range", "HEAD~1..HEAD"]) === 2);
   // THESE TWO CELLS NEED REAL RELEASE HISTORY, AND A SUITE MUST NOT RED FOR A REASON THAT IS NOT
   // A DEFECT. In a shallow checkout the commits behind these tags are absent, so the CLI answers
   // 2 (nothing was graded) and an assertion of 1 or 0 fails while the tool is behaving exactly as
@@ -385,7 +396,7 @@ if (process.argv.includes("--self-test")) {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  const EXPECTED = 39;
+  const EXPECTED = 41;
   // A SKIP MUST BE JUSTIFIED BY THE REPOSITORY THE SUITE IS ACTUALLY IN, and this cell is the
   // only thing that checks it. Found by mutation: forcing the probe true on a healthy clone made
   // the suite skip two real cells and still print OK, because every other shallow cell reasons
@@ -444,10 +455,53 @@ function main() {
   // learns to distrust a gate that is working correctly.
   const gitQuiet = (args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-  const range = flag("range") ?? (flag("base") ? `${flag("base")}..HEAD` : undefined);
-  if (!range) {
-    console.error("usage: node scripts/upgrade-section-gate.mjs --base <ref> | --range <a..b> | --self-test");
+  let range = flag("range") ?? (flag("base") ? `${flag("base")}..HEAD` : undefined);
+  const mergeSnapshot = argv.includes("--merge-snapshot");
+  if (!range && !mergeSnapshot) {
+    console.error("usage: node scripts/upgrade-section-gate.mjs --base <ref> | --range <a..b> | --merge-snapshot | --self-test");
     process.exit(2);
+  }
+  if (range && mergeSnapshot) {
+    console.error("upgrade-section-gate: --merge-snapshot takes its own range and cannot be combined with --base or --range.");
+    console.error("This is a MISUSE exit (2): nothing was graded.");
+    process.exit(2);
+  }
+
+  // `--merge-snapshot` GRADES A PULL REQUEST, AND IT REFUSES TO GUESS WHAT THAT MEANS.
+  //
+  // A CI checkout of a pull request is GitHub's synthetic merge commit, whose first parent is the
+  // mainline it would land on. `HEAD^1..HEAD` is therefore the contribution, and both ends are
+  // read off ONE object so nothing can drift between them. Taking the base from the event payload
+  // instead lets the two ends come from different snapshots: measured on the pull request that
+  // introduced this flag, the payload's base was six commits behind the merge's own first parent,
+  // and an unrelated release section on the mainline was swallowed into the range and read as
+  // coverage for a breaking commit that documented nothing.
+  //
+  // THE PARENT COUNT IS CHECKED HERE, IN THE TOOL, AND NOT ONLY IN THE CALLER. On a single-parent
+  // checkout `HEAD^1` is the branch's previous commit, so the range shrinks to the last commit
+  // and a breaking change one commit further back becomes invisible: the gate prints OK and exits
+  // 0 while the branch it was pointed at is exactly what it exists to refuse. A caller can hold
+  // that guard, and a caller can also be a local hook, a future workflow, or someone running this
+  // by hand, none of which inherit the caller's care. A tool that only refuses when its caller
+  // remembers to check is a tool that is correct by convention.
+  if (mergeSnapshot) {
+    let parents;
+    try {
+      parents = gitQuiet(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(/\s+/).length - 1;
+    } catch {
+      console.error("upgrade-section-gate: cannot read HEAD's parents.");
+      console.error("This is a MISUSE exit (2): nothing was graded.");
+      process.exit(2);
+    }
+    if (parents !== 2) {
+      console.error(`upgrade-section-gate: --merge-snapshot needs a two-parent merge commit, and HEAD has ${parents}.`);
+      console.error("Nothing was graded. This is a MISUSE exit (2), not a pass and not a refusal.");
+      console.error("On a single-parent checkout HEAD^1 is the previous commit, not the merge base, so the");
+      console.error("range would silently shrink and a breaking change would read as absent. Check out the");
+      console.error("pull request's merge ref, or pass --range explicitly if you know what you are grading.");
+      process.exit(2);
+    }
+    range = `${gitQuiet(["rev-parse", "HEAD^1"]).trim()}..${gitQuiet(["rev-parse", "HEAD"]).trim()}`;
   }
 
   // Commit subjects and bodies in range, one record per commit. A NUL separator, because a commit

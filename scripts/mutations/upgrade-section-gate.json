@@ -113,6 +113,24 @@
       "expectRed": "cells are only skipped when THIS repository is genuinely shallow",
       "cell": "cells are only skipped when THIS repository is genuinely shallow",
       "note": "A SKIP IS A CLAIM AND IT NEEDS GRADING LIKE ANY OTHER. The skip path exists so a shallow checkout reports UNGRADED instead of a false red, but the same mechanism could silently drop real cells on a healthy repository, and the sentinel cannot catch that because pass+fail+skipped is invariant under a skip. This mutant forces the probe true on a full clone; the discriminating cell reds because it asserts the probe answers false in a full source and true only in a depth-1 clone. That cell is what stops the skip from becoming a way to make the suite quiet."
+    },
+    {
+      "name": "M12 --merge-snapshot accepts a checkout that is not a merge",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    if (parents !== 2) {",
+      "replace": "    if (false) {",
+      "expectRed": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      "cell": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      "note": "THIS IS THE MUTANT FOR THE DEFECT THAT SHIPPED. On a single-parent checkout HEAD^1 is the branch's previous commit rather than the merge base, so the graded range shrinks to the last commit and a breaking change behind it reads as absent. The gate then prints OK and exits 0 on exactly the branch it exists to refuse: a clean green meaning I looked at the wrong thing. Reviewed against the caller's own parent check, which catches the same shape; the guard is duplicated deliberately, because a guard living only in its caller protects only the callers that remember it, and a local hook or a future workflow inherits none of that care."
+    },
+    {
+      "name": "M13 an explicit range silently overrides the merge snapshot's own range",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (range && mergeSnapshot) {",
+      "replace": "  if (false) {",
+      "expectRed": "EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
+      "cell": "EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
+      "note": "TWO SOURCES FOR ONE RANGE IS THE DEFECT THIS WHOLE FLAG REPLACES. If both are accepted, the later assignment wins silently and a caller that passes both gets whichever the implementation happens to prefer, which is how a base from one snapshot ended up paired with a head from another in the first place. Refusing the combination keeps the range's provenance single and visible."
     }
   ]
 }
