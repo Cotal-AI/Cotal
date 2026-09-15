@@ -663,6 +663,58 @@ export const CONTROL_DELIVERY = "delivery" as const;
  *  cred is default-denied — nats-server is the boundary);
  *  the `delivery` cred holds the serve + bounded-reply side. */
 export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
+
+// ---- the peer-readable liveness rail (#1577) ----
+
+/** The route token of the PEER-READABLE LIVENESS rail: `live.<plane>.<owner>.<actor>`.
+ *
+ *  ITS OWN TIER, and the choice is load-bearing in two directions.
+ *
+ *  NOT `ctl`. Since 1d `ctl.<service>` is ONLY the delivery daemon (`ctl.delivery` /
+ *  `ctl.delivery-admin`); the manager's control moved to its v0.4 `service` endpoint. Answering
+ *  MANAGER liveness on a `ctl` tier would re-introduce a manager ctl rail by accident — exactly what
+ *  that change deleted, and it would arrive spelled like a control rail while carrying none of its
+ *  authority, which is the worst of both.
+ *
+ *  NOT `ep`. The endpoint rails carry the typed command surface with its authz/target grammar and
+ *  its capability mints. A presence-only probe must not acquire that reach, and a reader auditing
+ *  the ep plane must not have to except one subject from every statement about it.
+ *
+ *  Its own token means it can be granted, denied, audited and reasoned about as ONE thing: a grep
+ *  for `.live.` finds the entire liveness surface. */
+export const LIVENESS_ROUTE = "live" as const;
+
+/** The liveness REQUEST subject: `live.<plane>.<owner>.<actor>` — the same four-token shape as a
+ *  control service subject, so the caller principal is pinned in the subject exactly as it is
+ *  everywhere else and the broker forge-locks the identity slots against the minted grant. A peer
+ *  publishes only its own principal's form; the responder subscribes the `*.*` caller form.
+ *
+ *  THE PLANE RIDES THE SUBJECT, NOT THE PAYLOAD, and that is a permissions decision rather than a
+ *  stylistic one: a subject token is what a credential can be scoped to, so a credential can be
+ *  granted "may ask about delivery" and nothing else, enforced by the broker. A plane carried in the
+ *  body would be invisible to nats-server and gradeable only by the responder — the weaker boundary,
+ *  since it would make the responder the only thing standing between a caller and a plane it was
+ *  never meant to ask about. */
+export function livenessSubject(space: string, plane: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** The SERVE-side filter a responder subscribes for one plane: `live.<plane>.*.*` — every caller
+ *  principal, queue-grouped by the responder so a plane with several instances answers a probe once
+ *  rather than N times. Held by the plane's own credential and by nothing else: an agent that could
+ *  subscribe this could impersonate a responder and answer a peer's probe with a comforting lie. */
+export function livenessServeFilter(space: string, plane: string): string {
+  return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.*.*`;
+}
+
+/** The responder's reply-PUBLISH grant for one plane, bounded to the `.reply.` leaf beneath a
+ *  caller's own request subject — the same shape as the delivery daemon's `ctl.delivery.*.*.reply.>`
+ *  and for the same two reasons: the responder can answer any requester without holding broad
+ *  inbox-publish, and because the row stops at the leaf it can NOT publish to the request subjects
+ *  themselves, so a responder cannot forge a probe that appears to come from a peer. */
+export function livenessReplyGrant(space: string, plane: string): string {
+  return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.*.*.reply.>`;
+}
 // The AUTH service's rail is NO LONGER a `ctl` control service. §13.11 retires the v0 ctl rail in
 // full and "MUST NOT be handled"; the auth-admin rows that served on it were spec defects written
 // onto a deleted rail, and they are rewritten onto the v0.4 endpoint surface (Cotal #350). The

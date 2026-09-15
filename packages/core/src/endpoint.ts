@@ -16,6 +16,17 @@ import {
   type Subscription,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
+import {
+  parseLivenessAnswer,
+  responderFromLease,
+  responderFromProbe,
+  isLivenessPlane,
+  LIVENESS_PLANES,
+  type LivenessAnswer,
+  type LivenessPlane,
+  type ProbeOutcome,
+  type ResponderState,
+} from "./liveness.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import {
@@ -100,6 +111,8 @@ import {
   chatHistDurable,
   chatSubject,
   controlServiceSubject,
+  livenessSubject,
+  livenessServeFilter,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   dmStream,
@@ -4310,6 +4323,126 @@ export class CotalEndpoint extends EventEmitter {
       if (i >= 0) this.subs.splice(i, 1);
     }
     this.deliveryAdminServeSub = this.serveControl(CONTROL_DELIVERY_ADMIN, (req) => this.handleDeliveryAdmin(req), { boundReply: true });
+  }
+
+  // ---- the peer-readable liveness surface (#1577) --------------------------
+
+  /** Bind this endpoint as the liveness RESPONDER for one plane, answering presence and nothing
+   *  else to any credentialed peer that asks (`live.<plane>.<owner>.<actor>`).
+   *
+   *  THE HANDLER IS THE PRIVACY BOUNDARY, and that is the entire reason this is a request/reply
+   *  probe rather than a KV read grant. `readState` returns the responder's OWN verdict, derived
+   *  from the lease it can already read; the LEASE ROW NEVER LEAVES THIS PROCESS. A peer therefore
+   *  learns one enum about one plane and cannot learn the holder, the workspace root, the pid, the
+   *  instance id, the runtime, or that any of those exist. Handing a peer the manager bucket instead
+   *  would have handed it the operator's filesystem path and a pid to signal.
+   *
+   *  `queue`-grouped by plane, so several manager instances in one space answer a probe ONCE rather
+   *  than N times. A queue group is correct here and would be wrong on a roster-style surface: the
+   *  question is "is ANY responder bound", which any one member can answer.
+   *
+   *  BOUNDED REPLY, for the same confused-deputy reason `serveControl` documents: this responder
+   *  holds a wildcard publish grant over `live.<plane>.*.*.reply.>`, so without the bound check an
+   *  authenticated caller could name a PEER's reply lane as its reply target and have us publish
+   *  into it. The broker does not permission-check a requester's embedded reply subject; we do.
+   *
+   *  A HANDLER THAT THROWS ANSWERS `unknown`, never silence and never health. Silence would reach
+   *  the prober as a timeout, which it correctly grades `unknown` anyway — but only after burning
+   *  the full deadline, and an operator staring at a hung probe learns less than one told plainly
+   *  that the axis could not be checked. */
+  serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState): Subscription {
+    if (!this.nc) throw new Error("endpoint not started");
+    const sub = this.nc.subscribe(livenessServeFilter(this.space, plane), { queue: `live.${plane}` });
+    this.subs.push(sub);
+    void (async () => {
+      for await (const m of sub) {
+        // Sender-bound reply guard. Drop silently rather than publishing somewhere else: a reply
+        // aimed outside the sender's own subtree is not a request we can answer safely.
+        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
+          this.emit("error", new Error(`rejected liveness probe on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
+          continue;
+        }
+        let responder: ResponderState;
+        try {
+          responder = await readState();
+        } catch {
+          responder = "unknown";
+        }
+        const answer: LivenessAnswer = { plane, responder };
+        try { m.respond(JSON.stringify(answer)); } catch { /* the requester is gone */ }
+      }
+    })().catch((e) => this.emit("error", e as Error));
+    return sub;
+  }
+
+  /** Bind the liveness responder for the DELIVERY plane, grading itself from its own shard-0 lease
+   *  through the shared classifier. The daemon is the one process that can answer this honestly: it
+   *  knows its own incarnation, so a predecessor's `ready:true` corpse in the bucket classifies
+   *  `stale` rather than as its own health.
+   *
+   *  It reads the lease at PROBE time rather than caching a flag set at bind time. A cached flag
+   *  would answer `bound` for as long as this process lived, including after it had lost the shard
+   *  and stood down — a responder that reports its intent instead of its state, which is the whole
+   *  family of bug this issue is about. */
+  serveDeliveryLiveness(shardIndex = 0): Subscription {
+    return this.serveLiveness("delivery", async () =>
+      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id));
+  }
+
+  /** Ask whether a responder is bound for `plane`, as a credentialed peer that need not own it.
+   *
+   *  EVERY WAY THIS CAN END IS CLASSIFIED, and the classification lives in ONE place
+   *  ({@link responderFromProbe}) so no call site can invent its own mapping. Only the broker's own
+   *  no-responders 503 becomes `unbound`. A timeout, a permission refusal, a transport failure and
+   *  an unreadable reply ALL become `unknown`, because each is a failure to find out, and this
+   *  issue exists because failures to find out were being reported as findings.
+   *
+   *  `noMux` with a named reply subject is required rather than stylistic: the muxed inbox would
+   *  swallow the 503 into an ordinary timeout, and the 503 is the only outcome that carries a
+   *  positive verdict. Collapsing it would leave a probe that can say `bound` or `unknown` and
+   *  never `unbound` — an instrument that cannot report the failure it was built to report.
+   *
+   *  The reply rides `<request>.reply.<uuid>`, the sender's own subtree, so the responder's bound
+   *  reply guard accepts it and the responder needs no broad inbox-publish grant to answer. */
+  async probeLiveness(plane: string, timeoutMs = 2_000): Promise<LivenessAnswer> {
+    if (!isLivenessPlane(plane))
+      // A closed set, refused loudly. Answering an unknown plane at all would make this a probe
+      // that returns something for every input, which is indistinguishable from one that is not
+      // measuring anything.
+      throw new Error(`liveness: "${plane}" is not a plane this surface answers for (${[...LIVENESS_PLANES].join(", ")})`);
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = livenessSubject(this.space, plane, this.owner, this.actor);
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
+    let outcome: ProbeOutcome;
+    let answered: ResponderState | undefined;
+    try {
+      const m = await this.nc.request(reqSubject, "", { timeout: timeoutMs, noMux: true, reply });
+      let body: unknown;
+      try { body = m.json(); } catch { body = undefined; }
+      const parsed = parseLivenessAnswer(body, plane);
+      // A reply we cannot read is `malformed`, which grades `unknown`. It is NOT promoted to
+      // `bound` on the strength of having replied at all: that promotion is the `pgrep` error,
+      // where evidence a process exists was read as evidence it works.
+      outcome = parsed ? "replied" : "malformed";
+      answered = parsed?.responder;
+    } catch (e) {
+      outcome = this.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
+    }
+    return { plane, responder: responderFromProbe(outcome, answered) };
+  }
+
+  /** Grade a failed probe that was NOT a no-responders answer. Both arms return an outcome that
+   *  maps to `unknown`; they are told apart so the distinction stays legible at the call site and so
+   *  a future caller can render the two differently (a refusal is about YOUR credential, a timeout
+   *  is about something being wedged). Neither may ever mean health. */
+  private probeFailureOutcome(e: unknown): ProbeOutcome {
+    if (e instanceof AuthorizationError || e instanceof PermissionViolationError) return "refused";
+    const name = (e as Error)?.name;
+    const msg = (e as Error)?.message ?? "";
+    if (name === "TimeoutError" || /timeout/i.test(msg)) return "timeout";
+    // Anything else is a transport or client failure: it says something about our link, not about
+    // the plane, so it is graded like a refusal rather than guessed at.
+    return "refused";
   }
 
   /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
