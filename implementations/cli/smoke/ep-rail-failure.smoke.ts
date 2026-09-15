@@ -9,8 +9,10 @@
  * Part 1 grades the renderer on hand-built errors, one cell per producer shape (each names the core
  * site it stands for). Part 2 drives the PUBLIC `askManager` against a real broker: a describe
  * responder that answers `ok:false unavailable` (the exact repro from review), a describe answered
- * `ok:true` whose cluster document is not in the store (the post-describe store read), and no
- * responder at all (the positive control for the verdict, unpinned and pinned).
+ * `ok:true` whose cluster document is not in the store (the post-describe store read), no
+ * responder at all (the positive control for the verdict, unpinned and pinned), and #1630's
+ * version skew: an ISSUED caller against a serve loop that subscribes the unversioned rail only,
+ * where the manager is up and answering and the verdict must be scoped to the `ep.v1` rail.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -19,7 +21,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_REGISTRY_READ_FAILED,
-  describeEndpoint, isReachable, parseEpSubject, epReplySubject, spacePrefix,
+  describeEndpoint, isReachable, parseEpSubject, epReplySubject, spacePrefix, unansweredRequest,
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { askManager, epRailFailure } from "../src/lib/control.js";
@@ -52,6 +54,27 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   // endpoint-invoke.ts describe: no describe reply within the deadline (marked, command "describe").
   const d = epRailFailure(ep("deadline-exceeded", "no describe reply from manager within 10000ms", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe" }]));
   c("describe-deadline (marked): unanswered=true and the verdict is stated", d.unanswered === true && VERDICT.test(d.error ?? ""), d);
+}
+{
+  // #1630: the same unanswered describe, told apart by the RAIL it rode. SPEC 13.15 keeps `ep` and
+  // `ep.v1` disjoint at the broker and requires an endpoint to serve both, so silence on `ep.v1` is
+  // what a manager older than the versioned rail looks like from an issued caller: up, on the
+  // roster, serving `ep`, unreachable here. The verdict is scoped to the rail and says so.
+  const v1Mark = { kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" };
+  const v1 = ep("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", [v1Mark]);
+  const r = epRailFailure(v1);
+  c("versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless",
+    r.unanswered === true && r.error?.startsWith("no manager answered on the ep.v1 rail (deadline-exceeded: no describe reply from manager") === true
+    && r.error.includes("disjoint at the broker (SPEC 13.15)") && r.error.includes("not evidence that no manager is running")
+    && !r.error.includes("no manager reachable"), r);
+  const p = epRailFailure(v1, { instanceId: IID });
+  c("versioned rail pinned: names the instance AND the rail its silence was on",
+    p.unanswered === true && p.error?.startsWith(`manager instance ${IID} did not answer on the ep.v1 rail (`) === true && p.error.includes("SPEC 13.15"), p);
+  // The LEGACY rail keeps the unscoped verdict: there is no second rail its silence could be hiding
+  // a manager on, so "no manager reachable" is the whole of what was observed.
+  const l = epRailFailure(ep("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", [{ ...v1Mark, rail: "ep" }]));
+  c("legacy rail: the verdict is unchanged and carries no 13.15 tail",
+    l.unanswered === true && l.error?.startsWith("no manager reachable on the ep rails (") === true && !l.error.includes("13.15"), l);
 }
 {
   // endpoint-invoke.ts:179 the responder's OWN ok:false describe reply, rethrown under its code (unmarked).
@@ -183,6 +206,30 @@ try {
       r.ok === false && r.unanswered === true && r.error?.startsWith("no manager reachable on the ep rails (deadline-exceeded: no describe reply from manager") === true, r);
     c("live: no responder at all, pinned: unanswered=true and 'instance … did not answer'",
       p.ok === false && p.unanswered === true && p.error?.startsWith(`manager instance ${IID} did not answer (deadline-exceeded: no describe reply from manager`) === true, p);
+  }
+  {
+    // #1630, live: a 0.49.0-shape client against a serve loop that subscribes the UNVERSIONED rail
+    // only, which is what a 0.48.2 manager is. `serveDescribe` above filters `…ep.one.manager.…`,
+    // so an issued caller's `…ep.v1.one.manager.…` describe never reaches it while a legacy
+    // caller's does: one serve loop, one variable, and the manager is demonstrably up for both.
+    // Measured on the mesh in #1630 as `cotal run ps` exiting 1 against an idle, healthy manager.
+    const legacyCaller = { owner: "local", actor: "cliabc", uid: "u".repeat(26) };
+    const issuedCaller = { ...legacyCaller, generation: "a1b2".repeat(8) };
+    const sub = serveDescribe((id) => ({ v: 1, id, ok: false, error: { code: "unavailable", message: "answered on the legacy rail" } }));
+    await nc.flush();
+    let legacy: unknown;
+    try { await describeEndpoint(nc, SPACE, "manager", legacyCaller, { deadlineMs: 2000 }); } catch (e) { legacy = e; }
+    c("live: the ep-only serve loop ANSWERS a legacy caller (the control: this manager is serving)",
+      legacy instanceof EpEnvelopeError && legacy.code === "unavailable" && unansweredRequest(legacy) === false, legacy);
+    let issued: unknown;
+    try { await describeEndpoint(nc, SPACE, "manager", issuedCaller, { deadlineMs: 2000 }); } catch (e) { issued = e; }
+    await sub.drain();
+    c("live: the same loop never sees an ISSUED caller's describe, and the refusal names the rail it rode",
+      unansweredRequest(issued) && (issued as EpEnvelopeError).message.includes("on the ep.v1 rail"), issued);
+    const r = epRailFailure(issued);
+    c("live: the CLI renders the ep.v1 skew as a named refusal, not as 'no manager reachable'",
+      r.unanswered === true && r.error?.startsWith("no manager answered on the ep.v1 rail (") === true
+      && r.error.includes("SPEC 13.15") && !r.error.includes("no manager reachable"), r);
   }
   await nc.drain();
 } finally {

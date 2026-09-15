@@ -248,7 +248,7 @@ async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: stri
 
 /** The {@link EP_UNANSWERED} detail for `op`: set ONLY where this module observed that nothing
  *  answered (the broker's no-responders control frame, or the reply deadline elapsing). */
-const unansweredDetail = (op: EpVerbOp): EpUnansweredDetail => ({ kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command });
+const unansweredDetail = (op: EpVerbOp): EpUnansweredDetail => ({ kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command, rail: epPlaneTokens(op.caller).join(".") });
 /** The {@link EP_REGISTRY_READ_FAILED} detail for `op`: set where the scatter's OWN registry read
  *  (freeze or reconcile) failed, so the failure is never read as the responders' silence. */
 const registryReadDetail = (op: EpVerbOp): EpRegistryReadFailedDetail => ({ kind: EP_REGISTRY_READ_FAILED, endpoint: op.endpoint, command: op.command });

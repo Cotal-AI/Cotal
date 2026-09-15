@@ -48,6 +48,7 @@ import {
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
+  unansweredRail,
   unansweredRequest,
   walkKvEntries,
   type EpErrorDetail,
@@ -505,6 +506,29 @@ function parseAnswerValue(values: RunValues): unknown {
 
 // ── the manager-hosted path (SPEC 14.3) ─────────────────────────────────────────────────────
 
+/**
+ * What a hosted `run` verb prints when its manager describe drew no answer, SCOPED TO THE RAIL the
+ * describe rode ({@link unansweredRail}, SPEC 13.15).
+ *
+ * On the LEGACY `ep` rail there is one rail and nothing answered on it, so "is a manager running?"
+ * is the right question and `--local` is the right remedy.
+ *
+ * On the VERSIONED `ep.v1` rail it is not. SPEC 13.15 keeps the two rails disjoint at the broker
+ * and requires an endpoint to serve both, so a manager older than the versioned rail subscribes
+ * `ep` alone: it is running, it is on the roster, and this caller cannot reach it. #1630 measured
+ * both halves of the damage. The question invites the operator to hunt a manager that is up, and
+ * `--local` drives the run from this process and NAMES THE CALLER as its answerer, so an operator
+ * who takes the tool's advice submits an answer under the wrong identity. Neither is printed for a
+ * rail whose silence does not mean what they claim.
+ */
+export function unansweredManagerRefusal(e: EpEnvelopeError): string {
+  const detail = `${e.code}: ${e.message}`;
+  const rail = unansweredRail(e);
+  if (rail === undefined || rail === "ep")
+    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
+  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so a manager older than ${rail} serves ep only and cannot answer here. This does not establish that no manager is running: check the manager's version and restart it on a build that serves ${rail}`;
+}
+
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke. The reply's data on success; on a refusal
  *  the manager's own sentence, printed, and a non-zero exit. */
@@ -538,9 +562,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     return r.reply.data;
   } catch (e) {
     if (e instanceof EpEnvelopeError) {
-      console.error(unansweredRequest(e)
-        ? `no manager answered on the endpoint rails (${e.code}: ${e.message}); is a manager running for this mesh? A run can still be driven from this terminal with --local`
-        : `${e.code}: ${e.message}`);
+      console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
       process.exit(1);
     }
     throw e;
