@@ -924,6 +924,14 @@ function ladderFilterCallees(source: string): LadderEnumeration {
   const fn = located.fn;
   const callees: string[] = [];
   const walk = (node: ts.Node): void => {
+    // The same boundary the return walk uses, and for the same reason. Pinning the TARGET to one
+    // top-level declaration stops a SIBLING decoy from being selected, but it does not stop a decoy
+    // nested INSIDE the real function from contributing its callees to this list. Measured after
+    // the top-level pin was in place: with the absent comparison inlined and a decoy
+    // `preflightNpmPublish` declared inside the real one, all three names were still collected and
+    // the cell stayed green. Location and attribution are two claims, and the pin only makes one of
+    // them. A nested function's `filter` call is not the ladder's.
+    if (isReturnScopeBoundary(node)) return;
     // `rows.filter((row) => <callee>(row.registry))`
     if (ts.isCallExpression(node)
       && ts.isPropertyAccessExpression(node.expression)
@@ -933,6 +941,10 @@ function ladderFilterCallees(source: string): LadderEnumeration {
       if (ts.isArrowFunction(arrow) && ts.isCallExpression(arrow.body) && ts.isIdentifier(arrow.body.expression)) {
         callees.push(arrow.body.expression.text);
       }
+      // The arrow IS a boundary, so descend into the call's own subtree deliberately rather than
+      // letting the generic walk do it: the callee name lives in the argument that was just read,
+      // and nothing below it is the ladder's own code.
+      return;
     }
     node.forEachChild(walk);
   };
@@ -997,6 +1009,28 @@ check(
     && typeof ambiguousLadder.why === "string"
     && ambiguousLadder.why.includes("2 top-level function declarations found"),
   ambiguousLadder.why,
+);
+// The pin fixes SELECTION. Attribution is a separate claim, and it was still open after the pin
+// landed: a decoy declared INSIDE the real ladder contributed its callees to the same list, so the
+// drifted ladder still read as calling all three predicates. Measured at that intermediate state,
+// which is why the walk now stops at a function boundary here too. This cell is the decoy in its
+// nastiest placement, inside the real target rather than beside it.
+const innerShadowedLadder = ladderFilterCallees(
+  preflightSource.split(ladderDriftFind).join(
+    ladderDriftReplace
+    + "  function shadowHolder() {\n"
+    + "    async function preflightNpmPublish(shadowRows) {\n"
+    + "      return shadowRows.filter((row) => isAbsentRegistry(row.registry));\n"
+    + "    }\n"
+    + "    return preflightNpmPublish;\n"
+    + "  }\n"
+    + "  void shadowHolder;\n",
+  ),
+);
+check(
+  "a decoy preflightNpmPublish nested INSIDE the real ladder does not lend it the exported predicate, so attribution is pinned as well as location",
+  innerShadowedLadder.callees !== null && !innerShadowedLadder.callees.includes("isAbsentRegistry"),
+  { callees: innerShadowedLadder.callees, locationRefusal: innerShadowedLadder.why },
 );
 check(
   "each CENSUS_BUCKETS entry is the exported predicate object itself, so grading through the table grades the function the ladder calls",
