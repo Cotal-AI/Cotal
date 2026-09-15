@@ -15,7 +15,10 @@
  * live eviction, standing-host renewal, and issuance audit still land in later D5 slices.
  */
 import { ttlBuckets } from "./streams.js";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { mkSecretDir, writeSecretFileAtomic } from "./secret-fs.js";
 import {
   decode,
   encodeOperator,
@@ -72,7 +75,7 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import {
-  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
+  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, managedRowRequesterGrantRows,
   operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "./endpoint-grants.js";
@@ -85,6 +88,7 @@ import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGr
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
+import { validateManagedRowIntent, verifyManagedRowAttemptNonce, type ManagedRowAttempt } from "./managed-row-request.js";
 import { credsClaims, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
@@ -102,6 +106,7 @@ export type Profile =
   | "provisioner"
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint (#159 B)
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail (#29 piece 3): asks the AUTH plane to retire a lifecycle; holds NO executing right
+  | "managed-row-requester" // one native create/revoke attempt: literal request + exact-nonce reply only
   | "lifecycle-executor" // ephemeral, LIFECYCLE-PINNED §13.1 state writes for the STATIC manager (Unit B): exactly ONE incarnation's head/uid/gate/cred-row/slot keys
   | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes (P2 item 1, 1a-serve): exactly ONE (endpoint, instanceId)'s epgate + epcred family + eprepair cursor
   | "operator"
@@ -220,6 +225,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
+  "managed-row-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one native managed-row create/revoke attempt; literal request and exact-nonce reply only" },
   "lifecycle-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one static lifecycle operation's 13.1 state-write window (activation / terminal / renewal ledger append)" },
   "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke + eprepair cursor for one (endpoint, instanceId))" },
   operator: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "send/dm/join/probe-style operator command" },
@@ -591,6 +597,9 @@ export interface MintOpts {
      *  `handle` target, so the grant pins it: a leaked requester cannot be re-aimed. */
     target: { owner: string; actor: string; lifecycleUid: string };
   };
+  /** `managed-row-requester` only: one fully validated fresh attempt. The random nonce is never
+   * persisted. Stable intent custody remains with the manager/CLI caller. */
+  managedRowRequester?: ManagedRowAttempt;
   /** `lifecycle-executor` profile only (Unit B, the static §13.1 executor): the ONE incarnation
    *  whose lifecycle-state keys this credential may write — the head `lifecycle.<owner>.<actor>`,
    *  the reservation `uid.<lifecycleUid>`, the gate `gate.<lifecycleUid>`, the ledger family
@@ -690,6 +699,97 @@ function userValidDates(kind: CredentialKind, opts: MintOpts): { exp?: number } 
   if (ttl === undefined) return {};
   if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("mintCreds: expiresInSeconds must be a positive integer");
   return { exp: Math.floor(Date.now() / 1000) + ttl };
+}
+
+export interface ProviderMutationCustody {
+  ver: 1;
+  requestId: string;
+  kind: "grant" | "revoke";
+  owner: string;
+  actor: string;
+  lifecycleUid: string;
+  operationId?: string;
+  admission?: { kind: "endpoint-goal"; goalId: string; originalCaller: EpCaller; fingerprint: string; acceptingInstanceId: string; acceptedEpoch: number } | { kind: "host-launch" | "cli-foreground"; launchDigest: string };
+  caller?: { owner: string; actor: string; uid: string };
+  state: "pending" | "host-committed";
+}
+
+function providerCustodyPath(root: string, requestId: string): string {
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(requestId)) throw new Error("provider mutation requestId must be a 16-128 character opaque token");
+  const dir = join(root, "provider-mutations");
+  mkSecretDir(dir);
+  return join(dir, `${requestId}.json`);
+}
+
+export function persistProviderMutationRequest(
+  root: string,
+  input: Omit<ProviderMutationCustody, "ver" | "state"> & { state?: ProviderMutationCustody["state"] },
+): ProviderMutationCustody {
+  const path = providerCustodyPath(root, input.requestId);
+  if (existsSync(path)) {
+    const existing = JSON.parse(readFileSync(path, "utf8")) as ProviderMutationCustody;
+    const wanted: ProviderMutationCustody = { ver: 1, ...input, state: input.state ?? "pending" };
+    const identity = (value: ProviderMutationCustody) => JSON.stringify({ ...value, state: "pending" });
+    if (identity(existing) !== identity(wanted)) throw new Error(`provider mutation request ${input.requestId} conflicts with its durable coordinates`);
+    return existing;
+  }
+  const wanted: ProviderMutationCustody = { ver: 1, ...input, state: input.state ?? "pending" };
+  writeSecretFileAtomic(path, `${JSON.stringify(wanted, null, 2)}\n`);
+  return wanted;
+}
+
+export function commitProviderMutationRequest(root: string, request: ProviderMutationCustody): ProviderMutationCustody {
+  const committed = { ...request, state: "host-committed" as const };
+  writeSecretFileAtomic(providerCustodyPath(root, request.requestId), `${JSON.stringify(committed, null, 2)}\n`);
+  return committed;
+}
+
+/** Closed read of one retained provider mutation custody record. Never creates or repairs state. */
+export function readProviderMutationRequest(root: string, requestId: string): ProviderMutationCustody | undefined {
+  const path = providerCustodyPath(root, requestId);
+  if (!existsSync(path)) return undefined;
+  const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  const allowed = ["ver", "requestId", "kind", "owner", "actor", "lifecycleUid", "operationId", "admission", "caller", "state"];
+  const extra = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (extra.length) throw new Error(`provider mutation custody ${requestId} has unknown fields: ${extra.join(", ")}`);
+  if (value.ver !== 1 || value.requestId !== requestId || (value.kind !== "grant" && value.kind !== "revoke") ||
+      typeof value.owner !== "string" || typeof value.actor !== "string" || typeof value.lifecycleUid !== "string" ||
+      (value.state !== "pending" && value.state !== "host-committed"))
+    throw new Error(`provider mutation custody ${requestId} does not validate`);
+  if (value.operationId !== undefined && typeof value.operationId !== "string") throw new Error(`provider mutation custody ${requestId} operationId is invalid`);
+  if (value.admission !== undefined) {
+    if (value.admission === null || typeof value.admission !== "object" || Array.isArray(value.admission)) throw new Error(`provider mutation custody ${requestId} admission is invalid`);
+    const admission = value.admission as Record<string, unknown>;
+    if (admission.kind === "endpoint-goal") {
+      const fields = ["kind", "goalId", "originalCaller", "fingerprint", "acceptingInstanceId", "acceptedEpoch"];
+      const original = admission.originalCaller as Record<string, unknown> | undefined;
+      if (Object.keys(admission).some((key) => !fields.includes(key)) || typeof admission.goalId !== "string" || typeof admission.fingerprint !== "string" ||
+          typeof admission.acceptingInstanceId !== "string" || typeof admission.acceptedEpoch !== "number" || !Number.isSafeInteger(admission.acceptedEpoch) || admission.acceptedEpoch < 0 ||
+          !original || Object.keys(original).some((key) => !["owner", "actor", "uid"].includes(key)) || typeof original.owner !== "string" || typeof original.actor !== "string" || typeof original.uid !== "string")
+        throw new Error(`provider mutation custody ${requestId} endpoint admission is invalid`);
+    } else if (admission.kind === "host-launch" || admission.kind === "cli-foreground") {
+      if (Object.keys(admission).some((key) => key !== "kind" && key !== "launchDigest") || typeof admission.launchDigest !== "string") throw new Error(`provider mutation custody ${requestId} launch admission is invalid`);
+    } else throw new Error(`provider mutation custody ${requestId} admission kind is invalid`);
+  }
+  if (value.caller !== undefined) {
+    if (value.caller === null || typeof value.caller !== "object" || Array.isArray(value.caller)) throw new Error(`provider mutation custody ${requestId} caller is invalid`);
+    const caller = value.caller as Record<string, unknown>;
+    if (Object.keys(caller).some((key) => !["owner", "actor", "uid"].includes(key)) || typeof caller.owner !== "string" || typeof caller.actor !== "string" || typeof caller.uid !== "string")
+      throw new Error(`provider mutation custody ${requestId} caller triple is invalid`);
+  }
+  return value as unknown as ProviderMutationCustody;
+}
+
+export function stableProviderMutationRequestId(input: {
+  kind: "grant" | "revoke";
+  owner: string;
+  actor: string;
+  lifecycleUid: string;
+  operationId: string;
+}): string {
+  return createHash("sha256")
+    .update(`${input.kind}\0${input.owner}\0${input.actor}\0${input.lifecycleUid}\0${input.operationId}`)
+    .digest("hex");
 }
 
 /** Options for {@link provisionAgent} — {@link MintOpts} plus the active read set. */
@@ -1027,6 +1127,8 @@ export function permissionsFor(
   // the generation to, so `issued` on it is a misconfiguration refused here, never dropped.
   if (opts.issued && !ISSUABLE_PROFILES.has(profile))
     throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
+  if (opts.managedRowRequester && profile !== "managed-row-requester")
+    throw new Error(`permissionsFor: managedRowRequester is valid only on the dedicated managed-row-requester profile, never "${profile}"`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
@@ -1087,6 +1189,22 @@ export function permissionsFor(
       target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
     }, caller);
     return { pub: { allow: rows }, sub: { allow: [epCallerReplyFilter(space, caller), `_INBOX_${pr.connId}.>`] } };
+  }
+  if (profile === "managed-row-requester") {
+    if (!opts.managedRowRequester)
+      throw new Error("permissionsFor: managed-row-requester requires one validated attempt pin");
+    const attempt = opts.managedRowRequester;
+    const intent = validateManagedRowIntent(attempt.intent);
+    if (attempt.ver !== 1 || attempt.command !== intent.command || intent.space !== space)
+      throw new Error("permissionsFor: managed-row-requester attempt disagrees with its stable command or space");
+    if (attempt.caller.owner !== pr.owner || attempt.caller.actor !== pr.actor || attempt.caller.uid !== pr.lifecycleUid)
+      throw new Error("permissionsFor: managed-row-requester caller triple must equal the credential principal and lifecycle");
+    verifyManagedRowAttemptNonce(attempt.nonce, attempt.caller, intent, attempt.authority);
+    const rows = managedRowRequesterGrantRows(space, {
+      command: intent.command, caller: attempt.caller, nonce: attempt.nonce,
+      ...(intent.command === "revoke-managed-row" ? { targetOwner: intent.target.owner } : {}),
+    });
+    return { pub: { allow: rows.publish }, sub: { allow: rows.subscribe } };
   }
   if (profile === "manager-service" as Profile)
     throw new Error('permissionsFor: "manager-service" is not a generic profile; use the typed remote manager authority protocol');

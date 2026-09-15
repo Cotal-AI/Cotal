@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "source": "implementations/auth/src/managed-row.ts",
+  "cases": [
+    {"id":"auth-request-conflict","find":"if (JSON.stringify(retryAuthority) !== JSON.stringify(committedAuthority))","replace":"if (false && JSON.stringify(retryAuthority) !== JSON.stringify(committedAuthority))","test":"ordinary_idempotency_and_request_conflict","expected":"assertion"},
+    {"id":"auth-hardlink","find":"if (st.nlink !== 1) throw new Error(`${path}: managed actor canonical must have exactly one hard link`);","replace":"if (false && st.nlink !== 1) throw new Error(`${path}: managed actor canonical must have exactly one hard link`);","test":"symlink_directory_hardlink_refused","expected":"assertion"},
+    {"id":"auth-cache-digest","find":"if (sha256(resultBytes) !== resultDigest) throw new Error(\"managed authorization result digest mismatch\");","replace":"if (false && sha256(resultBytes) !== resultDigest) throw new Error(\"managed authorization result digest mismatch\");","test":"cache_loss_and_nonce_mismatch_never_recreate","expected":"assertion"},
+    {"id":"auth-history-walk","find":"while (head !== \"0\".repeat(64)) {","replace":"while (false && head !== \"0\".repeat(64)) {","test":"history_head_fork_missing_commit_and_catalog_rollback_refused","expected":"assertion"},
+    {"id":"auth-pending-owner","find":"if (pending) throw new Error(`managed actor ${row.owner}.${row.actor} is owned by pending request ${pending.requestId}`);","replace":"if (false && pending) throw new Error(`managed actor ${row.owner}.${row.actor} is owned by pending request ${pending.requestId}`);","test":"boot_resume_open_claim_completes_before_successor","expected":"assertion"},
+    {"id":"auth-mode","find":"if ((st.mode & 0o777) !== 0o600) throw new Error(`${path}: managed actor canonical must be mode 0600`);","replace":"if (false && (st.mode & 0o777) !== 0o600) throw new Error(`${path}: managed actor canonical must be mode 0600`);","test":"wrong_mode_and_owner_refused","expected":"assertion"},
+    {"id":"auth-closed-fields","find":"if (extra.length) throw new Error(`${where}: unknown fields ${extra.join(\", \")}`);","replace":"if (false && extra.length) throw new Error(`${where}: unknown fields ${extra.join(\", \")}`);","test":"closed_parser_rejects_unknown_fields","expected":"assertion"},
+    {"id":"auth-lifecycle-owner","find":"current.row.lifecycleUid !== lifecycleUid","replace":"current.row.lifecycleUid === lifecycleUid","test":"tombstone_to_successor_atomic_no_displacement","expected":"assertion"}
+  ]
+}

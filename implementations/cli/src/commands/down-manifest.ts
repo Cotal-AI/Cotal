@@ -25,6 +25,11 @@ import {
   newIdentity,
   parsePrincipalKey,
   realDirNoSymlink,
+  commitProviderMutationRequest,
+  persistProviderMutationRequest,
+  stableProviderMutationRequestId,
+  createManagedRowAttempt,
+  ManagedRowAttemptError,
   resolveAuthProvider,
   subjectMatches,
   unlinkFileNoFollow,
@@ -214,7 +219,8 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     // ledger die with the mint authority standing (the crashed-manager residual).
     const principal = parsePrincipalKey(cp.id);
     if (principal && principal.owner.startsWith("u_") && principal.actor === cp.name) {
-      await teardownUserModeAuthority(root, ledger.space, cp, principal.owner, secrets, liveById, unresolvedCredIds);
+      if (!teardownAuth?.epCaller) { unresolvedCredIds.add(cp.id); continue; }
+      await teardownUserModeAuthority(root, ledger.space, ledger.server, teardownAuth.epCaller, cp, principal.owner, secrets, liveById, unresolvedCredIds);
       continue;
     }
     // The no-follow lstat gate below keeps guarding the FS MATERIALIZATION (a symlink is tamper
@@ -299,6 +305,8 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
 async function teardownUserModeAuthority(
   root: string,
   space: string,
+  server: string,
+  caller: EpCaller,
   cp: { requested: string; name: string; id: string; path: string; lifecycleUid?: string },
   owner: string,
   secrets: ReturnType<typeof workspaceSecretStore>,
@@ -317,7 +325,24 @@ async function teardownUserModeAuthority(
     // authority keyed to OUR owner+actor, independent of whatever is (or isn't) on disk. A
     // suspect materialization must never shield the row: completion may only ever delete the
     // ledger once no standing authority remains (the round-2 panel gate).
-    await resolveAuthProvider().revokeAgent({ dir: userAuthStateDir(root, space), owner, actor: cp.name });
+    if (!cp.lifecycleUid) throw new Error(`user-mode teardown for ${owner}.${cp.name} has no lifecycle UID; refusing to revoke whichever incarnation is current`);
+    const dir = userAuthStateDir(root, space);
+  const request = persistProviderMutationRequest(dir, {
+      requestId: stableProviderMutationRequestId({ kind: "revoke", owner, actor: cp.name, lifecycleUid: cp.lifecycleUid, operationId: `manifest-teardown:${cp.lifecycleUid}` }),
+      kind: "revoke", owner, actor: cp.name, lifecycleUid: cp.lifecycleUid,
+      operationId: `manifest-teardown:${cp.lifecycleUid}`,
+      admission: { kind: "cli-foreground", launchDigest: stableProviderMutationRequestId({ kind: "revoke", owner, actor: cp.name, lifecycleUid: cp.lifecycleUid, operationId: `manifest-teardown:${cp.lifecycleUid}` }) },
+      caller,
+    });
+    const provider = resolveAuthProvider();
+    const auth = await getSpaceAuth(secrets, space);
+    if (!provider.sendManagedRowAttempt || !auth) throw new Error("native managed-row revoke transport or local SpaceAuth unavailable; refusing filesystem fallback");
+    const intent = { ver: 1 as const, command: "revoke-managed-row" as const, requestId: request.requestId,
+      operationId: `manifest-teardown:${cp.lifecycleUid}`, space, target: { owner, actor: cp.name, lifecycleUid: cp.lifecycleUid } };
+    const attempt = createManagedRowAttempt(caller, intent);
+    const credentials = await mintCreds(auth, newIdentity(), "managed-row-requester", { principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid, managedRowRequester: attempt });
+    await provider.sendManagedRowAttempt({ server, credentials, attempt });
+    commitProviderMutationRequest(dir, request);
     if (tokenGate === "suspect" || sentinelGate === "suspect") {
       // Tamper evidence (symlink/irregular/unstatable): the files stay for the operator, and —
       // deliberately — the entry is NOT retained (retaining would re-trigger every retry, the
@@ -340,7 +365,8 @@ async function teardownUserModeAuthority(
       console.log(c.dim(`  • ${cp.name}: user-mode secrets already gone; grant row revoked`));
     }
   } catch (e) {
-    console.error(c.yellow(`  ! ${cp.name} user-mode teardown: ${(e as Error).message} - retained for retry`));
+    const reason = e instanceof ManagedRowAttemptError ? `${e.message}; caller knowledge=${e.knowledge}` : (e as Error).message;
+    console.error(c.yellow(`  ! ${cp.name} user-mode teardown: ${reason} - retained for retry`));
     unresolvedCredIds.add(cp.id);
   }
 }

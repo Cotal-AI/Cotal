@@ -46,6 +46,13 @@ import {
   writeSecretFile,
 } from "@cotal-ai/core";
 import { grantCommandLine } from "./grant-command.js";
+import {
+  grantManagedActorExact,
+  readManagedActor,
+  readManagedActorPath,
+  revokeManagedActorExact,
+  type ManagedRowMutationOptions,
+} from "./managed-row.js";
 import type { ActorGrant } from "./idp.js";
 import type { ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
@@ -137,7 +144,14 @@ function rowPath(dir: string, kind: ActorKind, owner: string, actor: string): st
  *  unknown-version/wrong-shape throws a sentence naming the file — never a skip, never a
  *  reclassification (an interactive row carrying a token hash was written by the wrong path; a
  *  managed row without a valid one has a corrupted grant — both deny with the repair). */
-function readRow(path: string, kind: ActorKind): ActorRow {
+function readRow(path: string, kind: ActorKind): ActorRow | undefined {
+  if (kind === "managed-agent") {
+    const managed = readManagedActorPath(path);
+    if (managed.state === "tombstone") return undefined;
+    if (managed.state !== "live")
+      throw new Error(`${path}: managed actor is absent`);
+    return managed.row;
+  }
   let parsed: RowFile;
   let fd: number | undefined;
   try {
@@ -158,8 +172,6 @@ function readRow(path: string, kind: ActorKind): ActorRow {
     throw new Error(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
   if (kind === "interactive" && parsed.tokenHash !== undefined)
     throw new Error(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
-  if (kind === "managed-agent" && !(typeof parsed.tokenHash === "string" && /^[0-9a-f]{64}$/.test(parsed.tokenHash)))
-    throw new Error(`${path}: managed-agent grant has a missing/corrupted secret hash - respawn the agent (\`cotal spawn\`) to rewrite it`);
   const { ver: _ver, ...row } = parsed;
   return row;
 }
@@ -174,7 +186,14 @@ export function loadActorLedger(dir: string): Array<ActorRow & { kind: ActorKind
     const d = assertRowSpaceDirectory(dir, kind);
     if (!d) continue;
     for (const f of readdirSync(d).filter((f) => f.endsWith(".json")).sort()) {
-      const row = readRow(join(d, f), kind);
+      let row: ActorRow | undefined;
+      if (kind === "managed-agent") {
+        const base = f.slice(0, -".json".length), dot = base.indexOf(".");
+        if (dot <= 0 || dot === base.length - 1) throw new Error(`${join(d, f)}: managed actor filename is not owner.actor.json`);
+        const managed = readManagedActor(d, base.slice(0, dot), base.slice(dot + 1));
+        row = managed.state === "live" ? managed.row : undefined;
+      } else row = readRow(join(d, f), kind);
+      if (row === undefined) continue;
       const expected = ledgerRowFilename(row.owner, row.actor);
       if (f !== expected)
         throw new Error(`${join(d, f)}: actor grant filename does not match its principal (expected ${expected}) - refusing a ledger state runtime lookup would ignore`);
@@ -191,10 +210,15 @@ export function loadActorLedger(dir: string): Array<ActorRow & { kind: ActorKind
 /** Find one row in ONE space, reading only that row's file. Undefined = not granted there. A
  *  corrupt file for THIS principal throws — deny with the reason, not a miss. */
 function findIn(dir: string, kind: ActorKind, owner: string, actor: string): ActorRow | undefined {
+  if (kind === "managed-agent") {
+    const managed = readManagedActor(spaceDir(dir, kind), owner, actor);
+    return managed.state === "live" ? managed.row : undefined;
+  }
   const p = rowPath(dir, kind, owner, actor);
   if (!assertRowSpaceDirectory(dir, kind)) return undefined;
   if (!existsSync(p)) return undefined;
   const row = readRow(p, kind);
+  if (row === undefined) return undefined;
   if (row.owner !== owner || row.actor !== actor)
     throw new Error(
       `${p}: actor grant principal "${row.owner}.${row.actor}" does not match requested canonical principal "${owner}.${actor}" - refusing to authenticate one row as another`,
@@ -394,7 +418,11 @@ function widenGrantCommand(
 
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
  *  with the secret hash REQUIRED — and never shadowing an interactive row. */
-export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> & { tokenHash: string }): ActorRow {
+export function grantManagedActor(
+  dir: string,
+  row: Omit<ActorRow, "grantedAt"> & { tokenHash: string },
+  mutation?: ManagedRowMutationOptions,
+): ActorRow {
   assertRowInputs(row);
   if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
@@ -405,13 +433,21 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
   // Same rule as grantActor: every row carries a lifecycle UID; the spawn path passes the one it
   // provisioned durables under, and a direct caller without one gets a fresh mint (never absent).
   const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid ?? mintLifecycleUid(), grantedAt: new Date().toISOString() };
-  writeRow(dir, "managed-agent", full);
+  const requestId = mutation?.requestId ?? createHash("sha256")
+    .update(`legacy-managed-grant\0${full.owner}\0${full.actor}\0${full.lifecycleUid}\0${full.tokenHash}`)
+    .digest("hex");
+  const committed = grantManagedActorExact(spaceDir(dir, "managed-agent"), full as Required<Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "tokenHash" | "lifecycleUid" | "grantedAt">> & ActorRow, {
+    ...mutation,
+    requestId,
+  });
   // Symmetric post-write compensation (see grantActor) — at most one surviving row per principal.
   if (findIn(dir, "interactive", row.owner, row.actor)) {
-    revokeIn(dir, "managed-agent", row.owner, row.actor);
+    revokeManagedActorExact(spaceDir(dir, "managed-agent"), row.owner, row.actor, committed.lifecycleUid, {
+      requestId: createHash("sha256").update(`managed-shadow-revoke\0${row.owner}\0${row.actor}\0${requestId}`).digest("hex"),
+    });
     throw shadowRefusal();
   }
-  return full;
+  return committed;
 }
 
 /** Revoke a row in one space. Returns false when there was nothing to revoke. NOTE: this stops NEW
@@ -421,8 +457,21 @@ export function revokeActor(dir: string, owner: string, actor: string): boolean 
   return revokeIn(dir, "interactive", owner, actor);
 }
 
-export function revokeManagedActor(dir: string, owner: string, actor: string): boolean {
-  return revokeIn(dir, "managed-agent", owner, actor);
+export function revokeManagedActor(
+  dir: string,
+  owner: string,
+  actor: string,
+  mutation?: ManagedRowMutationOptions & { lifecycleUid?: string },
+): boolean {
+  const current = findManagedActor(dir, owner, actor);
+  if (!current) return false;
+  const requestId = mutation?.requestId ?? createHash("sha256")
+    .update(`legacy-managed-revoke\0${owner}\0${actor}\0${current.lifecycleUid ?? "legacy"}`)
+    .digest("hex");
+  return revokeManagedActorExact(spaceDir(dir, "managed-agent"), owner, actor, mutation?.lifecycleUid ?? current.lifecycleUid, {
+    ...mutation,
+    requestId,
+  });
 }
 
 function revokeIn(dir: string, kind: ActorKind, owner: string, actor: string): boolean {
@@ -560,6 +609,14 @@ export function hashActorToken(actorToken: string): string {
   return createHash("sha256").update(actorToken, "utf8").digest("hex");
 }
 
+/** Smoke-only deterministic interleaving at the real retained-agent exchange reread boundary.
+ * Not re-exported from the package index. The hook is consumed and cleared before invocation so a
+ * fixture that writes through the normal managed-row path cannot recurse into itself. */
+let beforeAgentExchangeReadForSmoke: (() => void) | undefined;
+export function setBeforeAgentExchangeReadForSmoke(hook: (() => void) | undefined): void {
+  beforeAgentExchangeReadForSmoke = hook;
+}
+
 /** Authorize one AGENT exchange (`{ owner, actor, actorToken }`, no IdP proof) — MANAGED rows only,
  *  by construction. The presented secret must hash to the row's (constant-time over the two fixed
  *  32-byte digests). Every failure is the SAME sentence — a prober must not learn whether an
@@ -584,6 +641,9 @@ export function ledgerAuthorizeAgentExchange(
     new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
   let row: ActorRow | undefined;
   try {
+    const beforeRead = beforeAgentExchangeReadForSmoke;
+    beforeAgentExchangeReadForSmoke = undefined;
+    beforeRead?.();
     row = findManagedActor(dir, owner, actor);
   } catch {
     throw deny(); // a corrupt row denies exactly like a missing one on this unauthenticated surface

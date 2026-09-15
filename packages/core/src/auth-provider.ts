@@ -10,6 +10,8 @@ import type {
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
 } from "./remote-manager-authority.js";
+import type { ManagedRowAttempt } from "./managed-row-request.js";
+import type { ManagedRowResult } from "./managed-row-contract.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -152,12 +154,28 @@ export interface AuthProvider extends Extension {
     /** The incarnation's lifecycle UID (SPEC §13.1). Recorded on the ledger row so the auth
      *  callout mints this agent's lifecycle-keyed grants (`dm_…-<uid>`/`dlv_…-<uid>`/
      *  `chathist_…-<uid>`) from the SAME value its provisioned broker footprint carries. */
+    /** Stable host-owned operation identity. A retry after an uncertain result must reuse this exact value. */
+    requestId?: string;
     lifecycleUid: string;
   }): Promise<{ actorToken: string; sentinelCreds: string }>;
   /** Revoke an agent grant. False when there was nothing to revoke. New exchanges and new
    *  connects die immediately (both boundaries read the ledger fresh); an already-live
    *  connection dies at its bearer-bound JWT expiry (live eviction is a separate lever). */
-  revokeAgent(opts: { dir: string; owner: string; actor: string }): Promise<boolean>;
+  revokeAgent(opts: { dir: string; owner: string; actor: string; lifecycleUid?: string; requestId?: string }): Promise<boolean>;
+  /** Trusted-local native managed-row transport. The caller owns validation and minting of one
+   * ephemeral literal requester credential. The provider only connects, derives the exact request
+   * and reply subjects from the bound attempt, exchanges bytes, and closes. It receives no signer. */
+  sendManagedRowAttempt?(opts: {
+    server: string;
+    /** Caller-minted, in-memory five-minute credential. Never persisted or returned. */
+    credentials: string;
+    /** Complete validated attempt. Transport derives subjects internally and cannot retarget it. */
+    attempt: ManagedRowAttempt;
+    timeoutMs?: number;
+  }): Promise<{ bytes: Uint8Array; data: ManagedRowResult }>;
+  /** Stage/reload the one-time actor secret and sentinel for a create operation without writing the
+   * managed authority row. The caller persists this custody before minting the native requester. */
+  stageManagedRowCreate?(opts: { store: SecretStore; dir: string; space: string; owner: string; actor: string; lifecycleUid: string; requestId: string }): Promise<{ actorToken: string; sentinelCreds: string }>;
   /**
    * Read-only FRESH capability-scope read for one granted principal — `undefined` when the
    * principal holds no grant (for an authorization read, unknowable is "no grant": fail-closed).

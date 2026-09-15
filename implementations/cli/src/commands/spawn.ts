@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawn as spawnProcess, execFile } from "node:child_process";
 import { rmSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
@@ -18,6 +19,12 @@ import {
   mintLifecycleUid,
   provisionAgent,
   provisionAgentDurables,
+  commitProviderMutationRequest,
+  persistProviderMutationRequest,
+  stableProviderMutationRequestId,
+  createManagedRowAttempt,
+  managedRowCliForegroundDigest,
+  ManagedRowAttemptError,
   registry,
   resolveAuthProvider,
   CotalEndpoint,
@@ -57,14 +64,19 @@ import {
   userAuthStateDir,
   workspaceSecretStore,
   type MeshTarget,
+  CLI_USER_ACTOR,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
+import { connectUserControlOrExit, preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
+
+const managedRowFailureText = (error: unknown): string => error instanceof ManagedRowAttemptError
+  ? `${error.message}; caller knowledge=${error.knowledge}`
+  : error instanceof Error ? error.message : String(error);
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
  *  is a persona from the mesh this spawn would target. Resolved OFFLINE (registry + `current`, no
@@ -532,6 +544,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
     // dead auth plane.
     let eventGrant: string | undefined;
+    const cliControl = await connectUserControlOrExit({ space, server });
+    if (!cliControl.epCaller) {
+      console.error(c.red("✗ the fresh CLI control bearer carries no lifecycle-bound caller triple"));
+      process.exit(1);
+    }
     ({ userAuth, cleanup: userCleanup, eventChannel: eventGrant } = await provisionUserForeground(target, name, ref, {
       subscribe,
       allowSubscribe,
@@ -539,6 +556,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       role,
       capabilities: def.capabilities,
       lifecycleUid,
+      caller: cliControl.epCaller,
       liveOnly: values["live-only"] as boolean | undefined,
       ...(events ? { eventChannel: connector.eventChannel! } : {}),
     }));
@@ -868,11 +886,11 @@ async function provisionRemoteUserForeground(
  *  ledger grant with a fresh per-agent secret (upsert rotates); 0600 secret/sentinel files; and a
  *  one-shot bearer preflight whose operator-exact sentence is the refusal. Exits on any failure —
  *  the agent process is never launched into a broken auth chain. */
-async function provisionUserForeground(
+export async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
+  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; caller: import("@cotal-ai/core").EpCaller; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; eventChannel?: string }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -890,6 +908,8 @@ async function provisionUserForeground(
   } catch (e) {
     return fail((e as Error).message);
   }
+  if (owner !== opts.caller.owner || opts.caller.actor !== CLI_USER_ACTOR)
+    return fail(`the authenticated CLI caller ${opts.caller.owner}.${opts.caller.actor} does not match resolved owner ${owner}.${CLI_USER_ACTOR}`);
   // The provisioner cred is INFRA (pre-flip static coexistence, like the manager's own creds) —
   // loaded explicitly here for durable pre-creation only, never for the agent's identity.
   // The event grant, derived HERE because this is the first point at which the owner exists: in
@@ -897,29 +917,34 @@ async function provisionUserForeground(
   // caller before `ownerForLogin` answers.
   const eventGrant = opts.eventChannel?.({ owner, actor: name });
   const publish = eventGrant ? [...(opts.allowPublish ?? []), eventGrant] : (opts.allowPublish ?? []);
+  const requestId = stableProviderMutationRequestId({ kind: "grant", owner, actor: name, lifecycleUid: opts.lifecycleUid, operationId: `cli-foreground:${opts.lifecycleUid}` });
+  let grantRequest: ReturnType<typeof persistProviderMutationRequest> | undefined;
   const infra = await getSpaceAuth(store, space); // cross-check the bundle names the space we resolved this root for
   if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
   const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
   try {
+    if (!provider.sendManagedRowAttempt || !provider.stageManagedRowCreate)
+      throw new Error("the registered auth provider has no native managed-row transport; refusing filesystem fallback");
+    const sendManagedRowAttempt = provider.sendManagedRowAttempt.bind(provider);
+    const staged = await provider.stageManagedRowCreate({ store, dir, space, owner, actor: name, lifecycleUid: opts.lifecycleUid, requestId });
+    const createIntent = { ver: 1 as const, command: "create-managed-row" as const, requestId,
+      operationId: `cli-foreground:${opts.lifecycleUid}`, space, target: { owner, actor: name, lifecycleUid: opts.lifecycleUid },
+      tokenHash: createHash("sha256").update(staged.actorToken).digest("hex"), scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)).sort(),
+      allowSubscribe: [...(opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe ?? []))].sort(), allowPublish: [...publish].sort(),
+      ...(opts.role ? { role: opts.role } : {}), parent: `${opts.caller.owner}.${opts.caller.actor}`, label: ref };
+    grantRequest = persistProviderMutationRequest(dir, {
+      requestId, kind: "grant", owner, actor: name, lifecycleUid: opts.lifecycleUid,
+      operationId: `cli-foreground:${opts.lifecycleUid}`, admission: { kind: "cli-foreground", launchDigest: managedRowCliForegroundDigest(createIntent) }, caller: opts.caller,
+    });
+    const caller = opts.caller;
+    const attempt = createManagedRowAttempt(caller, createIntent);
+    const requesterCredentials = await mintCreds(infra, newIdentity(), "managed-row-requester", { principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid, managedRowRequester: attempt });
     // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
     // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
     // the same ordering as Manager.provisionUserAgent, for the same reason.
-    const grant = await provider.grantAgent({
-      store,
-      dir,
-      space,
-      owner,
-      actor: name,
-      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
-      // Read ACL: the flag, else the boot set, else nothing. A spawn that names no channel grants
-      // no channel (the agent is still DM-reachable) rather than silently granting `general`.
-      allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe ?? []),
-      allowPublish: publish,
-      role: opts.role,
-      parent: `${owner}.cli`,
-      label: ref,
-      lifecycleUid: opts.lifecycleUid,
-    });
+    await sendManagedRowAttempt({ server, credentials: requesterCredentials, attempt });
+    const grant = { actorToken: staged.actorToken, sentinelCreds: staged.sentinelCreds };
+    commitProviderMutationRequest(dir, grantRequest);
     const prov = new CotalEndpoint({
       space,
       servers: server,
@@ -982,7 +1007,17 @@ async function provisionUserForeground(
       // footprint the durable provisioning above created (DM/DLV durables + ACL row), the same
       // teardown the rollback path below runs on a failed preflight.
       cleanup: async () => {
-        await provider.revokeAgent({ dir, owner, actor: name });
+        const request = persistProviderMutationRequest(dir, {
+          requestId: stableProviderMutationRequestId({ kind: "revoke", owner, actor: name, lifecycleUid: opts.lifecycleUid, operationId: `cli-cleanup:${opts.lifecycleUid}` }),
+          kind: "revoke", owner, actor: name, lifecycleUid: opts.lifecycleUid,
+          operationId: `cli-cleanup:${opts.lifecycleUid}`, admission: grantRequest!.admission,
+          caller,
+        });
+        const intent = { ver: 1 as const, command: "revoke-managed-row" as const, requestId: request.requestId, operationId: `cli-cleanup:${opts.lifecycleUid}`, space, target: { owner, actor: name, lifecycleUid: opts.lifecycleUid } };
+        const cleanupAttempt = createManagedRowAttempt(caller, intent);
+        const cleanupCredentials = await mintCreds(infra, newIdentity(), "managed-row-requester", { principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid, managedRowRequester: cleanupAttempt });
+        await sendManagedRowAttempt({ server, credentials: cleanupCredentials, attempt: cleanupAttempt });
+        commitProviderMutationRequest(dir, request);
         await store.delete(agentActorTokenKey(space, name, composition));
         await store.delete(agentSentinelCredsKey(space, name, composition));
         rmSync(tokenPath, { force: true });
@@ -997,7 +1032,21 @@ async function provisionUserForeground(
   } catch (e) {
     // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
     // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
-    await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+    const request = persistProviderMutationRequest(dir, {
+      requestId: stableProviderMutationRequestId({ kind: "revoke", owner, actor: name, lifecycleUid: opts.lifecycleUid, operationId: `cli-rollback:${opts.lifecycleUid}` }),
+      kind: "revoke", owner, actor: name, lifecycleUid: opts.lifecycleUid,
+      operationId: `cli-rollback:${opts.lifecycleUid}`, ...(grantRequest?.admission ? { admission: grantRequest.admission } : {}),
+      caller: opts.caller,
+    });
+    let rollbackFailure: Error | undefined;
+    if (provider.sendManagedRowAttempt && infra) {
+      const intent = { ver: 1 as const, command: "revoke-managed-row" as const, requestId: request.requestId, operationId: `cli-rollback:${opts.lifecycleUid}`, space, target: { owner, actor: name, lifecycleUid: opts.lifecycleUid } };
+      const rollbackAttempt = createManagedRowAttempt(opts.caller, intent);
+      const rollbackCredentials = await mintCreds(infra, newIdentity(), "managed-row-requester", { principal: { owner: opts.caller.owner, actor: opts.caller.actor }, lifecycleUid: opts.caller.uid, managedRowRequester: rollbackAttempt });
+      await provider.sendManagedRowAttempt({ server, credentials: rollbackCredentials, attempt: rollbackAttempt })
+        .then(() => { commitProviderMutationRequest(dir, request); })
+        .catch((error) => { rollbackFailure = new Error(managedRowFailureText(error)); });
+    } else rollbackFailure = new Error("native managed-row rollback transport is unavailable");
     await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
     await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
     rmSync(tokenPath, { force: true });
@@ -1007,6 +1056,6 @@ async function provisionUserForeground(
     await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
       .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds }))
       .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
-    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}${rollbackFailure ? `; managed-row rollback remains pending for retry (${rollbackFailure.message})` : ""}`);
   }
 }

@@ -51,8 +51,13 @@ import type { Subscription } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   AUTH_ENDPOINT,
+  canonicalJson,
+  EP_CMD_CREATE_MANAGED_ROW,
+  EP_CMD_REVOKE_MANAGED_ROW,
   EP_CMD_RETIRE_LIFECYCLE,
   EpEnvelopeError,
+  assertBoundIncarnation,
+  checkRequestSubjectAgreement,
   assertLifecycleToken,
   deriveReplySubject,
   endpointToken,
@@ -63,10 +68,15 @@ import {
   spacePrefix,
   mintLifecycleUid,
   managedRetirementOpId,
+  endpointErrorReply,
+  parseManagedRowReplyBytes,
+  parseManagedRowRequestBytes,
   parseEpSubject,
   principalKey,
   retirementFrontierStreams,
   serveIssuanceGateKv,
+  verifyManagedRowAttemptNonce,
+  type ManagedRowIntent,
   type ParsedEpRequest,
 } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
@@ -78,9 +88,11 @@ const dec = new TextDecoder();
 
 /** The auth endpoint's one class rail, per-command (never a cross-command `>`): the grant and the
  *  runtime subscription are built from THIS, so a widened subscription cannot outrun its grant. */
-function authClassRail(space: string): string {
-  return `${spacePrefix(space)}.ep.one.${endpointToken(AUTH_ENDPOINT)}.${assertCommandToken(EP_CMD_RETIRE_LIFECYCLE)}.>`;
+function authClassRail(space: string, command: string): string {
+  return `${spacePrefix(space)}.ep.one.${endpointToken(AUTH_ENDPOINT)}.${assertCommandToken(command)}.>`;
 }
+
+const AUTH_COMMANDS = [EP_CMD_RETIRE_LIFECYCLE, EP_CMD_CREATE_MANAGED_ROW, EP_CMD_REVOKE_MANAGED_ROW] as const;
 
 /** The LISTENER profile (SPEC 13.9 "Auth endpoint rail" row): serve + bounded replies on the auth
  *  endpoint's class rail, plus the ONE leader-served gate read the authz check performs.
@@ -112,7 +124,7 @@ export function authAdminListenerGrants(
     // plain-subscribe the class rail and observe EVERY request's nonce — the property the queue
     // qualification exists to protect. The runtime's queue subscription is not a substitute: it
     // constrains what this process does, not what the credential permits.
-    subscribe: [`${authClassRail(space)} ${epClassQueueGroup(AUTH_ENDPOINT)}`, `_INBOX_${connId}.>`],
+    subscribe: [...AUTH_COMMANDS.map((command) => `${authClassRail(space, command)} ${epClassQueueGroup(AUTH_ENDPOINT)}`), `_INBOX_${connId}.>`],
   };
 }
 
@@ -127,6 +139,108 @@ interface RetireArgs {
   serveEndpoint: string;
   serveInstanceId: string;
   serveEpoch: number;
+}
+
+export interface ManagedRowListenerDeps {
+  /** Fresh trusted-host admission. `phase:"final"` is the last check before effect. */
+  admit(input: { caller: ParsedEpRequest["caller"]; intent: ManagedRowIntent; authority?: import("@cotal-ai/core").ManagedRowAttemptAuthority; phase: "initial" | "final" }): Promise<void>;
+  resolveTarget(input: { owner: string; actor: string }): Promise<{ lifecycleUid: string; mappingRevision: number } | undefined>;
+  execute(input: { wireId: string; intent: ManagedRowIntent; finalAdmission(): Promise<void>; assertPreEffectOpen(): void }): Promise<Uint8Array>;
+}
+
+export interface ManagedRowDeadlineClock {
+  now(): number;
+  setTimer(run: () => void, delayMs: number): unknown;
+  clearTimer(handle: unknown): void;
+}
+const SYSTEM_MANAGED_ROW_CLOCK: ManagedRowDeadlineClock = {
+  now: () => performance.now(),
+  setTimer: (run, delayMs) => setTimeout(run, delayMs),
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+async function withinManagedRowDeadline<T>(
+  budgetMs: number,
+  clock: ManagedRowDeadlineClock,
+  run: (latch: { assertOpen(): void; assertPreEffectOpen(): void }) => Promise<T>,
+): Promise<T> {
+  const startedAt = clock.now();
+  let closed = false;
+  let effectStarted = false;
+  let timer: unknown;
+  const assertOpen = () => {
+    if (closed) throw new EpEnvelopeError("deadline-exceeded", "managed-row pre-effect latch is closed; no mutation may begin", undefined, "not-executed");
+  };
+  const operation = run({
+    assertOpen,
+    assertPreEffectOpen() { assertOpen(); effectStarted = true; },
+  });
+  void operation.catch(() => {});
+  const deadline = new Promise<never>((_, reject) => {
+    timer = clock.setTimer(() => {
+      closed = true;
+      reject(new EpEnvelopeError("deadline-exceeded",
+        effectStarted
+          ? "managed-row deadline elapsed after effect dispatch; caller outcome is unknown until retained truth is observed"
+          : "managed-row deadline elapsed before effect dispatch; the pre-effect latch is permanently closed",
+        undefined, effectStarted ? "unknown" : "not-executed"));
+    }, Math.max(0, budgetMs - (clock.now() - startedAt)));
+  });
+  try { return await Promise.race([operation, deadline]); }
+  finally { clock.clearTimer(timer); }
+}
+
+export async function handleManagedRowNativeRequest(
+  space: string,
+  request: ParsedEpRequest,
+  body: Uint8Array,
+  deps: ManagedRowListenerDeps,
+  opts: { responder: { endpoint: "auth"; instanceId: string; epoch: number }; clock?: ManagedRowDeadlineClock } = {
+    responder: { endpoint: "auth", instanceId: "unbound", epoch: 0 },
+  },
+): Promise<Uint8Array> {
+  if (request.command !== EP_CMD_CREATE_MANAGED_ROW && request.command !== EP_CMD_REVOKE_MANAGED_ROW)
+    throw new EpEnvelopeError("failed-precondition", `command ${request.command} is not a managed-row command`);
+  const parsed = parseManagedRowRequestBytes(body);
+  const envelope = parsed.envelope;
+  const intent = parsed.args.intent;
+  checkRequestSubjectAgreement(envelope, request);
+  assertBoundIncarnation(envelope, opts.responder);
+  if (intent.command !== request.command || intent.space !== space)
+    throw new EpEnvelopeError("permission-denied", "managed-row body command or space disagrees with the authenticated request subject");
+  const assertTargetCurrent = async () => {
+    if (intent.command === "create-managed-row") {
+      if (envelope.target !== undefined) throw new EpEnvelopeError("target-mismatch", "create-managed-row is untargeted and must not carry an envelope target", undefined, "not-executed");
+      return;
+    }
+    if (request.target === null || request.target.mode !== "ledger" || envelope.target === undefined ||
+        canonicalJson({ owner: envelope.target.owner, actor: envelope.target.actor, lifecycleUid: envelope.target.lifecycleUid }) !== canonicalJson(intent.target))
+      throw new EpEnvelopeError("target-mismatch", "revoke-managed-row requires complete envelope-target equality with immutable intent", undefined, "not-executed");
+    const current = await deps.resolveTarget({ owner: intent.target.owner, actor: intent.target.actor });
+    if (current === undefined || current.lifecycleUid !== intent.target.lifecycleUid)
+      throw new EpEnvelopeError("expired", "revoke-managed-row target does not equal the authoritative current lifecycle mapping", undefined, "not-executed");
+    if (envelope.target.mappingRevision !== undefined && current.mappingRevision !== envelope.target.mappingRevision)
+      throw new EpEnvelopeError("expired", `revoke-managed-row target mapping revision ${envelope.target.mappingRevision} is not current revision ${current.mappingRevision}`, undefined, "not-executed");
+  };
+  verifyManagedRowAttemptNonce(request.nonce, request.caller, intent, parsed.args.authority, envelope.bind, envelope.target?.mappingRevision);
+  return withinManagedRowDeadline(envelope.deadlineMs!, opts.clock ?? SYSTEM_MANAGED_ROW_CLOCK, async (latch) => {
+    await assertTargetCurrent();
+    await deps.admit({ caller: request.caller, intent, authority: parsed.args.authority, phase: "initial" });
+    await assertTargetCurrent();
+    latch.assertOpen();
+    const exact = await deps.execute({
+      wireId: envelope.id,
+      intent,
+      finalAdmission: async () => {
+        await deps.admit({ caller: request.caller, intent, authority: parsed.args.authority, phase: "final" });
+        await assertTargetCurrent();
+      },
+      assertPreEffectOpen: latch.assertPreEffectOpen,
+    });
+    const reply = parseManagedRowReplyBytes(exact, envelope.id, intent);
+    if (!reply.ok) throw new EpEnvelopeError("internal", "managed-row executor returned a failure reply instead of committed success", undefined, "unknown");
+    return exact;
+  });
 }
 
 const RETIRE_ARG_KEYS = ["opId", "serveEndpoint", "serveInstanceId", "serveEpoch"];
@@ -195,6 +309,7 @@ export async function openAuthAdminListener(opts: {
   dataAccount: { pub: string; signingSeed: string };
   reg: LifecycleRegistry;
   retirement: RetirementDeps;
+  managedRow?: ManagedRowListenerDeps;
   log: (line: string) => void;
 }): Promise<AuthAdminListener> {
   const { space, log } = opts;
@@ -220,9 +335,8 @@ export async function openAuthAdminListener(opts: {
     await client.close();
     throw e;
   }
-  const sub: Subscription = client.nc.subscribe(authClassRail(space), {
-    queue: epClassQueueGroup(AUTH_ENDPOINT),
-    callback: (err, msg) => {
+  const subscriptions: Subscription[] = AUTH_COMMANDS.map((command) => client.nc.subscribe(authClassRail(space, command), {
+    queue: epClassQueueGroup(AUTH_ENDPOINT), callback: (err, msg) => {
       if (err) return;
       void (async () => {
         // The reply target is DERIVED from the parsed request, never taken from the wire. On the
@@ -242,26 +356,36 @@ export async function openAuthAdminListener(opts: {
         // the thrown-error path. A reply the caller cannot bind to its own request is one it must
         // ignore, so an unstamped error reply would silently become a timeout instead of a refusal.
         let echoId: string | undefined;
-        try { echoId = parseRequestId((JSON.parse(dec.decode(msg.data)) as { id?: unknown }).id); }
-        catch { echoId = undefined; }
-        let reply: { ok: boolean; id?: string; data?: unknown; error?: string };
         try {
-          reply = await handle(request, msg.data);
-        } catch (e) {
-          reply = { ok: false, error: e instanceof Error ? e.message : String(e) };
+          echoId = request.command === EP_CMD_CREATE_MANAGED_ROW || request.command === EP_CMD_REVOKE_MANAGED_ROW
+            ? parseManagedRowRequestBytes(msg.data).envelope.id
+            : parseRequestId((JSON.parse(dec.decode(msg.data)) as { id?: unknown }).id);
         }
-        // A request with no usable id gets an unbindable reply BY CONSTRUCTION: the caller requires
-        // the echo, so it will refuse this answer rather than accept an unattributable one.
-        if (echoId !== undefined) reply.id = echoId;
+        catch { echoId = undefined; }
+        let replyBytes: Uint8Array;
+        try {
+          const reply = await handle(request, msg.data);
+          replyBytes = reply instanceof Uint8Array ? reply : enc.encode(JSON.stringify(echoId === undefined ? reply : { ...reply, id: echoId }));
+        } catch (e) {
+          replyBytes = request.command === EP_CMD_CREATE_MANAGED_ROW || request.command === EP_CMD_REVOKE_MANAGED_ROW
+            ? enc.encode(JSON.stringify(endpointErrorReply(echoId ?? "invalid", e)))
+            : enc.encode(JSON.stringify({ ok: false, ...(echoId !== undefined ? { id: echoId } : {}), error: e instanceof Error ? e.message : String(e) }));
+        }
         const target = deriveReplySubject(space, request, responder);
         try {
-          client.nc.publish(target, enc.encode(JSON.stringify(reply)));
+          client.nc.publish(target, replyBytes);
         } catch (e) {
           log(`auth-admin: reply publish failed on ${target}: ${e instanceof Error ? e.message : String(e)}`);
         }
       })();
     },
-  });
+  }));
+  try { await client.nc.flush(); }
+  catch (error) {
+    for (const sub of subscriptions) try { sub.unsubscribe(); } catch {}
+    await client.close();
+    throw error;
+  }
 
   // SINGLE-FLIGHT the barrier EXECUTION per opId (audit #1): each request still runs its OWN fresh
   // lease re-check + idempotence, but concurrent same-opId requests (a manager nudge + a retry, or a boot
@@ -273,7 +397,11 @@ export async function openAuthAdminListener(opts: {
   // collide here. A coordinate-identical nudge, retry, or boot race still joins the one barrier run.
   const barrierFlight = new Map<string, { owner: string; actor: string; lifecycleUid: string; promise: ReturnType<typeof runAgentRetirementBarrier> }>();
 
-  const handle = async (request: ParsedEpRequest, body: Uint8Array): Promise<{ ok: boolean; id?: string; data?: unknown; error?: string }> => {
+  const handle = async (request: ParsedEpRequest, body: Uint8Array): Promise<{ ok: boolean; id?: string; data?: unknown; error?: string } | Uint8Array> => {
+    if (request.command === EP_CMD_CREATE_MANAGED_ROW || request.command === EP_CMD_REVOKE_MANAGED_ROW) {
+      if (!opts.managedRow) return { ok: false, error: "managed-row native mutation is unavailable in this auth service composition" };
+      return handleManagedRowNativeRequest(space, request, body, opts.managedRow, { responder: { endpoint: AUTH_ENDPOINT, ...responder } });
+    }
     if (request.command !== EP_CMD_RETIRE_LIFECYCLE)
       return { ok: false, error: `command "${request.command}" not supported on the auth endpoint` };
     // The TARGET comes from the subject (`handle` mode, arity 3) — broker-enforced and
@@ -375,7 +503,7 @@ export async function openAuthAdminListener(opts: {
 
   return {
     close: async () => {
-      try { sub.unsubscribe(); } catch { /* connection already down */ }
+      for (const sub of subscriptions) try { sub.unsubscribe(); } catch { /* connection already down */ }
       await client.close();
     },
   };

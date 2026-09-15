@@ -256,6 +256,14 @@ export async function bindGoal(
   return { bound: false, existing: parseBind(raw, subject, goalId) };
 }
 
+/** Leader-read an immutable goal bind by closed ref alone for trusted host admission composition. */
+export async function readGoalBindByRefLeader(jsm: JetStreamManager, space: string, ref: GoalRef): Promise<GoalBindFact | undefined> {
+  const snap = snapshotRef(ref);
+  const subject = epfGoalBindSubject(space, snap, snap.goalId);
+  const raw = await readLastFact(jsm, epfStreamName(space), subject);
+  return raw === undefined ? undefined : parseBind(raw, subject, snap.goalId);
+}
+
 async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Uint8Array): Promise<{ won: boolean }> {
   const h = natsHeaders();
   h.set("Nats-Expected-Last-Subject-Sequence", "0");
@@ -532,6 +540,15 @@ export async function readGoalStatusByRefLeader(jsm: JetStreamManager, space: st
   const key = recordStatusKey(RECORD_KINDS.goal, goalQualifiers(snapshotRef(ref)));
   const entry = await readRecordLeader(jsm, space, key);
   return entry === undefined ? undefined : parseStatus(entry.value, key);
+}
+
+/** Leader-read the accepted goal spec by closed ref alone for trusted host admission composition.
+ * Reuses the canonical key, snapshot, leader-read, and closed identity-bound parser above. */
+export async function readGoalSpecByRefLeader(jsm: JetStreamManager, space: string, ref: GoalRef): Promise<{ value: GoalSpecValue; revision: number } | undefined> {
+  const snap = snapshotRef(ref);
+  const key = recordSpecKey(RECORD_KINDS.goal, goalQualifiers(snap));
+  const entry = await readRecordLeader(jsm, space, key);
+  return entry === undefined ? undefined : { value: parseSpec(entry.value, key, snap), revision: entry.revision };
 }
 
 /** The executor's authenticated identity (subject/creds, never a body claim), required when a

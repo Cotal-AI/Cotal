@@ -45,6 +45,11 @@ import {
   probeConnect,
   provisionAgent,
   provisionAgentDurables,
+  commitProviderMutationRequest,
+  persistProviderMutationRequest,
+  stableProviderMutationRequestId,
+  createManagedRowAttempt,
+  ManagedRowAttemptError,
   registry,
   resolveAuthProvider,
   saveAgentFile,
@@ -698,6 +703,14 @@ interface ManagedAgent {
 /** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
 export interface SpawnHooks {
+  /** The durable accepted goal identity that authorized this endpoint-originated spawn. */
+  goalId?: string;
+  /** Original broker-authenticated endpoint caller and accepted submission coordinates retained
+   * separately from the current manager requester for native managed-row admission/adoption. */
+  originalCaller?: import("@cotal-ai/core").EpCaller;
+  fingerprint?: string;
+  acceptingInstanceId?: string;
+  acceptedEpoch?: number;
   /** Fires synchronously AFTER the incarnation identity (nkey + lifecycleUid) is minted but BEFORE
    *  any provision/side-effect — the accept seam: it binds the goal and replies the acceptance. A
    *  THROW here aborts the spawn before provisioning (the existing catch returns the failure and the
@@ -2971,6 +2984,21 @@ export class Manager {
    *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
    *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
    *  rolled back. */
+  private async managedRowRequesterContext(): Promise<{
+    caller: import("@cotal-ai/core").EpCaller;
+    authority: import("@cotal-ai/core").ManagedRowAttemptAuthority;
+  }> {
+    const serve = this.serviceServe;
+    const gate = this.goalWriter?.gate;
+    if (!serve || !gate) throw new Error("manager has no retained serving registration for managed-row requester mint");
+    const current = await gate.observe();
+    const caller = { owner: DEV_OWNER, actor: this.managerServeIdentity.id, uid: this.managerLifecycleUid };
+    if (!current || current.state !== "open" || current.space !== this.space || current.endpoint !== MANAGER_ENDPOINT || current.lifecycleUid !== this.managerInstanceId ||
+        current.principal !== principalKey(caller.owner, caller.actor).key || current.processEpoch !== serve.grant.epoch)
+      throw new Error("manager serving registration is not current before managed-row requester mint");
+    return { caller, authority: { kind: "local-manager", instanceId: this.managerInstanceId, processEpoch: current.processEpoch } };
+  }
+
   private async provisionUserAgent(
     name: string,
     opts: {
@@ -2986,6 +3014,9 @@ export class Manager {
        *  lifecycle-keyed grants from it) AND used for the provisioned durables/ACL row, so the
        *  credential names and the broker footprint can never diverge. */
       lifecycleUid: string;
+      /** Trusted origin, supplied only by the manager's actual accepted endpoint hook or validated
+       * host launch path. Never provider-controlled. */
+      admission: ({ kind: "endpoint-goal"; goalId: string; originalCaller: import("@cotal-ai/core").EpCaller; fingerprint: string; acceptingInstanceId: string; acceptedEpoch: number } | { kind: "host-launch"; launchDigest: string });
     },
   ): Promise<{ owner: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
     const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
@@ -3015,23 +3046,37 @@ export class Manager {
     const files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
     const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = files;
     try {
+      if (opts.admission.kind === "host-launch")
+        throw new Error("user-mode host-launch managed-row admission is unavailable until durable launch/name custody is implemented; refusing before stage or mint");
+      const { caller, authority } = await this.managedRowRequesterContext();
+      const grantRequest = persistProviderMutationRequest(dir, {
+        requestId: stableProviderMutationRequestId({ kind: "grant", owner, actor: name, lifecycleUid: opts.lifecycleUid, operationId: `manager-spawn:${opts.lifecycleUid}` }),
+        kind: "grant", owner, actor: name, lifecycleUid: opts.lifecycleUid,
+        operationId: `manager-spawn:${opts.lifecycleUid}`, admission: opts.admission,
+        caller,
+      });
+      if (!provider.sendManagedRowAttempt || !provider.stageManagedRowCreate || !this.auth)
+        throw new Error("the registered auth provider has no native managed-row transport, or this manager lacks matching local SpaceAuth; refusing filesystem fallback");
+      const staged = await provider.stageManagedRowCreate({ store: secrets, dir, space: this.space, owner, actor: name, lifecycleUid: opts.lifecycleUid, requestId: grantRequest.requestId });
+      const actorToken = staged.actorToken;
+      const createIntent = {
+        ver: 1 as const, command: "create-managed-row" as const, requestId: grantRequest.requestId,
+        operationId: `manager-spawn:${opts.lifecycleUid}`, space: this.space,
+        target: { owner, actor: name, lifecycleUid: opts.lifecycleUid },
+        tokenHash: createHash("sha256").update(actorToken).digest("hex"), scope,
+        allowSubscribe: [...opts.allowSubscribe].sort(), allowPublish: [...(opts.allowPublish ?? [])].sort(),
+        ...(opts.role ? { role: opts.role } : {}), ...(spawnerPr ? { parent: opts.spawner } : {}), label: opts.label,
+      };
+      const attempt = createManagedRowAttempt(caller, createIntent, undefined, authority);
+      const requesterCreds = await mintCreds(this.auth, newIdentity(), "managed-row-requester", {
+        principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid, managedRowRequester: attempt,
+      });
       // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
       // the spawner's own grant), so a refused delegation exits here having touched nothing beyond
       // the ledger: no durables, no broker footprint, nothing for a corrected respawn to race.
-      const grant = await provider.grantAgent({
-        store: secrets,
-        dir,
-        space: this.space,
-        owner,
-        actor: name,
-        scope,
-        allowSubscribe: opts.allowSubscribe,
-        allowPublish: opts.allowPublish ?? [],
-        role: opts.role,
-        parent: spawnerPr ? opts.spawner : undefined,
-        label: opts.label,
-        lifecycleUid: opts.lifecycleUid,
-      });
+      await provider.sendManagedRowAttempt({ server: this.servers ?? DEFAULT_SERVER, credentials: requesterCreds, attempt });
+      const grant = { actorToken, sentinelCreds: staged.sentinelCreds };
+      commitProviderMutationRequest(dir, grantRequest);
       // Durables + ACL row, LIFECYCLE-keyed (SPEC 13.1) — the same onboarding as static agents minus
       // the mint (a user agent's credential is its bearer, minted by the callout per connect from the
       // ledger row's recorded lifecycleUid — the same value provisioned here).
@@ -3073,7 +3118,24 @@ export class Manager {
       // secret, no ledger row, no durable footprint — and AWAIT the broker teardown: the caller
       // may respawn the moment it reads the refusal, and a detached teardown would race (and
       // delete) that fresh spawn's just-provisioned durables.
-      await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
+      const rollbackContext = await this.managedRowRequesterContext().catch(() => undefined);
+      const rollbackRequest = persistProviderMutationRequest(dir, {
+        requestId: stableProviderMutationRequestId({ kind: "revoke", owner, actor: name, lifecycleUid: opts.lifecycleUid, operationId: `manager-rollback:${opts.lifecycleUid}` }),
+        kind: "revoke", owner, actor: name, lifecycleUid: opts.lifecycleUid,
+        operationId: `manager-rollback:${opts.lifecycleUid}`, admission: opts.admission,
+        ...(rollbackContext ? { caller: rollbackContext.caller } : {}),
+      });
+      let rollbackFailure: Error | undefined;
+      if (provider.sendManagedRowAttempt && this.auth && rollbackContext) {
+        const intent = { ver: 1 as const, command: "revoke-managed-row" as const, requestId: rollbackRequest.requestId,
+          operationId: `manager-rollback:${opts.lifecycleUid}`, space: this.space, target: { owner, actor: name, lifecycleUid: opts.lifecycleUid } };
+        const { caller, authority } = rollbackContext;
+        const attempt = createManagedRowAttempt(caller, intent, undefined, authority);
+        const credentials = await mintCreds(this.auth, newIdentity(), "managed-row-requester", { principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid, managedRowRequester: attempt });
+        await provider.sendManagedRowAttempt({ server: this.servers ?? DEFAULT_SERVER, credentials, attempt })
+          .then(() => { commitProviderMutationRequest(dir, rollbackRequest); })
+          .catch((error) => { rollbackFailure = new Error(error instanceof ManagedRowAttemptError ? `${error.message}; caller knowledge=${error.knowledge}` : error instanceof Error ? error.message : String(error)); });
+      } else rollbackFailure = new Error("native managed-row rollback transport or current manager requester authority is unavailable");
       await secrets.delete(agentSecretKeyForFile(tokenPath, this.space)).catch(() => {});
       await secrets.delete(agentSecretKeyForFile(sentinelPath, this.space)).catch(() => {});
       rmSync(tokenPath, { force: true });
@@ -3081,7 +3143,7 @@ export class Manager {
       rmSync(healthPath, { force: true });
       await this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner, secretPaths: files }).catch((err) =>
         console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
-      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}${rollbackFailure ? `; managed-row rollback remains pending for retry (${rollbackFailure.message})` : ""}` };
     }
   }
 
@@ -3251,18 +3313,30 @@ export class Manager {
       const holdRevoke = this.retiring.get(a.name);
       if (holdRevoke && holdRevoke.lifecycleUid === a.lifecycleUid) holdRevoke.standingAuthorityLive = true;
       try {
-        await resolveAuthProvider().revokeAgent({
-          dir: userAuthStateDir(this.workspaceRoot, this.space),
-          owner: a.userOwner,
-          actor: a.name,
+        const { caller, authority } = await this.managedRowRequesterContext();
+        const request = persistProviderMutationRequest(userAuthStateDir(this.workspaceRoot, this.space), {
+          requestId: stableProviderMutationRequestId({ kind: "revoke", owner: a.userOwner, actor: a.name, lifecycleUid: a.lifecycleUid, operationId: `manager-teardown:${a.lifecycleUid}` }),
+          kind: "revoke", owner: a.userOwner, actor: a.name, lifecycleUid: a.lifecycleUid,
+          operationId: `manager-teardown:${a.lifecycleUid}`,
+          admission: { kind: "host-launch", launchDigest: stableProviderMutationRequestId({ kind: "revoke", owner: a.userOwner, actor: a.name, lifecycleUid: a.lifecycleUid, operationId: `manager-teardown:${a.lifecycleUid}` }) },
+          caller,
         });
+        const provider = resolveAuthProvider();
+        if (!provider.sendManagedRowAttempt || !this.auth) throw new Error("native managed-row revoke transport or local SpaceAuth unavailable; refusing filesystem fallback");
+        const intent = { ver: 1 as const, command: "revoke-managed-row" as const, requestId: request.requestId,
+          operationId: `manager-teardown:${a.lifecycleUid}`, space: this.space, target: { owner: a.userOwner, actor: a.name, lifecycleUid: a.lifecycleUid } };
+        const attempt = createManagedRowAttempt(caller, intent, undefined, authority);
+        const credentials = await mintCreds(this.auth, newIdentity(), "managed-row-requester", { principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid, managedRowRequester: attempt });
+        await provider.sendManagedRowAttempt({ server: this.servers ?? DEFAULT_SERVER, credentials, attempt });
+        commitProviderMutationRequest(userAuthStateDir(this.workspaceRoot, this.space), request);
         const done = this.retiring.get(a.name);
         if (done && done.lifecycleUid === a.lifecycleUid) done.standingAuthorityLive = false;
       } catch (e) {
         const h = this.retiring.get(a.name);
+        const reason = e instanceof ManagedRowAttemptError ? `${e.message}; caller knowledge=${e.knowledge}` : (e as Error).message;
         if (h && h.lifecycleUid === a.lifecycleUid)
-          h.lastError = `the agent's standing mint authority could not be revoked (${(e as Error).message}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
-        console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
+          h.lastError = `the agent's standing mint authority could not be revoked (${reason}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
+        console.error(`revoke agent grant ${a.name}: ${reason}`);
       }
     }
     await this.deprovisionBroker(a);
@@ -4115,6 +4189,8 @@ export class Manager {
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
     if (opts.resume && !connector.supportsResume)
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
+    if (this.userMode && !(hooks?.goalId && hooks.originalCaller && hooks.fingerprint && hooks.acceptingInstanceId && hooks.acceptedEpoch !== undefined))
+      return { ok: false, error: "user-mode host launch is unsupported until durable launch/name custody exists; no identity, token, custody, requester credential, or publish was created" };
     // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
     // External runtimes (tmux/cmux/orca/herdr) attach to a process they do not own and stream no
     // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
@@ -4382,6 +4458,9 @@ export class Manager {
           capabilities,
           label: ref,
           lifecycleUid,
+          admission: hooks && hooks.originalCaller && hooks.fingerprint && hooks.acceptingInstanceId !== undefined && hooks.acceptedEpoch !== undefined
+            ? { kind: "endpoint-goal", goalId: hooks.goalId ?? lifecycleUid, originalCaller: hooks.originalCaller, fingerprint: hooks.fingerprint, acceptingInstanceId: hooks.acceptingInstanceId, acceptedEpoch: hooks.acceptedEpoch }
+            : { kind: "host-launch", launchDigest: createHash("sha256").update(JSON.stringify({ ref, name, lifecycleUid, subscribe, allowSubscribe, allowPublish, role, capabilities })).digest("hex") },
         });
         if ("error" in prep) {
           this.reserved.delete(name);
@@ -6431,6 +6510,11 @@ export class Manager {
     };
 
     const bg = run({
+      goalId,
+      originalCaller: { ...ctx.subject.caller },
+      fingerprint,
+      acceptingInstanceId: this.managerInstanceId,
+      acceptedEpoch: epoch,
       onAccepted: async ({ name, agentTriple }) => {
         // must-5 Q-B: record the goal in the reconcile index BEFORE the bind (index-CAS-before-bind),
         // so a successor incarnation finds + settles this goal if we crash before its terminal. A

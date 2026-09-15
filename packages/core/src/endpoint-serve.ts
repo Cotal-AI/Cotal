@@ -137,7 +137,7 @@ export type EpLedgerAuthority = (args: {
  * ahead of every effect in `handle`, including the governed gate, which may consume a one-use
  * priced proof.
  */
-function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity): void {
+export function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity): void {
   const b = env.bind;
   if (b === undefined) return;
   if (b.instanceId === identity.instanceId && b.epoch === identity.epoch) return;

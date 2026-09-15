@@ -1,0 +1,19 @@
+{
+  "name": "retained-agent-returned-snapshot-ab-equality",
+  "guard": "validateRetainedManagedAgent must not return independently reread authority B after history-validating snapshot A; it verifies B history and refuses when A/B digest, head, fence, lifecycle, token, or authority differ",
+  "sources": [
+    "implementations/auth/src/continuity.ts",
+    "implementations/auth/src/ledger.ts",
+    "implementations/auth/smoke/retained-agent-snapshot.smoke.ts"
+  ],
+  "control": "pinned direct tsc plus retained-agent-snapshot.smoke.ts reports TASK84 RETAINED AGENT SNAPSHOT drift refused 9 passed, 0 failed",
+  "mutations": [
+    {
+      "name": "remove post-exchange A/B snapshot equality while retaining B history verification",
+      "file": "implementations/auth/src/continuity.ts",
+      "find": "  if (currentHistoryHead !== current.historyHead || current.digest !== canonical.digest ||\n      current.historyHead !== canonical.historyHead || current.fence !== canonical.fence ||\n      current.row.lifecycleUid !== canonical.row.lifecycleUid || current.row.tokenHash !== canonical.row.tokenHash ||\n      current.row.owner !== row.owner || current.row.actor !== row.actor || current.row.lifecycleUid !== row.lifecycleUid ||",
+      "replace": "  if (currentHistoryHead !== current.historyHead ||\n      current.row.owner !== row.owner || current.row.actor !== row.actor || current.row.lifecycleUid !== row.lifecycleUid ||",
+      "expected": "compile exit 0; smoke exit nonzero with retained validation returned independently reread snapshot B after verifying snapshot A"
+    }
+  ]
+}

@@ -200,6 +200,8 @@ the secret, every stop or despawn revokes the row, so a non-running agent holds 
 standing authority. Manifest deploys (`up -f`) stamp the logged-in owner into the launch,
 so those agents are yours too.
 
+**Managed actor rows use exact operations.** A managed grant or revoke has a stable host request id before the provider call. The auth provider keeps the request and generated actor token in a private file until the canonical row commits, so an uncertain retry reuses the same request and bytes. Revocation atomically replaces the live row with a tombstone. A connect authorization prepares against the live row, immutable history head, and revocation fence, performs signing outside the filesystem lock, then validates those coordinates again before the signed bytes can be returned. A stale authorization or lifecycle cannot authorize a successor.
+
 **Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
 drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the
 agent's standing mint authority (its ledger row, so a copied token can no longer mint a fresh

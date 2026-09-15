@@ -82,6 +82,43 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   };
 }
 
+/** Dedicated host-private managed-row exact-operation executor. It is intentionally not composed
+ * onto the mint writer or remote manager issuer. The raw connection never escapes the auth host. */
+export function managedRowMutationExecutorGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const auth = `KV_${epAuthBucket(space)}`;
+  const inbox = assertInboxConnId(connId);
+  const families = [
+    "managedrowop", "managedrowcommit", "managedrowevent", "managedroweventcommit", "managedrowhead",
+    "managedrowopen", "managedrowbytes", "managedrowtarget", "managedrowauthrequest",
+    "managedrowauthrequestdone", "managedrowauth", "managedrowauthready", "managedrowauthindex",
+    "managedrowauthfence", "managedrowauthdelivered",
+  ];
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.INFO.${auth}`,
+      `$JS.API.STREAM.MSG.GET.${auth}`,
+      ...families.map((family) => `$KV.${epAuthBucket(space)}.${family}.>`),
+    ],
+    subscribe: [`_INBOX_${inbox}.>`],
+  };
+}
+
+/** Dedicated host-private read-only manager managed-row admission connection. Body-selected reads
+ * are stream-wide trusted-host residuals; the closed helper accepts no raw key or filter. */
+export function managerManagedRowAdmissionGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const inbox = assertInboxConnId(connId);
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`,
+      `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`,
+      `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`,
+    ],
+    subscribe: [`_INBOX_${inbox}.>`],
+  };
+}
+
 /** The host-side REMOTE MANAGER ISSUER adds only the endpoint-instance gate/credential family
  * needed by the typed manager-service protocol. It carries no generic profile/mint endpoint; the
  * HTTP handler chooses fixed profiles and caller-generated nkeys. */

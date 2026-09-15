@@ -1,0 +1,18 @@
+{
+  "name": "ephemeral-nonce-stable-wire-and-successor-safety",
+  "guard": "Managed-row attempts use fresh nonce entropy, canonical immutable-intent wire identity is verified independently by listener and executor, manager surfaces uncertainty, and successor creation requires fully committed current-head tombstone truth",
+  "controls": [
+    "TASK84 CORE PROVIDER CUSTODY 6 passed, 0 failed",
+    "TASK84 MANAGED ROW REQUESTER",
+    "TASK84 MANAGED ROW NATIVE REQUEST recovery/result expansion passed, 0 failed",
+    "TASK84 CLI POST-CREATE ROLLBACK 21 passed, 0 failed",
+    "TASK84 MANAGER POST-CREATE ROLLBACK 18 passed, 0 failed"
+  ],
+  "mutations": [
+    {"name":"provisional nonce entropy persistence restored","file":"packages/core/src/provision.ts","effect":"add generated 16-byte nonce-prefix entropy to ProviderMutationCustody persistence and its parser allowlist","expected":"core custody control fails because retained records contain nonce entropy"},
+    {"name":"listener accepts ephemeral-coupled wire","file":"implementations/auth/src/auth-admin.ts","effect":"delete envelope.id === managedRowWireId(intent) verification","expected":"native request wrong-wire listener negative reaches admission/effect and fails"},
+    {"name":"executor accepts ephemeral-coupled wire","file":"implementations/auth/src/managed-row.ts","effect":"delete input.wireId === managedRowWireId(intent) verification","expected":"native request direct executor wrong-wire negative no longer refuses canonically"},
+    {"name":"manager rollback uncertainty is swallowed","file":"implementations/manager/src/manager.ts","effect":"remove pending rollback suffix from returned error","expected":"manager integration nonzero at surfaced pending cleanup assertion"},
+    {"name":"successor accepts uncommitted tombstone","file":"implementations/auth/src/managed-row.ts","effect":"skip validateReplaceableCommittedTombstone before successor CAS","expected":"CLI integration nonzero because pending tombstone successor is not refused"}
+  ]
+}

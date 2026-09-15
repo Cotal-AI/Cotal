@@ -51,11 +51,12 @@
  * /health probe) IS the readiness signal the provider's `ready()` polls.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeServeGrant, authorizeTrustedServeSnapshot, commitSiblingIssuance, contractRefToHex, contractStoreContext, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, fetchContractArtifact, isReachable, mintPublicUserJwt, rawDigest, recordsBucket, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeServeGrant, authorizeTrustedServeSnapshot, commitSiblingIssuance, contractRefToHex, contractStoreContext, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, fetchContractArtifact, isReachable, managedRowCliForegroundDigest, mintPublicUserJwt, rawDigest, readProviderMutationRequest, recordsBucket, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -69,8 +70,10 @@ import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentVali
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
+import { grantManagedActorExact, openManagedRowBrokerExecutor, prepareManagedAuthorization, readManagedActor, revokeManagedActorExact, type ManagedRowBrokerExecutor } from "./managed-row.js";
 import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, managedRowMutationExecutorGrants, managerManagedRowAdmissionGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
+import { admitManagerManagedRow, assertOriginalManagerSpawnDelegation, managerManagedRowAdmissionReaders } from "./manager-managed-row-admission.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -136,6 +139,7 @@ type Values = Record<string, string | undefined>;
  *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
  *  ensure both exchange arms stamp `act.credentialId` from. */
 export interface AuthAuthorityPlane {
+  prepareConnectAuthorization: (t: ValidatedUserToken, consumerId: string, requestDigest: string) => Promise<import("./callout.js").PreparedActorAuthorization>;
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
@@ -225,6 +229,9 @@ export async function openAuthAuthorityPlane(opts: {
    *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
    *  no natural failure to inject). Production compositions never set this. */
   probePlaneDeath?: (kill: { ledger: () => Promise<void>; records: () => Promise<void> }) => void;
+  /** Trusted composition's fresh endpoint-goal or durable host-launch/foreground custody check.
+   * Required to serve native managed-row commands. */
+  managedRowAdmission?: import("./auth-admin.js").ManagedRowListenerDeps["admit"];
 }): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
@@ -399,14 +406,124 @@ export async function openAuthAuthorityPlane(opts: {
   // scanner exactly like the boot resume); the listener only authorizes (subject attribution +
   // the FRESH space-manager-lease holder check) and dispatches.
   let authAdmin: AuthAdminListener | undefined;
+  let managedExecutor: ManagedRowBrokerExecutor | undefined;
+  let managerAdmissionClient: AuthorityClient | undefined;
   try {
-    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, log });
+    const managedClient = await openAuthorityClient({ server, space, dataAccount, label: `cotal:managed-row-executor:${space}`, grants: (id) => managedRowMutationExecutorGrants(space, id), log });
+    try {
+      const managedKv = await new Kvm(managedClient.nc).open(epAuthBucket(space));
+      managedExecutor = openManagedRowBrokerExecutor(managedKv, () => managedClient.close(), async ({ intent, target }) => {
+        const managedDir = join(opts.dir, "managed-actors");
+        if (intent.command === "create-managed-row") {
+          grantManagedActorExact(managedDir, {
+            ...intent.target, tokenHash: intent.tokenHash, scope: intent.scope, allowSubscribe: intent.allowSubscribe,
+            allowPublish: intent.allowPublish, ...(intent.role !== undefined ? { role: intent.role } : {}),
+            ...(intent.parent !== undefined ? { parent: intent.parent } : {}), ...(intent.label !== undefined ? { label: intent.label } : {}),
+            grantedAt: target.effectAt,
+          }, { requestId: intent.requestId, operationId: intent.operationId });
+        } else {
+          revokeManagedActorExact(managedDir, intent.target.owner, intent.target.actor, intent.target.lifecycleUid,
+            { requestId: intent.requestId, operationId: intent.operationId, now: () => new Date(target.effectAt) });
+        }
+        const projected = readManagedActor(managedDir, intent.target.owner, intent.target.actor);
+        if ((intent.command === "create-managed-row" && (projected.state !== "live" || projected.row.lifecycleUid !== intent.target.lifecycleUid)) ||
+            (intent.command === "revoke-managed-row" && (projected.state !== "tombstone" || projected.tombstone.lifecycleUid !== intent.target.lifecycleUid || projected.tombstone.revokedAt !== target.effectAt)))
+          throw new Error(`managed-row filesystem projection for ${intent.requestId} does not match broker target`);
+      });
+      managerAdmissionClient = await openAuthorityClient({ server, space, dataAccount, label: `cotal:managed-row-admission:${space}`, grants: (id) => managerManagedRowAdmissionGrants(space, id), log });
+      const managerReaders = managerManagedRowAdmissionReaders({
+        space, jsm: await jetstreamManager(managerAdmissionClient.nc),
+        authorizeOriginalSpawn: async ({ caller, intent }) => {
+          const grant = ledgerAuthorizeGrant(opts.dir)(caller.owner, caller.actor);
+          assertOriginalManagerSpawnDelegation({ caller, intent, grant });
+        },
+      });
+      const recoveryStarted = Date.now();
+      const admitRetained = async (intent: import("@cotal-ai/core").ManagedRowIntent, caller?: import("@cotal-ai/core").EpCaller) => {
+        const custody = readProviderMutationRequest(opts.dir, intent.requestId);
+        const expectedKind = intent.command === "create-managed-row" ? "grant" : "revoke";
+        if (!custody || custody.kind !== expectedKind || custody.owner !== intent.target.owner || custody.actor !== intent.target.actor ||
+            custody.lifecycleUid !== intent.target.lifecycleUid || custody.operationId !== intent.operationId || !custody.admission)
+          throw new Error(`managed-row request ${intent.requestId} has no matching retained manager/CLI custody`);
+        if (caller && (!custody.caller || custody.caller.owner !== caller.owner || custody.caller.actor !== caller.actor || custody.caller.uid !== caller.uid))
+          throw new Error(`managed-row request ${intent.requestId} authenticated caller is not the retained current caller lifecycle`);
+        if (custody.state === "host-committed" && intent.command === "create-managed-row")
+          throw new Error(`managed-row create ${intent.requestId} is already host-committed; a new effect is refused`);
+      };
+      const recovery = await managedExecutor.recover(async ({ intent }) => {
+        await admitRetained(intent);
+        const custody = readProviderMutationRequest(opts.dir, intent.requestId)!;
+        if (intent.command === "create-managed-row" && custody.admission?.kind === "endpoint-goal") {
+          const admission = custody.admission;
+          const gate = await managerReaders.readManagerGate(admission.acceptingInstanceId);
+          if (!gate || gate.state !== "open") throw new Error(`managed-row recovery ${intent.requestId} has no current manager registration`);
+          const principal = gate.principal.split(".");
+          if (principal.length !== 2) throw new Error(`managed-row recovery ${intent.requestId} has malformed current manager gate principal`);
+          const caller = { owner: principal[0], actor: principal[1], uid: "" };
+          const current = () => admitManagerManagedRow({ space, caller, intent, currency: { kind: "local-manager", instanceId: admission.acceptingInstanceId, processEpoch: gate.processEpoch, serveActor: caller.actor }, custody: {
+            kind: "endpoint-goal", originalCaller: admission.originalCaller, goalId: admission.goalId,
+            acceptingInstanceId: admission.acceptingInstanceId, fingerprint: admission.fingerprint,
+            acceptedEpoch: admission.acceptedEpoch, operationId: custody.operationId!, target: intent.target,
+          }, readers: managerReaders, recovery: true });
+          await current(); return { finalAdmission: current };
+        }
+        throw new Error(`managed-row recovery ${intent.requestId} has no composed current authority for custody kind ${custody.admission?.kind ?? "missing"}`);
+      });
+      log(`managed-row recovery: discovered=${recovery.discovered} committed=${recovery.committed} recovered=${recovery.recovered} durationMs=${Date.now() - recoveryStarted}`);
+    } catch (error) { await managedClient.close(); throw error; }
+    const managerReaders = managerManagedRowAdmissionReaders({
+      space, jsm: await jetstreamManager(managerAdmissionClient.nc),
+      authorizeOriginalSpawn: async ({ caller, intent }) => {
+        const grant = ledgerAuthorizeGrant(opts.dir)(caller.owner, caller.actor);
+        assertOriginalManagerSpawnDelegation({ caller, intent, grant });
+      },
+    });
+    const productionAdmission = opts.managedRowAdmission ?? (async ({ intent, caller, authority }: Parameters<import("./auth-admin.js").ManagedRowListenerDeps["admit"]>[0]) => {
+      const custody = readProviderMutationRequest(opts.dir, intent.requestId);
+      if (!custody || custody.owner !== intent.target.owner || custody.actor !== intent.target.actor || custody.lifecycleUid !== intent.target.lifecycleUid ||
+          custody.operationId !== intent.operationId || !custody.admission)
+        throw new Error(`managed-row request ${intent.requestId} has no fresh matching endpoint-goal/host-launch/foreground custody`);
+      if (!custody.caller || custody.caller.owner !== caller.owner || custody.caller.actor !== caller.actor || custody.caller.uid !== caller.uid)
+        throw new Error(`managed-row request ${intent.requestId} caller lifecycle is stale or foreign`);
+      if (intent.command === "create-managed-row" && custody.admission.kind === "endpoint-goal") {
+        if (!authority) throw new Error("endpoint-goal managed-row request carries no committed local manager currency");
+        await admitManagerManagedRow({ space, caller, intent, currency: { ...authority, serveActor: caller.actor }, custody: {
+          kind: "endpoint-goal", originalCaller: custody.admission.originalCaller, goalId: custody.admission.goalId,
+          acceptingInstanceId: custody.admission.acceptingInstanceId, fingerprint: custody.admission.fingerprint,
+          acceptedEpoch: custody.admission.acceptedEpoch, operationId: custody.operationId!, target: intent.target,
+        }, readers: managerReaders });
+      } else if (custody.admission.kind === "cli-foreground") {
+        const grant = ledgerAuthorizeGrant(opts.dir)(caller.owner, caller.actor);
+        if (grant.lifecycleUid !== caller.uid) throw new Error(`managed-row CLI caller lifecycle is stale`);
+        if (intent.target.owner !== caller.owner) throw new Error(`managed-row CLI target owner is foreign`);
+        if (intent.command === "create-managed-row") {
+          assertOriginalManagerSpawnDelegation({ caller, intent, grant });
+          if (custody.admission.launchDigest !== managedRowCliForegroundDigest(intent)) throw new Error(`managed-row CLI foreground launch custody digest changed`);
+        }
+      } else if (custody.admission.kind === "host-launch") {
+        throw new Error(`managed-row host-launch admission is unavailable until durable launch custody is recomputed; refusing effect`);
+      }
+    });
+    authAdmin = await openAuthAdminListener({
+      server, space, dataAccount, reg: barrierReg, retirement, log,
+      managedRow: {
+        admit: async (input) => { refuseIfFenced(); await productionAdmission(input); },
+        resolveTarget: async ({ owner, actor }) => {
+          refuseIfFenced();
+          const head = await readLifecycleHeadForOperation(barrierReg, owner, actor);
+          return head === undefined ? undefined : { lifecycleUid: head.mapping.lifecycleUid, mappingRevision: head.revision };
+        },
+        execute: (input) => managedExecutor!.execute(input),
+      },
+    });
   } catch (e) {
     closing = true;
     await recordsScanner.close();
     await scanner.close();
     await hold.release();
     await barrier.close();
+    await managedExecutor?.close();
+    await managerAdmissionClient?.close();
     await remoteIssuer.close();
     await reader.close();
     await writer.close();
@@ -436,6 +553,26 @@ export async function openAuthAuthorityPlane(opts: {
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
   return {
+    prepareConnectAuthorization: async (t, consumerId, requestDigest) => {
+      refuseIfFenced();
+      fileArm(t);
+      await authorizeConnectCredential(reader.current(), t, Date.now);
+      if (findInteractiveActor(opts.dir, t.owner, t.act.actor)) {
+        return {
+          commit: (_resultDigest: string, resultBytes: Uint8Array) => resultBytes,
+          cancel: () => {},
+        };
+      }
+      if (!t.act.lifecycleUid) throw new Error("bearer carries no lifecycle claim");
+      return prepareManagedAuthorization(join(opts.dir, "managed-actors"), {
+        owner: t.owner,
+        actor: t.act.actor,
+        lifecycleUid: t.act.lifecycleUid,
+        requestId: createHash("sha256").update(`connect\0${consumerId}\0${requestDigest}`).digest("hex"),
+        consumerId,
+        requestDigest,
+      });
+    },
     authorizeConnect: async (t) => {
       refuseIfFenced();
       fileArm(t);
@@ -713,6 +850,8 @@ export async function openAuthAuthorityPlane(opts: {
       // act), then the barrier that wrote it.
       closing = true;
       await authAdmin?.close();
+      await managedExecutor?.close();
+      await managerAdmissionClient?.close();
       await reader.close();
       await recordsScanner.close();
       await scanner.close();
@@ -886,6 +1025,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     space,
     token: { key: issuer.localKeySet(), issuer: issuer.issuer },
+    prepareActorAuthorization: plane.prepareConnectAuthorization,
     authorizeActor: plane.authorizeConnect,
     permissionsFor: calloutPermissions(ledgerAclResolver(dir)),
     log: (l) => console.error(l),

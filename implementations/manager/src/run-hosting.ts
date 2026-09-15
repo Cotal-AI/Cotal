@@ -531,14 +531,15 @@ export class RunHosting {
     let mediatorNc: NatsConnection | undefined;
     try {
       planes = { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, this.ctx.space), space: this.ctx.space };
-      mediatorNc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
+      const connectedMediatorNc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
         servers: this.ctx.servers ?? DEFAULT_SERVER,
         ...(mediatorCreds !== undefined
           ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(holder.mediatorCreds!))(nonce), inboxPrefix: `_INBOX_${mediatorIdentity.id}` }
           : {}),
         maxReconnectAttempts: -1,
       });
-      mediator = { nc: mediatorNc, js: jetstream(mediatorNc), jsm: await jetstreamManager(mediatorNc), kv: await openRecordsBucket(mediatorNc, this.ctx.space), space: this.ctx.space };
+      mediatorNc = connectedMediatorNc;
+      mediator = { nc: connectedMediatorNc, js: jetstream(connectedMediatorNc), jsm: await jetstreamManager(connectedMediatorNc), kv: await openRecordsBucket(connectedMediatorNc, this.ctx.space), space: this.ctx.space };
       // Checked AFTER the last await before the drive starts: a stop that landed during the
       // connect has already cleared the live map, and a drive started now would be nobody's.
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");

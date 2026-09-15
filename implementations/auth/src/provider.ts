@@ -13,11 +13,13 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
+import { ManagedRowAttemptError, canonicalJson, epRequestSubject, managedRowEndpointRequest, managedRowRequesterGrantRows, managedRowWireId, parseEpSubject, parseManagedRowReplyBytes, registry, validateManagedRowIntent, verifyManagedRowAttemptNonce, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type ManagedRowAttempt, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, openSync, closeSync, constants, fchmodSync, fsyncSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
@@ -39,7 +41,164 @@ import {
   saveServiceKeys,
 } from "./store.js";
 
+export interface ManagedRowTransportMessage {
+  subject: string;
+  data: Uint8Array;
+  headers?: { code?: number; status?: string } | null;
+}
+export interface ManagedRowTransportSubscription { unsubscribe(): void }
+export interface ManagedRowTransportConnection {
+  subscribe(subject: string, opts: { callback(error: Error | null, msg: ManagedRowTransportMessage): void }): ManagedRowTransportSubscription;
+  flush(): Promise<void>;
+  publish(subject: string, data: Uint8Array, opts?: { reply?: string }): void;
+  close(): Promise<void>;
+}
+export interface ManagedRowTransportDeps {
+  open(input: { server: string; credentials: string; requestId: string }): Promise<ManagedRowTransportConnection>;
+  now(): number;
+  setTimer(run: () => void, delayMs: number): unknown;
+  clearTimer(timer: unknown): void;
+}
+
+const PRODUCTION_MANAGED_ROW_TRANSPORT: ManagedRowTransportDeps = {
+  open: async ({ server, credentials, requestId }) => connect({
+    servers: server,
+    authenticator: credsAuthenticator(new TextEncoder().encode(credentials)),
+    name: `cotal:managed-row-request:${requestId}`,
+  }) as unknown as ManagedRowTransportConnection,
+  now: () => performance.now(),
+  setTimer: (run, delayMs) => setTimeout(run, delayMs),
+  clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
+const MAX_TIMER_MS = 2_147_483_647;
+export async function sendManagedRowAttemptWithTransport(
+  { server, credentials, attempt, timeoutMs = 15_000 }: { server: string; credentials: string; attempt: ManagedRowAttempt; timeoutMs?: number },
+  transport: ManagedRowTransportDeps = PRODUCTION_MANAGED_ROW_TRANSPORT,
+): Promise<{ bytes: Uint8Array; data: import("@cotal-ai/core").ManagedRowResult }> {
+  const startedAt = transport.now();
+  const intent = validateManagedRowIntent(attempt.intent);
+  if (attempt.ver !== 1 || attempt.command !== intent.command) throw new ManagedRowAttemptError("managed-row transport attempt command mismatch", "not-executed");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS)
+    throw new ManagedRowAttemptError(`managed-row timeout must be a positive integer within ${MAX_TIMER_MS}ms`, "not-executed");
+  try { verifyManagedRowAttemptNonce(attempt.nonce, attempt.caller, intent, attempt.authority, attempt.bind, attempt.mappingRevision); }
+  catch (error) { throw new ManagedRowAttemptError((error as Error).message, "not-executed", undefined, { cause: error }); }
+  const grants = managedRowRequesterGrantRows(intent.space, {
+    command: intent.command, caller: attempt.caller, nonce: attempt.nonce,
+    ...(intent.command === "revoke-managed-row" ? { targetOwner: intent.target.owner } : {}),
+  });
+  const subject = grants.publish[0];
+  const replyFilter = grants.subscribe[0];
+  const wireId = managedRowWireId(intent);
+  let nc: ManagedRowTransportConnection | undefined;
+  let sub: ManagedRowTransportSubscription | undefined;
+  let timer: unknown;
+  let published = false;
+  // `reply` is owned by this invocation until the race settles. The subscription is retained for
+  // exactly that interval and is synchronously unsubscribed in `finally`. A callback already queued
+  // by the transport may still run after timeout/cleanup, so it must observe this terminal flag and
+  // become a no-op rather than settling an abandoned continuation.
+  let settled = false;
+  try {
+    const timeout = () => new Promise<never>((_, reject) => {
+      const remaining = Math.max(0, timeoutMs - (transport.now() - startedAt));
+      timer = transport.setTimer(() => {
+        settled = true;
+        reject(new ManagedRowAttemptError(`managed-row request ${intent.requestId} timed out`, published ? "unknown" : "not-executed"));
+      }, remaining);
+    });
+    try { nc = await Promise.race([transport.open({ server, credentials, requestId: intent.requestId }), timeout()]); }
+    catch (error) { throw new ManagedRowAttemptError(`managed-row connect failed: ${(error as Error).message}`, "not-executed", undefined, { cause: error }); }
+    if (timer !== undefined) { transport.clearTimer(timer); timer = undefined; }
+    let resolveReply!: (result: { bytes: Uint8Array; data: import("@cotal-ai/core").ManagedRowResult }) => void;
+    let rejectReply!: (error: ManagedRowAttemptError) => void;
+    const reply = new Promise<{ bytes: Uint8Array; data: import("@cotal-ai/core").ManagedRowResult }>((resolve, reject) => {
+      resolveReply = resolve; rejectReply = reject;
+    });
+    try {
+      sub = nc.subscribe(replyFilter, { callback: (error, msg) => {
+        if (settled) return;
+        try {
+          if (error) { settled = true; rejectReply(new ManagedRowAttemptError(`managed-row reply subscription failed: ${error.message}`, published ? "unknown" : "not-executed", undefined, { cause: error })); return; }
+          const attributed = parseEpSubject(msg.subject);
+          if (!attributed || attributed.plane !== "reply" || attributed.endpoint !== "auth" || attributed.nonce !== attempt.nonce) return;
+          if (attempt.bind !== undefined && (attributed.instanceId !== attempt.bind.instanceId || attributed.epoch !== attempt.bind.epoch)) return;
+          let parsed;
+          try { parsed = parseManagedRowReplyBytes(msg.data, wireId, intent); }
+          catch { return; }
+          settled = true;
+          if (!parsed.ok) {
+            const knowledge = parsed.error?.outcome === "not-executed" ? "not-executed" : parsed.error?.outcome === "executed" ? "executed" : "unknown";
+            rejectReply(new ManagedRowAttemptError(parsed.error?.message ?? `managed-row ${intent.requestId} failed`, knowledge, parsed));
+            return;
+          }
+          resolveReply({ bytes: msg.data, data: parsed.data });
+        } catch { /* a late or malformed transport callback never escapes into the client runtime */ }
+      } });
+    } catch (error) {
+      throw new ManagedRowAttemptError(`managed-row reply subscription setup failed: ${(error as Error).message}`, "not-executed", undefined, { cause: error });
+    }
+    try { await Promise.race([nc.flush(), timeout()]); }
+    catch (error) { throw new ManagedRowAttemptError(`managed-row subscription flush failed: ${(error as Error).message}`, "not-executed", undefined, { cause: error }); }
+    if (timer !== undefined) { transport.clearTimer(timer); timer = undefined; }
+    const remainingAtPublish = Math.floor(timeoutMs - (transport.now() - startedAt));
+    if (remainingAtPublish <= 0) throw new ManagedRowAttemptError(`managed-row request ${intent.requestId} timed out before publish`, "not-executed");
+    const body = new TextEncoder().encode(canonicalJson(managedRowEndpointRequest(attempt, remainingAtPublish)));
+    try { nc.publish(subject, body); }
+    catch (error) { throw new ManagedRowAttemptError(`managed-row publish failed before acceptance: ${(error as Error).message}`, "not-executed", undefined, { cause: error }); }
+    published = true;
+    try { return await Promise.race([reply, timeout()]); }
+    finally { settled = true; }
+  } finally {
+    settled = true;
+    if (timer !== undefined) transport.clearTimer(timer);
+    try { sub?.unsubscribe(); } catch {}
+    await nc?.close().catch(() => {});
+  }
+}
+
 const READY_TIMEOUT_MS = 15_000;
+
+interface ProviderGrantRequest {
+  ver: 1;
+  requestId: string;
+  owner: string;
+  actor: string;
+  lifecycleUid: string;
+  actorToken: string;
+  state: "pending" | "host-committed";
+}
+
+function providerRequestPath(dir: string, requestId: string): string {
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(requestId)) throw new Error("auth provider requestId must be a 16-128 character opaque token");
+  const root = join(dir, "managed-row-requests");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  return join(root, `${requestId}.json`);
+}
+
+function writeProviderRequest(path: string, request: ProviderGrantRequest): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, `${JSON.stringify(request, null, 2)}\n`);
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  renameSync(tmp, path);
+}
+
+function loadOrCreateGrantRequest(dir: string, requestId: string, owner: string, actor: string, lifecycleUid: string): ProviderGrantRequest {
+  const path = providerRequestPath(dir, requestId);
+  if (existsSync(path)) {
+    const request = JSON.parse(readFileSync(path, "utf8")) as ProviderGrantRequest;
+    if (request.ver !== 1 || request.requestId !== requestId || request.owner !== owner || request.actor !== actor || request.lifecycleUid !== lifecycleUid)
+      throw new Error(`auth provider request ${requestId} conflicts with its durable coordinates`);
+    return request;
+  }
+  const request: ProviderGrantRequest = { ver: 1, requestId, owner, actor, lifecycleUid, actorToken: newActorToken().actorToken, state: "pending" };
+  writeProviderRequest(path, request);
+  return request;
+}
 
 /** Present only if PROVEN present. `probeLiveness` resolves EPERM (another user's process) to
  *  `alive`, which is the defect this fixes: the old two-state probe called that dead. `unknown`
@@ -418,11 +577,14 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid }) {
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid, requestId }) {
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
-    const { actorToken, tokenHash } = newActorToken();
+    const stableRequestId = requestId ?? createHash("sha256").update(`provider-grant\0${owner}\0${actor}\0${lifecycleUid}`).digest("hex");
+    const request = loadOrCreateGrantRequest(dir, stableRequestId, owner, actor, lifecycleUid);
+    const actorToken = request.actorToken;
+    const tokenHash = createHash("sha256").update(actorToken, "utf8").digest("hex");
     grantManagedActor(dir, {
       owner,
       actor,
@@ -434,12 +596,26 @@ export const cotalAuthProvider: AuthProvider = {
       ...(label ? { label } : {}),
       tokenHash,
       lifecycleUid,
-    });
+    }, { requestId: stableRequestId });
+    if (request.state !== "host-committed") {
+      request.state = "host-committed";
+      writeProviderRequest(providerRequestPath(dir, stableRequestId), request);
+    }
     return { actorToken, sentinelCreds: callout.sentinelCreds };
   },
 
-  async revokeAgent({ dir, owner, actor }) {
-    return revokeManagedActor(dir, owner, actor);
+  async stageManagedRowCreate({ store, dir, space, owner, actor, lifecycleUid, requestId }) {
+    const callout = await loadCalloutAuth(store, space);
+    if (!callout) throw new Error(`space "${space}" has no local user-auth callout material`);
+    const request = loadOrCreateGrantRequest(dir, requestId, owner, actor, lifecycleUid);
+    return { actorToken: request.actorToken, sentinelCreds: callout.sentinelCreds };
+  },
+
+  sendManagedRowAttempt: (opts) => sendManagedRowAttemptWithTransport(opts),
+
+  async revokeAgent({ dir, owner, actor, lifecycleUid, requestId }) {
+    const stableRequestId = requestId ?? createHash("sha256").update(`provider-revoke\0${owner}\0${actor}\0${lifecycleUid ?? "current"}`).digest("hex");
+    return revokeManagedActor(dir, owner, actor, { requestId: stableRequestId, lifecycleUid });
   },
 
   /** The delete half of the seam pair: drop the four secret kinds from the store, attempting all

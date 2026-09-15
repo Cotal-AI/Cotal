@@ -94,6 +94,8 @@ The runners take a CLI-shaped `ParsedArgs`, not a typed options object, so a hos
 const args: ParsedArgs = { values: { space, server, port: "0" }, positionals: [], raw: [] };
 ```
 
+A host that calls `AuthProvider.grantAgent` or `revokeAgent` persists one stable `requestId` with the managed lifecycle operation before making the call. It reuses that value after an uncertain result. The provider binds the request to the owner, actor, lifecycle, and committed canonical bytes, so a retry cannot become a second operation or move a successor.
+
 ### Long-lived endpoints take a bearer function
 
 `EndpointOptions.bearer` accepts either a string or a function, and the difference is not stylistic.

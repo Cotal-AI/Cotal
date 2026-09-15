@@ -6,7 +6,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { decode, type Account } from "@nats-io/jwt";
 import { fromCurveSeed, fromSeed } from "@nats-io/nkeys";
 import type { AuthTrustFingerprint, RetainedAgentAuthority, SecretStore } from "@cotal-ai/core";
-import { ledgerAuthorizeAgentExchange, loadActorLedger } from "./ledger.js";
+import { ledgerAuthorizeAgentExchange, loadActorLedger, managedActorLedgerDir } from "./ledger.js";
+import { readManagedActor, verifyManagedHistoryAgainstCanonical } from "./managed-row.js";
 import {
   loadCalloutAuth,
   loadIssuer,
@@ -79,7 +80,16 @@ export async function userAuthTrustFingerprint(store: SecretStore, dir: string, 
       external.auth_users?.length !== 1 || external.xkey !== callout.xkey.pub)
     throw new Error(`user-auth trust state ${inStore} has a callout account JWT that does not match its account, signer, xkey, or data-account binding`);
   const ledger = loadActorLedger(dir)
-    .map((row) => ({
+    .map((row) => {
+      const managed = row.kind === "managed-agent" ? readManagedActor(managedActorLedgerDir(dir), row.owner, row.actor) : undefined;
+      if (managed !== undefined && managed.state !== "live") throw new Error(`managed trust row ${row.owner}.${row.actor} is not live`);
+      if (managed?.state === "live") {
+        verifyManagedHistoryAgainstCanonical(managedActorLedgerDir(dir), row.owner, row.actor, managed.bytes);
+        const { owner, actor, scope, allowSubscribe, allowPublish, role, parent, tokenHash, lifecycleUid } = managed.row;
+        if (JSON.stringify({ owner, actor, scope, allowSubscribe, allowPublish, role, parent, tokenHash, lifecycleUid }) !== JSON.stringify({ owner: row.owner, actor: row.actor, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish, role: row.role, parent: row.parent, tokenHash: row.tokenHash, lifecycleUid: row.lifecycleUid }))
+          throw new Error(`managed trust row ${row.owner}.${row.actor} changed during fingerprint snapshot`);
+      }
+      return ({
       kind: row.kind,
       owner: row.owner,
       actor: row.actor,
@@ -89,7 +99,9 @@ export async function userAuthTrustFingerprint(store: SecretStore, dir: string, 
       role: row.role ?? null,
       parent: row.parent ?? null,
       tokenHash: row.kind === "managed-agent" ? row.tokenHash! : null,
-    }))
+      managedHistoryHead: managed?.state === "live" ? managed.historyHead : null,
+      managedCanonicalDigest: managed?.state === "live" ? managed.digest : null,
+    }); })
     .sort((a, b) => compareCodeUnits(`${a.kind}\0${a.owner}\0${a.actor}`, `${b.kind}\0${b.owner}\0${b.actor}`));
   const issuerKeys = issuer.jwks().keys
     .map((key) => ({
@@ -151,7 +163,29 @@ export async function validateRetainedManagedAgent(input: {
     throw new Error(`retained sentinel credential for ${input.owner}.${input.actor} does not match space "${input.space}"`);
 
   // This checks the token hash in constant time and re-walks the current delegation envelope.
+  const canonical = readManagedActor(managedActorLedgerDir(input.dir), input.owner, input.actor);
+  if (canonical.state === "absent") throw new Error(`retained agent ${input.owner}.${input.actor} does not have a canonical managed row`);
+  const historyHead = verifyManagedHistoryAgainstCanonical(managedActorLedgerDir(input.dir), input.owner, input.actor, canonical.bytes);
+  if (canonical.state !== "live" || canonical.historyHead !== historyHead)
+    throw new Error(`retained agent ${input.owner}.${input.actor} does not have one committed live managed history head`);
   const row = ledgerAuthorizeAgentExchange(input.dir, input.owner, input.actor, input.actorToken);
+  const changed = () => new Error(`retained agent ${input.owner}.${input.actor} changed during retained validation`);
+  const current = readManagedActor(managedActorLedgerDir(input.dir), input.owner, input.actor);
+  if (current.state !== "live") throw changed();
+  let currentHistoryHead: string;
+  try {
+    currentHistoryHead = verifyManagedHistoryAgainstCanonical(managedActorLedgerDir(input.dir), input.owner, input.actor, current.bytes);
+  } catch {
+    throw changed();
+  }
+  const sameList = (a: readonly string[], b: readonly string[]) => JSON.stringify(a) === JSON.stringify(b);
+  if (currentHistoryHead !== current.historyHead || current.digest !== canonical.digest ||
+      current.historyHead !== canonical.historyHead || current.fence !== canonical.fence ||
+      current.row.lifecycleUid !== canonical.row.lifecycleUid || current.row.tokenHash !== canonical.row.tokenHash ||
+      current.row.owner !== row.owner || current.row.actor !== row.actor || current.row.lifecycleUid !== row.lifecycleUid ||
+      !sameList(current.row.scope, row.scope) || !sameList(current.row.allowSubscribe, row.allowSubscribe) ||
+      !sameList(current.row.allowPublish, row.allowPublish) || current.row.role !== row.role || current.row.parent !== row.parent)
+    throw changed();
   if (!row.lifecycleUid)
     throw new Error(`retained agent ${input.owner}.${input.actor} has no lifecycleUid on its current ledger row; re-grant it (bearers are lifecycle-bound from v0.4)`);
   return {

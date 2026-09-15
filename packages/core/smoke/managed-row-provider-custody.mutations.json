@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "source": "packages/core/src/provision.ts",
+  "cases": [
+    {"id":"core-request-lifecycle","find":".update(`${input.kind}\\0${input.owner}\\0${input.actor}\\0${input.lifecycleUid}\\0${input.operationId}`)","replace":".update(`${input.kind}\\0${input.owner}\\0${input.actor}\\0${input.operationId}`)","test":"core_exact_coordinates_change_request_identity","expected":"assertion"},
+    {"id":"core-coordinate-conflict","find":"if (identity(existing) !== identity(wanted)) throw new Error(`provider mutation request ${input.requestId} conflicts with its durable coordinates`);","replace":"if (false && identity(existing) !== identity(wanted)) throw new Error(`provider mutation request ${input.requestId} conflicts with its durable coordinates`);","test":"core_request_coordinate_conflict_refused","expected":"assertion"},
+    {"id":"core-terminal-state","find":"const committed = { ...request, state: \"host-committed\" as const };","replace":"const committed = { ...request, state: \"pending\" as const };","test":"core_request_state_is_durable_and_private","expected":"assertion"}
+  ]
+}

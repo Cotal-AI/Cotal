@@ -265,6 +265,11 @@ export const AUTH_ENDPOINT = "auth";
  *  authz mode `handle` (arity 3), the exact argument tuple it takes: `owner`/`any` resolve against
  *  the CURRENT mapping, which is the wrong semantics for retiring a NAMED incarnation. */
 export const EP_CMD_RETIRE_LIFECYCLE = "retire-lifecycle";
+/** Host-private exact-operation managed-row commands. Create is untargeted because the proposed
+ * child does not yet have a lifecycle mapping. Revoke is ledger-targeted to one literal owner and
+ * the body supplies the actor/lifecycle that the listener cross-checks against retained custody. */
+export const EP_CMD_CREATE_MANAGED_ROW = "create-managed-row";
+export const EP_CMD_REVOKE_MANAGED_ROW = "revoke-managed-row";
 
 // ---- serve / read filters (§13.2, §13.9) ----------------------------------------------------
 

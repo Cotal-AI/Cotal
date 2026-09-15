@@ -8,6 +8,7 @@ export {
   type CalloutConnection,
   type CalloutMsg,
   type StartAuthCalloutOpts,
+  type PreparedActorAuthorization,
 } from "./callout.js";
 export {
   validateUserToken,
@@ -110,6 +111,19 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
+export {
+  readManagedActor,
+  readManagedActorPath,
+  prepareManagedAuthorization,
+  recoverManagedRowRequests,
+  verifyManagedHistory,
+  managedRowStatePaths,
+  type ManagedActorLiveRow,
+  type ManagedActorTombstone,
+  type ManagedActorRead,
+  type ManagedRowMutationOptions,
+  type PreparedManagedAuthorization,
+} from "./managed-row.js";
 export { runAuthService, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed

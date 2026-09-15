@@ -12,10 +12,10 @@
 import { spacePrefix } from "./subjects.js";
 import { epcStreamName } from "./endpoint-binding.js";
 import {
-  endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
+  endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner, assertNonce, isIssuedCaller,
   type EpCaller, type EpTarget,
   epCallerReplyFilter, epResponderReplyPattern, epResponderIssuedReplyPattern, epClassQueueGroup,
-  epPlaneTokens, callerRailTokens, callerTokens, EP_RAIL_V1,
+  epPlaneTokens, callerRailTokens, callerTokens, epRequestSubject, epReplySubject, EP_RAIL_V1,
 } from "./endpoint-subjects.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
@@ -102,6 +102,25 @@ export function epJournalGrantRow(space: string, cap: EpCapability, caller: EpCa
 /** The caller's reply-rail read row (§13.9 "Reply subscribe"): its own rail only, exact arity. */
 export function epCallerReplyGrantRow(space: string, caller: EpCaller): string {
   return epCallerReplyFilter(space, caller);
+}
+
+/** One-shot managed-row requester rows. Unlike a standing endpoint capability, both rows are
+ * literal subjects for one fresh 64-character attempt nonce. The caller must subscribe before
+ * publish and discard this short-lived credential and connection after one terminal outcome. */
+export function managedRowRequesterGrantRows(
+  space: string,
+  input: { command: "create-managed-row" | "revoke-managed-row"; caller: EpCaller; nonce: string; targetOwner?: string },
+): { publish: string[]; subscribe: string[] } {
+  const target = input.command === "revoke-managed-row"
+    ? { mode: "ledger" as const, tOwner: assertBoundedOwner(input.targetOwner ?? "", "target owner") }
+    : undefined;
+  if (input.command === "create-managed-row" && input.targetOwner !== undefined)
+    throw new Error("create-managed-row is untargeted and accepts no targetOwner grant input");
+  const subject = epRequestSubject(space, { route: { mode: "one" }, endpoint: "auth", command: input.command, ...(target ? { target } : {}), caller: input.caller, nonce: input.nonce });
+  if (isIssuedCaller(input.caller))
+    throw new Error("managed-row-requester is a locally root-minted one-shot rail and does not accept an issued caller generation");
+  const reply = `${spacePrefix(space)}.ep.reply.${endpointToken("auth")}.*.*.${callerRailTokens(input.caller).join(".")}.${assertNonce(input.nonce)}`;
+  return { publish: [subject], subscribe: [reply] };
 }
 
 /** Per-goal live progress read row (§13.9 "Live event progress", reserved `goal` topic):

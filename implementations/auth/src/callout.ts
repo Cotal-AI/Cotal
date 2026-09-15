@@ -32,6 +32,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
+import { createHash } from "node:crypto";
 import { assertInboxConnId, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
@@ -137,6 +138,11 @@ export interface CalloutMsg {
   respond(data: Uint8Array): unknown;
 }
 
+export interface PreparedActorAuthorization {
+  commit(resultDigest: string, resultBytes: Uint8Array): Uint8Array | Promise<Uint8Array>;
+  cancel(outcome: string): void | Promise<void>;
+}
+
 export interface StartAuthCalloutOpts {
   /** The callout xkey SEED — MANDATORY. No xkey, no service (fail startup, never plaintext). */
   xkeySeed: string;
@@ -150,7 +156,13 @@ export interface StartAuthCalloutOpts {
   token: { key: JWTVerifyGetKey | CryptoKey; issuer: string };
   /** The spawn-ledger hook: THROW to deny. Client-supplied actor claims are only as good as this
    *  server-side check — the flip wires the manager's authenticated spawn ledger in here. */
-  authorizeActor: (t: ValidatedUserToken) => void | Promise<void>;
+  prepareActorAuthorization?: (
+    t: ValidatedUserToken,
+    consumerId: string,
+    requestDigest: string,
+  ) => PreparedActorAuthorization | Promise<PreparedActorAuthorization>;
+  /** Compatibility adapter for compositions not yet using the managed final-commit seam. */
+  authorizeActor?: (t: ValidatedUserToken) => void | Promise<void>;
   /** Allow-list of trusted nats-server ids (`server_id.id`) — the tightest request-provenance pin:
    *  a request whose server id is not listed is dropped (no response). STRONGLY RECOMMENDED for any
    *  hardened / multi-server deploy. When omitted, the ONLY barrier left is NATS $SYS system-subject
@@ -183,6 +195,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const responseSigner = fromSeed(new TextEncoder().encode(opts.authAccount.signingSeed));
   const userSigner = fromSeed(new TextEncoder().encode(opts.dataAccount.signingSeed));
   if (!opts.space) throw new Error("auth callout: space is required");
+  if (!opts.prepareActorAuthorization && !opts.authorizeActor)
+    throw new Error("auth callout: prepareActorAuthorization is required (authorizeActor is accepted only as a compatibility adapter)");
   const log = opts.log ?? ((l: string) => console.error(l));
   const enc = (s: string) => new TextEncoder().encode(s);
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
@@ -255,7 +269,13 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           issuer: opts.token.issuer,
           audience: opts.space,
         });
-        await opts.authorizeActor(validated);
+        const requestDigest = createHash("sha256").update(msg.data).digest("hex");
+        const prepared = opts.prepareActorAuthorization
+          ? await opts.prepareActorAuthorization(validated, req.user_nkey, requestDigest)
+          : await (async () => {
+            await opts.authorizeActor!(validated);
+            return { commit: (_digest: string, bytes: Uint8Array) => bytes, cancel: () => {} } satisfies PreparedActorAuthorization;
+          })();
         // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
         // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so
         // the client cannot set its `inboxPrefix` to match it. So the client picks its own random inbox
@@ -285,8 +305,11 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
           { signer: userSigner, exp: validated.exp }, // NATS access dies with the bearer
         );
-        opts.onMint?.({ jwt: userJwt, principal: key, exp: validated.exp });
-        await respond({ jwt: userJwt });
+        const jwtBytes = enc(userJwt);
+        const committedBytes = await prepared.commit(createHash("sha256").update(jwtBytes).digest("hex"), jwtBytes);
+        const committedJwt = dec(committedBytes);
+        opts.onMint?.({ jwt: committedJwt, principal: key, exp: validated.exp });
+        await respond({ jwt: committedJwt });
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         log(`auth callout: denied ${req.user_nkey}: ${reason}`);
