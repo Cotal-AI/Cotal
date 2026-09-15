@@ -92,7 +92,7 @@ for (const verb of VERBS) c(`the usage line names \`${verb}\``, usage.includes(v
   const v1 = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", mark("ep.v1")));
   c("versioned rail: the refusal names ep.v1 and states what the silence does not establish",
     v1.startsWith("no manager answered on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
-    && v1.includes("does not establish that no manager is running"), v1);
+    && v1.includes("does not tell no manager running apart from one older than ep.v1"), v1);
   c("versioned rail: neither the false question nor the --local remedy that follows from it is printed",
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
   const unmarked = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms", mark()));

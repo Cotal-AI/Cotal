@@ -65,7 +65,7 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   const r = epRailFailure(v1);
   c("versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless",
     r.unanswered === true && r.error?.startsWith("no manager answered on the ep.v1 rail (deadline-exceeded: no describe reply from manager") === true
-    && r.error.includes("disjoint at the broker (SPEC 13.15)") && r.error.includes("not evidence that no manager is running")
+    && r.error.includes("disjoint at the broker (SPEC 13.15)") && r.error.includes("does not tell no manager running apart from one older than ep.v1")
     && !r.error.includes("no manager reachable"), r);
   const p = epRailFailure(v1, { instanceId: IID });
   c("versioned rail pinned: names the instance AND the rail its silence was on",

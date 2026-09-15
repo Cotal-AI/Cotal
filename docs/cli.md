@@ -750,11 +750,12 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
 versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
 both (SPEC 13.15). A manager older than the versioned rail serves `ep` alone, so it can be running,
 registered and answering while an issued caller's request reaches nobody. Silence on `ep.v1` is
-reported as `no manager answered on the ep.v1 rail`, with what that does not establish, rather than
-as a claim that the mesh has no manager. It is a version skew: check the manager's version and
-restart it on a build that serves `ep.v1`. The same scoping applies to `cotal run`'s hosted verbs,
-which drop the `--local` suggestion there, since `--local` drives the run from the calling process
-and names the caller as its answerer.
+reported as `no manager answered on the ep.v1 rail` and names both causes it is consistent with:
+no manager running, or one older than the rail. The CLI cannot tell them apart, because the service
+registry records no package version, so check whether a manager is running and, if it is, its
+version. The same scoping applies to `cotal run`'s hosted verbs, which drop the `--local`
+suggestion there, since `--local` drives the run from the calling process and names the caller as
+its answerer.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a

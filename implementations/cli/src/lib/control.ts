@@ -254,8 +254,12 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
     // whole time. On the legacy rail there is no other half, so the verdict stands as it was.
     const rail = unansweredRail(e);
     const versioned = rail !== undefined && rail !== "ep" ? rail : undefined;
+    // TWO CAUSES, BOTH NAMED. Silence on a versioned rail is consistent with no manager at all AND
+    // with one older than the rail, and this side cannot tell them apart: the registry records no
+    // package version. An earlier wording named only the skew, which sent an operator whose manager
+    // was simply down to go and check a version.
     const skew = versioned === undefined ? "" :
-      ` The ${versioned} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so a manager older than ${versioned} serves ep only and cannot answer here: this is not evidence that no manager is running. Check the manager's version.`;
+      ` The ${versioned} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${versioned}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, its version.`;
     return {
       ok: false, unanswered: true,
       error: instanceId !== undefined

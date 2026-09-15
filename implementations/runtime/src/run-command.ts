@@ -516,17 +516,22 @@ function parseAnswerValue(values: RunValues): unknown {
  * On the VERSIONED `ep.v1` rail it is not. SPEC 13.15 keeps the two rails disjoint at the broker
  * and requires an endpoint to serve both, so a manager older than the versioned rail subscribes
  * `ep` alone: it is running, it is on the roster, and this caller cannot reach it. #1630 measured
- * both halves of the damage. The question invites the operator to hunt a manager that is up, and
- * `--local` drives the run from this process and NAMES THE CALLER as its answerer, so an operator
- * who takes the tool's advice submits an answer under the wrong identity. Neither is printed for a
- * rail whose silence does not mean what they claim.
+ * both halves of the damage. The question ASSERTS one of two causes, and `--local` is the remedy
+ * that follows from it: it drives the run from this process and NAMES THE CALLER as its answerer,
+ * so an operator who takes the tool's advice on a mesh whose manager is merely old submits an
+ * answer under the wrong identity.
+ *
+ * So the versioned wording names BOTH causes and asserts neither, because this side cannot tell
+ * them apart: the service registry records no package version. Naming only the skew is the same
+ * defect one step over, and it is reachable - `bin/smoke/control-transport-dial.smoke.ts` runs a
+ * fixture with no manager at all, and an operator there would have been sent to check a version.
  */
 export function unansweredManagerRefusal(e: EpEnvelopeError): string {
   const detail = `${e.code}: ${e.message}`;
   const rail = unansweredRail(e);
   if (rail === undefined || rail === "ep")
     return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
-  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so a manager older than ${rail} serves ep only and cannot answer here. This does not establish that no manager is running: check the manager's version and restart it on a build that serves ${rail}`;
+  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
 }
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
