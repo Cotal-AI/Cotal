@@ -204,9 +204,27 @@ export async function readRunAdmission(jsm: JetStreamManager, space: string, end
   }
   if (admission.space !== space || admission.endpoint !== endpoint || admission.runId !== runId)
     throw new EpEnvelopeError("permission-denied", `run ${runId}'s admission record names other coordinates (${admission.space}/${admission.endpoint}/${admission.runId}); refused (SPEC 14.8)`);
-  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
-  const revoked = marker === undefined ? undefined : revocationSnapshot(marker.value, runId);
+  const revoked = await readRunRevocation(jsm, space, endpoint, runId);
   return Object.freeze({ admission, revoked });
+}
+
+/**
+ * The revocation marker alone, without the admission record beside it.
+ *
+ * {@link readRunAdmission} refuses when the admission is missing, unreadable or names other
+ * coordinates, which is the only safe answer for a host about to perform a channel effect. A
+ * DISPLAY surface is in a different position: it is not about to act on the record, and refusing a
+ * whole listing because one row has no admission would hide every other row from the operator
+ * reading it. So a reader that only needs to know "was this revoked" reads the marker key and
+ * nothing else.
+ *
+ * A read that FAILS still throws. "No marker" and "could not look" are different answers, and a
+ * caller that cannot tell them apart would render a revoked run as live the moment the store went
+ * away.
+ */
+export async function readRunRevocation(jsm: JetStreamManager, space: string, endpoint: string, runId: string): Promise<RunRevocation | undefined> {
+  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
+  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);
 }
 
 /** The channel checks a host applies, over the admitted ceiling. Concrete channels only: a

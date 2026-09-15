@@ -1,0 +1,84 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/run-command.smoke.ts"
+  ],
+  "guard": "`run ps --local` reads the revocation marker beside each run record and prints `revoked` whatever the record says, names the revoker and the reason under the table, and `revoke` says what the table will now show; the record itself is never rewritten",
+  "command": "pnpm smoke:runtime-run-command",
+  "completionMarker": "run-command:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/ps-revocation.json",
+  "why": [
+    "THE DIRECTION IS A ROW THAT LOOKS HEALTHY. A revocation is a create-only marker in the",
+    "admission store and nothing rewrites the run record (SPEC 14.8); the record is written only by",
+    "a driver, so a driver that dies mid-run leaves `running` behind with nothing left to write",
+    "anything else. Neither surface is broken in a way anyone can see: the marker is correct, the",
+    "record is correct, and the table that reads only one of them prints a live row for a run that",
+    "will never run again. An operator counting capacity from it counts that row.",
+    "",
+    "THE CONTROL IS MEASURED RATHER THAN MUTATED, and this is deliberate. The cell before the",
+    "revoke asserts the same run prints `running`, on the same table, through the same code path.",
+    "At the merge base 08cff353 that control PASSED while the cell after the revoke FAILED, which",
+    "is the only evidence that separates `this table reads the marker` from `this table happens to",
+    "print the word revoked`. A mutant that forced every row to `revoked` would redden an earlier",
+    "block's `with its state` cell first, so it would name the wrong line; the base measurement",
+    "answers the same question without that ambiguity.",
+    "",
+    "MUTATION TWO CROSSES A PACKAGE BOUNDARY AND SO CARRIES ITS OWN COMMAND. The suite imports",
+    "`@cotal-ai/core` by package name, which resolves to `dist/`, so a mutation in `packages/core/src`",
+    "is invisible to it unless core is rebuilt first. It builds core before the suite and rebuilds",
+    "it after the restore, or the tree keeps a `dist/` compiled from the mutant.",
+    "",
+    "MUTATIONS ONE AND TWO NAME THE SAME CELL, and the reason is worth writing down because the",
+    "issue predicted otherwise. #1621 expected that reading the admission key instead of the marker",
+    "key would make a live admission read as a revocation. It does not: `revocationSnapshot` is a",
+    "closed-field validator, so an admission record fails it, the read THROWS, and `ps` reports the",
+    "row as unchecked and keeps the record's own state. Same cell, different mechanism, and the two",
+    "are repaired differently: one is a table that stopped looking, the other is a table looking in",
+    "the wrong place and saying so.",
+    "",
+    "NOT ASSERTED, and recorded rather than implied: the manager-hosted `run ps` has the same",
+    "defect at `implementations/runtime/src/run-host.ts` `list()`, which builds `RunListRow` from",
+    "the record alone. Fixing it needs a field on that served answer shape and a manager credential",
+    "that may read the admission bucket, which is a wider change than the local surface this issue",
+    "names, and it cannot be driven from this suite."
+  ],
+  "mutations": [
+    {
+      "name": "the table stops overriding the record's state, so a revoked run keeps printing running",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "        state = \"revoked\";",
+      "replace": "        void 0;",
+      "cell": "ps prints revoked for it afterwards, whatever the record says",
+      "expectRed": "ps prints revoked for it afterwards, whatever the record says",
+      "note": "This is the shipped state before the fix, and it is exactly what the merge base prints: the row reads `running`, `cli-run-<id>`, journal 0, with the marker sitting unread beside it."
+    },
+    {
+      "name": "the reader looks at the admission key instead of the revocation marker",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));",
+      "replace": "  const marker = await readLeader(jsm, space, admissionKey(endpoint, runId));",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-command",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "ps prints revoked for it afterwards, whatever the record says",
+      "expectRed": "ps prints revoked for it afterwards, whatever the record says",
+      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then reports the row as unchecked and prints the record's own state, which reddens the same cell for a different reason."
+    },
+    {
+      "name": "the revoker and the reason stop being printed under the table",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    for (const [key, r] of revocations)",
+      "replace": "    for (const [key, r] of new Map<string, RunRevocation>())",
+      "cell": "...with the revoker and the reason under the table, since the columns carry neither",
+      "expectRed": "...with the revoker and the reason under the table, since the columns carry neither",
+      "note": "A state of `revoked` with no attribution anywhere sends the operator to a second command to learn who revoked it and why; the marker carries both and the columns carry neither."
+    },
+    {
+      "name": "revoke stops saying what the table will show",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);",
+      "replace": "    void runId;",
+      "cell": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
+      "expectRed": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
+      "note": "The acknowledgement and the table disagreed for as long as one of them never read the marker. Saying it at the moment of the revoke is what makes a future divergence visible to the person who caused it."
+    }
+  ]
+}
