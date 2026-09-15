@@ -285,5 +285,5 @@ if (ok + fail !== EXPECTED_CELLS) {
   console.log(`\n  ✗ FAIL: the suite ran ${ok + fail} cells, not the ${EXPECTED_CELLS} it declares`);
   fail++;
 }
-console.log(fail === 0 ? `\nplacement-grants.smoke: ${ok} passed, ${fail} failed ✅` : `\nplacement-grants.smoke: ${ok} passed, ${fail} failed ❌`);
+console.log(`\nplacement-grants.smoke: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
