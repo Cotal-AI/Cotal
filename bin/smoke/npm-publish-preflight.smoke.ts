@@ -961,11 +961,20 @@ check(
 );
 
 // 5. The ladder's own shadow, which is the case that actually hides a drift rather than merely
-// confusing an instrument. The source below is the SHIPPED file with the drift applied by name
-// (the exported absent predicate inlined, exactly what fixture entry 44 does) AND a nested decoy
-// `preflightNpmPublish` that calls all three predicates by name. Under the retired last-wins
-// lookup the decoy replaced the real ladder and this cell went green while the shipped ladder had
-// already drifted. Under the top-level pin the decoy is invisible and the drift is still seen.
+// confusing an instrument. The source below is the SHIPPED file with the ladder's absent filter
+// inlined, AND a nested decoy `preflightNpmPublish` that calls all three predicates by name. Under
+// the retired last-wins lookup the decoy replaced the real ladder and this cell went green while
+// the shipped ladder had already drifted. Under the top-level pin the decoy is invisible and the
+// drift is still seen.
+//
+// The drift applied here is the one the LADDER-INLINE fixture entry applies, which is a DIFFERENT
+// entry from the CENSUS_BUCKETS drift. Both inline the same absent comparison, which is exactly how
+// one gets mistaken for the other, and one was: the two entries are adjacent in the fixture. They
+// touch different code. The bucket entry rewrites the module-level CENSUS_BUCKETS table, which sits
+// OUTSIDE preflightNpmPublish and which this enumerator therefore never reads; measured, applying
+// it leaves this enumerator's callee list byte-identical. The ladder entry is the one that can
+// defeat this cell, so it is the one used, and both are located BY NAME below because the union
+// merge renumbers the file and index would silently select the neighbour.
 //
 // The drift is applied here by the same string the fixture uses, so the two cannot diverge
 // silently: if the shipped line is reworded, this substitution stops changing the source and the
@@ -973,9 +982,65 @@ check(
 const ladderDriftFind = "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n";
 const ladderDriftReplace = "  const absent = rows.filter((row) => row.registry === \"absent\");\n";
 const driftedLadderSource = preflightSource.split(ladderDriftFind).join(ladderDriftReplace);
+// Read both drift entries out of the fixture BY NAME and assert the strings this file uses are the
+// fixture's own, so the cell and the fixture cannot drift apart.
+const preflightFixture = JSON.parse(readFileSync(join(ROOT, "bin/smoke/mutations/npm-publish-preflight.json"), "utf8")) as
+  { mutations: Array<{ name: string; find: string; replace: string }> };
+const fixtureEntry = (name: string) => preflightFixture.mutations.filter((entry) => entry.name === name);
+const LADDER_INLINE_ENTRY = "the verdict ladder stops calling the exported bucket predicate and inlines the comparison";
+const BUCKET_DRIFT_ENTRY = "a CENSUS_BUCKETS entry drifts off the exported predicate onto an equivalent inline copy";
+const ladderInline = fixtureEntry(LADDER_INLINE_ENTRY);
+const bucketDrift = fixtureEntry(BUCKET_DRIFT_ENTRY);
+// Both lookups must RESOLVE before anything below grades anything, because a by-name lookup that
+// misses is SILENT: the cells beneath it still run and still pass on an undefined entry, and the
+// only trace is a cell count nobody compares. Measured while building this: renaming one fixture
+// entry dropped three cells from the run with zero failures reported. A rename is a legitimate
+// thing for a later commit to do, so the miss has to be loud and has to name what vanished.
+check(
+  "both drift entries this file grades through resolve in the fixture by name, so a renamed entry fails loudly instead of silently deleting the cells below it",
+  ladderInline.length === 1 && bucketDrift.length === 1,
+  {
+    ladderInlineMatches: ladderInline.length,
+    bucketDriftMatches: bucketDrift.length,
+    hint: "exactly 1 each is required; 0 means the entry was renamed or removed",
+  },
+);
+check(
+  "the ladder drift this cell applies is the fixture's own ladder-inline entry, so the cell grades the mutation the fixture actually ships",
+  ladderInline.length === 1
+    && ladderInline[0].find === ladderDriftFind
+    && ladderInline[0].replace === ladderDriftReplace,
+  { matched: ladderInline.length, find: ladderInline[0]?.find, replace: ladderInline[0]?.replace },
+);
+// The two entries are NOT interchangeable, and this cell exists because they were confused once.
+const bucketDriftedSource = bucketDrift.length === 1
+  ? preflightSource.split(bucketDrift[0].find).join(bucketDrift[0].replace)
+  : preflightSource;
+check(
+  "the CENSUS_BUCKETS drift entry changes the shipped source but leaves the ladder enumerator's reading identical, so it is not the entry that can defeat the ladder cell",
+  bucketDrift.length === 1
+    && bucketDriftedSource !== preflightSource
+    && JSON.stringify(ladderFilterCallees(bucketDriftedSource).callees) === JSON.stringify(ladderCallees),
+  {
+    changedSource: bucketDriftedSource !== preflightSource,
+    calleesUnderBucketDrift: ladderFilterCallees(bucketDriftedSource).callees,
+    calleesShipped: ladderCallees,
+  },
+);
+// The bucket drift IS graded, just by a different cell: a RUNTIME identity comparison over imported
+// function objects. No textual decoy can launder an object identity, so that pairing is decoy-proof
+// by construction rather than by a guard a later commit could relax.
+check(
+  "the CENSUS_BUCKETS drift replaces the exported predicate with an inline copy, so the identity cell that grades it cannot be laundered by any nested decoy",
+  bucketDrift.length === 1
+    && bucketDrift[0].find.includes("isAbsentRegistry")
+    && !bucketDrift[0].replace.includes("isAbsentRegistry")
+    && CENSUS_BUCKETS.find((bucket) => bucket.name === "absent")?.matches === isAbsentRegistry,
+  { find: bucketDrift[0]?.find, replace: bucketDrift[0]?.replace },
+);
 check(
   "positive control: the ladder drift used by the decoy cell really changes the shipped source, so that cell is not grading an unmodified file",
-  driftedLadderSource !== preflightSource && preflightSource.split(ladderDriftFind).length - 1 === 1,
+  driftedLadderSource !== preflightSource && preflightSource.includes(ladderDriftFind),
   { occurrences: preflightSource.split(ladderDriftFind).length - 1, changed: driftedLadderSource !== preflightSource },
 );
 const shadowedLadder = ladderFilterCallees(
