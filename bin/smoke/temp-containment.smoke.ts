@@ -365,8 +365,13 @@ try {
     let overlongRoot = join(root, "overlong");
     while (Buffer.byteLength(overlongRoot) <= rootBudget) overlongRoot += "o";
     mkdirSync(overlongRoot, { recursive: true });
+    // Whatever runs this suite may be a managed agent session, so the inherited environment can
+    // carry a live credential and broker URL. Strip every COTAL_ key from the copy before the
+    // child sees it; the fence variable below is the only COTAL_ key the child needs.
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
     const child = spawnSync(process.execPath, [...process.execArgv, ...[process.argv[1]]], {
-      env: { ...process.env, TMPDIR: overlongRoot, COTAL_1626_OVERLONG_CHILD: "1" },
+      env: { ...childEnv, TMPDIR: overlongRoot, COTAL_1626_OVERLONG_CHILD: "1" },
       encoding: "utf8",
     });
     const out = `${child.stdout ?? ""}${child.stderr ?? ""}`;
