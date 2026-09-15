@@ -1,5 +1,9 @@
 # A smoke cleanup may only delete what it minted: a recursive delete refuses any target that is not
-# a strict child of the root it was minted under, canonically, so a mutant or a bug upstream of the
-# cleanup cannot walk the shared temp dir (#1625). A control socket path over sun_path is refused
-# by name at construction instead of surfacing as a bare EINVAL from the bind.
+# a strict child of the root it was minted under, PHYSICALLY, so a mutant or a bug upstream of the
+# cleanup cannot walk the shared temp dir (#1625). A target that does not exist yet is resolved by
+# walking its original spelling: a dangling symlink is refused by name rather than read as a missing
+# basename, and a `..` after a symlink applies to the physical prefix, not to the spelling (#1626).
+# A control socket path over sun_path is refused by name at construction instead of surfacing as a
+# bare EINVAL from the bind, and the suite skips that control by name, with its fixture torn down,
+# when the runner's own temp root cannot fit the platform's byte budget.
 smoke:temp-containment
