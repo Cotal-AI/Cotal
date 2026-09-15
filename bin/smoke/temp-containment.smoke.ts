@@ -260,7 +260,10 @@ try {
 
   console.log("\nPART B — an over-long control socket path fails by name, not by EINVAL");
 
-  // The limit the guard applies is the platform's: 108 on Linux, 104 on darwin. The cell reads the
+  // The limit the guard applies is the platform's: 108 on Linux, 104 on darwin, and the usable root
+  // budget is that minus the fixed 44-byte socket name (64 on Linux, 60 on darwin). Measured at the
+  // graded head: 64 bytes was the last passing root and 65 CRASHED the suite mid-run. The cell reads
+  // the
   // same figure back so a run on either platform grades the message it would actually get.
   const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
   let deep = root;
@@ -298,6 +301,25 @@ try {
   // SKIPPED BY NAME rather than attempted, when the budget cannot hold it. A skip that says which
   // root was too long and by how much is a result; a raw stack is not. The figure is read from the
   // platform, never written as a literal.
+  //
+  // THE BOUNDARY, MEASURED AT THE GRADED HEAD on this Linux box (limit 108, fixed 44-byte socket
+  // name, so a 64-byte root budget):
+  //
+  //   bytes  rc  summary line  runtime.ts stack  leaked fixtures
+  //      64   0  yes           no                0                <- last passing, exactly the budget
+  //      65   1  NO            YES               2                <- crashed mid-run
+  //
+  // At 65 the throw came from runtime.ts:57 at TOP LEVEL, both teardown calls were skipped and the
+  // summary never printed, so a shard runner saw NO SENTINEL AT ALL. The same sweep at this head is
+  // rc=0 with a summary and zero leaked fixtures at every length. On darwin the budget is 104-44=60,
+  // which is why the maintainer crossed it from a 62-byte root while a Linux sweep did not.
+  //
+  // AND THE TRAP THAT HID IT: exit 1 carrying the words "over the 108-byte sun_path limit" was read
+  // as this suite's own named refusal. It was the text of an UNCAUGHT EXCEPTION, printed by Node's
+  // default handler with a stack and the teardown skipped. A named refusal and an uncaught throw
+  // carrying an excellent message look nearly identical in captured stdout and are OPPOSITE
+  // outcomes. That is why the cells below check that the SUMMARY LINE STILL PRINTS and that TEARDOWN
+  // STILL RAN, not merely that the text appeared.
   const CONTROL_TAIL_BYTES = "/cotal-".length + 32 + ".sock".length;
   const rootBudget = SUN_PATH_LIMIT - CONTROL_TAIL_BYTES;
   const tempRootBytes = Buffer.byteLength(TEMP_ROOT);
@@ -354,10 +376,16 @@ try {
         && /TEMP CONTAINMENT SMOKE OK\b/.test(out)
         && /1 skipped/.test(out)
         && /⊘ SKIP: a control socket path within the limit is still minted/.test(out)
-        && out.includes(`${SUN_PATH_LIMIT}-byte sun_path limit`),
+        && out.includes(`${SUN_PATH_LIMIT}-byte sun_path limit`)
+        // NOT AN UNCAUGHT THROW WEARING A GOOD MESSAGE. The crash printed that same limit text from
+        // Node's default handler, so the text alone cannot tell the two apart: require the absence
+        // of the runtime.ts frame that the crash always carried.
+        && !/connector-core\/src\/runtime\.ts:\d+/.test(out),
       `status=${child.status} signal=${child.signal}\n${out.slice(-1200)}`,
     );
-    // The measured failure left three entries under the temp root. A skip that leaks is not a skip.
+    // The crash at 65 bytes left its two `cotal-1625-*` fixtures behind. A skip that leaks is not a
+    // skip, so the fixture names are counted rather than the directory entries: tsx writes its own
+    // caches under TMPDIR, and counting those would make this cell pass or fail on cache state.
     const leaked = readdirSync(overlongRoot).filter((n) => n.startsWith("cotal-1625-"));
     check(
       "a skipped control tears its fixture down, leaving nothing behind",
