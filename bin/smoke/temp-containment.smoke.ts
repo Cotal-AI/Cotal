@@ -110,6 +110,49 @@ check(
   underLinkMissing,
 );
 
+// A DANGLING SYMLINK IS NOT A MISSING BASENAME. `realpath` reports ENOENT for both, so a resolver
+// that reads every ENOENT as "not created yet" steps PAST an existing symlink, canonicalizes an
+// ancestor ABOVE it, and appends the tail lexically — certifying a path the kernel would not take.
+// Measured at e6a831e36: with `outside-absent` NOT created this was ACCEPTED, and creating the
+// directory REFUSED the IDENTICAL call. The same spelling flipping verdict because someone else
+// created the parent is the tell, and the ACCEPTED half is the dangerous one.
+const danglingParent = join(root, "dangling-link");
+symlinkSync(join(TEMP_ROOT, "cotal-1626-outside-absent"), danglingParent);
+const underDangling = refusal(() => assertContainedIn(join(danglingParent, "future"), root));
+check(
+  "a target under a DANGLING symlinked parent is refused, not read as a missing basename",
+  underDangling !== null && /dangling symlink/.test(underDangling) && underDangling.includes(danglingParent),
+  underDangling,
+);
+
+// A `..` AFTER A SYMLINK BELONGS TO THE PHYSICAL PREFIX, NOT TO THE SPELLING. `resolve()` on entry
+// applied it textually before any symlink was read, so this was certified as `root/SIBLING.txt`
+// while the kernel reads it as `<outside>/../SIBLING.txt`. REFUSED at the pre-fix base 1d389afb and
+// ACCEPTED at e6a831e36: this PR introduced it.
+//
+// BUILT AS A LITERAL STRING. `join(link, "..", "SIBLING.txt")` collapses the `..` at the CALL SITE,
+// so the guard never sees the case at all — that mismeasurement is why this was first reported as
+// pre-existing rather than as the regression it is.
+const dotdotAfterLink = refusal(() => assertContainedIn(`${link}/../SIBLING.txt`, root));
+check(
+  "a `..` after a symlink is applied to the physical prefix, so it cannot walk back into the root",
+  dotdotAfterLink !== null && dotdotAfterLink.includes(root),
+  dotdotAfterLink,
+);
+
+// ACCEPT CONTROL, AND THE ONE WITH NO ALARM ATTACHED. Over-refusal is the failure mode a regression
+// cell cannot see: a resolver that refused every unresolvable-looking target would pass all three
+// refusal cells above and silently break every real caller. An INWARD symlink to a directory that
+// genuinely exists resolves fine, and its missing child must still be ACCEPTED.
+const inwardLink = join(root, "inward-link");
+symlinkSync(inside, inwardLink);
+const underInward = refusal(() => assertContainedIn(join(inwardLink, "future"), root));
+check(
+  "a missing child under an INWARD symlink that resolves is still allowed",
+  underInward === null,
+  underInward,
+);
+
 // The deepest existing ancestor of this target IS the root, and the tail is still missing. It must
 // stay allowed, or the fix above would trade the bypass for a guard that cannot approve a legitimate
 // not-yet-created child - which is how a containment fix gets reverted wholesale.
@@ -120,14 +163,12 @@ check(
   missingInsideRoot,
 );
 
-// A `..` in the tail of a MISSING target must not walk back out of the root. This is a boundary
-// cell, not a mutant-graded one, and deliberately so: `resolve()` normalizes the path on entry to
-// the resolver, so `..` is gone before the deepest-ancestor walk ever starts and every element of
-// the missing tail is a plain basename. A mutant that removed the re-resolve I first wrote around
-// the re-join SURVIVED, because that re-resolve was dead code — normalization had already happened.
-// The cell stays because the PROPERTY is worth pinning against a future resolver that stops
-// normalizing at entry; the dead mutant and the dead code both went, rather than shipping a NO-OP
-// that would have read as coverage (#1627).
+// A `..` in the tail of a MISSING target must not walk back out of the root. This one is textual
+// even under the walking resolver, and soundly so: `not-yet` does not exist, so nothing under it
+// can, and a component with no inode cannot be a symlink. The `..`s are therefore popped from the
+// missing tail rather than applied to the physical prefix, and the result still has to land outside
+// the root and be refused. The symlinked sibling of this case is the cell above, where the `..`
+// follows a link that DOES resolve and so belongs to the prefix.
 //
 // BUILT AS A RAW STRING, NOT WITH join(): `join(root, "not-yet", "..", "..", "x")` collapses the
 // `..` at the CALL SITE, so the guard would never see it at all.
