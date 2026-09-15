@@ -103,9 +103,16 @@ let deadReads = 0;
 const dead = armed("s1572a", async () => { deadReads++; return deadReads === 1 ? DEAD_OLD : DEAD_NEW; });
 
 // The first fetch adopts whatever the source has: there is no cache to protect, and `bindConnection`
-// holds the pre-dial guard that refuses to present it.
-await dead.internals.refreshBearer(true);
-c("the initial fetch is adopted even when it is already expired", dead.internals.currentBearer === DEAD_OLD);
+// holds the pre-dial guard that refuses to present it. Caught rather than awaited bare, because
+// "does not throw" is half of what this cell claims - `refreshBearer` rethrows on the initial fetch,
+// so a refusal that reached here would take the process down instead of naming itself.
+let initialRefusal: unknown;
+try { await dead.internals.refreshBearer(true); } catch (e) { initialRefusal = e; }
+c(
+  "the initial fetch is adopted even when it is already expired",
+  initialRefusal === undefined && dead.internals.currentBearer === DEAD_OLD,
+  initialRefusal ?? dead.internals.currentBearer?.slice(0, 24),
+);
 
 await dead.internals.refreshBearer();
 c(
