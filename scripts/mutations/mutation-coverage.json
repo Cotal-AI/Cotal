@@ -614,8 +614,8 @@
     {
       "name": "a guard with no rule is OPEN, so an unknown spelling makes the sweep count",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      // Anything else is OPEN. This is the default that makes the classifier safe.\n      return false;",
-      "replace": "      // Anything else is OPEN. This is the default that makes the classifier safe.\n      return true;",
+      "find": "      return false;\n    };\n    const exits = (stmt) => {",
+      "replace": "      return true;\n    };\n    const exits = (stmt) => {",
       "expectRed": "a guard the classifier cannot evaluate leaves the sweep counting",
       "cell": "a guard the classifier cannot evaluate leaves the sweep counting"
     }

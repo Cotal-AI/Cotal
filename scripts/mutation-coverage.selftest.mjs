@@ -699,6 +699,19 @@ try {
   result = run("sweep-narrowed-constant");
   check("a narrowing against a computed constant is refused", result.status !== 0 && /REFUSED sweep-narrowed-constant/.test(result.stderr), report(result));
 
+  // ORDERING IS LOAD-BEARING, NOT COSMETIC. This cell is the first ACCEPT control that observes the
+  // `pins` default, so it must run BEFORE the other open-sweep accept controls. The self-test stops
+  // at its first failing cell unless MUTATION_SELFTEST_REPORT_ALL is set, and the real mutation
+  // proof runs WITHOUT that flag. With this cell later, inverting the default red the extension
+  // filter first and the mutant for `a guard with no rule is OPEN` was credited to a cell it does
+  // not name -- coverage that grades the wrong thing while looking green (#1627). Keep it here.
+  // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
+  // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
+  // ever inverted, a named read would masquerade as a sweep and this cell would red.
+  config("sweep-unknown-guard", { suite: ["bin/smoke/listing-unknown-guard.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-unknown-guard");
+  check("a guard the classifier cannot evaluate leaves the sweep counting", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
   // The accept control for the three above: a filter that admits an OPEN set is still a sweep, and
   // refusing it would trade a false accept for a false refusal.
   config("sweep-open-filter", { suite: ["bin/smoke/listing-filtered-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
@@ -794,13 +807,6 @@ try {
   config("sweep-ternary-arms", { suite: ["bin/smoke/listing-ternary-arms.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("sweep-ternary-arms");
   check("a ternary guard pins only when every arm that reaches the read pins", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
-
-  // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
-  // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
-  // ever inverted, a named read would masquerade as a sweep and this cell would red.
-  config("sweep-unknown-guard", { suite: ["bin/smoke/listing-unknown-guard.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
-  result = run("sweep-unknown-guard");
-  check("a guard the classifier cannot evaluate leaves the sweep counting", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
