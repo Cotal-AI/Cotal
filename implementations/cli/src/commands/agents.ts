@@ -224,6 +224,70 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
   return c.red("registered, no answer within the deadline") + c.dim(why);
 }
 
+/** What a `ps` scatter actually enumerated (#1637): how much of the space these rows are. */
+export interface PsCensus {
+  /** Instances the scatter addressed: every registered one (SPEC §13.5 pin 3). */
+  total: number;
+  /** Instances that reported their seats. Zero rows from a healthy instance still counts: an
+   *  instance with no seats answered the question. */
+  reported: number;
+  /** Instances that did not report their seats, silent and refusing alike. */
+  silent: number;
+  /** At least one refusal was `contract-mismatch`: this space's managers do not all serve one
+   *  command contract. */
+  contractSplit: boolean;
+}
+
+/**
+ * GRADE ONE SCATTER'S SLOTS (#1637). The only question asked of each instance is whether it
+ * reported its seats.
+ *
+ * An instance that did not is counted the same whether it never answered or answered with a
+ * refusal, because the operator's question — "is this every seat in the space?" — has one answer
+ * for both, and the seats behind either are equally invisible. A refusal that hides its instance's
+ * whole roster is otherwise indistinguishable from an instance with no seats.
+ *
+ * `contractSplit` is the §13.7 case the issue was raised on, and it is a property of the SPACE, not
+ * of the instance that carries the refusal: one `describe` pins the contract for the whole class,
+ * so the instances serving a different one refuse, and WHICH instances those are swaps with
+ * whichever wins that describe queue. Keyed on the structured code, never on the message: the
+ * wording is operator copy, and a renderer matched to its prose goes quiet the day it improves.
+ */
+export function psCensus(instances: readonly { reachable: boolean; error?: string; code?: string }[]): PsCensus {
+  let reported = 0;
+  let contractSplit = false;
+  for (const inst of instances) {
+    if (inst.reachable && inst.error === undefined) { reported++; continue; }
+    if (inst.code === "contract-mismatch") contractSplit = true;
+  }
+  return { total: instances.length, reported, silent: instances.length - reported, contractSplit };
+}
+
+/**
+ * What a PARTIAL census owes its reader, or nothing at all when every instance reported.
+ *
+ * The per-instance rows already say what happened to each one. What no row can say is the thing a
+ * caller acts on: that this list is not the space. So the count is stated once, at the end, in the
+ * voice of a failure — the command exits non-zero on the same condition, and a line that read as a
+ * note beside a zero exit is the defect, not the report of it.
+ *
+ * The contract split gets its own line for the same reason it exists at all: it is one condition
+ * of the deployment, seen once, with the pin named. Naming the instance whose `describe` supplied
+ * the pin is what makes the flip-flop legible — the same command run twice pins a different
+ * contract and hides the other half of the fleet.
+ */
+export function psCensusNotice(census: PsCensus, pinned: { instanceId: string; input: string; output: string }): string[] {
+  if (census.silent === 0) return [];
+  const lines = [
+    `✗ partial listing: ${census.silent} of ${census.total} manager instance${census.total === 1 ? "" : "s"} did not report its seats, so any seat they host is missing here`,
+  ];
+  if (census.contractSplit)
+    lines.push(
+      `  ↳ the managers of this space do not all serve the same command contract. This listing pinned ${pinned.instanceId}'s ${pinned.input}/${pinned.output} from its describe, and a manager that cannot honor a pinned digest rejects rather than coerces (SPEC 13.7) - so which half of the fleet you see follows whichever instance answers the describe. Run one build per space, or read a single instance with --on <instance>.`,
+    );
+  return lines;
+}
+
 /** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
  *  the per-manager grouping a class scatter prints.
  *
@@ -407,6 +471,14 @@ export async function ps(args: ParsedArgs): Promise<void> {
     header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
     for (const r of rows) printSeat(r, opts, "  ");
   }
+  // #1637: an instance that contributed no rows leaves a HOLE in this listing, and until here the
+  // command ended the same way whether every seat in the space was printed or half of them were
+  // missing. The notice is on stderr in both presentations (it is a failure, not a row, and
+  // `--json` stdout stays pure JSONL either way), and the status follows it: a script that reads
+  // this as a complete census is the failure mode, and only the exit code reaches a script.
+  const census = psCensus(instances);
+  psCensusNotice(census, scatter.pinned).forEach((line, i) => console.error(i === 0 ? c.red(line) : c.dim(line)));
+  if (census.silent > 0) process.exit(1);
 }
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
