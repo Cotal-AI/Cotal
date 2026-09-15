@@ -320,6 +320,51 @@
       "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\";\n",
       "expectRed": "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed",
       "cell": "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed"
+    },
+    {
+      "name": "a bare return is added to readExactVersion, yielding undefined, which no census bucket claims",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 200) return \"present\";\n    if (response.status === 404) return \"absent\";\n",
+      "replace": "    if (response.status === 200) return \"present\";\n    if (response.status === 418) return;\n    if (response.status === 404) return \"absent\";\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "note": "The escape that killed the retired regex extractor: /\\breturn\\s+([^;]+);/ requires a non-empty expression, so a bare return was invisible to it and the universal cell stayed green while the function gained an undefined return."
+    },
+    {
+      "name": "a semicolon-free out-of-domain return is added, closed by ASI",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 404) return \"absent\";\n    return `unknown:${response.status}`;\n",
+      "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\"\n    return `unknown:${response.status}`;\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "note": "The retired regex captured to the next semicolon, so a semicolon-free return was swallowed into the following return's text and laundered into the domain."
+    },
+    {
+      "name": "the shipped absent bucket is widened to also claim unknown rows, so a row lands in two buckets",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export const isAbsentRegistry = (registry) => registry === \"absent\";\n",
+      "replace": "export const isAbsentRegistry = (registry) => registry === \"absent\" || registry.startsWith(\"unknown:\");\n",
+      "expectRed": "under the shipped bucket predicates every production census row lands in exactly one bucket",
+      "cell": "under the shipped bucket predicates every production census row lands in exactly one bucket",
+      "note": "The overlap the previous disjointness cell documented but could not detect: it retyped the predicates, so widening the SHIPPED one left the copy green. This cell imports the shipped predicate, so the widening changes what it computes."
+    },
+    {
+      "name": "the return enumerator stops treating a bare return as out of domain",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (!expression) return { text, inDomain: false, why: \"bare return: yields undefined, which no census bucket claims\" };\n",
+      "replace": "    if (!expression) return { text, inDomain: true, why: \"bare return: yields undefined, which no census bucket claims\" };\n",
+      "expectRed": "the return enumerator refuses a bare return, which yields undefined",
+      "cell": "the return enumerator refuses a bare return, which yields undefined",
+      "note": "Grades the instrument rather than the subject: if the enumerator stops refusing a bare return, the escape cell that pins that refusal must red. Without this the enumerator could be silently relaxed back to the defect it replaced."
+    },
+    {
+      "name": "the return enumerator descends into nested functions, attributing their returns to readExactVersion",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (isFunctionLike(node)) return;\n",
+      "replace": "    if (false && isFunctionLike(node)) return;\n",
+      "expectRed": "a return inside a nested function is not attributed to readExactVersion",
+      "cell": "a return inside a nested function is not attributed to readExactVersion",
+      "note": "The false-positive half of the enumerator: a helper closure's return is not readExactVersion's. Without the boundary the enumerator would red the shipped source for a value the function never returns."
     }
   ]
 }
