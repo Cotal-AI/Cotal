@@ -284,6 +284,13 @@ function acquireTreeLock(cwd, clearLock) {
       // harness itself, not only by an operator — and this refusal is its only
       // defence.
       say(`${C.red}REFUSING: a previous proof (pid ${held?.pid ?? "unknown"}) died without restoring.${C.off}`);
+      if (Array.isArray(held?.restoreFailed) && held.restoreFailed.length) {
+        // It did not merely die: it tried to put these back and could not, and
+        // wrote that into the lock on its way out. Name them, because `git
+        // status` can read clean while a build is still made from the mutant.
+        say(`${C.red}Its restore FAILED for:${C.off}`);
+        for (const f of held.restoreFailed.slice(0, 10)) say(`  ${f}`);
+      }
       say("Its mutation may still be applied to a product file in this tree.");
       const backups = strandedBackups();
       if (backups.length) {
@@ -319,24 +326,49 @@ function acquireTreeLock(cwd, clearLock) {
   return path;
 }
 
-/** Every mutation currently written to disk, by the restore that undoes it. */
-const liveRestores = new Set();
+/** Every mutation currently written to disk: the restore that undoes it, by file. */
+const liveRestores = new Map();
+/** Files a restore could not put back. Emptied by nothing; the lock reports it. */
+const failedRestores = new Set();
 let heldLockPath = null;
 
+function readLockFile(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function releaseEverything() {
-  for (const undo of [...liveRestores]) {
-    liveRestores.delete(undo);
+  for (const [undo, file] of [...liveRestores]) {
     try {
-      undo();
+      if (!undo()) failedRestores.add(file);
     } catch {
-      // Nothing useful to do from an exit handler; the next run's stale-lock
-      // refusal is what catches a restore that could not complete.
+      // It could not run at all, so the file is still mutated. Recorded rather
+      // than swallowed: this used to be the end of the story, and the lock that
+      // would have told the next run was removed a few lines later anyway.
+      failedRestores.add(file);
     }
   }
-  if (heldLockPath) {
-    rmSync(heldLockPath, { force: true });
-    heldLockPath = null;
+  if (!heldLockPath) return;
+  if (failedRestores.size) {
+    // KEEP the lock. A tree with a mutation still in it must not be graded by
+    // the next run, and the lock is the only thing that can stop it. Annotate
+    // it so the refusal can say which files, rather than only that someone
+    // died holding it.
+    try {
+      writeFileSync(
+        heldLockPath,
+        JSON.stringify({ ...(readLockFile(heldLockPath) ?? {}), restoreFailed: [...failedRestores] }),
+      );
+    } catch {
+      // Keeping the lock matters more than annotating it.
+    }
+    return;
   }
+  rmSync(heldLockPath, { force: true });
+  heldLockPath = null;
 }
 
 // `exit` covers a normal return and an uncaught throw; the signals cover the kill
@@ -482,10 +514,10 @@ function proveOne(m, opts) {
   // insists on before it starts. `afterRestore` runs AFTER the source is back, so whatever it
   // regenerates is regenerated from the original.
   const restore = () => {
-    // Self-deregistering: once the bytes are back, the exit and signal handlers
-    // have nothing left to undo for this file, and a second restore from them
-    // would re-copy a backup this call is about to delete.
-    liveRestores.delete(restore);
+    // Deregistered on the way out, not on the way in, and the OUTCOME is what
+    // gets recorded. The backup is deleted below, so a second call from a
+    // handler would fail on a file that is not there any more -- the list is
+    // therefore not the place to remember a failure, and `failedRestores` is.
     copyFileSync(backup, path);
     const ok = sha(path) === shaBefore;
     // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime
@@ -499,14 +531,20 @@ function proveOne(m, opts) {
     // the one case where a bumped mtime is telling the truth.
     if (ok) utimesSync(path, atimeBefore, mtimeBefore);
     rmSync(backup, { force: true });
+    let rebuilt = true;
     if (ok && m.afterRestore) {
       const rr = run(m.afterRestore, cwd, opts.timeoutMs);
       if (rr.status !== 0) {
         say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
-        return false;
+        rebuilt = false;
       }
     }
-    return ok;
+    liveRestores.delete(restore);
+    // `ok` alone is not "the mutation is gone". A failed `afterRestore` leaves
+    // the SOURCE byte-identical while whatever it builds stays compiled from
+    // the mutant, so a clean `git status` would say the tree is fine.
+    if (!ok || !rebuilt) failedRestores.add(m.file);
+    return ok && rebuilt;
   };
 
   // Declared OUTSIDE the try so the catch can read it. `const` inside the block made the catch's
@@ -518,7 +556,7 @@ function proveOne(m, opts) {
   try {
     // Registered BEFORE the write, so a signal landing between the two finds a
     // restore that is a no-op rather than no restore at all.
-    liveRestores.add(restore);
+    liveRestores.set(restore, m.file);
     writeFileSync(path, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
     // sound only by accident.
@@ -786,12 +824,17 @@ for (const m of mutations) {
   results.push({ ...proveOne(m, opts), file: m.file, command: m.command ?? opts.command,
     baseTicks: baseTicksBy.get(m.command ?? opts.command) });
   // Hand the loop one TIMER turn between mutations. Everything above is synchronous, and
-  // `spawnSync` does not deliver a signal that arrives while it blocks — libuv only reads its
-  // signal pipe in the poll phase, which a `setImmediate` (check phase) does not reach. Measured:
-  // after a SIGTERM during `spawnSync`, the handler is still unrun after `setImmediate` and has
-  // run after `setTimeout(0)`. Without this the handler never runs at all: the run marches on
-  // through the remaining mutations with the tree mutated, restores only from the `exit` handler,
-  // and reports an ordinary status for a run that was killed.
+  // `spawnSync` does not deliver a signal that arrives while it blocks, so the handler has to be
+  // given a turn afterwards. A `setImmediate` is not enough, measured rather than reasoned: after
+  // a SIGTERM during `spawnSync` the handler is still unrun after `setImmediate` and has run
+  // after `setTimeout(0)`. Which turn the pending signal lands in is the difference; this does not
+  // claim more about the loop's phases than that. Without the hop the handler never runs at all:
+  // the run marches on through the remaining mutations with the tree mutated, restores only from
+  // the `exit` handler, and reports an ordinary status for a run that was killed.
+  //
+  // This is the only top-level `await` in the file, so module evaluation is asynchronous from
+  // here: a throw after the first hop surfaces as an unhandled rejection rather than a synchronous
+  // one. The exit code is unchanged, and nothing imports this module — it is a CLI entry point.
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 

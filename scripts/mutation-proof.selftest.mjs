@@ -811,18 +811,118 @@ check("...and the lock is released, so the next proof is not refused by this one
   unlinkSync(link);
 }
 
-// Acquisition is one syscall, so two runs starting together cannot both pass a
-// check that ran before either wrote.
+// A restore that FAILS must fail closed. Before this, `releaseEverything`
+// deregistered the undo before calling it and removed the lock unconditionally,
+// so a failed restore left a mutated file on disk with nothing recording it and
+// nothing to stop the next run from grading that tree. `afterRestore` exiting
+// non-zero is the reachable shape: the source is byte-identical again, so `git
+// status` reads clean, while whatever it builds is still compiled from the
+// mutant.
 {
   rmSync(lockFor(root), { force: true });
-  writeFileSync(lockFor(root), JSON.stringify({ pid: process.pid, started: "x", cwd: root, command: "held" }), { flag: "wx" });
-  let threw = "";
-  try {
-    writeFileSync(lockFor(root), "second", { flag: "wx" });
-  } catch (error) {
-    threw = error.code;
-  }
-  check("the lock file is created exclusively, so a second create cannot silently win", threw === "EEXIST", threw);
+  writeFileSync(
+    join(root, "after-fails.json"),
+    JSON.stringify({
+      suite: ["smoke/suite.mjs"],
+      command: `${process.execPath} suite.mjs`,
+      mutations: [{
+        name: "its rebuild cannot run",
+        file: "src/impl.js", find: "if (n > 10)", replace: "if (false)",
+        expectRed: "oversized values are refused",
+        afterRestore: `${process.execPath} -e "process.exit(1)"`,
+      }],
+    }),
+  );
+  execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm after-fails", { cwd: root });
+
+  const first = runTool(["--config", "after-fails.json"]);
+  check("a failed afterRestore is reported as a failed restore, not as a verdict",
+    stripAnsi(first.stdout).includes("RESTORE FAILED"), first.stdout.slice(-300));
+  check("...and the tree lock is KEPT, so the next run cannot grade this tree",
+    existsSync(lockFor(root)), lockFor(root));
+  const held = JSON.parse(readFileSync(lockFor(root), "utf8"));
+  check("...and the lock records WHICH file the restore could not put back",
+    Array.isArray(held.restoreFailed) && held.restoreFailed.includes("src/impl.js"),
+    JSON.stringify(held).slice(0, 160));
+
+  // The pid in that lock is the first run's, and it is gone, so this is the
+  // stale branch: it must refuse and say what it knows rather than reclaim.
+  const second = runTool(["--config", "after-fails.json"]);
+  const out = stripAnsi(second.stdout);
+  check("the next proof refuses on that lock and names the file",
+    second.status === 3 && out.includes("restore FAILED") && out.includes("src/impl.js"),
+    out.slice(-400));
+
+  rmSync(lockFor(root), { force: true });
+  execSync("git checkout -- . && git clean -fdq", { cwd: root });
+}
+
+// The one deterministic discriminator for HOW the lock is taken. A dangling
+// symlink at the lock path reads as absent to `existsSync` and as present to an
+// exclusive create: `O_CREAT | O_EXCL` fails EEXIST, a plain write follows the
+// link and lands on its target. So an acquisition that asks before it writes
+// believes it won the lock AND writes through the link, every run, while the
+// exclusive create refuses, every run. The concurrent cell above only catches
+// that shape when the race happens to interleave.
+{
+  rmSync(lockFor(root), { force: true });
+  const elsewhere = join(dirname(root), `${basename(root)}-lock-target.json`);
+  try { unlinkSync(elsewhere); } catch { /* not there */ }
+  symlinkSync(elsewhere, lockFor(root));
+
+  const r = runTool(adHoc);
+
+  check("a dangling symlink at the lock path is taken as held, not as absent",
+    r.status === 3, `exit ${r.status}: ${stripAnsi(r.stdout).slice(-200)}`);
+  check("...and nothing is written through it",
+    !existsSync(elsewhere), elsewhere);
+
+  try { unlinkSync(lockFor(root)); } catch { /* the tool may have moved it */ }
+  rmSync(lockFor(root), { force: true });
+  try { unlinkSync(elsewhere); } catch { /* not there */ }
+}
+
+// Acquisition, graded by starting the tool rather than by calling `node:fs`
+// here. The previous version of this cell wrote the lock itself with `wx` and
+// asserted the second write threw, which grades the platform: the tool was
+// never launched, so a change to how IT acquires could not redden it.
+{
+  rmSync(lockFor(root), { force: true });
+  const RUNNERS = 6;
+  const runs = await Promise.all(
+    Array.from({ length: RUNNERS }, () =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [TOOL, ...adHoc], {
+          cwd: root,
+          env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        child.stdout.on("data", (d) => { out += d; });
+        child.stderr.on("data", (d) => { out += d; });
+        child.once("exit", (code) => resolve({ code, out: stripAnsi(out) }));
+      })),
+  );
+  const refused = runs.filter((r) => r.code === 3 && r.out.includes("already running against this tree"));
+  check("starting several proofs at once lets exactly one through the tree lock",
+    runs.length - refused.length === 1, `${runs.length - refused.length} of ${RUNNERS} got in`);
+  check("...and every loser is refused by the LOCK, not by something else",
+    refused.length === RUNNERS - 1, refused.map((r) => r.code).join(","));
+  rmSync(lockFor(root), { force: true });
+}
+
+// The loser must not write over the winner's lock on its way to refusing. An
+// acquisition that truncates first and asks afterwards passes the cell above
+// (it still refuses) and fails this one, because the bytes it refused over are
+// no longer there.
+{
+  rmSync(lockFor(root), { force: true });
+  plantLock(root, process.pid);
+  const planted = readFileSync(lockFor(root), "utf8");
+  const r = runTool(adHoc);
+  check("a refused proof leaves the holder's lock byte-identical",
+    r.status === 3 && readFileSync(lockFor(root), "utf8") === planted,
+    readFileSync(lockFor(root), "utf8").slice(0, 120));
   rmSync(lockFor(root), { force: true });
 }
 
