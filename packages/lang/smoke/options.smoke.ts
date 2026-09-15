@@ -19,6 +19,7 @@
  * the code found the gap in the wrong places; running it finds the gap where it is.
  */
 import { run, resume, RunDivergence } from "../src/interpret.js";
+import { digest } from "../src/keys.js";
 import { PRIMITIVES } from "../src/primitives.js";
 import { SimHandler } from "../src/sim.js";
 import type { EffectContext, EffectHandler } from "../src/effects.js";
@@ -108,7 +109,11 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   // One program per primitive, passing every option the validator accepts.
   const CASES: Readonly<Record<string, { src: string; method: string }>> = {
     spawn: {
-      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt" });\n',
+      // `placement` belongs in this fixture for the reason the whole section exists: it was added to
+      // `PRIMITIVES.spawn.options` and this program was not updated beside it, so the audit reported
+      // `spawn.placement` dropped and THIS SUITE WAS RED at a108a8ad8 — the option list and the
+      // fixture are the two correct-looking lists the header warns about, one gap further along.
+      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", cwd: "/prepared/writer", placement: { endpoint: "manager", instanceId: "i1" }, worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt" });\n',
       method: "spawn",
     },
     turn: {
@@ -305,6 +310,14 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   const PROBES: readonly Probe[] = [
     // spawn: identity is hashed, policy is not. `permits` is a budget and `supervise` a restart
     // rule; both decide how a recorded fact is ACTED ON, so they are reapplied from current source.
+    { prim: "spawn", opt: "cwd", a: "/prepared/a", b: "/prepared/b", bagA: 'name: "a", cwd: "/prepared/a"', bagB: 'name: "a", cwd: "/prepared/b"' },
+    // The PLACEMENT TARGET, on a resume that edits only the instance id. The table said `placement`
+    // was hashed and no probe executed that claim, so the audit's own coverage gap was the one the
+    // first review found: retargeting a recorded spawn at a different manager instance has to
+    // diverge as a migration, because the recorded resolution was taken against the old instance.
+    { prim: "spawn", opt: "placement", a: "i1", b: "i2",
+      bagA: 'name: "a", cwd: "/prepared/a", placement: { endpoint: "manager", instanceId: "i1" }',
+      bagB: 'name: "a", cwd: "/prepared/a", placement: { endpoint: "manager", instanceId: "i2" }' },
     { prim: "spawn", opt: "worktree", a: "wt-1", b: "wt-2", bagA: 'name: "a", worktree: "wt-1"', bagB: 'name: "a", worktree: "wt-2"' },
     { prim: "spawn", opt: "join", a: "t", b: "u", bagA: 'name: "a", join: [t]', bagB: 'name: "a", join: [u]' },
     { prim: "spawn", opt: "role", a: "r1", b: "r2", bagA: 'name: "a", role: "r1"', bagB: 'name: "a", role: "r2"' },
@@ -378,11 +391,177 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   }
 
   // A count, because a loop that audits nothing prints the same green as one that audits everything.
-  ok("the hash audit ran every probe", audited === PROBES.length && audited >= 18, audited);
+  ok("the hash audit ran every probe", audited === PROBES.length && audited >= 19, audited);
   // Both halves present: an interpreter that diverged on EVERY edit would satisfy the positives
   // while breaking every reapply, and one that never diverged would satisfy the controls.
   ok("with both hashed options and reapplied ones under test", hashedSeen >= 12 && cleanSeen >= 4, { hashedSeen, cleanSeen });
   ok("the interpreter's projection matches the table on every option", wrong.length === 0, wrong);
+}
+
+// ---- 6) a new option must not move an OLD step's identity ---------------------------------------
+
+/**
+ * The rule §5 above audits is "an edit to a hashed option diverges". This section audits the rule
+ * that sits under it and that §5 cannot see: ADDING AN OPTION TO A PRIMITIVE MUST NOT CHANGE THE
+ * INPUT HASH OF A STEP THAT DOES NOT USE IT.
+ *
+ * §5 is blind to it by construction. Every probe there edits one option on BOTH sides of a resume,
+ * so both sides run the same code and the same projection; a projection that grew two extra keys
+ * for every spawn in existence is identical on both sides and every probe stays green. The break is
+ * only visible against a journal written by the OLDER code, which no probe in this file has.
+ *
+ * It was a real break, not a hypothetical. #1616 added `cwd` and `placement` to the spawn
+ * projection as `cwd: req.cwd ?? null` and `placement: ... ?? null`, unconditionally. A legacy
+ * spawn hashed `{persona, model, variant, worktree, role, join}`; the same spawn then hashed those
+ * six plus two nulls it had never carried. `inputHash` changed, so every recorded pre-#1616 spawn
+ * step diverged on replay — with a `RunDivergence` that tells the operator their program changed,
+ * when it had not.
+ *
+ * Both directions are asserted, and the NEGATIVE one is why this is not just a compatibility cell:
+ * an implementation that restored the legacy hash by dropping placement from the projection
+ * entirely would satisfy (1) and silently reuse a resolution taken against a manager instance the
+ * edited program no longer names. So (1) omission is byte-identical, (2) presence is hashed.
+ */
+{
+  const hashOfSpawn = async (runId: string, bag: string): Promise<string> => {
+    const live = await run(`await spawn("p", { ${bag} });\n`, { runId, handler: new SimHandler({}) });
+    const entry = live.journal.entries().find((e) => e.kind === "spawn");
+    if (entry === undefined) throw new Error(`FAIL: ${runId} recorded no spawn entry to read an inputHash from`);
+    return entry.inputHash;
+  };
+
+  /**
+   * The object the MERGE-BASE code (aaff9d5e5) built for a spawn, restated key for key from that
+   * source. Six keys: no `cwd`, no `placement`, and no null standing in for either.
+   *
+   * Restated rather than imported, because the point is to pin the OLD shape: a copy that tracked
+   * the current projection would agree with whatever the projection becomes, which is the failure
+   * mode this whole section exists to catch. It is checked against the live hash, so it cannot
+   * silently be the wrong shape either — a wrong restatement reddens here immediately.
+   */
+  const BASE_SIX = { persona: "p", model: null, variant: null, worktree: null, role: null, join: [] };
+  const baseHash = digest(BASE_SIX);
+
+  // The digest canonicalizes (RFC 8785 sorts keys), so this cell is about the key SET and the
+  // values, never the order they are written in the source. Stated as a control rather than a
+  // comment: if it ever stopped holding, `BASE_SIX` would be testing source layout instead.
+  ok("the input digest is key-order insensitive, so the cells below test the key SET",
+    digest({ join: [], role: null, worktree: null, variant: null, model: null, persona: "p" }) === baseHash);
+
+  const legacyHash = await hashOfSpawn("o-legacy-identity", 'name: "a"');
+  ok("a spawn naming no cwd and no placement hashes the SIX-key merge-base object, byte for byte",
+    legacyHash === baseHash, { legacyHash, baseHash });
+
+  // The negative direction. Same program, same persona, one edited instance id.
+  const pinnedI1 = await hashOfSpawn("o-placed-i1",
+    'name: "a", cwd: "/prepared/a", placement: { endpoint: "manager", instanceId: "i1" }');
+  const pinnedI2 = await hashOfSpawn("o-placed-i2",
+    'name: "a", cwd: "/prepared/a", placement: { endpoint: "manager", instanceId: "i2" }');
+  ok("a PRESENT placement is hashed: the same spawn on two instance ids has two input hashes",
+    pinnedI1 !== pinnedI2, { pinnedI1, pinnedI2 });
+  ok("and a placed spawn is not the legacy spawn either",
+    pinnedI1 !== legacyHash && pinnedI2 !== legacyHash, { pinnedI1, legacyHash });
+
+  // Removing the option is the third direction, and it is the one a "hash it only when present"
+  // rule could get wrong in the other direction: dropping `cwd` from a recorded placed spawn must
+  // diverge too, not fall back to matching the legacy hash by accident.
+  const placedNoCwd = await hashOfSpawn("o-placed-nocwd",
+    'name: "a", placement: { endpoint: "manager", instanceId: "i1" }');
+  ok("dropping cwd from a placed spawn diverges from both the placed hash and the legacy hash",
+    placedNoCwd !== pinnedI1 && placedNoCwd !== legacyHash, { placedNoCwd, pinnedI1, legacyHash });
+}
+
+// ---- 7) a malformed placement is REFUSED BY NAME, before anything reads into it ----------------
+
+/**
+ * The refusal that was written for a malformed placement lives in the RUNTIME
+ * (`mesh-handler.ts`, L4000, "placement must name both an endpoint and an instanceId"), and
+ * `placement: null` never reached it. `option()` guards the BAG being null and not the VALUE, so
+ * `null` came back from the bag, passed the `!== undefined` forwarding test, and was dereferenced
+ * by the identity projection: `TypeError: Cannot read properties of null (reading 'endpoint')`,
+ * raised inside the interpreter, with no code, no effect kind and no journal entry. An author who
+ * wrote one wrong option got a stack trace where a diagnosis had been deliberately written.
+ *
+ * FOUR SHAPES, FOUR CELLS, and the three that did NOT crash are the reason this is not a
+ * one-line null check. A primitive, an empty record and a half-filled record were all forwarded
+ * too, and they projected `endpoint: undefined, instanceId: undefined` into the step identity and
+ * carried on. That is the quieter failure: the run continues under an identity describing a
+ * placement the program never named. A fix that only caught `null` would turn the loud case into a
+ * refusal and leave the three silent ones exactly as they were, which is why each shape is its own
+ * cell rather than a conjunction — a conjunction goes green the moment the null is handled and one
+ * red cell cannot say which shape regressed.
+ *
+ * The cells assert the CODE and the shape named in the message, never the message's full text: a
+ * cell that pinned the sentence would grade the wording and red on a reworded refusal that behaves
+ * identically.
+ */
+{
+  const refuse = async (runId: string, bag: string): Promise<{ code?: string; message?: string; name?: string } | undefined> =>
+    await run(`await spawn("p", { ${bag} });\n`, { runId, handler: new SimHandler({}) })
+      .then(() => undefined, (e: unknown) => e as { code?: string; message?: string; name?: string });
+
+  // THE SHAPE THAT CRASHED.
+  const nul = await refuse("o-place-null", "placement: null");
+  ok("`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
+    nul?.code === "L3048" && nul?.name !== "TypeError" && String(nul?.message).includes("null"), nul);
+
+  // THE THREE THAT DID NOT CRASH, and so were worse.
+  const prim = await refuse("o-place-primitive", "placement: 42");
+  ok("a primitive placement is refused, not projected as two undefined fields",
+    prim?.code === "L3048" && String(prim?.message).includes("42"), prim);
+
+  const empty = await refuse("o-place-empty", "placement: {}");
+  ok("an empty record placement is refused, and the message says it names neither half",
+    empty?.code === "L3048" && String(empty?.message).includes("empty record"), empty);
+
+  const partial = await refuse("o-place-partial", 'placement: { endpoint: "m" }');
+  ok("a partial placement is refused, and the message names the MISSING half rather than the given one",
+    partial?.code === "L3048" && String(partial?.message).includes("instanceId"), partial);
+
+  // The other half of "partial", so the cell above cannot pass by naming whichever half is easier.
+  const partial2 = await refuse("o-place-partial2", 'placement: { instanceId: "i" }');
+  ok("and a placement missing the endpoint instead is refused naming THAT half",
+    partial2?.code === "L3048" && String(partial2?.message).includes("endpoint"), partial2);
+
+  // Empty strings are the shape the runtime's own L4000 already refuses; lang agrees with it rather
+  // than admitting a placement the layer below would then reject.
+  const blank = await refuse("o-place-blank", 'placement: { endpoint: "", instanceId: "" }');
+  ok("a placement of two empty strings is refused, matching the runtime's own both-halves rule", blank?.code === "L3048", blank);
+
+  // `typeof [] === "object"`, so an array reaches `.endpoint` as undefined rather than as an error.
+  const arr = await refuse("o-place-array", 'placement: ["m", "i"]');
+  ok("an array placement is refused: a pair is a record, not two positions", arr?.code === "L3048", arr);
+
+  // THE TWO CONTROLS. Without these, a guard that refused EVERY placement would pass all of the
+  // above and would have removed the feature.
+  const valid = await run('await spawn("p", { placement: { endpoint: "m", instanceId: "i" } });\n',
+    { runId: "o-place-valid", handler: new SimHandler({}) }).then((r) => r, () => undefined);
+  ok("a well-formed placement still spawns, and records its step",
+    valid !== undefined && valid.journal.entries().filter((e) => e.kind === "spawn").length === 1,
+    valid === undefined ? "refused a valid placement" : valid.journal.entries().map((e) => e.status));
+  const omitted = await run('await spawn("p", { name: "a" });\n',
+    { runId: "o-place-omitted", handler: new SimHandler({}) }).then((r) => r, () => undefined);
+  ok("and a spawn that names no placement at all is untouched by the guard",
+    omitted !== undefined && omitted.journal.entries().filter((e) => e.kind === "spawn").length === 1, omitted === undefined);
+
+  // REFUSED BEFORE THE KEY IS MINTED. A refusal that had already written an entry would leave a
+  // journal recording a step the program must now be edited away from, and the edit would then
+  // diverge on resume. This is the same rule §4.4's refused-input cell states for crossing values.
+  const nothing = await run('try { await spawn("p", { placement: null }); } catch (e) { }\n',
+    { runId: "o-place-nojournal", handler: new SimHandler({}) });
+  ok("a refused placement writes NO journal entry", nothing.journal.entries().length === 0,
+    nothing.journal.entries().map((e) => `${e.kind}:${e.name}`));
+
+  // AND THE PROGRAM CAN ACT ON IT. A refusal the program cannot catch is a crash with a nicer
+  // name; the point of a code is that a workflow can branch on it. The caught value is a RECORD
+  // carrying `code`, which is what `toProgramError` makes of a `RuntimeFault`.
+  const caught = await run(
+    'try { await spawn("p", { placement: null }); } catch (e) { await spawn("p", { name: "saw", role: e.code }); }\n',
+    { runId: "o-place-catchable", handler: new SimHandler({}) });
+  const sawEntry = caught.journal.entries().find((e) => e.name === "saw");
+  ok("the refusal is CATCHABLE by the program, as a record carrying the code",
+    sawEntry !== undefined && sawEntry.status === "ok",
+    caught.journal.entries().map((e) => `${e.kind}:${e.name}:${e.status}`));
 }
 
 console.log(`options.smoke: ${pass} checks passed`);

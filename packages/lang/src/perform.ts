@@ -58,6 +58,51 @@ export function option(bag: unknown, key: string): unknown {
 }
 
 /**
+ * Is this value a `spawn` placement: an `{ endpoint, instanceId }` pair of non-empty strings?
+ *
+ * THE VALUE, NOT THE BAG. {@link option} answers `undefined` when the BAG is null or is not an
+ * object, which is the right guard for a missing option bag and no guard at all on what the bag
+ * holds: `{ placement: null }` is a perfectly good object whose `placement` is `null`, and it
+ * came back as `null`, passed a `!== undefined` test, and was dereferenced.
+ *
+ * An array is refused along with every other non-record: `typeof [] === "object"`, so an array
+ * reaches `.endpoint` as `undefined` rather than as an error, and `["manager", "i1"]` is exactly
+ * the shape an author writes when they have guessed the pair is positional.
+ *
+ * Emptiness is part of the shape rather than a separate rule, and it matches what the runtime
+ * already refuses at mesh-handler (L4000, "must name both an endpoint and an instanceId"): an
+ * empty string names no instance, and a placement that names no instance cannot pin a seat.
+ */
+function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: string } {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.endpoint === "string" && r.endpoint.length > 0
+    && typeof r.instanceId === "string" && r.instanceId.length > 0;
+}
+
+/**
+ * How a malformed placement is named back to its author.
+ *
+ * `JSON.stringify` alone is not enough: it answers `undefined` for `undefined` and for a function,
+ * so the message would read "it was given undefined" for three different mistakes and would
+ * interpolate the literal word into the sentence. Each wrong shape is named as what it IS, and a
+ * record is shown with the keys it actually carried, because the commonest case is a pair with one
+ * half missing and the author needs to see which half.
+ */
+function describePlacement(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return `an array (${JSON.stringify(v)}); placement is a record, not a positional pair`;
+  if (typeof v === "function") return "a function";
+  if (typeof v !== "object") return `the ${typeof v} ${JSON.stringify(v) ?? String(v)}`;
+  const r = v as Record<string, unknown>;
+  const names = Object.keys(r);
+  const missing = ["endpoint", "instanceId"].filter((k) => typeof r[k] !== "string" || (r[k] as string).length === 0);
+  return names.length === 0
+    ? "an empty record, which names neither an endpoint nor an instanceId"
+    : `${JSON.stringify(r)}, which is missing ${missing.join(" and ")}`;
+}
+
+/**
  * The per-run turn queues, keyed by agent identity (§6.5: one agent, one turn at a time).
  *
  * A WeakMap off the host rather than a field on it, so neither engine's host construction
@@ -605,6 +650,32 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           `spawn names no persona: its first argument is ${JSON.stringify(spawnSubject) ?? "undefined"}, and a spawn takes a persona name or a record carrying one`,
         );
       const persona = named;
+      // PLACEMENT IS VALIDATED HERE, BEFORE ANYTHING READS INTO IT.
+      //
+      // `option()` guards the BAG being null, not the VALUE, so `option(bag, "placement")` answers
+      // `null` for `placement: null` and the `!== undefined` test below FORWARDS it. The identity
+      // projection further down then reads `req.placement.endpoint`, and that is a raw `TypeError`
+      // out of the interpreter: no code, no effect kind, no journal entry, and a stack trace handed
+      // to an author where the runtime's own named refusal (mesh-handler's L4000 "placement must
+      // name both an endpoint and an instanceId") was written to speak. The runtime's refusal is
+      // correct and stays; it simply never ran, because the value died one layer earlier.
+      //
+      // ALL FOUR MALFORMED SHAPES ARE REFUSED, not just the one that crashed. A primitive, an empty
+      // record and a half-filled record did NOT throw: they projected `endpoint: undefined,
+      // instanceId: undefined` into the step identity and travelled on. That is the worse half of
+      // the defect — `undefined` has no canonical form (§4.4), so what got hashed was a placement
+      // the program never named, and the crash at least stopped. Refusing the shape rather than the
+      // null is what makes the hash mean the target again.
+      //
+      // It is a call-shape refusal (L3xxx) and it is raised BEFORE the step key is minted, so a
+      // malformed placement writes nothing to the journal: there is no entry to replay, and the
+      // fix is an edit to the program rather than a migration.
+      const placementValue = option(bag, "placement");
+      if (placementValue !== undefined && !isPlacementPair(placementValue))
+        throw new RuntimeFault(
+          "L3048",
+          `spawn(${persona}) placement must name BOTH an endpoint and an instanceId, each a non-empty string: it was given ${describePlacement(placementValue)}. A host-local seat is pinned to one manager instance, and the target is hashed into this step's identity, so a half-named target would record a placement the program never asked for. Pass placement: { endpoint: "manager", instanceId: "<the instance's id>" }.`,
+        );
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
       // Every accepted option is forwarded, including the three that are policy rather than
@@ -616,6 +687,11 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         persona,
         ...(model !== undefined ? { model } : {}),
         ...(variant !== undefined ? { variant } : {}),
+        ...(option(bag, "cwd") !== undefined ? { cwd: option(bag, "cwd") as string } : {}),
+        // The VALIDATED value, not a second `option()` read cast into the pair type. The cast was
+        // the whole defect: it asserted the shape the projection then relied on, and TypeScript
+        // erases at run time, so the assertion was a comment that looked like a check.
+        ...(placementValue !== undefined ? { placement: placementValue } : {}),
         ...(option(bag, "worktree") !== undefined ? { worktree: option(bag, "worktree") as string } : {}),
         ...(option(bag, "role") !== undefined ? { role: option(bag, "role") as string } : {}),
         ...(option(bag, "join") !== undefined ? { join: option(bag, "join") as ChannelHandleValue[] } : {}),
@@ -637,6 +713,23 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           persona,
           model: model ?? null,
           variant: variant ?? null,
+          // #1616 item 3, identity half: placement and `cwd` are hashed WHEN PRESENT and contribute
+          // NO KEY AT ALL when omitted, which is the same rule `req` above already follows. The
+          // first cut of this wrote `cwd: req.cwd ?? null` and `placement: ... ?? null`
+          // unconditionally, and that is a REPLAY COMPATIBILITY BREAK, not a cosmetic difference: a
+          // legacy spawn that never mentioned either option hashed a six-key object, and hashing an
+          // eight-key object carrying two nulls it never had changes its `inputHash` — so every
+          // recorded pre-#1616 spawn step diverges on resume. `digest` canonicalizes (RFC 8785), so
+          // the key SET is what the hash is over and a present-but-null key is a different set.
+          //
+          // Absent contributes nothing; PRESENT IS HASHED. Not hashing placement at all would also
+          // restore the legacy hash, and would be wrong for the other direction: replaying a step
+          // against a different manager instance must DIVERGE as a migration rather than silently
+          // reuse the resolution that was taken against the old instance.
+          ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
+          ...(req.placement !== undefined
+            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }
+            : {}),
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),

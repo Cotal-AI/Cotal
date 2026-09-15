@@ -60,6 +60,7 @@
     "smoke:runtime-mesh-notify": "tsx implementations/runtime/smoke/mesh-notify.smoke.ts",
     "smoke:runtime-migrate": "tsx implementations/runtime/smoke/migrate-run.smoke.ts",
     "smoke:runtime-mesh-spawn": "tsx implementations/runtime/smoke/mesh-spawn.smoke.ts",
+    "smoke:runtime-placement-grants": "tsx implementations/runtime/smoke/placement-grants.smoke.ts",
     "smoke:runtime-spawn-policy": "tsx implementations/runtime/smoke/spawn-policy.smoke.ts",
     "smoke:runtime-mesh-conclave": "tsx implementations/runtime/smoke/mesh-conclave.smoke.ts",
     "smoke:runtime-mesh-ask": "tsx implementations/runtime/smoke/mesh-ask.smoke.ts",
