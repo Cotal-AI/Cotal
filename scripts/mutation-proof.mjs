@@ -376,10 +376,17 @@ function releaseEverything() {
 // status still reports the signal rather than becoming a tidy 0 — a wrapper
 // reading `$?` must not be told the run merely finished.
 process.on("exit", releaseEverything);
+/** Set once a signal handler has re-raised. The loop below must not run past it: `process.kill`
+ *  QUEUES the signal, it does not deliver it, so the module body keeps going and can reach its own
+ *  `process.exit(...)` first — the parent then reads a tidy status for a run that was killed. That
+ *  is a race, and it goes the other way on a loaded CI runner than it does here: measured
+ *  `code=1 signal=null` on the runner while this machine reported `SIGTERM`. */
+let terminating = false;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
     say(`${C.yellow}! ${signal} — restoring ${liveRestores.size} mutated file(s) before exit${C.off}`);
     releaseEverything();
+    terminating = true;
     process.removeAllListeners(signal);
     process.kill(process.pid, signal);
   });
@@ -835,7 +842,13 @@ for (const m of mutations) {
   // This is the only top-level `await` in the file, so module evaluation is asynchronous from
   // here: a throw after the first hop surfaces as an unhandled rejection rather than a synchronous
   // one. The exit code is unchanged, and nothing imports this module — it is a CLI entry point.
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  //
+  // The hop also never resolves once a handler has re-raised, which is what makes the exit status
+  // deterministic. Returning here would let the loop finish and run into `process.exit(bad ? 1 : 0)`
+  // below before the queued signal is delivered, so the parent reads a tidy 1 for a killed run.
+  // Not resolving leaves the process with nothing to do but take the signal it has already been
+  // sent, which is the disposition this handler exists to preserve.
+  await new Promise((resolve) => { if (!terminating) setTimeout(resolve, 0); });
 }
 
 // ---- APPLIES IS NOT MUTATES: a SURVIVED needs a positive control in the same file ----------
