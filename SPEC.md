@@ -4158,8 +4158,11 @@ single-function profiles, each granting only the verbs its function needs and no
   root, so passing that store explicitly names the real operator layout without an ambient coordinate. Uninjected `--creds`
   that names one real workstation while process cwd resolves another is refused at start, because
   membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
-  case. A manager whose remint store diverges is refused before that remint, including a daemon that
-  bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
+  case. The identity also selects the daemon's credential renewal owner: the daemon names one store,
+  so at most one manager matches it and only that manager remints. A manager whose remint store is
+  not the daemon's remints no daemon credential, names both stores on every pass, and otherwise runs
+  normally, so one space may carry a manager on more than one workspace root. This covers a daemon
+  that bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement
   minted to the `supervisor` profile **and to the trusted auth path** (§9/§10), which is the
@@ -4192,8 +4195,9 @@ single-function profiles, each granting only the verbs its function needs and no
 
 Standing host credentials are **bounded and renewed**: one-shot profiles carry minutes-scale
 expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the manager as the named
-renewal owner (self-remint for its own credential; same-nkey re-sign + explicit `reloadCreds`
-adoption for the seed-less daemons); the two system-account credentials (`membership-observer`,
+renewal owner (self-remint for its own credential, which every manager of the space performs for
+itself; same-nkey re-sign + explicit `reloadCreds` adoption for the seed-less daemons, which only
+the manager reading the daemon's own SecretStore performs); the two system-account credentials (`membership-observer`,
 `connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
 broker restart; no persisted system-account minting secret exists, by design. On per-user-auth
 spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
