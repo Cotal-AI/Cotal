@@ -445,6 +445,59 @@ const commandEnv = (command) => {
 };
 
 /**
+ * Does this node introduce a lexical scope?
+ *
+ * Used to RESOLVE a name to its binding rather than to recognise its spelling. A function, a class
+ * and a block each bind, and a `for` header binds its own loop variable, so a walk that skipped
+ * blocks would report an outer binding for a name an inner `const` had already taken.
+ */
+const isScopeNode = (node) => ts.isSourceFile(node) || ts.isBlock(node) || ts.isModuleBlock(node)
+  || ts.isForStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node)
+  || ts.isCatchClause(node) || ts.isCaseBlock(node) || ts.isFunctionDeclaration(node)
+  || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node)
+  || ts.isConstructorDeclaration(node) || ts.isClassDeclaration(node);
+
+/** Does this binding name, including a destructuring pattern, bind `ident`? */
+const bindingBinds = (nameNode, ident) => {
+  if (nameNode === undefined) return false;
+  if (ts.isIdentifier(nameNode)) return nameNode.text === ident;
+  if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
+    return nameNode.elements.some((element) => ts.isBindingElement(element) && bindingBinds(element.name, ident));
+  }
+  return false;
+};
+
+/**
+ * Does THIS scope itself declare `ident`, by any binding form the language has?
+ *
+ * Deliberately over-inclusive: a parameter, an import, a `var`/`let`/`const`, a destructured
+ * element, a function or class declaration all count. Over-reporting a binding can only make a
+ * name fail to resolve to the global, and an unresolved name is treated as OPEN, which makes the
+ * sweep count. Under-reporting would bless a shadowed local as the global conversion, which is the
+ * false-identity route sol found at v2.
+ */
+const declaresLocally = (scope, ident) => {
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    // A function or class DECLARATION binds its own name in the enclosing scope, so it is recorded
+    // before the walk declines to descend into its body.
+    if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))
+      && node.name !== undefined && node.name.text === ident) { found = true; return; }
+    if (ts.isVariableDeclaration(node) && bindingBinds(node.name, ident)) { found = true; return; }
+    if (ts.isParameter(node) && bindingBinds(node.name, ident)) { found = true; return; }
+    if (ts.isImportSpecifier(node) && node.name.text === ident) { found = true; return; }
+    if (ts.isNamespaceImport(node) && node.name.text === ident) { found = true; return; }
+    if (ts.isImportClause(node) && node.name !== undefined && node.name.text === ident) { found = true; return; }
+    if (ts.isCatchClause(node) && bindingBinds(node.variableDeclaration?.name, ident)) { found = true; return; }
+    if (node !== scope && isScopeNode(node)) return;
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(scope, visit);
+  return found;
+};
+
+/**
  * Are the entries this listing produces actually READ?
  *
  * A directory listing by itself observes names, not bytes: mutating a file's contents cannot change
@@ -467,61 +520,203 @@ const listingIsRead = (call, readers, evalPath) => {
     const name = ts.isVariableDeclarationList(decl) && decl.declarations[0]
       && ts.isIdentifier(decl.declarations[0].name) ? decl.declarations[0].name.text : undefined;
     if (name === undefined) return false;
-    const mentions = (e) => {
+    // Does this expression carry the loop entry at all? An any-occurrence walk, which is what a
+    // reader's ARGUMENT needs: it decides whether the read reads the entry, not how many entries
+    // reach it. A loop-local `const` alias is followed to its initializer, because
+    // `const entry = String(f); readFileSync(join(DIR, entry))` reads the entry just as surely as
+    // spelling `String(f)` in the argument. Not following it refuses an entirely OPEN aliased
+    // sweep, which is the failure with no alarm attached: nothing reds, coverage just stops
+    // counting. That refusal is live at `cbf0ab8c3` and this is what fixes it.
+    const mentions = (e, seen) => {
       if (!e) return false;
-      if (ts.isIdentifier(e)) return e.text === name;
+      if (ts.isIdentifier(e)) {
+        if (e.text === name) return true;
+        const visited = seen ?? new Set();
+        if (visited.has(e.text)) return false;
+        visited.add(e.text);
+        const declaration = aliasDeclaration(e);
+        return declaration !== undefined && mentions(declaration.initializer, visited);
+      }
       let found = false;
-      ts.forEachChild(e, (c) => { if (mentions(c)) found = true; });
+      ts.forEachChild(e, (c) => { if (mentions(c, seen)) found = true; });
       return found;
     };
-    // Is this expression the loop entry ITSELF, rather than something merely computed from it?
-    // `mentions` is an any-occurrence walk, which is what a reader's argument needs but is too
+    // The `const` declaration this identifier resolves to, when it is a loop-local alias whose
+    // value cannot change between the binding and the guard. Everything here is a REASON the alias
+    // is the same value, not a shape: it must be declared inside this loop's body, be `const`, have
+    // a plain identifier name, and never appear as an assignment target. A `let`, a parameter, a
+    // destructured element or an outer binding all return undefined, and an unresolved alias is
+    // simply not an identity, which leaves the guard OPEN and the sweep counting.
+    const aliasDeclaration = (node) => {
+      for (let s = node.parent; s !== undefined; s = s.parent) {
+        if (!isScopeNode(s)) continue;
+        let found;
+        const visit = (n) => {
+          if (found !== undefined) return;
+          if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === node.text) {
+            found = n; return;
+          }
+          if (n !== s && isScopeNode(n)) return;
+          ts.forEachChild(n, visit);
+        };
+        ts.forEachChild(s, visit);
+        if (found === undefined) {
+          // Not bound here. Stop at the loop: a binding outside the loop body is not a per-entry
+          // alias, so it is not followed.
+          if (s === cur) return undefined;
+          continue;
+        }
+        const list = found.parent;
+        if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return undefined;
+        // Inside THIS loop's body, or it is not a per-entry binding.
+        let inLoop = false;
+        for (let p = found; p !== undefined; p = p.parent) if (p === cur) { inLoop = true; break; }
+        if (!inLoop) return undefined;
+        // `const` cannot be reassigned, but a declaration this walk mis-identified could be; the
+        // check costs nothing and makes the "never reassigned" clause of the contract explicit.
+        if (reassignedIn(cur, node.text)) return undefined;
+        return found;
+      }
+      return undefined;
+    };
+    // Is this name ever an assignment target inside the loop?
+    const reassignedIn = (root, ident) => {
+      let assigned = false;
+      const visit = (n) => {
+        if (assigned) return;
+        if (ts.isBinaryExpression(n) && ts.isIdentifier(n.left) && n.left.text === ident
+          && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+          && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) { assigned = true; return; }
+        if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+          && ts.isIdentifier(n.operand) && n.operand.text === ident
+          && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) {
+          assigned = true; return;
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(root);
+      return assigned;
+    };
+    // `a === b` pins the entry when it HOLDS and one side is the entry, value-preserving, while the
+    // other resolves to a single known string. A side counts as known when the path evaluator
+    // resolves it, which covers a literal and a constant the program computes.
+    const pinsEquality = (cond, holds) => {
+      if (!holds) return false;
+      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;
+      return (entryIdentity(cond.left) && known(cond.right)) || (entryIdentity(cond.right) && known(cond.left));
+    };
+    // Does this identifier RESOLVE to the global `String`, or has some enclosing scope bound the
+    // name to something else? Resolution, not spelling. v2 compared the callee's terminal NAME, so
+    // `helper.String(f)` and a shadowed local `const String = v => …` both read as the global
+    // conversion: the first refused a legitimate open sweep, the second blessed a many-to-one
+    // projection as identity. Walking out to the source file and asking each scope whether it
+    // declares the name answers the question the name cannot.
+    const resolvesToGlobalString = (node) => {
+      if (!ts.isIdentifier(node) || node.text !== "String") return false;
+      for (let s = node.parent; s !== undefined; s = s.parent) {
+        if (!isScopeNode(s)) continue;
+        if (declaresLocally(s, "String")) return false;
+      }
+      return true;
+    };
+    // Is this expression the loop entry, VALUE-PRESERVING?
+    //
+    // `mentions` is an any-occurrence walk, which is what a reader's argument needs but is far too
     // loose for an equality: `String(f).slice(-3) !== ".ts"` mentions `f` and sits next to a known
     // string, yet it pins an EXTENSION and not an entry. Only an identity-preserving projection
-    // counts here, meaning one that sends distinct entries to distinct values. A bare identifier
-    // is one, and `String(f)` is one because it fixes the representation and nothing else.
-    // `f.slice(…)`, `basename(f)`, `f.toLowerCase()` and `f + x` are NOT: each sends many entries
-    // onto the same value, so an equality against a single known string leaves the sweep open.
-    const isEntryItself = (e) => {
-      if (!e) return false;
-      if (ts.isParenthesizedExpression(e)) return isEntryItself(e.expression);
-      if (ts.isIdentifier(e)) return e.text === name;
-      return ts.isCallExpression(e) && calleeText(e.expression) === "String"
-        && e.arguments.length === 1 && isEntryItself(e.arguments[0]);
+    // counts, meaning one that sends distinct entries to distinct values. A bare identifier is one.
+    // `String(f)` is one when `String` really is the global, because it fixes the representation
+    // and nothing else. `f.slice(…)`, `basename(f)`, `f.toLowerCase()` and `f + x` are NOT: each
+    // sends many entries onto one value, so an equality against a single known string leaves the
+    // sweep open.
+    //
+    // A `const` bound to an identity inside the loop is the SAME VALUE under a second name, so it
+    // is followed to its initializer. `let` is not: a reassignment elsewhere in the body would make
+    // the binding's value at the guard something this walk cannot claim.
+    const entryIdentity = (e, depth = 0) => {
+      if (!e || depth > 16) return false;
+      // Type-only and grouping wrappers carry no runtime value change, so they are transparent.
+      // `as`/`satisfies`/`!` are erased before the program runs; parentheses never existed.
+      if (ts.isParenthesizedExpression(e)) return entryIdentity(e.expression, depth + 1);
+      if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e)
+        || ts.isTypeAssertionExpression(e)) return entryIdentity(e.expression, depth + 1);
+      if (ts.isIdentifier(e)) {
+        if (e.text === name) return true;
+        // A loop-local alias. The declaration has to be inside the loop body, `const`, and never
+        // reassigned, or the value at the guard is not the one the initializer gives.
+        const declaration = aliasDeclaration(e);
+        return declaration !== undefined && entryIdentity(declaration.initializer, depth + 1);
+      }
+      // A call is identity only when the callee RESOLVES to the global `String`, called DIRECTLY.
+      // A property access is never the global binding however its terminal name is spelled, so
+      // `helper.String(f)` and `globalThis.String(f)` are both projections here; the first really
+      // is many-to-one, and the second is refused only as a conservative OPEN, which counts.
+      return ts.isCallExpression(e) && resolvesToGlobalString(e.expression)
+        && e.arguments.length === 1 && entryIdentity(e.arguments[0], depth + 1);
     };
-    // Does this condition admit exactly ONE value of the loop variable when it evaluates to
-    // `holds`? A side counts as a single known string when the path evaluator resolves it, which
-    // covers a literal and a constant the program computes, and the other side has to be the loop
-    // entry itself, or the equality says nothing about which entries get through.
-    const singleValueEquality = (cond, holds) => {
-      if (!cond) return false;
-      // Normalize the spelling before classifying, so the same guard grades the same however it is
-      // written. Parentheses carry no meaning. `!` inverts the sense rather than dropping out, so
-      // it flips `holds`: reaching a read guarded by `!(f !== ONE)` being TRUE is reaching it with
-      // `f !== ONE` being FALSE, which is exactly the case that pins the entry.
-      if (ts.isParenthesizedExpression(cond)) return singleValueEquality(cond.expression, holds);
+    // Does `cond`, when it evaluates to `holds`, constrain the entry to exactly ONE value?
+    //
+    // A THREE-VALUED EVALUATION over the boolean structure, not a match against known spellings.
+    // The crucial property is the default: ANYTHING THIS CANNOT CLASSIFY IS OPEN. An unrecognised
+    // guard therefore makes the sweep COUNT; it never lets a named read masquerade as a sweep.
+    // That is what makes a spelling nobody enumerated safe, and it is why v1 and v2 both fell:
+    // each answered the question by recognising a finite set of shapes, and the set of ways to
+    // write a condition is open.
+    const pins = (cond, holds, depth = 0) => {
+      if (!cond || depth > 32) return false;
+      if (ts.isParenthesizedExpression(cond)) return pins(cond.expression, holds, depth + 1);
+      // `!` inverts the SENSE rather than dropping out: reaching a read guarded by `!(f !== ONE)`
+      // being TRUE is reaching it with `f !== ONE` being FALSE, which is the case that pins.
       if (ts.isPrefixUnaryExpression(cond) && cond.operator === ts.SyntaxKind.ExclamationToken) {
-        return singleValueEquality(cond.operand, !holds);
+        return pins(cond.operand, !holds, depth + 1);
       }
-      if (!ts.isBinaryExpression(cond)) return false;
-      const kind = cond.operatorToken.kind;
-      // A compound guard pins the entry when an operand that pins it is KNOWN to have held. A true
-      // `&&` makes both operands true and a false `||` makes both false, so each decomposes in one
-      // direction only, and the two swap under negation. The other two pairings say merely that
-      // SOME operand did, which narrows nothing: control reaching the read past
-      // `if (f !== ONE && other) continue` only means that conjunction was false, which leaves
-      // `f !== ONE` free, so every entry other than ONE still gets through and the sweep is open.
-      if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
-        if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;
-        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);
+      if (ts.isBinaryExpression(cond)) {
+        const kind = cond.operatorToken.kind;
+        // A true `&&` makes BOTH operands true, so an operand that pins pins the whole branch. A
+        // false `&&` says merely that SOME operand was false, which narrows nothing: past
+        // `if (f !== ONE && other) continue` the entry is still free. `||` is the mirror image.
+        if (kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;
+        }
+        if (kind === ts.SyntaxKind.BarBarToken) {
+          return holds ? false : (pins(cond.left, false, depth + 1) || pins(cond.right, false, depth + 1));
+        }
+        // `a !== b` is `a === b` with the sense flipped, so it delegates rather than repeating the
+        // equality rule with the operator table inverted.
+        if (kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken) {
+          const eq = ts.factory.createBinaryExpression(cond.left, ts.SyntaxKind.EqualsEqualsEqualsToken, cond.right);
+          return pinsEquality(eq, !holds);
+        }
+        if (kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken) {
+          return pinsEquality(cond, holds);
+        }
+        return false;
       }
-      const isEq = kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken;
-      const isNe = kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken;
-      if (!isEq && !isNe) return false;
-      // `f === LIT` pins the entry when it HOLDS; `f !== LIT` pins it when it does NOT.
-      if (isEq !== holds) return false;
-      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;
-      return (isEntryItself(cond.left) && known(cond.right)) || (isEntryItself(cond.right) && known(cond.left));
+      // A ternary is a boolean value like any other, so it is EVALUATED rather than matched.
+      // With boolean-literal arms it reduces to its condition, which is the shape sol defeated v2
+      // with. With other arms, control reaching `holds` can come through EITHER branch that can
+      // yield `holds`, so every such branch must pin, or some branch leaves the entry free.
+      if (ts.isConditionalExpression(cond)) {
+        const arm = (e) => (e.kind === ts.SyntaxKind.TrueKeyword ? true
+          : e.kind === ts.SyntaxKind.FalseKeyword ? false : undefined);
+        const whenTrue = arm(cond.whenTrue);
+        const whenFalse = arm(cond.whenFalse);
+        if (whenTrue !== undefined && whenFalse !== undefined) {
+          if (whenTrue === whenFalse) return false;
+          return pins(cond.condition, whenTrue === holds, depth + 1);
+        }
+        // Each branch that can still produce `holds` has to pin on its own, together with the
+        // condition that selects it.
+        const viaTrue = whenTrue === undefined || whenTrue === holds;
+        const viaFalse = whenFalse === undefined || whenFalse === holds;
+        const truePins = !viaTrue
+          || (pins(cond.condition, true, depth + 1) || pins(cond.whenTrue, holds, depth + 1));
+        const falsePins = !viaFalse
+          || (pins(cond.condition, false, depth + 1) || pins(cond.whenFalse, holds, depth + 1));
+        return (viaTrue || viaFalse) && truePins && falsePins;
+      }
+      // Anything else is OPEN. This is the default that makes the classifier safe.
+      return false;
     };
     const exits = (stmt) => {
       if (!stmt) return false;
@@ -537,14 +732,14 @@ const listingIsRead = (call, readers, evalPath) => {
         const parent = n.parent;
         if (parent === undefined) break;
         if (ts.isIfStatement(parent)) {
-          if (parent.thenStatement === n && singleValueEquality(parent.expression, true)) return true;
-          if (parent.elseStatement === n && singleValueEquality(parent.expression, false)) return true;
+          if (parent.thenStatement === n && pins(parent.expression, true)) return true;
+          if (parent.elseStatement === n && pins(parent.expression, false)) return true;
         }
         if (ts.isBlock(parent)) {
           const index = parent.statements.indexOf(n);
           for (const earlier of parent.statements.slice(0, index < 0 ? 0 : index)) {
             if (ts.isIfStatement(earlier) && earlier.elseStatement === undefined
-              && exits(earlier.thenStatement) && singleValueEquality(earlier.expression, false)) return true;
+              && exits(earlier.thenStatement) && pins(earlier.expression, false)) return true;
           }
         }
       }
