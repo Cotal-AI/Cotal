@@ -48,10 +48,10 @@
       "cell": "✗ FAIL: a target that resolves to the root itself is refused, not treated as contained"
     },
     {
-      "name": "the target is compared lexically instead of canonically, so a symlink out of the root passes",
+      "name": "the target's existing components stop being resolved physically, so a symlink out of the root passes a lexical compare",
       "file": "bin/smoke/_scratch.ts",
-      "find": "  const abs = resolve(p);",
-      "replace": "  if (true) return resolve(p);\n  const abs = resolve(p);",
+      "find": "      prefix = realpathSync.native(candidate);",
+      "replace": "      prefix = candidate;",
       "expectRed": "✗ FAIL: a symlink inside the root whose target is outside it is refused",
       "cell": "✗ FAIL: a symlink inside the root whose target is outside it is refused"
     },
@@ -74,10 +74,42 @@
     {
       "name": "the deepest-ancestor walk stops failing closed on a non-ENOENT errno, downgrading an unprovable target to its lexical spelling",
       "file": "bin/smoke/_scratch.ts",
-      "find": "      if ((e as NodeJS.ErrnoException).code !== \"ENOENT\") throw e;",
-      "replace": "      if (false) throw e;",
+      "find": "      if ((e as NodeJS.ErrnoException).code !== \"ENOENT\") throw e;\n      // ENOENT FROM realpath IS AMBIGUOUS",
+      "replace": "      if (false) throw e;\n      // ENOENT FROM realpath IS AMBIGUOUS",
       "expectRed": "✗ FAIL: a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling",
       "cell": "✗ FAIL: a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling"
+    },
+    {
+      "name": "an ENOENT from realpath is taken as proof of absence again, so an existing DANGLING symlink is walked past as if it were a missing basename",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "        lstatSync(candidate);",
+      "replace": "        if (true) throw Object.assign(new Error(\"ENOENT\"), { code: \"ENOENT\" });",
+      "expectRed": "✗ FAIL: a target under a DANGLING symlinked parent is refused, not read as a missing basename",
+      "cell": "✗ FAIL: a target under a DANGLING symlinked parent is refused, not read as a missing basename"
+    },
+    {
+      "name": "a `..` is applied to the SPELLING instead of to the physical prefix, so one that follows a symlink walks back into the root it had already left",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "  const abs = isAbsolute(p) ? p : `${process.cwd()}${sep}${p}`;",
+      "replace": "  const abs = resolve(p);",
+      "expectRed": "✗ FAIL: a `..` after a symlink is applied to the physical prefix, so it cannot walk back into the root",
+      "cell": "✗ FAIL: a `..` after a symlink is applied to the physical prefix, so it cannot walk back into the root"
+    },
+    {
+      "name": "the positive control mints unguarded again, so a TMPDIR over the socket budget kills the suite with a raw stack instead of skipping by name",
+      "file": "bin/smoke/temp-containment.smoke.ts",
+      "find": "  if (tempRootBytes > rootBudget) {",
+      "replace": "  if (false && tempRootBytes > rootBudget) {",
+      "expectRed": "✗ FAIL: under a TMPDIR too long for the socket budget the suite still reports a result, skipping the control by name",
+      "cell": "✗ FAIL: under a TMPDIR too long for the socket budget the suite still reports a result, skipping the control by name"
+    },
+    {
+      "name": "the fixture teardown leaves the finally, so a suite that skips or throws leaks the fixture it minted",
+      "file": "bin/smoke/temp-containment.smoke.ts",
+      "find": "  removeContained(root, TEMP_ROOT, \"1625 fixture root\");",
+      "replace": "  if (!process.env.COTAL_1626_OVERLONG_CHILD) removeContained(root, TEMP_ROOT, \"1625 fixture root\");",
+      "expectRed": "✗ FAIL: a skipped control tears its fixture down, leaving nothing behind",
+      "cell": "✗ FAIL: a skipped control tears its fixture down, leaving nothing behind"
     }
   ]
 }

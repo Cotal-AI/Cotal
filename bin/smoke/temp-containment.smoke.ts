@@ -18,7 +18,8 @@
  *
  * Run: pnpm smoke:temp-containment
  */
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertContainedIn, removeContained } from "./_scratch.js";
@@ -286,6 +287,42 @@ try {
       "the minted control socket path is within the limit and is a .sock",
       Buffer.byteLength(path) <= SUN_PATH_LIMIT && path.endsWith(".sock"),
       path,
+    );
+  }
+
+  // THE CONTROL'S OWN BEHAVIOUR ON A TOO-LONG ROOT, GRADED RATHER THAN ASSUMED. The two cells above
+  // cannot see this: under a short TMPDIR the skip branch never runs, so the guard that makes a
+  // too-long root a RESULT instead of a raw stack is invisible to every other cell in the file. That
+  // is exactly the state this suite shipped in — the defect was in the one path nothing exercised.
+  //
+  // So run THIS SUITE as a child under a deliberately over-long TMPDIR and grade what the shard
+  // runner would actually see: a zero exit, the sentinel summary line, a skip that names itself, and
+  // no fixture left behind. `COTAL_1626_OVERLONG_CHILD` fences the recursion to one level.
+  if (!process.env.COTAL_1626_OVERLONG_CHILD) {
+    // Built INSIDE the fixture root, so the `finally` below removes it with everything else.
+    let overlongRoot = join(root, "overlong");
+    while (Buffer.byteLength(overlongRoot) <= rootBudget) overlongRoot += "o";
+    mkdirSync(overlongRoot, { recursive: true });
+    const child = spawnSync(process.execPath, [...process.execArgv, ...[process.argv[1]]], {
+      env: { ...process.env, TMPDIR: overlongRoot, COTAL_1626_OVERLONG_CHILD: "1" },
+      encoding: "utf8",
+    });
+    const out = `${child.stdout ?? ""}${child.stderr ?? ""}`;
+    check(
+      "under a TMPDIR too long for the socket budget the suite still reports a result, skipping the control by name",
+      child.status === 0
+        && /TEMP CONTAINMENT SMOKE OK\b/.test(out)
+        && /1 skipped/.test(out)
+        && /⊘ SKIP: a control socket path within the limit is still minted/.test(out)
+        && out.includes(`${SUN_PATH_LIMIT}-byte sun_path limit`),
+      `status=${child.status} signal=${child.signal}\n${out.slice(-1200)}`,
+    );
+    // The measured failure left three entries under the temp root. A skip that leaks is not a skip.
+    const leaked = readdirSync(overlongRoot).filter((n) => n.startsWith("cotal-1625-"));
+    check(
+      "a skipped control tears its fixture down, leaving nothing behind",
+      leaked.length === 0,
+      leaked,
     );
   }
 } catch (e) {
