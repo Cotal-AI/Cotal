@@ -12,8 +12,9 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -806,6 +807,148 @@ r = runTool([
 ]);
 check("an ERROR raised before the run says there was no run, not that the run was silent",
   stripAnsi(r.stdout).includes("(no run:") && !stripAnsi(r.stdout).includes("produced NO output"), r.stdout.slice(-400));
+
+// ---- a killed proof: what it leaves, what the next run says, and how it is undone --------------
+//
+// SIGKILL, because that is the case no signal handler can cover and the one the reproof harness
+// actually produces: it launches a proof with a 140-minute deadline and `killSignal: "SIGKILL"`,
+// so a proof that overruns is killed exactly this way with a mutation on disk.
+//
+// Its own git repo, nested under the fixture so the cleanup above still reaches it, and driven
+// LAST so the untracked directory it adds cannot dirty the tree the cells above mutate.
+const killRoot = join(root, "killfix");
+const killImpl = join(killRoot, "src/impl.js");
+mkdirSync(join(killRoot, "src"), { recursive: true });
+mkdirSync(join(killRoot, "smoke"), { recursive: true });
+writeFileSync(killImpl, [
+  "export function admit(n) {",
+  "  if (n > 10)",
+  "    return false;",
+  "  return true;",
+  "}",
+  "",
+].join("\n"));
+// Slow on purpose, and only so the kill has somewhere to land: the window this cell needs is the
+// interval between the mutating write and the restore, and a suite that returns immediately closes
+// it before a killer can see it. The kill is still gated on an OBSERVED mutation, never on a timer.
+const slowSuite = [
+  "import { admit } from './src/impl.js';",
+  "await new Promise((r) => setTimeout(r, 4000));",
+  "if (admit(50) !== false) { console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+  "console.log('  ✓ done');",
+  "",
+].join("\n");
+writeFileSync(join(killRoot, "suite.mjs"), slowSuite);
+writeFileSync(join(killRoot, "smoke/suite.mjs"), slowSuite);
+writeFileSync(join(killRoot, "cfg.json"), JSON.stringify({
+  suite: ["smoke/suite.mjs"],
+  command: `${process.execPath} suite.mjs`,
+  mutations: [{ name: "the guard is gone", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
+}));
+execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm killfix", { cwd: killRoot });
+
+const killTool = (args) => spawnSync(process.execPath, [TOOL, ...args], { cwd: killRoot, encoding: "utf8", timeout: 120_000 });
+const killStatus = () => execSync("git status --porcelain", { cwd: killRoot, encoding: "utf8" }).trim();
+const shaOf = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
+const realKillRoot = realpathSync(killRoot);
+/** Records in tmpdir that name a file in THIS fixture. tmpdir is shared, so a bare count would be
+ *  reading someone else's proof. */
+const recordsHere = () => readdirSync(tmpdir())
+  .filter((n) => n.startsWith("mutation-proof-") && n.endsWith(".live.json"))
+  .map((n) => ({ path: join(tmpdir(), n), body: (() => { try { return JSON.parse(readFileSync(join(tmpdir(), n), "utf8")); } catch { return undefined; } })() }))
+  .filter((e) => typeof e.body?.file === "string" && e.body.file.startsWith(`${realKillRoot}/`));
+
+const shaOriginal = shaOf(killImpl);
+
+// A proof that finishes normally leaves nothing behind. Asserted BEFORE the kill so a later
+// leftover cannot be confused with one this fixture started with.
+let kr = killTool(["--config", "cfg.json"]);
+check("a proof that completes leaves no record and no backup behind",
+  kr.status === 0 && recordsHere().length === 0 && killStatus() === "",
+  { status: kr.status, records: recordsHere().map((e) => e.path), tree: killStatus() });
+
+// Read AFTER that proof, not before it. The happy-path restore puts the timestamp back through a
+// `Date`, which is whole milliseconds, so a mtime read before the first proof carries sub-millisecond
+// precision the tool never claims to preserve and this cell would be grading the wrong thing.
+const mtimeOriginal = statSync(killImpl).mtimeMs;
+
+const killed = spawn(process.execPath, [TOOL, "--config", "cfg.json"], { cwd: killRoot, stdio: ["ignore", "ignore", "ignore"] });
+const killedExit = new Promise((resolve) => killed.on("exit", (code, signal) => resolve({ code, signal })));
+let applied = false;
+for (let i = 0; i < 600 && !applied; i++) {
+  applied = killStatus().includes("src/impl.js");
+  if (!applied) await new Promise((r) => setTimeout(r, 50));
+}
+check("the kill lands on an OBSERVED mutation, so this cell cannot pass by killing a run that had not mutated yet", applied, killStatus());
+killed.kill("SIGKILL");
+const killedResult = await killedExit;
+await new Promise((r) => setTimeout(r, 300));
+
+check("SIGKILL leaves the mutant on disk, which is the state this record exists for",
+  killedResult.signal === "SIGKILL" && shaOf(killImpl) !== shaOriginal && killStatus() !== "",
+  { signal: killedResult.signal, tree: killStatus() });
+{
+  const rec = recordsHere();
+  check("...and a record in tmpdir names the file, the mutation and the backup",
+    rec.length === 1 && rec[0].body.file === realpathSync(killImpl)
+      && rec[0].body.mutation === "the guard is gone" && typeof rec[0].body.backup === "string"
+      && rec[0].body.shaBefore === shaOriginal,
+    rec.map((e) => e.body));
+}
+
+kr = killTool(["--config", "cfg.json"]);
+{
+  const out = stripAnsi(kr.stdout + kr.stderr);
+  check("the next run refuses by naming the previous run, not by calling the tree dirty",
+    kr.status === 3 && out.includes("left 1 mutation(s) live") && out.includes("the guard is gone")
+      && !out.includes("working tree is dirty"),
+    { status: kr.status, out: out.slice(0, 600) });
+}
+
+kr = killTool(["--restore-live"]);
+check("--restore-live puts the file back byte for byte, with its timestamp, and clears the record",
+  kr.status === 0 && shaOf(killImpl) === shaOriginal && statSync(killImpl).mtimeMs === mtimeOriginal
+    && killStatus() === "" && recordsHere().length === 0,
+  { status: kr.status, sha: shaOf(killImpl) === shaOriginal, mtime: statSync(killImpl).mtimeMs === mtimeOriginal, tree: killStatus() });
+
+kr = killTool(["--config", "cfg.json"]);
+check("...and an ordinary proof runs again afterwards", kr.status === 0 && stripAnsi(kr.stdout).includes("KILLED"), kr.stdout.slice(-300));
+
+// A record whose file already matches what it recorded is EVIDENCE OF NOTHING: the run was killed
+// before it wrote the mutant, or someone recovered with git. Refusing on it forever would make the
+// documented `git checkout` recovery a trap.
+{
+  const stalePath = join(tmpdir(), `mutation-proof-${createHash("sha1").update(realpathSync(killImpl)).digest("hex").slice(0, 12)}.live.json`);
+  writeFileSync(stalePath, JSON.stringify({
+    file: realpathSync(killImpl), backup: join(tmpdir(), "mutation-proof-does-not-exist.bak"),
+    shaBefore: shaOf(killImpl), mutation: "already recovered", pid: 1, startedAt: "2026-01-01T00:00:00.000Z",
+  }));
+  kr = killTool(["--config", "cfg.json"]);
+  check("a record whose file already matches it is cleared as stale and the run proceeds",
+    kr.status === 0 && stripAnsi(kr.stdout).includes("the record is cleared") && recordsHere().length === 0,
+    { status: kr.status, out: stripAnsi(kr.stdout).slice(0, 300), records: recordsHere().map((e) => e.path) });
+}
+
+// The backup is the only thing standing between a visible mutation and an invisible corruption, so
+// it is verified against the recorded hash before anything is written over the file.
+{
+  const badBackup = join(tmpdir(), "mutation-proof-selftest-bad-backup.bak");
+  writeFileSync(badBackup, "export function admit() { return 'not the original'; }\n");
+  const crumb = join(tmpdir(), `mutation-proof-${createHash("sha1").update(realpathSync(killImpl)).digest("hex").slice(0, 12)}.live.json`);
+  writeFileSync(killImpl, readFileSync(killImpl, "utf8").replace("if (n > 10)", "if (false)"));
+  writeFileSync(crumb, JSON.stringify({
+    file: realpathSync(killImpl), backup: badBackup, shaBefore: shaOriginal,
+    mutation: "a mutation whose backup went bad", pid: 1, startedAt: "2026-01-01T00:00:00.000Z",
+  }));
+  kr = killTool(["--restore-live"]);
+  const out = stripAnsi(kr.stdout + kr.stderr);
+  check("--restore-live refuses a backup that does not hash to the record, and leaves both in place",
+    kr.status === 3 && out.includes("CANNOT RESTORE") && readFileSync(killImpl, "utf8").includes("if (false)")
+      && recordsHere().length === 1,
+    { status: kr.status, out: out.slice(0, 300), records: recordsHere().length });
+  rmSync(crumb, { force: true });
+  rmSync(badBackup, { force: true });
+}
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);
