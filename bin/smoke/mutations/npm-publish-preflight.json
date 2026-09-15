@@ -318,8 +318,9 @@
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    if (response.status === 404) return \"absent\";\n",
       "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\";\n",
-      "expectRed": "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed",
-      "cell": "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed"
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "note": "expectRed was stale and inherited: the cell was reworded when the enumerator was rewritten to use the compiler, and this tag was left on the retired wording, so mutation-proof graded a genuine, correctly-aimed red as WRONG-RED. It now pins the INVARIANT substring of the cell name, which is a template literal whose leading count changes with the enumeration, so a count change cannot rot it again."
     },
     {
       "name": "a bare return is added to readExactVersion, yielding undefined, which no census bucket claims",
