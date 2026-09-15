@@ -1,25 +1,30 @@
 /**
- * The #773 two-root renewal refusal, reproduced through the SHIPPED renewal owner - a REAL
- * `Manager` (its initial class-2 renewal pass in `start()`), a REAL delivery daemon
- * (`tsx bin/cotal.ts deliver`), a REAL authed broker. No live stack, no shared state.
+ * Many managers per space, on the same device or different ones, exercised through the SHIPPED
+ * renewal owner - a REAL `Manager` (its initial class-2 renewal pass in `start()`), a REAL delivery
+ * daemon (`tsx bin/cotal.ts deliver`), a REAL authed broker. No live stack, no shared state.
  *
- * THE FIX (#773): the manager challenges the daemon's reload-store identity at start, before the
- * first remint. Fingerprint-only `reloadCreds` stays; it is safe once both sides name one store.
- * A composition where the two roots differ is refused at construction, naming BOTH roots. The
- * cells below encode the FIXED behavior. The CONTROL phase still runs the identical path over a
- * UNIFIED root and must keep adopting.
+ * #773 was a manager writing a re-signed generation into ITS filesystem and fingerprinting a daemon
+ * that reloads from ANOTHER, so every adoption was refused and the credential expired. The first
+ * fix refused the two-root composition at manager construction, which made a second manager on a
+ * second machine (or a second root on one machine) impossible. That is a regression against the
+ * product requirement, ruled 2026-09-15: a space has many managers on any device.
  *
- * Both roots are load-bearing, and the refusal is produced end to end by shipped code only:
- *   - root A is the Manager's actual `workspaceRoot`;
+ * THE FIX: the manager CLASSIFIES the daemon's reload store instead of refusing it. A manager whose
+ * store is the daemon's is the renewal owner and remints. A manager whose store is foreign STARTS,
+ * serves seats, never remints daemon creds (a write the daemon could not read), and records that
+ * renewal is owned elsewhere. Fingerprint-only `reloadCreds` stays for the owner.
+ *
+ * Both roots are load-bearing and every outcome is produced end to end by shipped code:
+ *   - root A is the foreign Manager's actual `workspaceRoot`;
  *   - root B is the daemon's actual read path (its `--creds` source and membership feed store).
- * The suite never hand-sends a fingerprint; `Manager.start()` drives the whole pass. The
- * construction-time challenge names both roots and must fire BEFORE any remint, so A's bytes
- * stay the original generation.
+ * The suite never hand-sends a fingerprint; `Manager.start()` drives the whole pass. Phase 1 must
+ * START, must NOT remint (A's and B's bytes stay the original generation), and must record the
+ * owner-elsewhere note naming both stores.
  *
  * The CONTROL phase runs the IDENTICAL path over a UNIFIED root (manager and daemon share one
- * root, the stock single-host composition): adoption succeeds, proving the phase-1 refusal is
- * caused by the divergence and not by the rig. Each phase gets its own space AND its own broker:
- * the per-space artifact store reserves 4 GiB of JetStream capacity, so two spaces on one broker
+ * root, the stock single-host composition): adoption succeeds, proving phase 1's silence is the
+ * classification and not a broken rig. Each phase gets its own space AND its own broker: the
+ * per-space artifact store reserves 4 GiB of JetStream capacity, so two spaces on one broker
  * overrun a small CI disk - and a virgin broker per phase also rules out cross-phase carryover.
  *
  * COTAL_HOME is sandboxed and ambient COTAL_* is scrubbed; kills ONLY the PIDs it spawns.
@@ -86,7 +91,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 /** Every cell above is enumerated: a run that silently skipped cells must not read as green. */
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 21;
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -188,22 +193,17 @@ try {
   } catch (e) {
     startRefusal = (e as Error).message;
   }
-  ok(
-    "#773: the divergent manager-store/daemon-store composition is refused at start, naming both roots",
-    startRefusal !== undefined && startRefusal.includes(rootA) && startRefusal.includes(rootB),
-    { startRefusal, rootA, rootB },
-  );
+  ok("many managers: a manager rooted at A STARTS while the daemon reloads from B (no construction refusal)", startRefusal === undefined, { startRefusal, rootA, rootB });
 
   const rec = readRenewalRecord(rootA);
-  ok(
-    "#773: the refused start never reminted (no manager renewal record, no write into A)",
-    rec === undefined,
-    rec,
-  );
-  ok("#773: root A's delivery cred still holds the ORIGINAL generation (remint did not run)", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
-  ok("#773: root B's delivery cred still holds the ORIGINAL generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
-  ok("#773: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
-  ok("daemon B outlives the refused start (refusal is a manager construction error, not a daemon death)", !sinkB.exited);
+  ok("many managers: the foreign manager recorded that renewal is owned elsewhere", rec?.renewalOwner?.elsewhere === true, rec);
+  ok("many managers: the record names the daemon's store", rec?.renewalOwner?.store === rootB, rec?.renewalOwner);
+  ok("many managers: the note names both stores", rec?.renewalOwner?.note.includes(rootA) === true && rec?.renewalOwner?.note.includes(rootB) === true, rec?.renewalOwner?.note);
+  ok("many managers: the foreign manager reminted nothing (empty results, no adoption request)", rec?.results.length === 0 && rec?.adoption === undefined, rec);
+  ok("many managers: root A's delivery cred still holds the ORIGINAL generation (no remint into the foreign store)", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  ok("many managers: root B's delivery cred still holds the ORIGINAL generation (nothing pushed at the daemon)", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  ok("many managers: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
+  ok("daemon B outlives the foreign manager's start and pass", !sinkB.exited);
 
   await mgrA.stop({ withAgents: true });
   mgrA = undefined;

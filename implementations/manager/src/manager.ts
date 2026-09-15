@@ -10,7 +10,8 @@ import {
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
-  divergentSecretStoreRefusal,
+  foreignRenewalOwnerNote,
+  formatSecretStoreIdentity,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
@@ -1119,6 +1120,8 @@ export class Manager {
   private leaseRenewInFlight = false;
   /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
+  /** Last "renewal owner is elsewhere" note logged, so a foreign daemon is reported once, not every pass. */
+  private renewalOwnerNoteLogged?: string;
   private maintenanceState: ManagerMaintenanceState = "active";
   private lifecycleInFlight = 0;
   private lifecycleDrainWaiters: Array<() => void> = [];
@@ -1424,7 +1427,6 @@ export class Manager {
     // every half-TTL: re-sign the daemon creds files for their EXISTING nkeys, request the explicit
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
-      await this.assertDaemonSharesSecretStore();
       await this.renewDaemonCreds();
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
@@ -1478,20 +1480,30 @@ export class Manager {
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
   }
 
-  /** Proof that this manager remints into the store the delivery daemon reloads from.
-   *  Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores
-   *  refuse the pass. A daemon that is not bound yet is not a named store: start and
-   *  remint still proceed (tests, delayed delivery), writing this manager's store. The
-   *  challenge runs again before every remint, so a later daemon on a foreign store is
-   *  refused then rather than certified by an earlier absence. A request timeout is not
-   *  absence: a hung rail would skip the proof, so it fails closed. */
-  private async assertDaemonSharesSecretStore(): Promise<"shared" | "absent"> {
+  /** Classify this manager's relation to the delivery daemon's SecretStore. The daemon names the
+   *  store it reloads from on the delivery-admin rail; this manager compares it with its own.
+   *
+   *  - `"shared"`: one authority. This manager is the daemon-cred RENEWAL OWNER: it remints and the
+   *    daemon adopts by fingerprint, which is sufficient proof once both sides name one store.
+   *  - `"foreign"`: the daemon reloads from another store (another host, or another root on this
+   *    host). This manager is NOT the renewal owner. It never remints daemon creds, because a
+   *    remint into its own store is a write the daemon can never read (#773). It still starts and
+   *    serves seats: a space has many managers on many devices, and only the one rooted where the
+   *    daemon reads is the renewal owner. Recorded on every pass so `doctor auth` says where
+   *    renewal happens.
+   *  - `"absent"`: no bound delivery-admin responder. Not a named store, so the pass proceeds
+   *    writing this store (tests, delayed delivery). A later daemon on a foreign store moves this
+   *    manager to `"foreign"` on the next pass rather than being certified by the earlier absence.
+   *
+   *  A request timeout is not absence: a hung rail would skip the classification, so it fails
+   *  closed and the pass is skipped with the reason recorded. */
+  private async classifyDaemonSecretStore(): Promise<{ kind: "shared" } | { kind: "absent" } | { kind: "foreign"; daemon: SecretStoreIdentity }> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
       const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return "absent";
+      if (isAbsentDeliveryAdmin(msg)) return { kind: "absent" };
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
     }
     if (!reply.ok)
@@ -1504,9 +1516,8 @@ export class Manager {
     } catch (e) {
       throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
     }
-    if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon))
-      throw new Error(divergentSecretStoreRefusal(this.secretStoreIdentity, daemon));
-    return "shared";
+    if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) return { kind: "foreign", daemon };
+    return { kind: "shared" };
   }
 
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
@@ -1519,7 +1530,26 @@ export class Manager {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
-      await this.assertDaemonSharesSecretStore();
+      let relation: Awaited<ReturnType<Manager["classifyDaemonSecretStore"]>>;
+      try {
+        relation = await this.classifyDaemonSecretStore();
+      } catch (e) {
+        // A hung or unreadable rail is not a proof either way: no remint, and the reason is on record.
+        console.error(`! credential renewal: skipped - ${(e as Error).message}`);
+        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results: [], adoption: { ok: false, error: (e as Error).message } });
+        return;
+      }
+      if (relation.kind === "foreign") {
+        // Not the renewal owner. Say so once per pass, in the record `doctor auth` renders, naming
+        // both stores so an operator can find the owner. Nothing is written into this store.
+        const note = foreignRenewalOwnerNote(this.secretStoreIdentity, relation.daemon);
+        if (this.renewalOwnerNoteLogged !== note) {
+          console.error(`  ${note}`);
+          this.renewalOwnerNoteLogged = note;
+        }
+        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results: [], renewalOwner: { elsewhere: true, store: formatSecretStoreIdentity(relation.daemon), note } });
+        return;
+      }
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).

@@ -4,6 +4,7 @@
  */
 import {
   divergentSecretStoreRefusal,
+  foreignRenewalOwnerNote,
   formatSecretStoreIdentity,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
@@ -37,6 +38,10 @@ const b = { kind: "fs" as const, root: "/daemon-root" };
 const msg = divergentSecretStoreRefusal(a, b);
 ok("refusal names the manager root", msg.includes("/mgr-root"));
 ok("refusal names the daemon root", msg.includes("/daemon-root"));
+const note = foreignRenewalOwnerNote(a, b);
+ok("owner-elsewhere note names this manager's store", note.includes("/mgr-root"));
+ok("owner-elsewhere note names the daemon's store", note.includes("/daemon-root"));
+ok("owner-elsewhere note says this manager serves seats and does not remint", note.includes("serves seats") && note.includes("does not remint"));
 ok("fs label is the root itself", formatSecretStoreIdentity(a) === "/mgr-root");
 ok("injected label is prefixed", formatSecretStoreIdentity({ kind: "injected", coordinate: "kms:x" }) === "injected:kms:x");
 

@@ -417,6 +417,12 @@ function renderRenewalRecord(root: string): void {
     console.log(c.dim("    no renewal record yet (written by the manager's renewal pass)"));
     return;
   }
+  if (rec.renewalOwner?.elsewhere) {
+    // Not a problem: this manager serves seats while another manager of the same space, rooted
+    // where the delivery daemon reads, owns the daemon-cred remint.
+    console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} - ${c.dim(`renewal owned elsewhere (daemon store: ${rec.renewalOwner.store})`)}`);
+    return;
+  }
   const resigned = rec.results.filter((r) => r.ok).map((r) => r.file);
   const failed = rec.results.filter((r) => !r.ok && !r.skipped);
   // Per-component result from the daemon's structured reply detail (persisted on ok AND failed

@@ -111,9 +111,23 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 }
 
 /**
- * The construction-time refusal when the manager's remint store and the daemon's reload
- * source are not one authority. Both identities appear in the message; a refusal that
- * declines to start without naming them is the same defect wearing a different error.
+ * The note a manager records when it is NOT the daemon-cred renewal owner: the delivery daemon
+ * reloads from a store this manager does not write. Both identities appear, so an operator can
+ * find the owner. A space has many managers, on the same device or different ones; exactly one of
+ * them, the one rooted where the daemon reads, remints the daemon credentials. The others start,
+ * serve seats, and record this instead of writing a generation the daemon can never read (#773).
+ */
+export function foreignRenewalOwnerNote(self: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
+  return (
+    `daemon credential renewal is owned elsewhere: this manager's store is ${formatSecretStoreIdentity(self)} ` +
+    `while the delivery daemon reloads from ${formatSecretStoreIdentity(daemon)}. This manager serves seats ` +
+    `and does not remint daemon creds; the manager rooted at the daemon's store is the renewal owner.`
+  );
+}
+
+/**
+ * Kept for callers that still name a divergent pair as a refusal (the delivery daemon's own
+ * `--creds`-vs-cwd check). A manager no longer refuses on this: see {@link foreignRenewalOwnerNote}.
  */
 export function divergentSecretStoreRefusal(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
   return (
