@@ -131,9 +131,9 @@ if (process.platform !== "win32") {
     setArgv(p);
     try { return selfArgv(); } catch (e) { return e as Error; }
   };
-  const checkout = argv("/Users/x/repo/bin/cotal.ts");
+  const checkout = argv("/srv/checkout/bin/cotal.ts");
   check("the dev-checkout entry `bin/cotal.ts` builds a re-exec argv ending in that entry",
-    Array.isArray(checkout) && checkout[0] === process.execPath && checkout.at(-1) === "/Users/x/repo/bin/cotal.ts");
+    Array.isArray(checkout) && checkout[0] === process.execPath && checkout.at(-1) === "/srv/checkout/bin/cotal.ts");
   const installed = argv("/usr/local/lib/node_modules/cotal-ai/dist/cotal.js");
   check("the published entry `dist/cotal.js` builds one too",
     Array.isArray(installed) && installed.at(-1) === "/usr/local/lib/node_modules/cotal-ai/dist/cotal.js");
@@ -143,7 +143,7 @@ if (process.platform !== "win32") {
   const globalLink = argv("/usr/local/bin/cotal");
   check("a bare `cotal` bin symlink (the global-install shape) builds a re-exec argv",
     Array.isArray(globalLink) && globalLink.at(-1) === "/usr/local/bin/cotal");
-  const suite = argv("/Users/x/repo/implementations/cli/smoke/delivery-boot-honesty.smoke.ts");
+  const suite = argv("/srv/checkout/implementations/cli/smoke/delivery-boot-honesty.smoke.ts");
   check("a `.smoke.ts` entry is REFUSED, not re-execed as a daemon", suite instanceof Error);
   check("the refusal names the entry it will not re-exec",
     suite instanceof Error && suite.message.includes("delivery-boot-honesty.smoke.ts"));
@@ -153,7 +153,7 @@ if (process.platform !== "win32") {
     suite instanceof Error && /points `process\.argv\[1\]` at the cotal entry/.test(suite.message));
   // The stem is the whole check, so a file that merely SITS beside the entry is refused too: a
   // `bin/run.ts` re-exec would boot the composition root without the Node-version preflight.
-  check("a sibling of the entry is not the entry", argv("/Users/x/repo/bin/run.ts") instanceof Error);
+  check("a sibling of the entry is not the entry", argv("/srv/checkout/bin/run.ts") instanceof Error);
   check("a process with no entry file at all is refused rather than spawning `[node, undefined]`",
     (() => { const saved = process.argv[1]; delete (process.argv as (string | undefined)[])[1];
       try { selfArgv(); return false; } catch { return true; } finally { process.argv[1] = saved; } })());
