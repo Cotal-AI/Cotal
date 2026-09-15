@@ -10,9 +10,16 @@ import { fileURLToPath } from "node:url";
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
 const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
 let pass = 0;
+let failed = 0;
+// Normally the first failing cell stops the run, which keeps a failure legible. Grading the
+// MUTANTS needs the opposite: a mutant is only proven to bite when the cell it NAMES reds, and an
+// early exit hides every cell after the first. This reports them all, and still exits non-zero.
+const CONTINUE = process.env.MUTATION_SELFTEST_REPORT_ALL === "1";
 const check = (name, condition, extra) => {
   if (!condition) {
+    failed++;
     console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
+    if (CONTINUE) return;
     rmSync(root, { recursive: true, force: true });
     process.exit(1);
   }
@@ -96,6 +103,231 @@ try {
     'import { readdirSync } from "node:fs";\n' +
     'const DIR = join(ROOT, "packages", "seat");\n' +
     'for (const f of readdirSync(DIR, { recursive: true })) { console.log(String(f)); }\n');
+  // The #1575 attack: the sweep still walks the tree, but one `continue` on an equality against a
+  // single known path means only one entry ever reaches the reader. Form of a sweep, substance of
+  // a named read.
+  write("bin/smoke/listing-narrowed.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts") continue;\n' +
+    '  const text = readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  if (text.split("export const impl").length - 1 !== 1) throw new Error("shape");\n' +
+    '}\n');
+  // The same narrowing spelled as a positive guard rather than an early exit.
+  write("bin/smoke/listing-narrowed-eq.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts") { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The narrowing hidden behind a CONSTANT the program computes, so the rule cannot be satisfied
+  // by looking for a string literal next to an equality operator.
+  write("bin/smoke/listing-narrowed-const.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const ONLY = join("src", "impl.ts");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== ONLY) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The direction matters as much as the operator. `!== ONE` admits one file, but `=== ONE`
+  // followed by `continue` EXCLUDES one file and leaves every other entry going through, so the
+  // sweep is still open and still catches a file nobody named.
+  write("bin/smoke/listing-skip-one.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/skipped.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The near neighbour that must stay ACCEPTED: an extension test admits an open set of files, so
+  // a new file still gets caught and nothing is named.
+  write("bin/smoke/listing-filtered-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (!String(f).endsWith(".ts")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The same narrowing wearing parentheses. A `ParenthesizedExpression` is not a
+  // `BinaryExpression`, so two characters are enough to walk past a classifier that does not
+  // normalize, and the narrowed sweep counts as a sweep again.
+  write("bin/smoke/listing-narrowed-paren.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if ((String(f) !== "src/impl.ts")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The De Morgan spelling. `!(f !== ONE)` means the same thing as `f === ONE`, so a classifier
+  // with no notion of negation grades the two spellings differently.
+  write("bin/smoke/listing-narrowed-negated.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (!(String(f) !== "src/impl.ts")) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The narrowing hidden in one operand of a compound guard. Inside the `then` branch BOTH
+  // operands of `&&` hold, so an operand that pins the entry pins it for the whole branch.
+  write("bin/smoke/listing-narrowed-and.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length > 0) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The compound narrowing in the EXIT form. Control reaches the read only when the whole guard
+  // is false, and a false `||` makes BOTH operands false, so `f !== ONE` being false pins the
+  // entry. `||` is the operand that decomposes here; `&&` is not (see listing-compound-open).
+  write("bin/smoke/listing-narrowed-or.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts" || DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The accept control for the decomposition, and the reason `&&` must NOT decompose under an
+  // exit guard. A false `&&` only says at least ONE operand was false, so `f !== ONE` is left
+  // free and every entry other than ONE still reaches the reader. Decomposing here would refuse
+  // an open sweep, which is the failure that reds nothing and just stops counting.
+  write("bin/smoke/listing-compound-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts" && DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // An ordinary extension filter that happens to be WRITTEN as an equality. It mentions the loop
+  // entry, and the other side is a known string, but `slice(-3)` maps many entries onto one
+  // value, so the guard pins an extension and not an entry. Refusing it would silently drop
+  // coverage with nothing going red.
+  write("bin/smoke/listing-suffix-equality.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f).slice(-3) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // #1605 v3. Each of these is a spelling that defeated v1 or v2, and each is a ROW of the table
+  // in the design record rather than a grammar case in the classifier. A future spelling is added
+  // here, as another row, and the classifier does not grow a case to match it.
+  //
+  // The ternary. A `ConditionalExpression` is not a `BinaryExpression`, so v2 walked straight past
+  // a guard that admits exactly one entry. `pins` evaluates it instead of matching it: with
+  // boolean-literal arms it reduces to its condition.
+  write("bin/smoke/listing-narrowed-ternary.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" ? true : false) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The TypeScript `as` wrapper. Erased before the program runs, so it cannot change which entries
+  // reach the read, yet `AsExpression` appears zero times in the v2 classifier.
+  write("bin/smoke/listing-narrowed-as.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f as string) !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The loop-local alias, in the shape where the READER still spells `String(f)`. The guard tests
+  // a second name for the same value, so the entry is pinned just as hard as if it were inlined.
+  write("bin/smoke/listing-narrowed-alias.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  if (entry !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The SAME narrowing in the shape sol probed, where the alias is also what the reader is handed.
+  // The two shapes disagreed across harnesses at v2 and they must land on one verdict: the guard
+  // admits one entry either way, so both are named reads.
+  write("bin/smoke/listing-narrowed-alias-read.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  if (entry !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, entry), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE ALIAS RULE, and a false refusal that is live at `cbf0ab8c3`. This
+  // sweep names nothing at all: it just binds the entry before reading it. v2 refused it because
+  // `mentions` did not follow the binding, so the reader's argument looked unrelated to the loop.
+  // Nothing reds when that happens; coverage simply stops counting, which is why an accept control
+  // is the only thing that can catch it.
+  write("bin/smoke/listing-alias-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  readFileSync(join(DIR, entry), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE RESOLUTION RULE. `helper.String` is a many-to-one projection that
+  // merely spells its terminal name `String`, and the sweep it filters is open. v2 compared the
+  // callee's terminal name, called it the global conversion, and refused this legitimate sweep.
+  write("bin/smoke/listing-helper-string.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const helper = { String: (v) => globalThis.String(v).slice(-3) };\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (helper.String(f) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, globalThis.String(f)), "utf8");\n' +
+    '}\n');
+  // The same, through a LOCAL BINDING that shadows the global `String`. Resolution has to consult
+  // the scope chain, not the spelling, or a shadowed projection is blessed as identity.
+  write("bin/smoke/listing-shadowed-string.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const String = (v) => globalThis.String(v).slice(-3);\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, globalThis.String(f)), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE TERNARY RULE: a ternary whose arms BOTH read. Whichever way the
+  // condition goes the loop reads the entry it is on, so no entry is excluded and the sweep is
+  // open. A ternary rule that pinned on the condition alone would refuse this.
+  write("bin/smoke/listing-ternary-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const where = String(f) === "src/impl.ts" ? String(f) : String(f);\n' +
+    '  readFileSync(join(DIR, where), "utf8");\n' +
+    '}\n');
+  // A guard the classifier has NO rule for, over a sweep that really is open. The guard is a bare
+  // CALL, so it reaches the final `return false` of `pins` rather than any rule above it -- that is
+  // the point of the cell, and a guard shaped like `a && b` would be answered by the `&&` rule and
+  // grade nothing here. The default has to be OPEN: an unrecognised guard makes the sweep COUNT.
+  write("bin/smoke/listing-unknown-guard.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f).startsWith("zz")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The `&&` exit guard in its POSITIVE form. Control reaches the read when the conjunction was
+  // FALSE, which says only that at least one operand was false, so `String(f) === ONE` is left free
+  // and every other entry still gets through. Decomposing a false `&&` would refuse this open
+  // sweep. The existing compound-open control spells the equality with `!==`, which cannot tell a
+  // direction-blind decomposition apart from a correct one: both answer "does not pin" there.
+  write("bin/smoke/listing-and-exit-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length > 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // A ternary GUARD whose arms are conditions rather than boolean literals. Control reaches the
+  // read when the ternary is false, and that can happen down EITHER arm, so the entry is pinned
+  // only if both arms pin it. Here the `then` arm does and the `else` arm does not, so the sweep is
+  // open. A rule that accepted one pinning arm would refuse it.
+  write("bin/smoke/listing-ternary-arms.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (DIR.length > 0 ? String(f) !== "src/impl.ts" : DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
@@ -449,6 +681,132 @@ try {
   config("recursive-listing-source", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("recursive-listing-source");
   check("a recursive sweep that reads every file covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1575. The sweep above earns its accept by never naming its subjects. One `continue` on an
+  // equality against a single known path takes that back: the loop walks the tree, but exactly one
+  // entry can reach the reader, so the suite is reading a file it names and the cell reddens on a
+  // spelling again. What is tested is the CARDINALITY the guard admits, so the same narrowing has
+  // to be caught however it is spelled, and an open filter has to survive.
+  config("sweep-narrowed-literal", { suite: ["bin/smoke/listing-narrowed.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-literal");
+  check("a sweep narrowed to one literal path is a named read", result.status !== 0 && /REFUSED sweep-narrowed-literal/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-positive", { suite: ["bin/smoke/listing-narrowed-eq.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-positive");
+  check("the same narrowing as a positive guard is refused too", result.status !== 0 && /REFUSED sweep-narrowed-positive/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-constant", { suite: ["bin/smoke/listing-narrowed-const.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-constant");
+  check("a narrowing against a computed constant is refused", result.status !== 0 && /REFUSED sweep-narrowed-constant/.test(result.stderr), report(result));
+
+  // ORDERING IS LOAD-BEARING, NOT COSMETIC. This cell is the first ACCEPT control that observes the
+  // `pins` default, so it must run BEFORE the other open-sweep accept controls. The self-test stops
+  // at its first failing cell unless MUTATION_SELFTEST_REPORT_ALL is set, and the real mutation
+  // proof runs WITHOUT that flag. With this cell later, inverting the default red the extension
+  // filter first and the mutant for `a guard with no rule is OPEN` was credited to a cell it does
+  // not name -- coverage that grades the wrong thing while looking green (#1627). Keep it here.
+  // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
+  // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
+  // ever inverted, a named read would masquerade as a sweep and this cell would red.
+  config("sweep-unknown-guard", { suite: ["bin/smoke/listing-unknown-guard.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-unknown-guard");
+  check("a guard the classifier cannot evaluate leaves the sweep counting", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control for the three above: a filter that admits an OPEN set is still a sweep, and
+  // refusing it would trade a false accept for a false refusal.
+  config("sweep-open-filter", { suite: ["bin/smoke/listing-filtered-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-open-filter");
+  check("a sweep filtered by extension still covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The discriminator for the DIRECTION of the equality: excluding one entry is not selecting one.
+  config("sweep-skips-one", { suite: ["bin/smoke/listing-skip-one.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-skips-one");
+  check("a sweep that skips one entry is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // Cardinality is a property of the guard, not of how the guard is written, so every spelling of
+  // the same narrowing has to land on the same verdict. Parentheses, a De Morgan negation and an
+  // `&&`/`||` operand are three ways to write `f === ONE` that a spelling-shaped classifier reads
+  // as something else.
+  config("sweep-narrowed-paren", { suite: ["bin/smoke/listing-narrowed-paren.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-paren");
+  check("a narrowing in parentheses is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-paren/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-negated", { suite: ["bin/smoke/listing-narrowed-negated.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-negated");
+  check("a narrowing spelled as a negated inequality is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-negated/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-and", { suite: ["bin/smoke/listing-narrowed-and.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-and");
+  check("a narrowing in one operand of an && guard is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-and/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-or", { suite: ["bin/smoke/listing-narrowed-or.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-or");
+  check("a narrowing in one operand of an || exit guard is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-or/.test(result.stderr), report(result));
+
+  // The two accept controls that keep the decomposition and the projection rule honest. Each one
+  // fails exactly when the corresponding rule is widened too far, which is the direction that
+  // costs coverage silently: a wrongly refused sweep reds nothing, it just stops counting.
+  config("sweep-compound-open", { suite: ["bin/smoke/listing-compound-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-compound-open");
+  check("an && exit guard leaves every other entry going through", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-suffix-equality", { suite: ["bin/smoke/listing-suffix-equality.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-suffix-equality");
+  check("an extension filter written as an equality is still a sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1605 v3: one cell per row of the design record's table. These are the spellings that defeated
+  // v1 and v2. They are recorded as ROWS, not as grammar cases, because the classifier now answers
+  // the cardinality question by resolution and three-valued evaluation rather than by matching.
+  config("sweep-narrowed-ternary", { suite: ["bin/smoke/listing-narrowed-ternary.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-ternary");
+  check("a narrowing spelled as a ternary with boolean arms is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-ternary/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-as", { suite: ["bin/smoke/listing-narrowed-as.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-as");
+  check("a type assertion around the entry does not hide the narrowing", result.status !== 0 && /REFUSED sweep-narrowed-as/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-alias", { suite: ["bin/smoke/listing-narrowed-alias.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-alias");
+  check("a loop-local alias of the entry is still the entry", result.status !== 0 && /REFUSED sweep-narrowed-alias/.test(result.stderr), report(result));
+
+  // The disputed row, pinned in BOTH harnesses. sol measured this shape as accepted and the
+  // maintainer's harness measured it as refused; the two fixtures differ only in whether the READER
+  // is handed the alias. Cardinality does not depend on that, so both must refuse.
+  config("sweep-narrowed-alias-read", { suite: ["bin/smoke/listing-narrowed-alias-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-alias-read");
+  check("an alias that is also what the reader is handed is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-alias-read/.test(result.stderr), report(result));
+
+  // The four accept controls. Each one fails exactly when the corresponding rule over-refuses,
+  // which is the direction with no alarm attached: a wrongly refused sweep reds nothing, it just
+  // stops counting. v2 shipped exactly such a regression in the two below.
+  config("sweep-alias-open", { suite: ["bin/smoke/listing-alias-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-alias-open");
+  check("binding the entry before reading it is still an open sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-helper-string", { suite: ["bin/smoke/listing-helper-string.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-helper-string");
+  check("a projection through a property named String is not the global conversion", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-shadowed-string", { suite: ["bin/smoke/listing-shadowed-string.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-shadowed-string");
+  check("a local binding that shadows String is not the global conversion", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-ternary-open", { suite: ["bin/smoke/listing-ternary-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-ternary-open");
+  check("a ternary whose arms both read leaves the sweep open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control that actually grades the DIRECTION of the `&&` rule. `sweep-compound-open`
+  // spells its equality with `!==`, which a direction-blind decomposition answers the same way, so
+  // it cannot tell the two apart; this one can.
+  config("sweep-and-exit-open", { suite: ["bin/smoke/listing-and-exit-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-and-exit-open");
+  check("a false && leaves the entry free, so the sweep is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control for a ternary GUARD with non-literal arms: reaching the read can happen down
+  // either arm, so one pinning arm is not enough to pin the entry.
+  config("sweep-ternary-arms", { suite: ["bin/smoke/listing-ternary-arms.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-ternary-arms");
+  check("a ternary guard pins only when every arm that reaches the read pins", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
@@ -1084,4 +1442,7 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
-console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, 0 failed`);
+// `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
+// report-all mode, where the run continues, and the exit status follows it rather than the literal.
+console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);
