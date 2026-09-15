@@ -121,12 +121,34 @@ check(
 );
 
 // The missing segments are re-resolved after the join, so a `..` in the tail cannot walk back out
-// of the root it was just checked against. Lexically this reads as inside the root.
-const missingEscapes = refusal(() => assertContainedIn(join(root, "not-yet", "..", "..", "elsewhere"), root));
+// of the root it was just checked against.
+//
+// BUILT AS A RAW STRING, NOT WITH join(). `join(root, "not-yet", "..", "..", "x")` collapses the
+// `..` at the CALL SITE and hands the guard an already-escaped path, which the outside-the-root
+// branch catches for an entirely different reason — so the cell passed while grading nothing about
+// the re-resolve, and its mutant SURVIVED. The `..` has to still be in the string the guard receives.
+const missingEscapes = refusal(() => assertContainedIn(`${root}/not-yet/../../elsewhere`, root));
 check(
   "a missing target whose tail walks back out of the root is refused",
   missingEscapes !== null,
   missingEscapes,
+);
+
+// FAIL CLOSED ON AN ERRNO THAT IS NOT ENOENT. Walking up to the deepest existing ancestor must not
+// turn "I could not resolve this" into "it does not exist yet, so trust its spelling": that is the
+// same silent downgrade `physical` documents, reintroduced one level down.
+//
+// ELOOP, via a symlink cycle, rather than EACCES via chmod 000: a chmod-based cell grades nothing
+// when the suite runs as root (CI containers routinely do), passing for the wrong reason. A cycle
+// is refused by the kernel for every uid.
+const cyclic = join(root, "cycle-a");
+symlinkSync(join(root, "cycle-b"), cyclic);
+symlinkSync(cyclic, join(root, "cycle-b"));
+const unresolvable = refusal(() => assertContainedIn(join(cyclic, "future"), root));
+check(
+  "a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling",
+  unresolvable !== null && /could not be established/.test(unresolvable),
+  unresolvable,
 );
 
 // POSITIVE CONTROL. Without this, a guard that refused unconditionally would pass every cell above

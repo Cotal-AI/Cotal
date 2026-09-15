@@ -84,8 +84,8 @@
       "file": "bin/smoke/_scratch.ts",
       "find": "      if ((e as NodeJS.ErrnoException).code !== \"ENOENT\") throw e;",
       "replace": "      if (false) throw e;",
-      "expectRed": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling",
-      "cell": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling"
+      "expectRed": "✗ FAIL: a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling",
+      "cell": "✗ FAIL: a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling"
     }
   ]
 }
