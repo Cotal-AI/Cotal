@@ -1,15 +1,45 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
+
+/** The CLI's own composition root, by filename: `bin/cotal.ts` in a source checkout, `dist/cotal.js`
+ *  in a published install (`bin/package.json` declares `"cotal": "./dist/cotal.js"`), and a bare
+ *  `cotal` for `npm i -g`, which publishes `<prefix>/bin/cotal` as a SYMLINK into the package and
+ *  leaves `process.argv[1]` on the link rather than its target. That third shape is the one an
+ *  installed binary actually runs under, so an extension-only rule would refuse every global install.
+ *  A filename rather than an absolute path, because a checkout, the npx cache and a global prefix
+ *  each place the same file somewhere this module cannot derive. */
+const CLI_ENTRY_FILE = /^cotal(?:\.(?:ts|js|mjs|cjs))?$/;
 
 /** This CLI's own invocation as argv: `[node, ...loaderFlags, entryScript]`. The loader flags carry
  *  tsx in dev (so a re-exec can run the `.ts` entry) and are empty in prod (entry = compiled JS).
  *  Re-execed children (web, manager) and cmux pane commands use this so they never depend on
- *  `cotal` being on PATH — works the same via `npx`, `npm i -g`, and a dev clone. */
+ *  `cotal` being on PATH — works the same via `npx`, `npm i -g`, and a dev clone.
+ *
+ *  A RE-EXEC IS ONLY VALID FROM THE CLI'S OWN ENTRY, and that is checked here rather than at each
+ *  spawn site. Every caller appends a cotal subcommand (`supervise`, `deliver`, `ext add`) to this
+ *  argv and detaches the child, so the entry has to be the file that READS a subcommand. Started
+ *  from anything else the child re-runs THAT file with an argument it ignores, and a file that
+ *  reaches this on load spawns its own successor.
+ *
+ *  #1629 measured that: a smoke fixture calling `ensureControlPlane` under tsx had `process.argv[1]`
+ *  pointing at the suite, so the detached "manager" was the suite, which ran to the same call and
+ *  spawned the next generation. 970 generations in 4.7 hours on a persistent host, each holding a
+ *  nats-server and a delivery holder, until the chain was killed by pid. The guard cannot live in
+ *  the smoke harness: `startManagerDetached` unrefs its child on purpose, so nothing that owns the
+ *  suite's children can own it. It is a THROW rather than a skipped spawn, because a re-exec that
+ *  silently does not happen reports a healthy control plane over nothing. */
 export function selfArgv(): string[] {
-  return [process.execPath, ...process.execArgv, process.argv[1]];
+  const entry = process.argv[1];
+  if (entry === undefined || !CLI_ENTRY_FILE.test(basename(entry)))
+    throw new Error(
+      `refusing to re-exec this process as \`cotal\`: it was started from ${entry === undefined ? "no entry file" : entry}, which is not the CLI's own entry (\`bin/cotal.ts\` in a checkout, \`dist/cotal.js\` in an install).\n` +
+        "A child spawned from that entry re-runs it with a cotal subcommand appended, which it does not read; if that file reaches this call on load, every child spawns the next one.\n" +
+        "NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery or ensureControlPlane.",
+    );
+  return [process.execPath, ...process.execArgv, entry];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */

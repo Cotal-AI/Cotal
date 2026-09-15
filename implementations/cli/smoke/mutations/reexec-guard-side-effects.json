@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "implementations/cli/smoke/delivery-boot-honesty.smoke.ts"
+  ],
+  "guard": "a refused detached start leaves the mesh root exactly as it found it, with no manager log and no leaked descriptor",
+  "command": "pnpm smoke:delivery-boot-honesty",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/reexec-guard-side-effects.json",
+  "why": [
+    "The #1629 guard is only half a guard if it runs after the side effects. `startManagerDetached`",
+    "opened `manager.<key>.log` before it built the argv, so a refusal created that log and leaked",
+    "its descriptor into every fixture root that reached the call. Ordering is the whole content of",
+    "this fixture: the mutant forks nothing and still fails, which is the point.",
+    "",
+    "NOT MUTATED HERE, deliberately: removing the guard itself. This suite is the one whose entry is",
+    "not the cotal entry, so a run with the guard gone re-execs the suite as its own manager and each",
+    "generation spawns the next. That mutant is graded on `install.smoke.ts` instead, where the argv",
+    "is inspected and never spawned."
+  ],
+  "mutations": [
+    {
+      "name": "the log is created before the argv is validated, so a refused start still leaves it behind",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  const logPath = managerLogPath(space);\n",
+      "replace": "  const logPath = managerLogPath(space);\n  closeSync(openSync(logPath, \"a\", 0o600));\n  const [node, ...self] = selfArgv();\n",
+      "expectRed": "CELL: the refused spawn left no manager log behind either"
+    }
+  ]
+}
