@@ -28,7 +28,7 @@ concurrency:
 jobs:
   attribution:
     timeout-minutes: 5
-    runs-on: tenki-standard-small-2c-4g
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:

@@ -30,7 +30,7 @@ jobs:
     # git and fixture JSON only.
     if: github.event_name != 'schedule'
     timeout-minutes: 10
-    runs-on: tenki-standard-small-2c-4g
+    runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
@@ -66,7 +66,7 @@ jobs:
     if: github.event_name != 'schedule' && needs.plan.outputs.shards != '[]'
     needs: [plan]
     timeout-minutes: 150
-    runs-on: tenki-standard-medium-4c-8g
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -127,7 +127,7 @@ jobs:
   changed:
     if: github.event_name != 'schedule' && always()
     needs: [plan, changed_shard]
-    runs-on: tenki-standard-medium-4c-8g
+    runs-on: ubuntu-latest
     steps:
       - name: Gate
         env:
@@ -150,7 +150,7 @@ jobs:
     # the runner's deterministic path hash partitions it across 12 independent mutation trees.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 240
-    runs-on: tenki-standard-medium-4c-8g
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -207,7 +207,7 @@ jobs:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && always()
     needs: [full_shard]
     timeout-minutes: 10
-    runs-on: tenki-standard-small-2c-4g
+    runs-on: ubuntu-latest
     steps:
       - name: Gate
         env:
@@ -228,7 +228,7 @@ jobs:
     needs: full
     if: always() && (needs.full.result == 'failure' || needs.full.result == 'cancelled')
     timeout-minutes: 10
-    runs-on: tenki-standard-small-2c-4g
+    runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
