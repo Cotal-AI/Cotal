@@ -1,20 +1,26 @@
 /**
- * The #773 two-root renewal refusal, reproduced through the SHIPPED renewal owner - a REAL
- * `Manager` (its initial class-2 renewal pass in `start()`), a REAL delivery daemon
+ * Two managers, two workspace roots, one space, through the SHIPPED renewal path - REAL
+ * `Manager` instances (their initial class-2 renewal pass in `start()`), a REAL delivery daemon
  * (`tsx bin/cotal.ts deliver`), a REAL authed broker. No live stack, no shared state.
  *
- * THE FIX (#773): the manager challenges the daemon's reload-store identity at start, before the
- * first remint. Fingerprint-only `reloadCreds` stays; it is safe once both sides name one store.
- * A composition where the two roots differ is refused at construction, naming BOTH roots. The
- * cells below encode the FIXED behavior. The CONTROL phase still runs the identical path over a
- * UNIFIED root and must keep adopting.
+ * THE #773 GUARANTEE, and it is what phase 1 measures: a manager must never remint a daemon
+ * credential into a store the daemon does not read. Fingerprint-only `reloadCreds` carries no
+ * bytes, so a remint into the wrong store refuses every adoption until the 24h window burns out.
+ * The manager therefore challenges the daemon's reload-store identity before every remint.
  *
- * Both roots are load-bearing, and the refusal is produced end to end by shipped code only:
- *   - root A is the Manager's actual `workspaceRoot`;
- *   - root B is the daemon's actual read path (its `--creds` source and membership feed store).
+ * THE #1634 CORRECTION: that challenge selects the daemon's RENEWAL OWNER, it does not decide
+ * whether a manager may run. The daemon names one store, so at most one manager matches it and
+ * only that manager remints. A manager on any other root starts, serves its own agents, and
+ * remints nothing. Refusing its start renewed nothing (the daemon's own root is just as
+ * unrenewed) and capped an auth space at one manager.
+ *
+ * Both roots are load-bearing, and every outcome is produced end to end by shipped code only:
+ *   - root A is the non-owner Manager's actual `workspaceRoot`;
+ *   - root B is the daemon's actual read path (its `--creds` source and membership feed store),
+ *     and the co-rooted owner Manager's `workspaceRoot`.
  * The suite never hand-sends a fingerprint; `Manager.start()` drives the whole pass. The
- * construction-time challenge names both roots and must fire BEFORE any remint, so A's bytes
- * stay the original generation.
+ * challenge runs BEFORE any remint, so A's bytes stay the original generation throughout,
+ * including across the owner's full adopted pass.
  *
  * The CONTROL phase runs the IDENTICAL path over a UNIFIED root (manager and daemon share one
  * root, the stock single-host composition): adoption succeeds, proving the phase-1 refusal is
@@ -26,7 +32,7 @@
  * Run: pnpm smoke:manager-two-root-renewal   (needs `nats-server` on PATH; auth mode; ~60s)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,7 +42,7 @@ const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx")
 // COTAL_* environment names a LIVE mesh. The in-process Manager and every child must see only the
 // rig this suite builds. (Child env is additionally scrubbed via `cleanEnv` below, the tree-wide
 // `smoke:suite-ambient-env` convention.)
-const home = mkdtempSync(join(tmpdir(), "cotal-773-home-"));
+const home = realpathSync(mkdtempSync(join(tmpdir(), "cotal-1634-home-")));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 
@@ -86,7 +92,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 /** Every cell above is enumerated: a run that silently skipped cells must not read as green. */
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 23;
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -121,6 +127,22 @@ const stageDaemonRoot = (root: string, space: string, files: Record<string, stri
   return seg;
 };
 
+/** Tee the in-process Manager's own operator log while a step runs. The renewal-owner notice is
+ *  the only surface a non-owner manager has, so a cell that graded the outcome without reading it
+ *  would pass on a manager that skipped the remint silently. */
+const captureStderr = (): { text: string; release: () => void } => {
+  const original = console.error;
+  const cap = {
+    text: "",
+    release: () => { console.error = original; },
+  };
+  console.error = (...args: unknown[]) => {
+    cap.text += args.map((a) => (typeof a === "string" ? a : String(a))).join(" ") + "\n";
+    original(...args);
+  };
+  return cap;
+};
+
 /** Spawn the REAL delivery daemon rooted at `root` (its cwd - the store its re-reads resolve). */
 const spawnDaemon = (root: string, space: string, servers: string, credsPath: string, sink: { out: string; exited: boolean }): ChildProcess => {
   const d = spawnProc(TSX, [BIN, "deliver", "--space", space, "--server", servers, "--creds", credsPath], {
@@ -136,20 +158,25 @@ const spawnDaemon = (root: string, space: string, servers: string, credsPath: st
   return d;
 };
 
-const rootA = mkdtempSync(join(tmpdir(), "cotal-773-mgr-root-")); // the manager's workspace root
-const rootB = mkdtempSync(join(tmpdir(), "cotal-773-daemon-root-")); // the daemon's DIVERGENT root
-const rootC = mkdtempSync(join(tmpdir(), "cotal-773-unified-root-")); // control: one shared root
+// realpath, because a store identity is compared as a path and the daemon's own side of that
+// comparison arrives through `process.cwd()`, which is already resolved. On a platform whose
+// tmpdir is reached through a symlink (macOS `/var` -> `/private/var`) an unresolved mkdtemp path
+// would make one directory look like two and fail the rig rather than the code under test.
+const rootA = realpathSync(mkdtempSync(join(tmpdir(), "cotal-1634-nonowner-root-"))); // the non-owner manager's root
+const rootB = realpathSync(mkdtempSync(join(tmpdir(), "cotal-1634-daemon-root-"))); // the daemon's root, and the owner manager's
+const rootC = realpathSync(mkdtempSync(join(tmpdir(), "cotal-1634-unified-root-"))); // control: one shared root
 
 let daemonB: ChildProcess | undefined;
 let daemonC: ChildProcess | undefined;
 const sinkB = { out: "", exited: false };
 const sinkC = { out: "", exited: false };
 let mgrA: InstanceType<typeof Manager> | undefined;
+let mgrB: InstanceType<typeof Manager> | undefined;
 let mgrC: InstanceType<typeof Manager> | undefined;
 let broker1: ReturnType<typeof startBroker> | undefined;
 let broker2: ReturnType<typeof startBroker> | undefined;
 try {
-  // ---- phase 1 (#773): manager rooted at A, daemon rooted at B - SAME space, DIVERGENT stores --
+  // ---- phase 1: manager A rooted at A, daemon + manager B rooted at B - one space, two roots --
   const auth1 = await createSpaceAuth(SPACE_DIVERGED);
   const obs1 = await mintMembershipObserverCreds(auth1, newIdentity()); // while the $SYS seed is in memory
   const evict1 = await mintConnectionEvictorCreds(auth1, newIdentity());
@@ -165,7 +192,8 @@ try {
   const rwId1 = newIdentity();
   const dlvGen1 = await mintCreds(auth1, dlvId1, "delivery");
   const rwGen1 = await mintCreds(auth1, rwId1, "membership-rw");
-  saveSpaceAuth(authDir(rootA), auth1); // the manager's signer lives in ITS root's store
+  saveSpaceAuth(authDir(rootA), auth1); // each manager's signer lives in ITS OWN root's store
+  saveSpaceAuth(authDir(rootB), auth1);
   const segA = stageDaemonRoot(rootA, SPACE_DIVERGED, { [DELIVERY_CREDS_KIND]: dlvGen1, [MEMBERSHIP_RW_CREDS_KIND]: rwGen1 });
   const segB = stageDaemonRoot(rootB, SPACE_DIVERGED, {
     [DELIVERY_CREDS_KIND]: dlvGen1,
@@ -179,32 +207,61 @@ try {
   must("daemon B boots from its own root", await until(() => sinkB.out.includes("delivery daemon up"), 60_000), sinkB.out.slice(-500));
   must("daemon B's membership feed is up (the membership component is a real adopter here)", await until(() => sinkB.out.includes("membership feed up"), 15_000), sinkB.out.slice(-500));
 
-  // The renewal owner is the REAL Manager: `start()` runs the initial class-2 renewal pass inline
-  // (re-sign through ITS store, request `reloadCreds {expected}`, persist `renewal.json`).
+  // Manager A is the NON-OWNER: its own workspace root, the space's signer, and a delivery daemon
+  // that reloads from somewhere else. `start()` runs the initial class-2 renewal pass inline, so
+  // whatever it decides about the daemon half has already happened once `start()` resolves.
   mgrA = new Manager({ space: SPACE_DIVERGED, servers: servers1, runtime: "pty", workspaceRoot: rootA });
   let startRefusal: string | undefined;
+  const notices = captureStderr();
   try {
     await mgrA.start();
   } catch (e) {
     startRefusal = (e as Error).message;
+  } finally {
+    notices.release();
   }
   ok(
-    "#773: the divergent manager-store/daemon-store composition is refused at start, naming both roots",
-    startRefusal !== undefined && startRefusal.includes(rootA) && startRefusal.includes(rootB),
-    { startRefusal, rootA, rootB },
+    "#1634: a manager on a SECOND workspace root starts against a daemon rooted elsewhere",
+    startRefusal === undefined,
+    { startRefusal },
+  );
+  ok(
+    "#1634: it reports that it is not the renewal owner, naming both roots and its own inaction",
+    notices.text.includes("not the delivery daemon's credential renewal owner")
+      && notices.text.includes(rootA)
+      && notices.text.includes(rootB)
+      && notices.text.includes("No daemon credential is reminted here"),
+    { tail: notices.text.slice(-600), rootA, rootB },
   );
 
   const rec = readRenewalRecord(rootA);
   ok(
-    "#773: the refused start never reminted (no manager renewal record, no write into A)",
+    "#773: the non-owner never reminted (no manager renewal record, no write into A)",
     rec === undefined,
     rec,
   );
   ok("#773: root A's delivery cred still holds the ORIGINAL generation (remint did not run)", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
   ok("#773: root B's delivery cred still holds the ORIGINAL generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
   ok("#773: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
-  ok("daemon B outlives the refused start (refusal is a manager construction error, not a daemon death)", !sinkB.exited);
+  ok("daemon B outlives the non-owner's start (a foreign store is not a daemon death)", !sinkB.exited);
 
+  // The OWNER is the manager the daemon's own store points at. It comes up SECOND, with the
+  // non-owner already live in the same space, and must still adopt: one owner per space is
+  // selected by store identity, not by being the only manager.
+  mgrB = new Manager({ space: SPACE_DIVERGED, servers: servers1, runtime: "pty", workspaceRoot: rootB });
+  await mgrB.start();
+  ok("#1634: the co-rooted manager starts too, so ONE space carries TWO managers on TWO roots", true);
+
+  const recB = readRenewalRecord(rootB);
+  ok("#1634: the OWNER's pass adopts (adoption.ok:true) with the non-owner live in the same space", recB?.adoption?.ok === true, recB?.adoption);
+  ok("#1634: root B's delivery cred now holds the owner's re-signed generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") !== dlvGen1);
+  ok(
+    "#773: root A is STILL the original generation after the owner's full adopted pass",
+    readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1 && readRenewalRecord(rootA) === undefined,
+  );
+
+  await mgrB.stop({ withAgents: true });
+  mgrB = undefined;
   await mgrA.stop({ withAgents: true });
   mgrA = undefined;
   if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL");
@@ -265,6 +322,7 @@ try {
   process.exitCode = 1;
 } finally {
   try { await mgrA?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
+  try { await mgrB?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
   try { await mgrC?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
   try { if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL"); } catch { /* gone */ }
   try { if (daemonC && !sinkC.exited) daemonC.kill("SIGKILL"); } catch { /* gone */ }
