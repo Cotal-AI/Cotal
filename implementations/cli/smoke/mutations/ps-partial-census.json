@@ -1,0 +1,66 @@
+{
+  "suite": [
+    "implementations/cli/smoke/ps-partial-census.smoke.ts"
+  ],
+  "guard": "cotal ps reports a partial census and exits non-zero instead of presenting one instance's seats as the whole space",
+  "command": "pnpm smoke:ps-partial-census",
+  "completionMarker": "ps partial census smoke",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/ps-partial-census.json",
+  "why": [
+    "The defect had two halves and each has its own mutation. Restoring the zero exit is the half a",
+    "script reads, so it is proven against the command's own status rather than against a helper.",
+    "Counting a refusing instance as one that reported restores the miscount the exit is derived",
+    "from. The last two hold the line the issue asked for: the split is decided on the structured",
+    "refusal code, and the code has to travel from the scatter to the renderer for the operator to",
+    "see it at all, which only the live run crosses.",
+    "No build step is needed: the suite imports the CLI from src, and nothing here mutates a package",
+    "that resolves through dist."
+  ],
+  "mutations": [
+    {
+      "name": "the partial census exits 0 again",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (census.silent > 0) process.exit(1);",
+      "replace": "  if (false) process.exit(1);",
+      "expectRed": "EXITS NON-ZERO: a partial census is not a listing of the space",
+      "cell": "`cotal ps` over this space EXITS NON-ZERO: a partial census is not a listing of the space",
+      "note": "This is the shipped behaviour and reproduces the half of #1637 that only a script can see."
+    },
+    {
+      "name": "a refusing instance is counted as one that reported",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    if (inst.reachable && inst.error === undefined) { reported++; continue; }",
+      "replace": "    if (inst.reachable) { reported++; continue; }",
+      "expectRed": "the refusal and the silence counted the same way",
+      "cell": "...so two did not, the refusal and the silence counted the same way",
+      "note": "The refusal hides that instance's whole roster, so counting it as reported is the miscount the exit status is derived from."
+    },
+    {
+      "name": "the notice is withheld from a partial census",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (census.silent === 0) return [];",
+      "replace": "  if (census.silent >= 0) return [];",
+      "expectRed": "a partial census produces a notice",
+      "cell": "a partial census produces a notice",
+      "note": "An exit code with no line beside it tells an operator at a terminal nothing about what is missing."
+    },
+    {
+      "name": "the contract split is decided on the message instead of the code",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    if (inst.code === \"contract-mismatch\") contractSplit = true;",
+      "replace": "    if ((inst.error ?? \"\").includes(\"contract\")) contractSplit = true;",
+      "expectRed": "a refusal whose MESSAGE reads like a mismatch but carries no code is not one either",
+      "cell": "...and a refusal whose MESSAGE reads like a mismatch but carries no code is not one either",
+      "note": "The wording is operator copy; a renderer matched to its prose claims a split for any refusal that mentions a contract."
+    },
+    {
+      "name": "the scatter stops carrying the refusal code to the renderer",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "          ...(ar.reply.error?.code !== undefined ? { code: ar.reply.error.code } : {}),",
+      "replace": "",
+      "expectRed": "naming the contract split once, with the pin, off the code the scatter carried",
+      "cell": "...and naming the contract split once, with the pin, off the code the scatter carried",
+      "note": "The census keys on the code, so dropping it in the scatter leaves the operator with the per-row SPEC citation and no statement of the condition."
+    }
+  ]
+}

@@ -746,6 +746,22 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   `ps` says the manager registry could not be read rather than pronouncing on the managers, which
   may all be up.
 
+  A listing that could not reach every instance is not a listing of the space, so it does not end
+  like one. When a registered instance does not report its seats, whether it stayed silent or
+  answered with a refusal, `ps` prints one line naming how many instances did not report and exits
+  non-zero. The per-instance rows are printed either way, so nothing is hidden; what changes is
+  that a script can no longer read the result as a full census. An instance that answers with no
+  seats has reported, and does not make the listing partial. The line goes to stderr in both
+  presentations, so `--json` stdout stays one JSON object per seat per line.
+
+  Every manager of one space must serve the same command contract. `ps` takes the contract from one
+  instance's `describe` and pins it for the whole class, and a manager serving a different one
+  rejects the request rather than coercing it ([SPEC](../SPEC.md) §13.7), so none of its seats can
+  be listed. Which instances reject follows whichever one answered the describe, so the listing
+  swaps between calls on a space running two builds. When that is the cause, the partial-listing
+  line names the pinned digests and the instance they came from. Run one build per space, or read a
+  single instance with `--on <instance>`.
+
 **The verdict is scoped to the endpoint rail the request rode.** An issued caller rides the
 versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
 both (SPEC 13.15). A manager older than the versioned rail serves `ep` alone, so it can be running,
