@@ -258,6 +258,18 @@ try {
   // flips to `bound`. This is the discriminator for the delivery plane: same responder, same peer,
   // same call, one fact changed.
   const rev = await dlvEp.acquireDeliveryLease(0);
+
+  // BETWEEN THOSE TWO STATES LIES THE ONE THE REPORTER ACTUALLY WATCHED FOR 22 HOURS, and it needs
+  // its own cell rather than being assumed to ride on B2. `acquireDeliveryLease` CAS-creates the row
+  // `ready:false` BEFORE binding, so right now the slot is CLAIMED but the responder is not ready —
+  // which is a different input to the classifier than B2's, where the row was ABSENT entirely and
+  // the `lease === undefined` branch answered. A mutant that graded a not-ready row as `bound`
+  // therefore survived B2 untouched: B2 never reached that branch. Measured, not predicted; this
+  // cell exists because the mutation proof found the gap.
+  const dlvClaimedNotReady = await peer.probeLiveness("delivery", 1_500);
+  check("CELL B2b: a lease that is CLAIMED but not READY grades `unbound` (the 22-hour state: the slot is taken, the responder is not up)",
+    dlvClaimedNotReady.responder === "unbound", dlvClaimedNotReady);
+
   await dlvEp.markDeliveryLeaseReady(0, rev);
   const dlvBound = await peer.probeLiveness("delivery", 1_500);
   check("CELL B3: once the lease is READY, the same DELIVERY probe returns `bound`",
@@ -371,6 +383,56 @@ try {
   const canHearOwn = await trySubscribe(peerCreds, peerId.id, ownReply);
   check("CELL D4 (CONTROL for D3): the same peer on the same credential CAN subscribe its OWN reply lane",
     canHearOwn === "allowed", { subject: ownReply, verdict: canHearOwn });
+
+  // REFUSED: naming SOMEONE ELSE'S lane as the reply target. The broker does not permission-check a
+  // requester's embedded reply subject, so without the responder's own bound-reply guard an
+  // authenticated peer could point a probe's reply at a VICTIM's lane and make the responder publish
+  // into it — the confused-deputy shape `serveControl` documents, reproduced on a new rail.
+  //
+  // THIS CELL EXISTS BECAUSE THE MUTATION PROOF FOUND IT MISSING. A mutant that dropped the guard
+  // entirely survived the whole suite: every other cell sends a well-formed reply target, so nothing
+  // ever exercised the rejecting branch. The discriminator is the pair below — the same peer, the
+  // same responder, the same request subject, differing only in where the reply is aimed.
+  const victimLane = `${livenessSubject(space, "manager", DEV_OWNER, "victimpeer")}.reply.stolen`;
+  let deputyAnswered: "answered" | "refused";
+  const deputyNc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(peerCreds)),
+    inboxPrefix: `_INBOX_${peerId.id}`,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    await deputyNc.request(peerProbeSubject, new Uint8Array(0), { timeout: 1_000, noMux: true, reply: victimLane });
+    deputyAnswered = "answered";
+  } catch {
+    // No answer came back, which is the correct outcome: the responder dropped the request rather
+    // than publishing into a lane the sender does not own.
+    deputyAnswered = "refused";
+  } finally {
+    await deputyNc.drain().catch(() => { /* already gone */ });
+  }
+  check("CELL D4b: a probe whose reply target is ANOTHER peer's lane is NOT answered (no confused deputy)",
+    deputyAnswered === "refused", { victimLane, outcome: deputyAnswered });
+  // The control for D4b, and it is what makes the refusal mean something: the SAME peer against the
+  // SAME responder, differing only in the reply target, DOES get an answer. Without this, a
+  // responder that had simply died would pass D4b while proving nothing.
+  let ownLaneAnswered: "answered" | "refused";
+  const okNc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(peerCreds)),
+    inboxPrefix: `_INBOX_${peerId.id}`,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    await okNc.request(peerProbeSubject, new Uint8Array(0), { timeout: 1_000, noMux: true, reply: `${peerProbeSubject}.reply.${randomUUID()}` });
+    ownLaneAnswered = "answered";
+  } catch {
+    ownLaneAnswered = "refused";
+  } finally {
+    await okNc.drain().catch(() => { /* already gone */ });
+  }
+  check("CELL D4c (CONTROL for D4b): the same probe with its OWN reply lane IS answered (the responder is alive and the fixture discriminates)",
+    ownLaneAnswered === "answered", { outcome: ownLaneAnswered });
 
   // REFUSED, and this is the boundary the issue asks to be pinned: the peer gains NO read of the
   // state behind the answer. The manager lease row carries the operator's workspace root and pid;

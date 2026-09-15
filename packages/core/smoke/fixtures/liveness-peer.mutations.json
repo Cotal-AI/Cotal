@@ -1,7 +1,7 @@
 {
   "command": "TMPDIR=/home/cotal/.cotal/jcode-scratch/w1577-tmp ./node_modules/.bin/tsx packages/core/smoke/liveness-peer.smoke.ts",
   "progressPattern": "✓",
-  "minTicks": 30,
+  "minTicks": 33,
   "mutations": [
     {
       "name": "a probe TIMEOUT is reported as an unbound responder instead of an unchecked axis",
@@ -24,8 +24,8 @@
       "file": "packages/core/src/liveness.ts",
       "find": "  if (lease.ready !== true) return \"unbound\";",
       "replace": "  if (lease.ready !== true) return \"bound\";",
-      "expectRed": "CELL B2",
-      "cell": "CELL B2: a daemon that ANSWERS but has not reached ready reports `unbound` about itself (it is not counted alive merely for replying)"
+      "expectRed": "CELL B2b",
+      "cell": "CELL B2b: a lease that is CLAIMED but not READY grades `unbound` (the 22-hour state: the slot is taken, the responder is not up)"
     },
     {
       "name": "a responder whose readState throws answers bound instead of unknown",
@@ -56,8 +56,16 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {\n          this.emit(\"error\", new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));\n          continue;\n        }",
       "replace": "        if (!m.reply) continue;",
-      "expectRed": "CELL D8",
-      "cell": "CELL D8: the wire answer carries EXACTLY {plane, responder} - no holder, pid, root, instance id or roster"
+      "expectRed": "CELL D4b",
+      "cell": "CELL D4b: a probe whose reply target is ANOTHER peer's lane is NOT answered (no confused deputy)"
+    },
+    {
+      "name": "the responder reports a plane it was not asked about, so an answer about delivery can arrive for a question about the manager",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        const answer: LivenessAnswer = { plane, responder };",
+      "replace": "        const answer = { plane: plane === \"manager\" ? \"delivery\" : \"manager\", responder } as LivenessAnswer;",
+      "expectRed": "CELL B1",
+      "cell": "CELL B1: with a responder bound, the peer's MANAGER probe returns `bound`"
     },
     {
       "name": "a peer may probe under another principal's identity slots because the subject stops pinning the caller",
