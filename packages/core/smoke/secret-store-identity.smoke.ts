@@ -1,9 +1,9 @@
 /**
- * Construction-time SecretStore identity: the #773 challenge names both stores and
- * never falls back between an fs root and an injected coordinate.
+ * SecretStore identity: the #773 renewal-owner challenge names both stores and never
+ * falls back between an fs root and an injected coordinate.
  */
 import {
-  divergentSecretStoreRefusal,
+  foreignDaemonSecretStoreNotice,
   formatSecretStoreIdentity,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
@@ -34,9 +34,10 @@ ok("fs never equals injected", !sameSecretStoreIdentity({ kind: "fs", root: "/a"
 
 const a = { kind: "fs" as const, root: "/mgr-root" };
 const b = { kind: "fs" as const, root: "/daemon-root" };
-const msg = divergentSecretStoreRefusal(a, b);
-ok("refusal names the manager root", msg.includes("/mgr-root"));
-ok("refusal names the daemon root", msg.includes("/daemon-root"));
+const msg = foreignDaemonSecretStoreNotice(a, b);
+ok("the foreign-store notice names the manager root", msg.includes("/mgr-root"));
+ok("the foreign-store notice names the daemon root", msg.includes("/daemon-root"));
+ok("the foreign-store notice says no daemon credential is reminted here", msg.includes("No daemon credential is reminted here"));
 ok("fs label is the root itself", formatSecretStoreIdentity(a) === "/mgr-root");
 ok("injected label is prefixed", formatSecretStoreIdentity({ kind: "injected", coordinate: "kms:x" }) === "injected:kms:x");
 

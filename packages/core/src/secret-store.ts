@@ -58,6 +58,9 @@ export interface SecretStore {
  *
  * Fingerprint-only `reloadCreds` is safe only when the renewal owner and the delivery daemon
  * genuinely read one store. This identity is that proof: it names the store, never a secret.
+ * It is also what SELECTS the renewal owner among several managers on one space: the daemon
+ * names ONE store, so at most one manager's store can match it, and only that manager remints
+ * the daemon credentials. A manager on any other store serves its own agents and remints none.
  * Two workstation filesystem stores agree only when they resolve the same directory. An
  * injected (hosted) store is identified by an operator-supplied coordinate, never guessed from
  * a local root. A store may declare this identity itself; otherwise the composition root must
@@ -111,15 +114,21 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 }
 
 /**
- * The construction-time refusal when the manager's remint store and the daemon's reload
- * source are not one authority. Both identities appear in the message; a refusal that
- * declines to start without naming them is the same defect wearing a different error.
+ * What a manager says when the delivery daemon reloads from a store this manager does not
+ * write. Both identities appear in the message; a notice that declines to name them cannot
+ * be acted on.
+ *
+ * This is a NOTICE, not a refusal to run. Reminting into a store the daemon never reads is
+ * the #773 defect, so this manager remints no daemon credential; the manager whose store the
+ * daemon does read is the renewal owner. Killing this manager instead would renew nothing and
+ * would take a whole workspace root's seats down with it.
  */
-export function divergentSecretStoreRefusal(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
+export function foreignDaemonSecretStoreNotice(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
   return (
-    `daemon credential renewal cannot be constructed across two SecretStores: ` +
-    `the manager remints through ${formatSecretStoreIdentity(owner)} while the delivery daemon ` +
-    `reloads from ${formatSecretStoreIdentity(daemon)}. Pass both processes the same store ` +
-    `(one explicit SecretStore coordinate, or one shared filesystem root).`
+    `this manager is not the delivery daemon's credential renewal owner: it remints through ` +
+    `${formatSecretStoreIdentity(owner)} while the daemon reloads from ${formatSecretStoreIdentity(daemon)}, ` +
+    `and fingerprint-only reloadCreds cannot cross two stores. No daemon credential is reminted here. ` +
+    `The renewal owner is the manager on ${formatSecretStoreIdentity(daemon)}; run one there, or pass both ` +
+    `processes the same store (one explicit SecretStore coordinate, or one shared filesystem root).`
   );
 }
