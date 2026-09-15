@@ -34,6 +34,16 @@
  *   node scripts/mutation-proof.mjs --config mutations.json
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
+ *   node scripts/mutation-proof.mjs --restore-live      put a killed run's mutation back
+ *
+ * A killed run cannot restore anything, so it leaves a BREADCRUMB instead. Before each mutating
+ * write the tool records the target, its pre-mutation hash and where the backup is; a verified
+ * restore removes the record. A later run reads those records first, and a mutation still live in
+ * this tree is named as the previous run's leftover rather than reported as a dirty tree the
+ * operator made. `--restore-live` puts it back from the backup, byte and timestamp, and refuses
+ * rather than guessing if the backup is missing or does not hash to what was recorded. This is the
+ * one path that survives SIGKILL, which no handler can catch: the reproof harness kills a proof
+ * that overruns its 140-minute deadline with exactly that signal.
  *
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
@@ -46,7 +56,7 @@
  * Measured here: a subset config keyed on `expectRed` outlived a cell rename and re-ran the
  * pre-fix mutation for a minute before the mismatch was noticed.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, readdirSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -144,6 +154,153 @@ function parseArgs(argv) {
  * separate lines, so a single-line pattern misses exactly the guards worth proving.
  */
 const countOccurrences = (hay, needle) => hay.split(needle).length - 1;
+
+/**
+ * A killed run's leftovers, recorded before the damage and read by whoever comes next.
+ *
+ * Signal handlers cover the kills that can be caught. SIGKILL cannot be caught, a supervisor that
+ * has run out of patience sends it, and the file is then a syntactically valid, deliberately
+ * sabotaged build that every surface still reports as a clean checkout. The one thing a process
+ * that is about to be killed can do is write down what it is ABOUT to do, so the state is named
+ * rather than silent.
+ *
+ * In `tmpdir()` next to the backup it points at, NOT in the worktree. This tool refuses to start
+ * on a dirty tree, so a record kept in the tree would refuse itself, and it has to survive the
+ * `git checkout` that is the documented recovery.
+ *
+ * Keyed on the same hash as the backup, so the two always travel together.
+ */
+const CRUMB_SUFFIX = ".live.json";
+const keyFor = (path) => createHash("sha1").update(path).digest("hex").slice(0, 12);
+const backupFor = (path) => join(tmpdir(), `mutation-proof-${keyFor(path)}.bak`);
+const crumbFor = (path) => join(tmpdir(), `mutation-proof-${keyFor(path)}${CRUMB_SUFFIX}`);
+
+/** The tree a run mutates. A record is only THIS run's business if it names a file inside it. */
+function treeRoot(cwd) {
+  try {
+    return realpathSync(execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim());
+  } catch {
+    return realpathSync(cwd);
+  }
+}
+
+/** Every record in `tmpdir()` naming a file under `root`, split by whether the mutation is still
+ *  on disk. The classification is a HASH of the file, not the presence of the record: a run killed
+ *  between writing the record and writing the mutant did no damage, and a `git checkout` after a
+ *  crash is a real recovery that must not leave the operator refused forever. */
+function strandedMutations(root) {
+  const live = [], stale = [];
+  let names;
+  try {
+    names = readdirSync(tmpdir());
+  } catch {
+    return { live, stale };
+  }
+  for (const name of names) {
+    if (!name.startsWith("mutation-proof-") || !name.endsWith(CRUMB_SUFFIX)) continue;
+    const crumb = join(tmpdir(), name);
+    let rec;
+    try {
+      rec = JSON.parse(readFileSync(crumb, "utf8"));
+    } catch {
+      continue;
+    }
+    if (typeof rec?.file !== "string" || typeof rec?.shaBefore !== "string") continue;
+    if (rec.file !== root && !rec.file.startsWith(`${root}/`)) continue;
+    const entry = { ...rec, crumb };
+    if (!existsSync(rec.file)) live.push(entry);
+    else if (sha(rec.file) === rec.shaBefore) stale.push(entry);
+    else live.push(entry);
+  }
+  return { live, stale };
+}
+
+/** Write the record BEFORE the mutating write, so the window it covers starts before the damage. */
+function recordLiveMutation(rec) {
+  writeFileSync(crumbFor(rec.file), `${JSON.stringify(rec, null, 2)}\n`);
+}
+
+/**
+ * Refuse a tree that still carries a previous run's mutation, and say whose it was.
+ *
+ * BEFORE the dirty-tree check, because the order is the point of this. `REFUSING: working tree is
+ * dirty. Commit before you mutate` is addressed to an operator who dirtied the tree, and reading it
+ * after a crash sends that operator looking for uncommitted work they never did.
+ *
+ * Not bypassed by `--allow-dirty`. That flag says "I accept that git is not my recovery for what I
+ * left here"; it does not say "measure against a file this tool broke on purpose", which is the one
+ * reading a green result cannot survive.
+ */
+function assertNoLiveMutation(cwd) {
+  const root = treeRoot(cwd);
+  const { live, stale } = strandedMutations(root);
+  for (const s of stale) {
+    say(`${C.dim}! a previous run recorded a mutation in ${s.file}; the file matches its pre-mutation content again, so the record is cleared${C.off}`);
+    rmSync(s.crumb, { force: true });
+  }
+  if (live.length === 0) return;
+  say(`${C.red}REFUSING: a previous mutation-proof run left ${live.length} mutation(s) live in this tree.${C.off}`);
+  say("This is not your uncommitted work. A killed run cannot restore, so it recorded what it broke:");
+  for (const l of live) {
+    say(`  ${l.file}`);
+    say(`    mutation "${l.mutation ?? "(unnamed)"}" from ${l.config ?? "(inline)"}, pid ${l.pid ?? "?"}, started ${l.startedAt ?? "?"}`);
+    say(`    original at ${l.backup}${existsSync(l.backup) ? "" : " (MISSING)"}`);
+  }
+  say("");
+  say("  node scripts/mutation-proof.mjs --restore-live    put them back from those backups");
+  say("  git checkout -- <file>                            recover from git instead; the record clears itself");
+  process.exit(3);
+}
+
+/**
+ * Put a recorded mutation back, or refuse and say why.
+ *
+ * The backup is verified against the hash the record carries before it is copied over anything. A
+ * backup that does not hash to what was recorded is not the original, and writing it would replace
+ * a mutation the operator can see with a corruption they cannot. The record is kept in that case:
+ * it is the only remaining evidence of which file is broken.
+ */
+function restoreLive(cwd) {
+  const root = treeRoot(cwd);
+  const { live, stale } = strandedMutations(root);
+  for (const s of stale) rmSync(s.crumb, { force: true });
+  if (live.length === 0) {
+    say(`${C.green}nothing to restore: no mutation-proof run left a live mutation in ${root}.${C.off}`);
+    return 0;
+  }
+  let failed = 0;
+  for (const l of live) {
+    if (!existsSync(l.backup)) {
+      say(`${C.red}CANNOT RESTORE ${l.file}: the backup ${l.backup} is gone. Use git.${C.off}`);
+      failed++;
+      continue;
+    }
+    const backupSha = createHash("sha256").update(readFileSync(l.backup)).digest("hex");
+    if (backupSha !== l.shaBefore) {
+      say(`${C.red}CANNOT RESTORE ${l.file}: ${l.backup} hashes ${backupSha.slice(0, 12)}, the record says ${String(l.shaBefore).slice(0, 12)}. Use git.${C.off}`);
+      failed++;
+      continue;
+    }
+    copyFileSync(l.backup, l.file);
+    if (sha(l.file) !== l.shaBefore) {
+      say(`${C.red}CANNOT RESTORE ${l.file}: the copy did not land. Use git.${C.off}`);
+      failed++;
+      continue;
+    }
+    // The timestamp as well as the bytes, for the same reason the happy path does it: a restored
+    // file with a fresh mtime makes every source-against-build comparison report a stale artefact
+    // for a file nobody edited.
+    // Seconds, as a float: `utimesSync` takes numbers in seconds and Dates in whole milliseconds,
+    // and only the first of those can put back what was recorded.
+    if (typeof l.atimeMs === "number" && typeof l.mtimeMs === "number") {
+      utimesSync(l.file, l.atimeMs / 1000, l.mtimeMs / 1000);
+    }
+    rmSync(l.backup, { force: true });
+    rmSync(l.crumb, { force: true });
+    say(`${C.green}restored ${l.file}${C.off} (mutation "${l.mutation ?? "(unnamed)"}")`);
+  }
+  return failed === 0 ? 0 : 3;
+}
 
 /** The tree must be recoverable WITHOUT this tool before a destructive experiment starts. */
 function assertCleanTree(cwd, allowDirty) {
@@ -263,10 +420,10 @@ function proveOne(m, opts) {
     return { label, verdict: "ERROR", why: "no expectRed: name the assertion this mutation must redden, or the verdict is an accusation about nothing" };
   }
 
-  const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(path).digest("hex").slice(0, 12)}.bak`);
+  const backup = backupFor(path);
   copyFileSync(path, backup);
   const shaBefore = sha(path);
-  const { atime: atimeBefore, mtime: mtimeBefore } = statSync(path);
+  const { atime: atimeBefore, mtime: mtimeBefore, atimeMs, mtimeMs } = statSync(path);
 
   // Restoring the FILE is not restoring the TREE when the command under test compiles it. The sha
   // check below proves the source is byte-identical again; it says nothing about a `dist/` the run
@@ -286,7 +443,14 @@ function proveOne(m, opts) {
     // and back-dating it would hide a failed restore from the tools that compare timestamps —
     // the one case where a bumped mtime is telling the truth.
     if (ok) utimesSync(path, atimeBefore, mtimeBefore);
-    rmSync(backup, { force: true });
+    // The backup and the record survive a restore that did NOT verify, because that is the state
+    // they exist for. Deleting them here left the caller's `RESTORE FAILED ... backup at <path>`
+    // naming a file this line had already removed, and left the next run with a broken tree and no
+    // record of who broke it.
+    if (ok) {
+      rmSync(backup, { force: true });
+      rmSync(crumbFor(path), { force: true });
+    }
     if (ok && m.afterRestore) {
       const rr = run(m.afterRestore, cwd, opts.timeoutMs);
       if (rr.status !== 0) {
@@ -304,6 +468,24 @@ function proveOne(m, opts) {
   // before the run, and the excerpt for a throw after it.
   let transcript;
   try {
+    // BEFORE the write, not after: the window this record has to cover starts at the write, and a
+    // record written afterwards is absent for exactly the interval that matters.
+    recordLiveMutation({
+      // The REAL path. `--cwd` may be spelled through a symlink, and a record whose path does not
+      // share a prefix with the tree root would be invisible to the run that has to read it.
+      file: realpathSync(path),
+      backup,
+      shaBefore,
+      // The raw millisecond floats, not `Date.getTime()`: a Date is whole milliseconds, and a
+      // restore that rounds the timestamp is still a write as far as anything comparing a source
+      // against a build is concerned.
+      atimeMs,
+      mtimeMs,
+      mutation: m.name ?? label,
+      config: opts.configPath,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    });
     writeFileSync(path, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
     // sound only by accident.
@@ -481,9 +663,16 @@ function proveOne(m, opts) {
 // ---- entry ------------------------------------------------------------------------------------
 const a = parseArgs(process.argv.slice(2));
 const cwd = a.cwd ?? process.cwd();
+
+// `--restore-live` takes no config, no command and no mutations. It is the way out of the state a
+// killed run left behind, and an escape hatch that needs the configuration which produced that
+// state is one more thing to get right while the tree is broken.
+if (a["restore-live"] !== undefined) process.exit(restoreLive(cwd));
+
 let mutations;
 let opts = {
   cwd,
+  configPath: typeof a.config === "string" ? a.config : undefined,
   command: a.command,
   timeoutMs: Number(a.timeout ?? 900_000),
   progressPattern: a["progress-pattern"],
@@ -510,6 +699,7 @@ if (a.config) {
 }
 if (!opts.command) usage("no --command given (and none in the config)");
 
+assertNoLiveMutation(cwd);
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
