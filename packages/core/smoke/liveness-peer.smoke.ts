@@ -389,12 +389,33 @@ try {
   // authenticated peer could point a probe's reply at a VICTIM's lane and make the responder publish
   // into it — the confused-deputy shape `serveControl` documents, reproduced on a new rail.
   //
-  // THIS CELL EXISTS BECAUSE THE MUTATION PROOF FOUND IT MISSING. A mutant that dropped the guard
-  // entirely survived the whole suite: every other cell sends a well-formed reply target, so nothing
-  // ever exercised the rejecting branch. The discriminator is the pair below — the same peer, the
-  // same responder, the same request subject, differing only in where the reply is aimed.
-  const victimLane = `${livenessSubject(space, "manager", DEV_OWNER, "victimpeer")}.reply.stolen`;
-  let deputyAnswered: "answered" | "refused";
+  // THE OBSERVER MUST BE THE VICTIM, and the first version of this cell got that wrong in a way
+  // worth recording. It had the ATTACKER wait for its own request to time out — but the attacker
+  // cannot subscribe a lane it does not own, so it heard nothing whether the guard was present or
+  // absent, and the mutant that deleted the guard survived a cell written to catch it. A detector
+  // that returns the same answer under both conditions is not measuring anything. So a real second
+  // agent listens on ITS OWN reply subtree (which its own grant permits) and the question becomes
+  // the one that matters: does anything arrive there that the victim never asked for?
+  const victimId = newIdentity();
+  const victimUid = mintLifecycleUid();
+  const victimCreds = await provisionAgent(mgr, auth, victimId, {
+    subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: victimUid,
+  });
+  const victimSubject = livenessSubject(space, "manager", DEV_OWNER, victimId.id);
+  const victimNc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(victimCreds)),
+    inboxPrefix: `_INBOX_${victimId.id}`,
+    maxReconnectAttempts: 0,
+  });
+  let victimHeard = 0;
+  const victimSub = victimNc.subscribe(`${victimSubject}.>`, { callback: (err) => { if (!err) victimHeard++; } });
+  await victimNc.flush();
+
+  // The attacker aims its probe's reply at the victim's lane. Its own request will not return
+  // either way (it cannot subscribe that lane), which is precisely why the verdict is read from the
+  // VICTIM's counter rather than from the attacker's outcome.
+  const victimLane = `${victimSubject}.reply.stolen`;
   const deputyNc = await connect({
     servers: SERVERS,
     authenticator: credsAuthenticator(new TextEncoder().encode(peerCreds)),
@@ -403,36 +424,28 @@ try {
   });
   try {
     await deputyNc.request(peerProbeSubject, new Uint8Array(0), { timeout: 1_000, noMux: true, reply: victimLane });
-    deputyAnswered = "answered";
   } catch {
-    // No answer came back, which is the correct outcome: the responder dropped the request rather
-    // than publishing into a lane the sender does not own.
-    deputyAnswered = "refused";
-  } finally {
-    await deputyNc.drain().catch(() => { /* already gone */ });
+    /* the attacker hearing nothing is expected and is NOT the measurement */
   }
-  check("CELL D4b: a probe whose reply target is ANOTHER peer's lane is NOT answered (no confused deputy)",
-    deputyAnswered === "refused", { victimLane, outcome: deputyAnswered });
-  // The control for D4b, and it is what makes the refusal mean something: the SAME peer against the
-  // SAME responder, differing only in the reply target, DOES get an answer. Without this, a
-  // responder that had simply died would pass D4b while proving nothing.
-  let ownLaneAnswered: "answered" | "refused";
-  const okNc = await connect({
-    servers: SERVERS,
-    authenticator: credsAuthenticator(new TextEncoder().encode(peerCreds)),
-    inboxPrefix: `_INBOX_${peerId.id}`,
-    maxReconnectAttempts: 0,
-  });
+  await new Promise((r) => setTimeout(r, 400));
+  const heardAfterAttack = victimHeard;
+  check("CELL D4b: a probe whose reply target is ANOTHER peer's lane delivers NOTHING into that peer's lane (no confused deputy)",
+    heardAfterAttack === 0, { victimLane, framesDeliveredToVictim: heardAfterAttack });
+
+  // THE CONTROL, and it is what makes the zero above mean something rather than merely proving the
+  // victim's subscription never worked: the victim probes on its OWN behalf, and a frame DOES land
+  // in the same lane, over the same subscription, in the same run.
   try {
-    await okNc.request(peerProbeSubject, new Uint8Array(0), { timeout: 1_000, noMux: true, reply: `${peerProbeSubject}.reply.${randomUUID()}` });
-    ownLaneAnswered = "answered";
+    await victimNc.request(victimSubject, new Uint8Array(0), { timeout: 1_000, noMux: true, reply: `${victimSubject}.reply.${randomUUID()}` });
   } catch {
-    ownLaneAnswered = "refused";
-  } finally {
-    await okNc.drain().catch(() => { /* already gone */ });
+    /* graded by the counter below */
   }
-  check("CELL D4c (CONTROL for D4b): the same probe with its OWN reply lane IS answered (the responder is alive and the fixture discriminates)",
-    ownLaneAnswered === "answered", { outcome: ownLaneAnswered });
+  await new Promise((r) => setTimeout(r, 400));
+  check("CELL D4c (CONTROL for D4b): the victim's OWN probe DOES deliver into that same lane (the zero above is a refusal, not a dead subscription)",
+    victimHeard > heardAfterAttack, { before: heardAfterAttack, after: victimHeard });
+  try { victimSub.unsubscribe(); } catch { /* ignore */ }
+  await victimNc.drain().catch(() => { /* fine */ });
+  await deputyNc.drain().catch(() => { /* fine */ });
 
   // REFUSED, and this is the boundary the issue asks to be pinned: the peer gains NO read of the
   // state behind the answer. The manager lease row carries the operator's workspace root and pid;
