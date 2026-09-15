@@ -37,6 +37,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isMainEntry } from './main-entry.mjs';
 
 const AI_NAMES =
   /\b(claude|anthropic|openai|chatgpt|gpt|copilot|codex|gemini|grok|glm|cursor|windsurf|devin|aider|opencode|jcode|ai assistant|an ai|llm)\b/i;
@@ -316,6 +317,6 @@ function main(argv) {
   return 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainEntry(import.meta.url)) {
   process.exit(main(process.argv));
 }
