@@ -1597,6 +1597,12 @@ function remoteManagerPermissions(
   const gateKey = epgateKey("manager", iid);
   const credPrefix = epcredFamilyPrefix("manager", iid);
   const repairKey = eprepairKey("manager", iid);
+  // The SUPERVISOR actor of the pair, which is the one that runs `Manager.start()` and therefore
+  // the only one that binds the manager plane's liveness responder (`service.ts` hands
+  // `credentials.supervisor` to the manager; the executor gets the instance-scoped registration
+  // surface). The liveness rows below are pinned to it so the executor does not carry authority to
+  // answer a probe it never serves.
+  const isSupervisorActor = pin.actor === `manager_${iid}`;
   const recordKeys = [
     recordSpecKey(RECORD_KINDS.svc, ["manager", iid]),
     recordStatusKey(RECORD_KINDS.svc, ["manager", iid]),
@@ -1631,9 +1637,35 @@ function remoteManagerPermissions(
         `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
         ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),
         `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+        // LIVENESS REPLIES for the MANAGER plane (#1577), bounded to the `.reply.` leaf under a
+        // caller's own request subject — the same row and the same bound as the local supervisor
+        // profile holds.
+        //
+        // WHY THIS PROFILE NEEDS IT AT ALL. `Manager.start()` binds the manager plane's liveness
+        // responder unconditionally, and a remote manager runs the same `start()` under this
+        // credential. Without the serve subscription below the bind is denied, and a peer probing
+        // the manager plane then gets the broker's own no-responders answer, which this surface
+        // grades `unbound` — a definite verdict about the plane, produced by a gap in a credential,
+        // while the remote manager is bound and serving. A surface that exists to stop a failure to
+        // find out being rendered as a finding must not render its own missing grant as one.
+        //
+        // REPLIES ONLY. The row stops at the leaf, so a remote manager cannot publish to the
+        // liveness REQUEST subjects and therefore cannot forge a probe that appears to come from a
+        // peer, exactly as the supervisor row cannot.
+        ...(isSupervisorActor ? [livenessReplyGrant(space, "manager")] : []),
       ],
     },
-    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+    sub: {
+      allow: [
+        `_INBOX_${pr.connId}.>`,
+        // The manager-plane liveness SERVE filter (#1577): `live.manager.*.*`, queue-grouped, so a
+        // credentialed peer's presence probe reaches this instance. A serve subscription on a
+        // presence-only rail and not a widening of what a remote manager may read: the request body
+        // is empty and the subject carries only the caller's own principal. The MANAGER plane only —
+        // this credential cannot serve `delivery`, so each plane still answers for itself.
+        ...(isSupervisorActor ? [livenessServeFilter(space, "manager")] : []),
+      ],
+    },
   };
 }
 

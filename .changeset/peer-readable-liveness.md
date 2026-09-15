@@ -1,6 +1,8 @@
 ---
 "@cotal-ai/core": minor
 "@cotal-ai/cli": patch
+"@cotal-ai/manager": patch
+"@cotal-ai/delivery": patch
 ---
 
 Let a credentialed peer ask which plane is broken, instead of guessing at its own credentials
@@ -34,3 +36,24 @@ own no-responders answer becomes "unbound"; a timeout, a permission refusal or a
 all become "unknown", because each is a failure to find out, and reporting a failure to find out as
 health is the defect this surface exists to remove. A responder that cannot determine its own state
 says so rather than guessing, and a reply is never counted as health merely for having arrived.
+
+The reply also names which responder answered it, as an opaque per-bind token and not an identity.
+Manager instances coexist per instance id, each responder answers only about itself, and the queue
+group hands one probe to one arbitrary member, so two instances holding opposite verdicts made
+identical probes alternate with nothing in the answer to say a second instance existed. With the
+token a caller that probes more than once can tell two responders apart from one responder that
+changed state. One probe still samples one responder and cannot report a split by itself.
+
+A remote manager can now answer the probe it already binds. It runs the same start path as a local
+supervisor, so it binds the manager plane's responder, and its credential carried neither the serve
+subscription nor the bounded reply row. The subscription was denied and a peer asking about the
+manager plane received the broker's own no-responders answer, which grades "unbound": a definite
+verdict about a plane that was in fact bound, produced by a gap in a credential. Both rows are now
+on that profile, pinned to the supervisor actor that does the serving.
+
+The responder's rejection notice for a reply target outside the sender's own subtree now travels on
+the endpoint's non-fatal warning channel. It was emitted on the `error` channel, and Node's
+`EventEmitter` rethrows an `error` emitted with no listener attached, so an embedder that had not
+attached one ended its process when a peer sent a probe naming such a target. The plane was then
+genuinely unbound and the next probe reported it as such, so the notice manufactured the state it
+described. The guard's behaviour is unchanged: the frame is dropped and the responder keeps serving.

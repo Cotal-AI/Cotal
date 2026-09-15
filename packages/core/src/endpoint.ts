@@ -4341,6 +4341,20 @@ export class CotalEndpoint extends EventEmitter {
    *  than N times. A queue group is correct here and would be wrong on a roster-style surface: the
    *  question is "is ANY responder bound", which any one member can answer.
    *
+   *  THE ANSWER NAMES WHICH RESPONDER GAVE IT (`instance`), and that field exists because the queue
+   *  group alone leaves a real ambiguity. Manager instances coexist per instance id by design, each
+   *  member answers only about ITSELF, and the group delivers one probe to an arbitrary member. So
+   *  when two instances hold opposite verdicts, identical probes alternate between them, and without
+   *  a discriminator the two answers are indistinguishable from one instance changing state. With
+   *  the field, a caller that probes more than once can see that two DIFFERENT responders answered
+   *  and that the verdicts disagree. The field is the responder's own endpoint-scoped instance
+   *  token, never the lease row's `instanceId`, its holder, its pid or its root: see
+   *  {@link LivenessAnswer} for why none of those may cross the wire.
+   *
+   *  ONE PROBE STILL SAMPLES ONE MEMBER. This does not aggregate N instances, and a single probe
+   *  cannot report a split; it makes the split OBSERVABLE to a caller that asks again, where before
+   *  it was not observable at all.
+   *
    *  BOUNDED REPLY, for the same confused-deputy reason `serveControl` documents: this responder
    *  holds a wildcard publish grant over `live.<plane>.*.*.reply.>`, so without the bound check an
    *  authenticated caller could name a PEER's reply lane as its reply target and have us publish
@@ -4354,12 +4368,41 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.nc) throw new Error("endpoint not started");
     const sub = this.nc.subscribe(livenessServeFilter(this.space, plane), { queue: `live.${plane}` });
     this.subs.push(sub);
+    // The responder token this bind answers under: AN OPAQUE VALUE MINTED HERE, and deliberately
+    // not any name this process already has. It is what makes "which responder answered" askable
+    // without making "who is this responder" answerable — the two properties the surface has to
+    // hold at once. The endpoint's own `card.id` would be its principal, the lease row's
+    // `instanceId` is a field of a bucket an agent holds no grant on, and either would turn a
+    // presence probe into an identity read for every credentialed peer in the space. A fresh
+    // random token correlates with nothing but this plane's other answers, which is the whole job:
+    // two answers carrying two different tokens came from two different responders.
+    //
+    // Per BIND rather than per process, so a responder that goes away and comes back answers under
+    // a new token. That is the honest reading: a caller comparing answers across a restart is
+    // comparing two different incarnations, and a token that survived the restart would say
+    // otherwise.
+    const instance = randomUUID();
     void (async () => {
       for await (const m of sub) {
         // Sender-bound reply guard. Drop silently rather than publishing somewhere else: a reply
         // aimed outside the sender's own subtree is not a request we can answer safely.
+        //
+        // REPORTED ON `warning`, NOT ON `error`, AND THAT IS A SAFETY PROPERTY RATHER THAN A CHOICE
+        // OF CHANNEL. A rejected probe is a condition this responder is already surviving: it drops
+        // the frame and keeps serving. `error` cannot carry such a notice on this class, because
+        // Node's `EventEmitter` RETHROWS an `error` emit that has no listener attached, so the
+        // notice would end the process of any embedder that had not attached one — and the plane
+        // would then genuinely be unbound, which a peer's next probe reports as `unbound`. The
+        // condition would have manufactured the state it described. `warning` is observable and
+        // never fatal without a listener (see {@link emitRecoverable} and #891, where retry notices
+        // on `error` killed hosts the endpoint intended to keep running).
+        //
+        // Since ANY credentialed peer may publish a probe, and the reply target inside it is chosen
+        // by that peer and not permission-checked by the broker, reaching this branch is a peer's
+        // decision, not an operator's. Safety here must therefore hold with no listener attached,
+        // which is what CELL F1 runs.
         if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
-          this.emit("error", new Error(`rejected liveness probe on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
+          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
           continue;
         }
         let responder: ResponderState;
@@ -4368,9 +4411,14 @@ export class CotalEndpoint extends EventEmitter {
         } catch {
           responder = "unknown";
         }
-        const answer: LivenessAnswer = { plane, responder };
+        const answer: LivenessAnswer = { plane, responder, instance };
         try { m.respond(JSON.stringify(answer)); } catch { /* the requester is gone */ }
       }
+      // The loop itself ends only on a SUBSCRIPTION-level fault (the connection went away), which
+      // is not something a peer's probe can cause: the guard above `continue`s, `readState` is
+      // caught, and the respond is caught. So this arm stays on `error` — it reports that this
+      // responder has stopped answering at all, which is a fault an embedder should not be able to
+      // miss, and no credentialed peer can reach it.
     })().catch((e) => this.emit("error", e as Error));
     return sub;
   }
@@ -4415,6 +4463,7 @@ export class CotalEndpoint extends EventEmitter {
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     let outcome: ProbeOutcome;
     let answered: ResponderState | undefined;
+    let instance: string | undefined;
     try {
       const m = await this.nc.request(reqSubject, "", { timeout: timeoutMs, noMux: true, reply });
       let body: unknown;
@@ -4425,10 +4474,15 @@ export class CotalEndpoint extends EventEmitter {
       // where evidence a process exists was read as evidence it works.
       outcome = parsed ? "replied" : "malformed";
       answered = parsed?.responder;
+      instance = parsed?.instance;
     } catch (e) {
       outcome = this.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
     }
-    return { plane, responder: responderFromProbe(outcome, answered) };
+    // `instance` rides ONLY a reply that was read. Every other outcome means no responder answered,
+    // so there is no responder to name, and a token attached to an `unbound` or an `unknown` would
+    // claim one had. It stays absent on those arms by construction: nothing assigns it.
+    const verdict: LivenessAnswer = { plane, responder: responderFromProbe(outcome, answered) };
+    return instance === undefined ? verdict : { ...verdict, instance };
   }
 
   /** Grade a failed probe that was NOT a no-responders answer. Both arms return an outcome that

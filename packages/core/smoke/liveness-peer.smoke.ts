@@ -25,13 +25,26 @@
  * connection; nothing here re-implements the grading, because a re-implementation would grade the
  * copy rather than the code that ships.
  *
+ * TWO GROUPS RUN OUTSIDE THIS PROCESS OR ACROSS REPEATED PROBES, and each states why in its own
+ * banner. Group F grades a claim about PROCESS SURVIVAL, which cannot be graded in the process
+ * making it, so it drives a child (`liveness-guard-nolistener.child.ts`). Group G characterises the
+ * QUEUE GROUP, where one probe reaches one arbitrary member, so a single sample cannot show that two
+ * members exist. Neither group asserts a duration; F waits out a fixed window inside the child and G
+ * counts over answers already received.
+ *
+ * GROUPS F AND G EACH CLEAR THEIR PLANE FIRST AND ASSERT THE CLEARING. Earlier groups leave
+ * responders bound on both planes, and both new groups count RESPONDERS, so a leftover member makes
+ * a count wrong for a reason that has nothing to do with the code. Both preconditions were written
+ * because the first runs measured exactly that.
+ *
  * Needs `nats-server` on PATH. Run: pnpm smoke:liveness-peer
  */
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   CotalEndpoint,
@@ -61,6 +74,9 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal, emitSentinel } from "@cotal-ai/sm
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `liveness-${randomUUID().slice(0, 8)}`;
+/** This file's own directory, so the group F child is resolved by PATH rather than by the cwd the
+ *  suite happens to be started from. */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -466,17 +482,28 @@ try {
   // the type, because the type cannot stop a handler from attaching an extra field.
   const rawNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: peerCreds, tls: false }), maxReconnectAttempts: 0 });
   let wireKeys: string[] = [];
+  let wireInstance: unknown;
   try {
     const subj = livenessSubject(space, "manager", DEV_OWNER, peerId.id);
     const m = await rawNc.request(subj, "", { timeout: 1_500, noMux: true, reply: `${subj}.reply.${randomUUID()}` });
-    wireKeys = Object.keys(m.json() as Record<string, unknown>).sort();
+    const frame = m.json() as Record<string, unknown>;
+    wireKeys = Object.keys(frame).sort();
+    wireInstance = frame.instance;
   } catch (e) {
     wireKeys = [`(probe failed: ${(e as Error).message})`];
   } finally {
     await rawNc.drain().catch(() => { /* fine */ });
   }
-  check("CELL D8: the wire answer carries EXACTLY {plane, responder} - no holder, pid, root, instance id or roster",
-    wireKeys.length === 2 && wireKeys[0] === "plane" && wireKeys[1] === "responder", { wireKeys });
+  check("CELL D8: the wire answer carries EXACTLY {plane, responder, instance} - no holder, pid, root, lease instance id or roster",
+    wireKeys.length === 3 && wireKeys[0] === "instance" && wireKeys[1] === "plane" && wireKeys[2] === "responder", { wireKeys });
+  // `instance` is a discriminator and must not become an identity read. The peer's own id, the
+  // responder's card id and the manager lease's `instanceId` are the three things a reader might
+  // expect it to be, and it is none of them: checked against the values this fixture actually
+  // holds, so this is a comparison and not a re-reading of the type.
+  check("CELL D8b: the `instance` token is not any identity the peer could otherwise learn (not a card id, not a lease instance id, not the peer's own id)",
+    typeof wireInstance === "string" && wireInstance !== "" &&
+      wireInstance !== peerId.id && wireInstance !== mgrId.id && wireInstance !== victimId.id,
+    { wireInstance, peer: peerId.id, mgr: mgrId.id });
 
   // REFUSED: a plane outside the closed set. A probe that answered for every input would be the
   // "same answer at every input" instrument, and would report health for planes that do not exist.
@@ -521,9 +548,197 @@ try {
     !grants(dlvRows.sub, livenessServeFilter(space, "manager").replace("*.*", "a.b")),
     { offenders: dlvRows.sub.filter((r) => r.includes(".live.manager.")) });
 
-  await peer.stop().catch(() => { /* fine */ });
-  await mgrBrokenEp.stop().catch(() => { /* fine */ });
+  // The REMOTE-MANAGER profile, which runs the same `Manager.start()` as the local supervisor and
+  // therefore binds the same manager-plane responder. Its rows are read from the shipped builder,
+  // not from a fixture's idea of them, and both actors of the pair are minted: the profile hands the
+  // liveness rows to the supervisor actor (the one that serves) and withholds them from the
+  // executor, so a sweep that only minted one actor could not tell a correct pin from a missing row.
+  const remoteIid = mintLifecycleUid();
+  const remoteRows = (actor: string): { pub: string[]; sub: string[] } => {
+    const uid = mintLifecycleUid();
+    const perms = permissionsFor("remote-manager", space,
+      { owner: DEV_OWNER, actor, connId: "conn0123456789abcdef", lifecycleUid: uid } as never,
+      { remoteManager: { instanceId: remoteIid, owner: DEV_OWNER, actor } } as never) as
+      { pub?: { allow?: string[] }; sub?: { allow?: string[] } };
+    return { pub: perms.pub?.allow ?? [], sub: perms.sub?.allow ?? [] };
+  };
+  const rmSup = remoteRows(`manager_${remoteIid}`);
+  const rmExec = remoteRows(`manager_exec_${remoteIid}`);
+  check("CELL E6: the REMOTE-MANAGER supervisor actor CAN subscribe the manager plane's serve filter (it binds that responder in `start()`)",
+    grants(rmSup.sub, livenessServeFilter(space, "manager").replace("*.*", "a.b")),
+    { rows: rmSup.sub });
+  check("CELL E7: that credential's liveness reply grant is bounded to the `.reply.` leaf - it cannot publish a probe AS a peer",
+    grants(rmSup.pub, `${livenessSubject(space, "manager", DEV_OWNER, "somepeer")}.reply.x`) &&
+      !grants(rmSup.pub, livenessSubject(space, "manager", DEV_OWNER, "somepeer")),
+    { rows: rmSup.pub.filter((r) => r.includes(".live.")) });
+  check("CELL E8: the remote manager CANNOT serve the DELIVERY plane either (each plane still answers for itself)",
+    !grants(rmSup.sub, livenessServeFilter(space, "delivery").replace("*.*", "a.b")),
+    { offenders: rmSup.sub.filter((r) => r.includes(".live.delivery.")) });
+  check("CELL E9: the remote-manager EXECUTOR actor holds NO liveness row at all (it never binds the responder)",
+    !grants(rmExec.sub, livenessServeFilter(space, "manager").replace("*.*", "a.b")) &&
+      !grants(rmExec.pub, `${livenessSubject(space, "manager", DEV_OWNER, "somepeer")}.reply.x`),
+    { offenders: [...rmExec.pub, ...rmExec.sub].filter((r) => r.includes(".live.")) });
+
+  // =============================================================================================
+  console.log("\nCELL GROUP F - THE REJECTION NOTICE IS SURVIVABLE WITH NO LISTENER ATTACHED");
+  // The mechanism: a peer publishes a probe naming a reply target outside its own reply subtree, the
+  // responder's bound-reply guard rejects it, and the guard reports that rejection on an event
+  // channel. `CotalEndpoint extends EventEmitter`, and Node rethrows an `error` event emitted with
+  // no listener attached, so reporting it there ended the process of any embedder that had not
+  // attached one. The plane was then genuinely unbound and a peer's next probe said so, which is
+  // this surface reporting a state its own notice had produced.
+  //
+  // GRADED IN A CHILD PROCESS, because the failing form ends the process: an in-process assertion
+  // after the emit would never run, and the suite would report nothing rather than a red. The child
+  // attaches NOTHING on `error` - a cell that attached a listener would grade the listener.
+  //
+  // THE DELIVERY PLANE IS CLEARED FIRST, AND THE CLEARING IS ASSERTED, for the same reason group G
+  // clears the manager plane. Cell C1's responder is still bound on this plane, and the queue group
+  // hands one frame to ONE arbitrary member: with two members the child's own responder receives the
+  // probe only some of the time, so both arms would grade a coin toss. Measured, not predicted: the
+  // control arm returned ANSWERS 0 with WARNINGS 0 while the guard arm returned WARNINGS 1, which is
+  // the two arms having reached two different responders.
+  // =============================================================================================
   await brokenEp.stop().catch(() => { /* fine */ });
+  await new Promise((r) => setTimeout(r, 300));
+  const dlvCleared = await peer.probeLiveness("delivery", 1_500);
+  check("CELL F0 (PRECONDITION): the DELIVERY plane has no responder left from the earlier groups, so the child below is the only member of its queue group",
+    dlvCleared.responder === "unbound" && dlvCleared.instance === undefined, dlvCleared);
+  const childPath = join(HERE, "liveness-guard-nolistener.child.ts");
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+  const guardChildCreds = await mintCreds(auth, newIdentity(), "delivery");
+  const runChild = (armName: "guard" | "control") => spawnSync(process.execPath, [
+    "--import", "tsx", childPath,
+    SERVERS, space, b64(guardChildCreds), b64(peerCreds), peerId.id, armName,
+  ], { encoding: "utf8", timeout: 40_000, killSignal: "SIGKILL" });
+
+  const guardArm = runChild("guard");
+  check("CELL F1: with NO `error` listener attached, a probe the reply guard REJECTS leaves the responder process alive",
+    guardArm.status === 0 && guardArm.signal === null && /^SURVIVED$/m.test(guardArm.stdout ?? ""),
+    { status: guardArm.status, signal: guardArm.signal, stderr: (guardArm.stderr ?? "").slice(0, 500) });
+  check("CELL F2: that rejected probe was NOT answered, so the guard still refuses rather than merely surviving",
+    /^ANSWERS 0$/m.test(guardArm.stdout ?? ""),
+    { stdout: (guardArm.stdout ?? "").slice(-400) });
+  check("CELL F3: the rejection was REPORTED on the endpoint's non-fatal warning channel, not silently dropped",
+    /^WARNING rejected liveness probe on /m.test(guardArm.stdout ?? "") && /^WARNINGS 1$/m.test(guardArm.stdout ?? ""),
+    { stdout: (guardArm.stdout ?? "").slice(-400) });
+
+  // THE CONTROL, and it is what makes F1's survival mean something. Same file, same absent listener,
+  // same responder, a WELL-FORMED probe: a child that died during its own setup, or one that printed
+  // SURVIVED while binding nothing, would look identical to a child that really took a probe.
+  const controlArm = runChild("control");
+  check("CELL F4 (CONTROL for F1): the same no-listener child with a WELL-FORMED probe survives too, so F1's survival is not merely a child that does nothing",
+    controlArm.status === 0 && controlArm.signal === null && /^SURVIVED$/m.test(controlArm.stdout ?? ""),
+    { status: controlArm.status, signal: controlArm.signal, stderr: (controlArm.stderr ?? "").slice(0, 500) });
+  check("CELL F5 (CONTROL for F2): and it IS answered, so the zero in F2 is a refusal rather than a responder that was never bound",
+    /^ANSWERS 1$/m.test(controlArm.stdout ?? "") && /^WARNINGS 0$/m.test(controlArm.stdout ?? ""),
+    { stdout: (controlArm.stdout ?? "").slice(-400) });
+
+  // =============================================================================================
+  console.log("\nCELL GROUP G - THE ANSWER NAMES WHICH RESPONDER GAVE IT");
+  // Manager instances coexist per instance id, each responder answers only about ITSELF, and the
+  // queue group hands one probe to one arbitrary member. So two instances holding opposite verdicts
+  // made identical probes alternate, with nothing in the answer to say a second instance existed -
+  // indistinguishable from one responder that changed state. These cells run TWO responders on one
+  // plane with OPPOSITE constant verdicts, which is the shape that ambiguity needs.
+  //
+  // THE PLANE IS CLEARED FIRST, AND THE CLEARING IS ASSERTED. Cell C3 left a THIRD manager-plane
+  // responder bound (the one that cannot grade itself), and this group counts DISTINCT responders,
+  // so a leftover member is a third token that makes the count wrong for a reason that has nothing
+  // to do with the code. Measured rather than reasoned about: the first run of this group returned
+  // three tokens and named the third one's verdict, `unknown`, which is exactly C3's responder. A
+  // count over an un-cleared field is a count of the fixture, so the stop is followed by a probe
+  // that must say `unbound`.
+  // =============================================================================================
+  await mgrBrokenEp.stop().catch(() => { /* fine */ });
+  await new Promise((r) => setTimeout(r, 300));
+  const clearedPlane = await peer.probeLiveness("manager", 1_500);
+  check("CELL G0 (PRECONDITION): the manager plane has NO responder left from the earlier groups, so the counts below are counts of what this group binds",
+    clearedPlane.responder === "unbound" && clearedPlane.instance === undefined, clearedPlane);
+
+  const twoEps: CotalEndpoint[] = [];
+  for (const verdict of ["bound", "unbound"] as const) {
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "supervisor"),
+      card: { name: `sup-${verdict}`, kind: "endpoint" },
+      consume: false, registerPresence: false, watchPresence: false,
+    });
+    ep.on("error", (e: Error) => console.error(`  ! sup-${verdict}`, e.message));
+    await ep.start();
+    ep.serveLiveness("manager", () => verdict);
+    twoEps.push(ep);
+  }
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Probed repeatedly because the queue group is what is being characterised: one probe reaches one
+  // member, so a single sample cannot show two members exist. The loop is NOT a timing assertion and
+  // has no deadline of its own; it is a count over answers already received.
+  const seen = new Map<string, Set<string>>();
+  let unnamed = 0;
+  for (let i = 0; i < 24; i++) {
+    const a = await peer.probeLiveness("manager", 1_500);
+    if (a.instance === undefined) { unnamed++; continue; }
+    if (!seen.has(a.instance)) seen.set(a.instance, new Set());
+    seen.get(a.instance)!.add(a.responder);
+  }
+  const tokens = [...seen.keys()];
+  const verdictsPerToken = [...seen.values()].map((s) => [...s].sort().join("+"));
+  check("CELL G1: every answer from a bound responder NAMES which responder answered",
+    unnamed === 0, { answersWithNoInstance: unnamed });
+  check("CELL G2: across repeated probes TWO DIFFERENT responders are visible, so a peer can tell a split from one responder changing state",
+    tokens.length === 2, { distinctInstances: tokens.length, verdictsPerToken });
+  check("CELL G3: each responder answers ONLY about itself - neither token ever returns both verdicts",
+    verdictsPerToken.every((v) => v === "bound" || v === "unbound") &&
+      new Set(verdictsPerToken).size === 2,
+    { verdictsPerToken });
+  // The discriminator must be usable for the thing it exists for: reading a disagreement OFF the
+  // answers, without any fixture knowledge of which endpoint is which.
+  const answersByToken = [...seen.entries()].map(([t, v]) => ({ t, v: [...v][0] }));
+  check("CELL G4: the disagreement is READABLE from the answers alone (two tokens, opposite verdicts)",
+    answersByToken.length === 2 && answersByToken[0].v !== answersByToken[1].v, { answersByToken });
+
+  // THE CONTROL for G2, and it is what stops G2 from passing on an instrument that invents tokens:
+  // with ONE responder bound, repeated probes must return exactly ONE token. A surface that minted a
+  // token per REPLY rather than per responder would pass G2 and fail here. The pair is stood down
+  // first and the stand-down is asserted, for G0's reason: this cell counts responders, so it has to
+  // start from a field it knows is empty.
+  for (const ep of twoEps) await ep.stop().catch(() => { /* fine */ });
+  await new Promise((r) => setTimeout(r, 300));
+  const pairGone = await peer.probeLiveness("manager", 1_500);
+  check("CELL G4b (PRECONDITION for G5): with the pair stood down the plane is empty again, so the single-responder count below starts from zero",
+    pairGone.responder === "unbound" && pairGone.instance === undefined, pairGone);
+  const soleCreds = await mintCreds(auth, newIdentity(), "supervisor");
+  const soleEp = new CotalEndpoint({
+    space, servers: SERVERS, creds: soleCreds, card: { name: "sup-sole", kind: "endpoint" },
+    consume: false, registerPresence: false, watchPresence: false,
+  });
+  soleEp.on("error", (e: Error) => console.error("  ! sup-sole", e.message));
+  await soleEp.start();
+  soleEp.serveLiveness("manager", () => "bound");
+  await new Promise((r) => setTimeout(r, 300));
+  const soleTokens = new Set<string>();
+  for (let i = 0; i < 12; i++) {
+    const a = await peer.probeLiveness("manager", 1_500);
+    if (a.instance !== undefined) soleTokens.add(a.instance);
+  }
+  check("CELL G5 (CONTROL for G2): with ONE responder bound, repeated probes return exactly ONE token - the token names a responder, not a reply",
+    soleTokens.size === 1, { distinctInstances: soleTokens.size });
+  check("CELL G6: and that token is none of the two the pair answered under, so a restarted responder is not mistaken for one that never left",
+    [...soleTokens].every((t) => !tokens.includes(t)), { soleTokens: [...soleTokens], pairTokens: tokens });
+
+  // An answer with no readable responder token is `malformed`, hence `unknown`. Graded on the pure
+  // parser so the value under test is the value asserted: a caller compares tokens, and a token it
+  // cannot compare would read as "the same responder as the other answer that also had none",
+  // rendering a split as agreement.
+  check("CELL G7: a reply naming its responder in a form that cannot be compared is REJECTED (it grades `unknown`, never `bound`)",
+    parseLivenessAnswer({ plane: "manager", responder: "bound", instance: 7 }, "manager") === undefined &&
+      parseLivenessAnswer({ plane: "manager", responder: "bound", instance: "" }, "manager") === undefined);
+  check("CELL G8 (CONTROL for G7): a reply with a readable token IS accepted, and one with NO token is still readable",
+    parseLivenessAnswer({ plane: "manager", responder: "bound", instance: "abc" }, "manager")?.instance === "abc" &&
+      parseLivenessAnswer({ plane: "manager", responder: "bound" }, "manager")?.responder === "bound");
+
+  await soleEp.stop().catch(() => { /* fine */ });
+  await peer.stop().catch(() => { /* fine */ });
   await mgr.stop().catch(() => { /* fine */ });
 } catch (e) {
   fail++;

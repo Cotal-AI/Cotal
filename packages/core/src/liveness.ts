@@ -78,10 +78,10 @@ export function isLivenessPlane(plane: string): plane is LivenessPlane {
 
 /** THE ANSWER, AND EVERYTHING IT IS NOT.
  *
- *  Exactly one field: whether a responder is bound for the named plane. No holder, no pid, no
- *  workspace root, no instance id, no runtime, no roster, no membership, no ownership — none of
- *  which a peer needs in order to learn WHICH PLANE IS BROKEN, and all of which the issue
- *  explicitly says the surface does not need to expose.
+ *  Two fields: whether a responder is bound for the named plane, and an OPAQUE token for which
+ *  responder said so. No holder, no pid, no workspace root, no instance id, no runtime, no roster,
+ *  no membership — none of which a peer needs in order to learn WHICH PLANE IS BROKEN, and all of
+ *  which the issue explicitly says the surface does not need to expose.
  *
  *  THIS IS THE SECURITY BOUNDARY AND IT IS WHY THE PEER DOES NOT SIMPLY READ THE LEASE. The manager
  *  lease row ({@link import("./lease.js").ManagerLeaseInfo}) carries `holder`, `instanceId`,
@@ -89,7 +89,7 @@ export function isLivenessPlane(plane: string): plane is LivenessPlane {
  *  grant on that bucket at all, by deliberate omission (`provision.ts`: "an agent must never read,
  *  write, or delete it"), and granting one to make liveness askable would hand every peer the
  *  operator's filesystem layout and a pid to signal. So the row NEVER leaves the responder: the
- *  responder reduces it to this one enum and answers with that. Presence is the whole ask, and
+ *  responder reduces it to one enum and answers with that. Presence is the whole ask, and
  *  presence is the whole answer.
  *
  *  `since`/`uptime` are deliberately absent too, though `$SRV.INFO` would carry them: a timestamp
@@ -99,6 +99,25 @@ export interface LivenessAnswer {
   plane: LivenessPlane;
   /** Whether a responder is bound for that plane, in #1594's vocabulary. */
   responder: ResponderState;
+  /** WHICH RESPONDER ANSWERED, as an opaque per-bind token, or `undefined` when no responder
+   *  answered at all (a 503, a timeout, a refusal, an unreadable reply).
+   *
+   *  IT ANSWERS "WAS THIS THE SAME ONE" AND NOTHING ELSE, and that narrowness is the design. Manager
+   *  instances coexist per instance id, each answers only about ITSELF, and the queue group hands a
+   *  probe to an arbitrary member — so two probes that disagree are, without this field,
+   *  indistinguishable from one responder that changed state. Comparing tokens tells those apart.
+   *
+   *  IT IS NOT AN IDENTITY. The value is minted at bind time from nothing ({@link
+   *  import("./endpoint.js").CotalEndpoint.serveLiveness}) and is not the endpoint's principal, the
+   *  lease row's `instanceId`, a pid, a host or a path. A peer can tell two responders apart and can
+   *  learn nothing else about either, which is the same boundary the rest of this type holds: a
+   *  field that named the real instance would have re-opened the lease row the responder exists to
+   *  keep off the wire.
+   *
+   *  ONE PROBE STILL SAMPLES ONE RESPONDER. This field does not aggregate the plane, and a single
+   *  answer cannot report a split. It makes a split OBSERVABLE across repeated probes, where before
+   *  it was not observable at all. */
+  instance?: string;
 }
 
 /** Classify a lease record into responder state — #1594's pure classifier, moved here so the CLI
@@ -173,13 +192,22 @@ export function responderFromProbe(outcome: ProbeOutcome, answered?: ResponderSt
  *  unrecognised `responder` value, a plane that does not match the one asked about, or a body of the
  *  wrong shape all return `undefined`, which the caller grades as `malformed` and therefore
  *  `unknown`. A lenient parse here would let a garbled or foreign reply be read as health, and this
- *  is the exact seam where "it said something" becomes "it said it was fine". */
+ *  is the exact seam where "it said something" becomes "it said it was fine".
+ *
+ *  `instance` IS STRICT TOO, FOR A DIFFERENT REASON THAN THE OTHER FIELDS. It is not the verdict, so
+ *  a bad one cannot say "healthy" — but a caller compares tokens to tell two responders apart, and
+ *  a value it cannot compare (a number, an object, an empty string) would silently read as "the same
+ *  responder as the other answer that also had no usable token". That is a split rendered as
+ *  agreement. A reply naming a responder in a form this surface cannot read is therefore `malformed`
+ *  rather than an answer with the field dropped. A reply with NO `instance` at all is still
+ *  readable: it is an answer from a responder that predates the field. */
 export function parseLivenessAnswer(body: unknown, expectPlane: LivenessPlane): LivenessAnswer | undefined {
   if (typeof body !== "object" || body === null) return undefined;
-  const { plane, responder } = body as { plane?: unknown; responder?: unknown };
+  const { plane, responder, instance } = body as { plane?: unknown; responder?: unknown; instance?: unknown };
   if (typeof plane !== "string" || !isLivenessPlane(plane) || plane !== expectPlane) return undefined;
   if (responder !== "bound" && responder !== "unbound" && responder !== "stale" && responder !== "unknown") return undefined;
-  return { plane, responder };
+  if (instance !== undefined && (typeof instance !== "string" || instance === "")) return undefined;
+  return instance === undefined ? { plane, responder } : { plane, responder, instance };
 }
 
 /** The consequence of an unbound responder, in the operator's terms rather than the daemon's — per
