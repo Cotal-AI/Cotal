@@ -230,7 +230,7 @@ async function reportRunningManager(flags: Record<string, unknown>): Promise<"no
     // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
     // core's answer-provenance marker; the headline beside it is operator prose and is now scoped to
     // the rail the caller rode (#1630), so this call, which runs under an issued control caller, saw
-    // `no manager answered on the versioned rail` and threw instead of reporting "none". The string test
+    // the headline naming the versioned rail and threw instead of reporting "none". The string test
     // was redundant the day it was written: this call passes no `--on`, so an unanswered reply here
     // can only ever be the unpinned verdict.
     if (status.unanswered) return "none";
