@@ -194,6 +194,38 @@
       "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
     },
     {
+      "name": "the inconclusive guard block is deleted whole",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n    throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);\n  }\n",
+      "replace": "",
+      "expectRed": "a 503 on one exact-version read refuses the release as inconclusive",
+      "cell": "a 503 on one exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "an unreadable exact-version response is treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${response.status}`;\n",
+      "replace": "    return \"absent\";\n",
+      "expectRed": "a 302 on every exact-version read refuses the release rather than reading as absent",
+      "cell": "a 302 on every exact-version read refuses the release rather than reading as absent"
+    },
+    {
+      "name": "a thrown exact-version read is swallowed and treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n",
+      "replace": "    return \"absent\";\n",
+      "expectRed": "a thrown fetch on the exact-version read refuses the release as inconclusive",
+      "cell": "a thrown fetch on the exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "the inconclusive refusal skips the census print, hiding which package was unreadable",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n",
+      "replace": "  if (registryVerdict === \"inconclusive\") {\n",
+      "expectRed": "the inconclusive census names the unreadable package and carries its registry status",
+      "cell": "the inconclusive census names the unreadable package and carries its registry status"
+    },
+    {
       "name": "an unverifiable trust read is admitted as createPackage proof",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    if (response.status === 401) return \"unverifiable:trust-endpoint-needs-npm-token\";\n",
@@ -280,6 +312,204 @@
       "replace": "    if (extra.length) void extra;\n",
       "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
       "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "a fourth status-specific census outcome is added, escaping the three-value domain the verdict ladder buckets on",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 404) return \"absent\";\n",
+      "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\";\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "note": "expectRed was stale and inherited: the cell was reworded when the enumerator was rewritten to use the compiler, and this tag was left on the retired wording, so mutation-proof graded a genuine, correctly-aimed red as WRONG-RED. It now pins the INVARIANT substring of the cell name, which is a template literal whose leading count changes with the enumeration, so a count change cannot rot it again."
+    },
+    {
+      "name": "a bare return is added to readExactVersion, yielding undefined, which no census bucket claims",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 200) return \"present\";\n    if (response.status === 404) return \"absent\";\n",
+      "replace": "    if (response.status === 200) return \"present\";\n    if (response.status === 418) return;\n    if (response.status === 404) return \"absent\";\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "note": "The escape that killed the retired regex extractor: /\\breturn\\s+([^;]+);/ requires a non-empty expression, so a bare return was invisible to it and the universal cell stayed green while the function gained an undefined return."
+    },
+    {
+      "name": "a semicolon-free out-of-domain return is added, closed by ASI",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 404) return \"absent\";\n    return `unknown:${response.status}`;\n",
+      "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\"\n    return `unknown:${response.status}`;\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "note": "The retired regex captured to the next semicolon, so a semicolon-free return was swallowed into the following return's text and laundered into the domain."
+    },
+    {
+      "name": "the shipped absent bucket is widened to also claim unknown rows, so a row lands in two buckets",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export const isAbsentRegistry = (registry) => registry === \"absent\";\n",
+      "replace": "export const isAbsentRegistry = (registry) => registry === \"absent\" || registry.startsWith(\"unknown:\");\n",
+      "expectRed": "under the shipped bucket predicates every production census row lands in exactly one bucket",
+      "cell": "under the shipped bucket predicates every production census row lands in exactly one bucket",
+      "note": "The overlap the previous disjointness cell documented but could not detect: it retyped the predicates, so widening the SHIPPED one left the copy green. This cell imports the shipped predicate, so the widening changes what it computes."
+    },
+    {
+      "name": "the return enumerator stops treating a bare return as out of domain",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (!expression) return { text, inDomain: false, why: \"bare return: yields undefined, which no census bucket claims\" };\n",
+      "replace": "    if (!expression) return { text, inDomain: true, why: \"bare return: yields undefined, which no census bucket claims\" };\n",
+      "expectRed": "the return enumerator refuses a bare return, which yields undefined",
+      "cell": "the return enumerator refuses a bare return, which yields undefined",
+      "note": "Grades the instrument rather than the subject: if the enumerator stops refusing a bare return, the escape cell that pins that refusal must red. Without this the enumerator could be silently relaxed back to the defect it replaced."
+    },
+    {
+      "name": "the return enumerator descends into nested functions, attributing their returns to readExactVersion",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (isReturnScopeBoundary(node)) return;\n    if (ts.isReturnStatement(node)) found.push(node);\n",
+      "replace": "    if (false && isReturnScopeBoundary(node)) return;\n    if (ts.isReturnStatement(node)) found.push(node);\n",
+      "expectRed": "a return inside a nested function is not attributed to readExactVersion",
+      "cell": "a return inside a nested function is not attributed to readExactVersion",
+      "note": "The false-positive half of the enumerator: a helper closure's return is not readExactVersion's. Without the boundary the enumerator would red the shipped source for a value the function never returns. Re-anchored when the boundary predicate was renamed to isReturnScopeBoundary and the ladder walk gained the same guard: the single line now occurs TWICE in this file, so the anchor is the two-line code-only window that pins the CENSUS walk specifically. The bare line would have been ambiguous, and the nearest comment would have been unique for free and load-bearing for a docs commit."
+    },
+    {
+      "name": "a CENSUS_BUCKETS entry drifts off the exported predicate onto an equivalent inline copy",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  { name: \"absent\", matches: isAbsentRegistry },\n",
+      "replace": "  { name: \"absent\", matches: (registry) => registry === \"absent\" },\n",
+      "expectRed": "each CENSUS_BUCKETS entry is the exported predicate object itself",
+      "cell": "each CENSUS_BUCKETS entry is the exported predicate object itself",
+      "note": "Found by attacking the bucket cells: the table this suite grades through agreed with the ladder today but was free to diverge, which would restore the transcription defect one layer up. Identity, not equality, is what makes grading through CENSUS_BUCKETS mean anything."
+    },
+    {
+      "name": "the verdict ladder stops calling the exported bucket predicate and inlines the comparison",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const absent = rows.filter((row) => row.registry === \"absent\");\n",
+      "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "cell": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "note": "The other half of the same drift: exports that the ladder no longer calls are decoration, and a test grading them would grade nothing the release path runs."
+    },
+    {
+      "name": "the census enumerator goes back to last-match-wins, so a nested same-name declaration replaces the target",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "  const declared = parsed.statements.filter(\n    (statement): statement is ts.FunctionDeclaration =>\n      ts.isFunctionDeclaration(statement) && statement.name?.text === name,\n  );\n",
+      "replace": "  const declared: ts.FunctionDeclaration[] = [];\n  parsed.forEachChild(function find(node: ts.Node): void {\n    if (ts.isFunctionDeclaration(node) && node.name?.text === name) { declared.length = 0; declared.push(node); }\n    node.forEachChild(find);\n  });\n",
+      "expectRed": "a nested same-name readExactVersion decoy cannot replace the shipped declaration",
+      "cell": "a nested same-name readExactVersion decoy cannot replace the shipped declaration, so a poisoned real function is still enumerated and refused",
+      "note": "Rule 1, the census half. Restores the exact retired lookup: a recursive walk that keeps only the LAST declaration of the name. The decoy cell then reads a clean nested copy while the real function returns an out-of-domain value, which is the defeat a panel drove. Grades the instrument, not the subject: without this the pin could be quietly relaxed back to the shape it replaced."
+    },
+    {
+      "name": "the return-walk boundary drops back to the hand-rolled union that omits constructors and static blocks",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "const isReturnScopeBoundary = (node: ts.Node): boolean =>\n  ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);\n",
+      "replace": "const isReturnScopeBoundary = (node: ts.Node): boolean => ts.isFunctionDeclaration(node)\n  || ts.isFunctionExpression(node)\n  || ts.isArrowFunction(node)\n  || ts.isMethodDeclaration(node)\n  || ts.isGetAccessor(node)\n  || ts.isSetAccessor(node);\n",
+      "expectRed": "a return inside a constructor is not attributed to readExactVersion",
+      "cell": "a return inside a constructor is not attributed to readExactVersion, so a local class does not red the enumerator with a value the function never returns",
+      "note": "Rule 2. The retired six-way union omitted ConstructorDeclaration and ClassStaticBlockDeclaration, so a local class constructor's return was attributed to the enclosing function and reddened a clean source with five enumerated returns. ts.isFunctionLike is the compiler's own answer; the static block is named separately because the compiler does not consider it function-like."
+    },
+    {
+      "name": "a shadowing nested readExactVersion is appended to the shipped source beside a poisoned real one",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n  }\n}\n",
+      "replace": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n  }\n  if (pkg.name === \"never\") return response;\n}\n\nfunction readExactVersionShadowHolder() {\n  async function readExactVersion(pkg, registryBase, fetchImpl) {\n    if (pkg) return \"present\";\n    if (registryBase) return \"absent\";\n    if (fetchImpl) return `unknown:shadow`;\n    return `unknown:shadow-tail`;\n  }\n  return readExactVersion;\n}\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "the 5 return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "note": "The shadowing-declaration mutation for the census enumerator, applied to the SHIPPED source rather than a synthetic one. It poisons the real function with an unpinnable return AND appends a nested clean decoy of the same name. Under the retired last-match-wins lookup the decoy won and this cell stayed green at four returns; under the top-level pin the real function is read and its out-of-domain return refused."
+    },
+    {
+      "name": "a shadowing nested preflightNpmPublish is appended inside the ladder beside a drifted comparison",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  function preflightNpmPublishShadowHolder() {\n    async function preflightNpmPublish(shadowRows) {\n      return shadowRows.filter((row) => isUnknownRegistry(row.registry));\n    }\n    return preflightNpmPublish;\n  }\n  void preflightNpmPublishShadowHolder;\n  const unknown = rows.filter((row) => row.registry.startsWith(\"unknown:\"));\n",
+      "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "cell": "the verdict ladder buckets rows by calling the exported predicates by name, so CENSUS_BUCKETS cannot drift into a parallel copy that agrees today and diverges later",
+      "note": "The shadowing-declaration mutation for the ladder enumerator. It drifts the real ladder off the exported unknown predicate AND declares a nested decoy of the same name that calls it, which is the laundering shape measured to keep this cell green both under the retired last-wins lookup and, later, under the top-level pin before the walk was given a function boundary. Both halves of that repair are required for this to red."
+    },
+    {
+      "name": "the unknown bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  const unknown = rows.filter((row) => row.registry.startsWith(\"unknown:\"));\n  if (false) { rows.filter((row) => isUnknownRegistry(row.registry)); }\n",
+      "expectRed": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "cell": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the present bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "replace": "  const present = rows.filter((row) => row.registry === \"present\");\n  if (false) { rows.filter((row) => isPresentRegistry(row.registry)); }\n",
+      "expectRed": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "cell": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the absent bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const absent = rows.filter((row) => row.registry === \"absent\");\n  if (false) { rows.filter((row) => isAbsentRegistry(row.registry)); }\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the absent rung is redirected to an inline copy while a live call to the exported predicate remains beside it",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absent.length === rows.length\n",
+      "replace": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n  const absentRows = rows.filter((row) => row.registry === \"absent\");\n  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absentRows.length === rows.length\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The dead call made LIVE, which is why it is a separate entry rather than a variant of the three above. `absent` is still declared, still calls isAbsentRegistry, and is now genuinely reachable, so every reading that asks whether the predicate is called says yes and a pin that resolved buckets by NAME would also say yes. The verdict reads `absentRows`. AIM, corrected after a WRONG-RED: this is tagged on the SHIPPED absent rung cell, not on the skeleton cell that describes this same shape. The skeleton cell is synthetic and by design does not move when the shipped module is mutated, so tagging it graded a genuine detection as a miss. The shipped rung cell is where a mutation of the shipped file must red. It also rots nothing: the shipped absent line is left byte-identical, so the three older controls that anchor on that line stay green."
+    },
+    {
+      "name": "the unknown bucket call is captured by a same-name local predicate",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  const isUnknownRegistry = (registry) => registry.startsWith(\"unknown:\");\n  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "expectRed": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "cell": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. The mutation changes which declaration the consumed call resolves to while preserving current behaviour, and must be killed by resolving the callee to a symbol rather than by an enumerated registry input."
+    },
+    {
+      "name": "the present bucket call is captured by a same-name local predicate",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "replace": "  const isPresentRegistry = (registry) => registry === \"present\";\n  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "expectRed": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "cell": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. The mutation changes which declaration the consumed call resolves to while preserving current behaviour, and must be killed by resolving the callee to a symbol rather than by an enumerated registry input."
+    },
+    {
+      "name": "the absent bucket call is captured by a widened same-name local predicate",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\";\n  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. This is deliberately non-equivalent: it widens the local predicate beyond the shipped export on an unenumerated value. The kill must therefore come from the absent binding's structural symbol-identity cell, not from adding a behavioural cell for that one value."
+    },
+    {
+      "name": "the unknown bucket call is captured by a sibling-block var that hoists to the ladder's scope",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  { var isUnknownRegistry = (registry) => registry.startsWith(\"unknown:\") && registry !== \"unknown:410\"; }\n  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "expectRed": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "cell": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. `var` hoists out of the block to the ladder's own function scope and really captures the rung's call, and this widening is non-equivalent: the shipped export says isUnknownRegistry(\"unknown:410\") is true and the shadow says false, which moves a real 404/404/410 census from inconclusive to incomplete. The kill must come from the unknown binding's structural symbol-identity cell, not from an enumerated registry input."
+    },
+    {
+      "name": "the absent bucket call is captured by a sibling-block var that hoists to the ladder's scope",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  { var isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\"; }\n  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The same hoisting mechanism on a second bucket, so a reading that special-cased one rung does not pass. The original bucket line remains byte-identical. Deliberately non-equivalent: the shadow claims a value the shipped export does not. The kill must come from the absent binding's structural symbol-identity cell."
+    },
+    {
+      "name": "the absent bucket call is captured by a same-name predicate in the ladder's destructured parameter list",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  log = console.log,\n}) {\n",
+      "replace": "  log = console.log,\n  isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\",\n}) {\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The ladder's only parameter is an ObjectBindingPattern, so a same-name predicate given a default inside it binds over the whole body and captures the absent rung's call. It leaves every bucket line byte-identical, so no control anchor is disturbed. This mutation also changes the emitted declaration, so the committed .d.mts must be regenerated for the run to isolate this cell; without that the dts-freshness cell reds instead, which is staleness and not detection. The kill must come from the absent binding's structural symbol-identity cell."
     }
   ]
 }
