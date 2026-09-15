@@ -490,6 +490,54 @@
       "replace": "      if (!isEq && !isNe) return false;",
       "expectRed": "a sweep that skips one entry is still open",
       "cell": "a sweep that skips one entry is still open"
+    },
+    {
+      "name": "a parenthesized narrowing is unwrapped before it is classified",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isParenthesizedExpression(cond)) return singleValueEquality(cond.expression, holds);",
+      "replace": "      if (ts.isParenthesizedExpression(cond)) return false;",
+      "expectRed": "a narrowing in parentheses is still a named read",
+      "cell": "a narrowing in parentheses is still a named read"
+    },
+    {
+      "name": "a prefix `!` flips the sense of the guard rather than being dropped",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        return singleValueEquality(cond.operand, !holds);",
+      "replace": "        return singleValueEquality(cond.operand, holds);",
+      "expectRed": "a narrowing spelled as a negated inequality is still a named read",
+      "cell": "a narrowing spelled as a negated inequality is still a named read"
+    },
+    {
+      "name": "a compound guard is taken apart operand by operand",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);",
+      "replace": "        return false;",
+      "expectRed": "a narrowing in one operand of an && guard is still a named read",
+      "cell": "a narrowing in one operand of an && guard is still a named read"
+    },
+    {
+      "name": "`||` decomposes under a false guard, not just `&&` under a true one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;",
+      "replace": "        if (kind !== ts.SyntaxKind.AmpersandAmpersandToken || !holds) return false;",
+      "expectRed": "a narrowing in one operand of an || exit guard is still a named read",
+      "cell": "a narrowing in one operand of an || exit guard is still a named read"
+    },
+    {
+      "name": "each logical operator decomposes in one direction only",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;\n        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);",
+      "replace": "        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);",
+      "expectRed": "an && exit guard leaves every other entry going through",
+      "cell": "an && exit guard leaves every other entry going through"
+    },
+    {
+      "name": "the compared side must be the loop entry, not merely mention it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      return (isEntryItself(cond.left) && known(cond.right)) || (isEntryItself(cond.right) && known(cond.left));",
+      "replace": "      return (mentions(cond.left) && known(cond.right)) || (mentions(cond.right) && known(cond.left));",
+      "expectRed": "an extension filter written as an equality is still a sweep",
+      "cell": "an extension filter written as an equality is still a sweep"
     }
   ]
 }
