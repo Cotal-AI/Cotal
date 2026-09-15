@@ -113,6 +113,8 @@ import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
+import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -2036,7 +2038,18 @@ async function startDeliveryWithBroker(
   },
 ): Promise<boolean> {
   try {
-    await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
+    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
+    // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
+    // dependency of spawn, retirement and join, and this function used to return `true` for a boot
+    // that started a daemon whose responder never bound — so `cotal up` printed its success banner
+    // over a control plane that could not perform any of the three. The reporter's fleet ran 22
+    // hours in that state. This is not a failure of `up` (live messaging is unaffected and the
+    // responder may still bind), so it does not throw; it states the condition and its consequence.
+    if (plane.responderBound === false)
+      console.error(
+        c.yellow(`! delivery responder did not bind before this boot finished - ${RESPONDER_UNBOUND_CONSEQUENCE}`) +
+          c.dim(`\n  The daemon process is running and the wait is open-ended; boot durable joins reconcile by themselves once it binds (agents do NOT need respawning).\n  Watch it with \`${displayCmd()} status --components\`.`),
+      );
     return true;
   } catch (e) {
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,

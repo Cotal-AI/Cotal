@@ -20,6 +20,7 @@ export {
   outstandingPauseTokens,
   readSupervise,
   spawnArgs,
+  canonicalCwd,
   type MeshHandlerBinding,
   type SettleWatcher,
 } from "./mesh-handler.js";

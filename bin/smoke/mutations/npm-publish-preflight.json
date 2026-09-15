@@ -25,10 +25,34 @@
     {
       "name": "a mixed present and absent census is allowed to continue",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  if (unknown.length || present.length > 0) {\n",
-      "replace": "  if (unknown.length) {\n",
-      "expectRed": "one already-published package refuses the whole preflight",
-      "cell": "one already-published package refuses the whole preflight"
+      "find": "  if (registryVerdict === \"mixed\") {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n  }\n",
+      "replace": "",
+      "expectRed": "mixed repository entrypoint preserves the partial-publication refusal",
+      "cell": "mixed repository entrypoint preserves the partial-publication refusal"
+    },
+    {
+      "name": "an all-present census is refused instead of treated as a no-op",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"all-present\") {\n    printPublishCensus(rows, log);\n    log(\"nothing to publish: every exact version is already on the registry\");\n    return { state: \"nothing-to-publish\", rows };\n  }\n",
+      "replace": "  if (registryVerdict === \"all-present\") {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n  }\n",
+      "expectRed": "all-present repository entrypoint returns the named no-op verdict",
+      "cell": "all-present repository entrypoint returns the named no-op verdict"
+    },
+    {
+      "name": "the all-present no-op returns a publish-ready state",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return { state: \"nothing-to-publish\", rows };\n",
+      "replace": "    return { state: \"ready\", rows };\n",
+      "expectRed": "all-present preflight returns the named no-op state",
+      "cell": "all-present preflight returns the named no-op state"
+    },
+    {
+      "name": "an all-absent census is treated as the all-present no-op",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    : absent.length === rows.length\n      ? \"all-absent\"\n",
+      "replace": "    : absent.length === rows.length\n      ? \"all-present\"\n",
+      "expectRed": "zero-present repository entrypoint reaches the publish authorization stage",
+      "cell": "zero-present repository entrypoint reaches the publish authorization stage"
     },
     {
       "name": "the recursive publish set may omit one fixed-group package",
@@ -119,6 +143,33 @@
       "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)"
     },
     {
+      "name": "the census state widens back to bare string in the published type",
+      "note": "The defect this file is being extended for: with the @returns removed, tsc widens the object-literal property and the declaration stops carrying the state contract. The byte-identity cell above cannot catch it on its own, because the declaration and the module still agree with each other.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ ([\"nothing-to-publish\", \"ready\"]);",
+      "replace": "export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ ([\"nothing-to-publish\", \"ready\", \"inconclusive\"]);",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a census state literal is renamed in the published union",
+      "note": "Graded separately from preflightNpmPublish because the two properties are emitted independently: before this fix each was its own bare `string`, so one entry point's coverage says nothing about the other's. This mutation widens the declared return rather than deleting it, and the difference was measured: DELETING the annotation here does not widen anything, because this function returns preflightNpmPublish(...) directly and inherits the union by inference, so a deletion reds the byte-identity cell instead and grades WRONG-RED. The annotation is kept in the source anyway, because inference only holds while the body stays a direct return.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "([\"nothing-to-publish\", \"ready\"]);",
+      "replace": "([\"nothing-to-publish\", \"shipped\"]);",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a census state the module can return is dropped from the published union",
+      "note": "The union has to match the module, not merely be a union: `inconclusive` is a registryVerdict that throws, so admitting it into the published type would invite a caller to branch on a state no call site can produce.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "[\"nothing-to-publish\", \"ready\"]",
+      "replace": "[\"nothing-to-publish\"]",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
       "name": "a publisher with blank environment bypasses the environment check",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "  if (expectedEnvironment && envValue !== expectedEnvironment) return false;\n",
@@ -149,6 +200,86 @@
       "replace": "    if (response.status === 401) return \"createPackage\";\n",
       "expectRed": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
       "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
+    },
+    {
+      "name": "the census state grader stops refusing: the declaration never declares this entry point",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (declared === 0) { refusals.push(`${fn}: the declaration never declares this entry point`); continue; }\n",
+      "replace": "    if (declared === 0) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: so which result a caller resolves is ambiguous",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (declared > 1) { refusals.push(`${fn}: declared ${declared} times, so which result a caller resolves is ambiguous`); continue; }\n",
+      "replace": "    if (declared > 1) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: no resolved result object in the declaration",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (block === null) { refusals.push(`${fn}: no resolved result object in the declaration`); continue; }\n",
+      "replace": "    if (block === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: no top-level state property",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written.length === 0) { refusals.push(`${fn}: the result carries no top-level state property`); continue; }\n",
+      "replace": "    if (written.length === 0) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: top-level state properties",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written.length > 1) { refusals.push(`${fn}: carries ${written.length} top-level state properties: ${written.join(\", \")}`); continue; }\n",
+      "replace": "    if (written.length > 1) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: which this declaration never defines",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (resolved === null) { refusals.push(`${fn}: state is ${type}, which this declaration never defines`); continue; }\n",
+      "replace": "    if (resolved === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: state is optional, so the census verdict may be absent",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written[0].startsWith(\"?\")) { refusals.push(`${fn}: state is optional, so the census verdict may be absent from the published result`); continue; }\n",
+      "replace": "    if (written[0].startsWith(\"?\")) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: not a union of the census literals",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (members === null) { refusals.push(`${fn}: state is ${resolved}, not a union of the census literals`); continue; }\n",
+      "replace": "    if (members === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: state union is missing",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (missing.length) { refusals.push(`${fn}: state union is missing ${missing.join(\", \")}`); continue; }\n",
+      "replace": "    if (missing.length) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: which the census never returns",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (extra.length) refusals.push(`${fn}: state union carries ${extra.join(\", \")}, which the census never returns`);\n",
+      "replace": "    if (extra.length) void extra;\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
     }
   ]
 }

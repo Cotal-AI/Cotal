@@ -26,6 +26,12 @@ export function printPublishCensus(rows: any, log?: {
     (...data: any[]): void;
     (message?: any, ...optionalParams: any[]): void;
 }): void;
+/**
+ * @typedef {(typeof NPM_PUBLISH_PREFLIGHT_STATES)[number]} NpmPublishPreflightState
+ */
+/**
+ * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
+ */
 export function preflightNpmPublish({ fixedPackages, workspacePackages, registryBase, env, fetchImpl, log, }: {
     fixedPackages: any;
     workspacePackages: any;
@@ -37,9 +43,12 @@ export function preflightNpmPublish({ fixedPackages, workspacePackages, registry
         (message?: any, ...optionalParams: any[]): void;
     };
 }): Promise<{
-    state: string;
+    state: NpmPublishPreflightState;
     rows: any[];
 }>;
+/**
+ * @returns {Promise<{ state: NpmPublishPreflightState, rows: any[] }>}
+ */
 export function preflightFromRepository({ root, registryBase, env, fetchImpl, log, exec, }?: {
     root?: string;
     registryBase?: string;
@@ -51,7 +60,21 @@ export function preflightFromRepository({ root, registryBase, env, fetchImpl, lo
     };
     exec?: typeof execFileSync;
 }): Promise<{
-    state: string;
+    state: NpmPublishPreflightState;
     rows: any[];
 }>;
+/**
+ * The census verdict this preflight can return. Every other outcome throws, so these two
+ * names are the complete contract a caller may branch on. Naming the union here is what puts
+ * it in the generated declaration: an object-literal property widens to `string` on emit,
+ * while a named type survives, so the published type stays as strict as the module.
+ *
+ * The members live in this exported CODE array rather than in a JSDoc union, so the contract
+ * cannot be widened, narrowed or renamed by a commit that only edits prose. A comment-only
+ * diff reads as documentation to a reviewer, which is exactly the diff that must not be able
+ * to move a published type. `mutation-fixtures` refuses anchors that span comments for the
+ * same reason, and its refusal is what showed the JSDoc-only form was disarmable.
+ */
+export const NPM_PUBLISH_PREFLIGHT_STATES: readonly ["nothing-to-publish", "ready"];
+export type NpmPublishPreflightState = (typeof NPM_PUBLISH_PREFLIGHT_STATES)[number];
 import { execFileSync } from "node:child_process";

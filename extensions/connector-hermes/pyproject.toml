@@ -3,16 +3,26 @@
 # (the plugin dir is copied into HERMES_HOME at launch) — `package = false` keeps uv from
 # building it.
 #
-# Pin: the connector is written against the Hermes 0.16 plugin/platform API. The TS sidecar
-# asserts the installed version is on that line at startup and fails loudly on a mismatch
-# (no silent degrade) — keep this pin and the assertion in src/launch.ts in sync.
+# Range: the connector is written against the Hermes 0.18 through 0.21 plugin/platform API. The
+# TS sidecar asserts the installed version is inside that range at startup and fails loudly
+# outside it (no silent degrade) — keep this range and HERMES_MIN/HERMES_MAX_EXCLUSIVE in
+# src/launch.ts in sync.
+#
+# The floor is 0.18 because `BasePlatformAdapter.connect` gained the keyword-only `is_reconnect`
+# there and the gateway has passed it at every call site since; plugin/cotal/adapter.py accepts
+# and acts on it. The ceiling is exclusive of 0.22, which does not exist upstream yet.
+#
+# What a resolver actually picks from this range: PyPI publishes up to 0.19.0, so a plain uv/pip
+# resolution lands on 0.19.0, which is inside the range and supported. 0.20.x and 0.21.x exist
+# only as upstream GitHub releases, so an operator on those installed from git or the install
+# script is also inside the range rather than refused.
 [project]
 name = "cotal-connector-hermes"
 version = "0.1.0"
 description = "Run the Hermes (Nous Research) agent as a Cotal mesh peer."
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "hermes-agent>=0.16,<0.17",
+    "hermes-agent>=0.18,<0.22",
 ]
 
 [tool.uv]

@@ -88,12 +88,116 @@ const namedAliases = (source, fromSpec, originals) => {
 const pathEval = (suite, source, env = new Map()) => {
   const sf = ast(suite, source);
   const joiners = namedAliases(source, "path", JOINERS);
-  const variables = new Map();
+  // A scalar binding is resolved at the USE SITE, by walking outward to the nearest enclosing
+  // scope that declares the name. A flat name->value map is not a binding: a same-named `ENTRY`
+  // in an unrelated function would stand in for the one the launcher actually passes, which
+  // asserts a data-flow fact the program does not have. That is the #1586 class, and fixing it
+  // for an argv ARRAY while leaving it for the SCALAR the array holds only moves the hole.
+  const functionLike = (node) => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node)
+    || ts.isClassDeclaration(node);
+  // A block is a scope. Treating only functions as scopes reads a `const` from a sibling `if`
+  // branch that never ran, which is the same false-accept one level down.
+  const blockLike = (node) => ts.isBlock(node) || ts.isForStatement(node) || ts.isForOfStatement(node)
+    || ts.isForInStatement(node) || ts.isCatchClause(node) || ts.isCaseBlock(node) || ts.isModuleBlock(node);
+  const scopeOf = (node) => {
+    for (let s = node; s !== undefined; s = s.parent) {
+      if (ts.isSourceFile(s) || functionLike(s) || blockLike(s)) return s;
+    }
+    return sf;
+  };
+  // Textual position is not execution order. A use inside a function body runs when that function
+  // is INVOKED: `function run(){ spawn([ENTRY]) } const ENTRY = target; run()` initializes ENTRY
+  // before the call and is a real launch, while `run(); const ENTRY = target; function run(){...}`
+  // reads ENTRY in its dead zone and is not. The identifier's own offset cannot tell those apart,
+  // so the position compared against a declaration is the earliest CALL of the enclosing function.
+  const namedFunction = (node) => {
+    if (ts.isFunctionDeclaration(node)) return node.name?.text;
+    const parent = node.parent;
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+      && (ts.isFunctionExpression(node) || ts.isArrowFunction(node))) return parent.name.text;
+    return undefined;
+  };
+  const earliestCall = (name, within) => {
+    let earliest;
+    const scan = (node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+        const pos = node.getStart(sf);
+        if (earliest === undefined || pos < earliest) earliest = pos;
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(within);
+    return earliest;
+  };
+  // Where `use` actually evaluates, relative to declarations in `scope`: its own offset when no
+  // function boundary separates the two, and otherwise the earliest call of each function crossed
+  // on the way out. `undefined` means the order could not be established -- an anonymous or
+  // never-called function -- and every caller must treat that as a refusal rather than a value.
+  // A refusal is a claim this tool can back; a guess at invocation order is not.
+  const executionPos = (use, scope) => {
+    let pos = use.getStart(sf);
+    for (let s = use.parent; s !== undefined && s !== scope; s = s.parent) {
+      if (!functionLike(s)) continue;
+      const name = namedFunction(s);
+      if (name === undefined) return undefined;
+      const call = earliestCall(name, scope);
+      if (call === undefined) return undefined;
+      pos = call;
+    }
+    return pos;
+  };
+  // A destructuring pattern is a binding. `function run({ENTRY})` declares ENTRY, and reading it as
+  // no binding at all lets an outer target-valued ENTRY stand in for the parameter the call really
+  // passes, which witnesses a launch THAT IS NOT THERE -- the dangerous direction. The value a
+  // pattern binds is not one this tool can follow, so a pattern that can bind the name stops
+  // resolution instead of letting the walk continue outward.
+  const bindsName = (nameNode, name) => {
+    if (ts.isIdentifier(nameNode)) return nameNode.text === name;
+    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
+      return nameNode.elements.some((element) => ts.isBindingElement(element) && bindsName(element.name, name));
+    }
+    return false;
+  };
+  // Declared here, but with no value this tool may claim: a parameter, a declaration with no
+  // initializer, or one that appears after the use. Each SHADOWS an outer binding of the same
+  // name, so resolution stops rather than walking outward and reporting the outer one's value.
+  const OPAQUE = Symbol("declared, value unknown");
+  const declarationKind = (declaration) => {
+    const list = declaration.parent;
+    if (list === undefined || !ts.isVariableDeclarationList(list)) return "other";
+    if (list.flags & ts.NodeFlags.Let) return "let";
+    if (list.flags & ts.NodeFlags.Const) return "const";
+    return "var";
+  };
+  // What `scope` itself declares for `name`, by the language's rules rather than an approximation
+  // of them, because every place the approximation differs is a data-flow fact the program does
+  // not have. `var` hoists out of inner blocks to its function and so is collected from them; a
+  // `let` or `const` in an inner block is not visible here and is deliberately not collected.
+  const declaredIn = (scope, name, useNode) => {
+    const usePos = executionPos(useNode, scope);
+    let found;
+    const record = (value) => { if (found === undefined) found = value; };
+    const scan = (node, hoistedOnly) => {
+      if (found !== undefined) return;
+      if (node !== scope && (functionLike(node) || ts.isSourceFile(node))) return;
+      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, true)); return; }
+      if (!hoistedOnly && ts.isParameter(node) && bindsName(node.name, name)) record(OPAQUE);
+      if (ts.isVariableDeclaration(node) && (!hoistedOnly || declarationKind(node) === "var")) {
+        if (ts.isIdentifier(node.name) && node.name.text === name) {
+          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);
+        } else if (!ts.isIdentifier(node.name) && bindsName(node.name, name)) record(OPAQUE);
+      }
+      ts.forEachChild(node, (child) => scan(child, hoistedOnly));
+    };
+    scan(scope, false);
+    return found;
+  };
   // The repository root, and ONLY where the program actually computes it. An identifier's spelling
   // is not evidence of its value: `const root = mkdtempSync(...)` is a temp directory, and reading
   // it as the repo root invents a data-flow fact that does not exist. A name-shaped root was the
   // exact class #1434 is about, so nothing here looks at identifier text. A binding reaches this
-  // value only by evaluating to it, through the `variables` map.
+  // value only by evaluating to it, through its declaration.
   const rootish = (node) => {
     if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === "process.cwd") return true;
     if (ts.isPropertyAccessExpression(node)) {
@@ -107,7 +211,19 @@ const pathEval = (suite, source, env = new Map()) => {
     if (ts.isParenthesizedExpression(node)) return evalPath(node.expression);
     const literal = stringValue(node);
     if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) return variables.get(node.text);
+    if (ts.isIdentifier(node)) {
+      // `const A = B` beside `const B = A` is a program, and it terminates here because a cycle
+      // needs one edge pointing at a later declaration, which the use-position rule below stops.
+      // A visited set as well would be a second guard for the same case, and mutating either one
+      // then proves nothing, because the other still holds.
+      for (let scope = scopeOf(node); scope !== undefined;
+        scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {
+        const declared = declaredIn(scope, node.text, node);
+        if (declared === OPAQUE) return undefined;
+        if (declared !== undefined) return evalPath(declared);
+      }
+      return undefined;
+    }
     if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
       if (node.name.text === "dirname") return dirname(resolve(suite));
       if (node.name.text === "url") return resolve(suite);
@@ -144,14 +260,6 @@ const pathEval = (suite, source, env = new Map()) => {
     }
     return undefined;
   };
-  const walk = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const value = evalPath(node.initializer);
-      if (value !== undefined) variables.set(node.name.text, value);
-    }
-    ts.forEachChild(node, walk);
-  };
-  walk(sf);
   return { sf, evalPath };
 };
 
@@ -337,33 +445,312 @@ const commandEnv = (command) => {
 };
 
 /**
+ * Does this node introduce a lexical scope?
+ *
+ * Used to RESOLVE a name to its binding rather than to recognise its spelling. A function, a class
+ * and a block each bind, and a `for` header binds its own loop variable, so a walk that skipped
+ * blocks would report an outer binding for a name an inner `const` had already taken.
+ */
+const isScopeNode = (node) => ts.isSourceFile(node) || ts.isBlock(node) || ts.isModuleBlock(node)
+  || ts.isForStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node)
+  || ts.isCatchClause(node) || ts.isCaseBlock(node) || ts.isFunctionDeclaration(node)
+  || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node)
+  || ts.isConstructorDeclaration(node) || ts.isClassDeclaration(node);
+
+/** Does this binding name, including a destructuring pattern, bind `ident`? */
+const bindingBinds = (nameNode, ident) => {
+  if (nameNode === undefined) return false;
+  if (ts.isIdentifier(nameNode)) return nameNode.text === ident;
+  if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
+    return nameNode.elements.some((element) => ts.isBindingElement(element) && bindingBinds(element.name, ident));
+  }
+  return false;
+};
+
+/**
+ * Does THIS scope itself declare `ident`, by any binding form the language has?
+ *
+ * Deliberately over-inclusive: a parameter, an import, a `var`/`let`/`const`, a destructured
+ * element, a function or class declaration all count. Over-reporting a binding can only make a
+ * name fail to resolve to the global, and an unresolved name is treated as OPEN, which makes the
+ * sweep count. Under-reporting would bless a shadowed local as the global conversion, which is the
+ * false-identity route sol found at v2.
+ */
+const declaresLocally = (scope, ident) => {
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    // A function or class DECLARATION binds its own name in the enclosing scope, so it is recorded
+    // before the walk declines to descend into its body.
+    if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))
+      && node.name !== undefined && node.name.text === ident) { found = true; return; }
+    if (ts.isVariableDeclaration(node) && bindingBinds(node.name, ident)) { found = true; return; }
+    if (ts.isParameter(node) && bindingBinds(node.name, ident)) { found = true; return; }
+    if (ts.isImportSpecifier(node) && node.name.text === ident) { found = true; return; }
+    if (ts.isNamespaceImport(node) && node.name.text === ident) { found = true; return; }
+    if (ts.isImportClause(node) && node.name !== undefined && node.name.text === ident) { found = true; return; }
+    if (ts.isCatchClause(node) && bindingBinds(node.variableDeclaration?.name, ident)) { found = true; return; }
+    if (node !== scope && isScopeNode(node)) return;
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(scope, visit);
+  return found;
+};
+
+/**
  * Are the entries this listing produces actually READ?
  *
  * A directory listing by itself observes names, not bytes: mutating a file's contents cannot change
  * it. The listing therefore witnesses a read only when its entries flow into a reader, which is the
  * `for (const f of readdirSync(...)) readFileSync(<f>)` shape. The binding is followed by identity,
  * so a loop that reads some other path does not count.
+ *
+ * A sweep also has to still BE a sweep at the point of the read. A listing is real coverage because
+ * it never enumerates its subjects, so a new file is caught precisely because nothing named it. One
+ * `continue` on an equality against a single known path takes that away: the loop still walks the
+ * tree, but only one entry ever reaches the reader, and the suite is back to reading a file it
+ * names. The question is the CARDINALITY the guard chain admits rather than the presence of a
+ * particular spelling, so the conditions that must hold for control to reach a reader are collected
+ * and a reader that only one value of the loop variable can reach is not counted.
  */
-const listingIsRead = (call, readers) => {
+const listingIsRead = (call, readers, evalPath) => {
   for (let cur = call.parent; cur !== undefined; cur = cur.parent) {
     if (!ts.isForOfStatement(cur)) continue;
     const decl = cur.initializer;
     const name = ts.isVariableDeclarationList(decl) && decl.declarations[0]
       && ts.isIdentifier(decl.declarations[0].name) ? decl.declarations[0].name.text : undefined;
     if (name === undefined) return false;
+    // Does this expression carry the loop entry at all? An any-occurrence walk, which is what a
+    // reader's ARGUMENT needs: it decides whether the read reads the entry, not how many entries
+    // reach it. A loop-local `const` alias is followed to its initializer, because
+    // `const entry = String(f); readFileSync(join(DIR, entry))` reads the entry just as surely as
+    // spelling `String(f)` in the argument. Not following it refuses an entirely OPEN aliased
+    // sweep, which is the failure with no alarm attached: nothing reds, coverage just stops
+    // counting. That refusal is live at `cbf0ab8c3` and this is what fixes it.
+    const mentions = (e, seen) => {
+      if (!e) return false;
+      if (ts.isIdentifier(e)) {
+        if (e.text === name) return true;
+        const visited = seen ?? new Set();
+        if (visited.has(e.text)) return false;
+        visited.add(e.text);
+        const declaration = aliasDeclaration(e);
+        return declaration !== undefined && mentions(declaration.initializer, visited);
+      }
+      let found = false;
+      ts.forEachChild(e, (c) => { if (mentions(c, seen)) found = true; });
+      return found;
+    };
+    // The `const` declaration this identifier resolves to, when it is a loop-local alias whose
+    // value cannot change between the binding and the guard. Everything here is a REASON the alias
+    // is the same value, not a shape: it must be declared inside this loop's body, be `const`, have
+    // a plain identifier name, and never appear as an assignment target. A `let`, a parameter, a
+    // destructured element or an outer binding all return undefined, and an unresolved alias is
+    // simply not an identity, which leaves the guard OPEN and the sweep counting.
+    const aliasDeclaration = (node) => {
+      for (let s = node.parent; s !== undefined; s = s.parent) {
+        if (!isScopeNode(s)) continue;
+        let found;
+        const visit = (n) => {
+          if (found !== undefined) return;
+          if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === node.text) {
+            found = n; return;
+          }
+          if (n !== s && isScopeNode(n)) return;
+          ts.forEachChild(n, visit);
+        };
+        ts.forEachChild(s, visit);
+        if (found === undefined) {
+          // Not bound here. Stop at the loop: a binding outside the loop body is not a per-entry
+          // alias, so it is not followed.
+          if (s === cur) return undefined;
+          continue;
+        }
+        const list = found.parent;
+        if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return undefined;
+        // Inside THIS loop's body, or it is not a per-entry binding.
+        let inLoop = false;
+        for (let p = found; p !== undefined; p = p.parent) if (p === cur) { inLoop = true; break; }
+        if (!inLoop) return undefined;
+        // `const` cannot be reassigned, but a declaration this walk mis-identified could be; the
+        // check costs nothing and makes the "never reassigned" clause of the contract explicit.
+        if (reassignedIn(cur, node.text)) return undefined;
+        return found;
+      }
+      return undefined;
+    };
+    // Is this name ever an assignment target inside the loop?
+    const reassignedIn = (root, ident) => {
+      let assigned = false;
+      const visit = (n) => {
+        if (assigned) return;
+        if (ts.isBinaryExpression(n) && ts.isIdentifier(n.left) && n.left.text === ident
+          && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+          && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) { assigned = true; return; }
+        if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+          && ts.isIdentifier(n.operand) && n.operand.text === ident
+          && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) {
+          assigned = true; return;
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(root);
+      return assigned;
+    };
+    // `a === b` pins the entry when it HOLDS and one side is the entry, value-preserving, while the
+    // other resolves to a single known string. A side counts as known when the path evaluator
+    // resolves it, which covers a literal and a constant the program computes.
+    const pinsEquality = (cond, holds) => {
+      if (!holds) return false;
+      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;
+      return (entryIdentity(cond.left) && known(cond.right)) || (entryIdentity(cond.right) && known(cond.left));
+    };
+    // Does this identifier RESOLVE to the global `String`, or has some enclosing scope bound the
+    // name to something else? Resolution, not spelling. v2 compared the callee's terminal NAME, so
+    // `helper.String(f)` and a shadowed local `const String = v => …` both read as the global
+    // conversion: the first refused a legitimate open sweep, the second blessed a many-to-one
+    // projection as identity. Walking out to the source file and asking each scope whether it
+    // declares the name answers the question the name cannot.
+    const resolvesToGlobalString = (node) => {
+      if (!ts.isIdentifier(node) || node.text !== "String") return false;
+      for (let s = node.parent; s !== undefined; s = s.parent) {
+        if (!isScopeNode(s)) continue;
+        if (declaresLocally(s, "String")) return false;
+      }
+      return true;
+    };
+    // Is this expression the loop entry, VALUE-PRESERVING?
+    //
+    // `mentions` is an any-occurrence walk, which is what a reader's argument needs but is far too
+    // loose for an equality: `String(f).slice(-3) !== ".ts"` mentions `f` and sits next to a known
+    // string, yet it pins an EXTENSION and not an entry. Only an identity-preserving projection
+    // counts, meaning one that sends distinct entries to distinct values. A bare identifier is one.
+    // `String(f)` is one when `String` really is the global, because it fixes the representation
+    // and nothing else. `f.slice(…)`, `basename(f)`, `f.toLowerCase()` and `f + x` are NOT: each
+    // sends many entries onto one value, so an equality against a single known string leaves the
+    // sweep open.
+    //
+    // A `const` bound to an identity inside the loop is the SAME VALUE under a second name, so it
+    // is followed to its initializer. `let` is not: a reassignment elsewhere in the body would make
+    // the binding's value at the guard something this walk cannot claim.
+    const entryIdentity = (e, depth = 0) => {
+      if (!e || depth > 16) return false;
+      // Type-only and grouping wrappers carry no runtime value change, so they are transparent.
+      // `as`/`satisfies`/`!` are erased before the program runs; parentheses never existed.
+      if (ts.isParenthesizedExpression(e)) return entryIdentity(e.expression, depth + 1);
+      if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e)
+        || ts.isTypeAssertionExpression(e)) return entryIdentity(e.expression, depth + 1);
+      if (ts.isIdentifier(e)) {
+        if (e.text === name) return true;
+        // A loop-local alias. The declaration has to be inside the loop body, `const`, and never
+        // reassigned, or the value at the guard is not the one the initializer gives.
+        const declaration = aliasDeclaration(e);
+        return declaration !== undefined && entryIdentity(declaration.initializer, depth + 1);
+      }
+      // A call is identity only when the callee RESOLVES to the global `String`, called DIRECTLY.
+      // A property access is never the global binding however its terminal name is spelled, so
+      // `helper.String(f)` and `globalThis.String(f)` are both projections here; the first really
+      // is many-to-one, and the second is refused only as a conservative OPEN, which counts.
+      return ts.isCallExpression(e) && resolvesToGlobalString(e.expression)
+        && e.arguments.length === 1 && entryIdentity(e.arguments[0], depth + 1);
+    };
+    // Does `cond`, when it evaluates to `holds`, constrain the entry to exactly ONE value?
+    //
+    // A THREE-VALUED EVALUATION over the boolean structure, not a match against known spellings.
+    // The crucial property is the default: ANYTHING THIS CANNOT CLASSIFY IS OPEN. An unrecognised
+    // guard therefore makes the sweep COUNT; it never lets a named read masquerade as a sweep.
+    // That is what makes a spelling nobody enumerated safe, and it is why v1 and v2 both fell:
+    // each answered the question by recognising a finite set of shapes, and the set of ways to
+    // write a condition is open.
+    const pins = (cond, holds, depth = 0) => {
+      if (!cond || depth > 32) return false;
+      if (ts.isParenthesizedExpression(cond)) return pins(cond.expression, holds, depth + 1);
+      // `!` inverts the SENSE rather than dropping out: reaching a read guarded by `!(f !== ONE)`
+      // being TRUE is reaching it with `f !== ONE` being FALSE, which is the case that pins.
+      if (ts.isPrefixUnaryExpression(cond) && cond.operator === ts.SyntaxKind.ExclamationToken) {
+        return pins(cond.operand, !holds, depth + 1);
+      }
+      if (ts.isBinaryExpression(cond)) {
+        const kind = cond.operatorToken.kind;
+        // A true `&&` makes BOTH operands true, so an operand that pins pins the whole branch. A
+        // false `&&` says merely that SOME operand was false, which narrows nothing: past
+        // `if (f !== ONE && other) continue` the entry is still free. `||` is the mirror image.
+        if (kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;
+        }
+        if (kind === ts.SyntaxKind.BarBarToken) {
+          return holds ? false : (pins(cond.left, false, depth + 1) || pins(cond.right, false, depth + 1));
+        }
+        // `a !== b` is `a === b` with the sense flipped, so it delegates rather than repeating the
+        // equality rule with the operator table inverted.
+        if (kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken) {
+          const eq = ts.factory.createBinaryExpression(cond.left, ts.SyntaxKind.EqualsEqualsEqualsToken, cond.right);
+          return pinsEquality(eq, !holds);
+        }
+        if (kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken) {
+          return pinsEquality(cond, holds);
+        }
+        return false;
+      }
+      // A ternary is a boolean value like any other, so it is EVALUATED rather than matched.
+      // With boolean-literal arms it reduces to its condition, which is the shape sol defeated v2
+      // with. With other arms, control reaching `holds` can come through EITHER branch that can
+      // yield `holds`, so every such branch must pin, or some branch leaves the entry free.
+      if (ts.isConditionalExpression(cond)) {
+        const arm = (e) => (e.kind === ts.SyntaxKind.TrueKeyword ? true
+          : e.kind === ts.SyntaxKind.FalseKeyword ? false : undefined);
+        const whenTrue = arm(cond.whenTrue);
+        const whenFalse = arm(cond.whenFalse);
+        if (whenTrue !== undefined && whenFalse !== undefined) {
+          if (whenTrue === whenFalse) return false;
+          return pins(cond.condition, whenTrue === holds, depth + 1);
+        }
+        // Each branch that can still produce `holds` has to pin on its own, together with the
+        // condition that selects it.
+        const viaTrue = whenTrue === undefined || whenTrue === holds;
+        const viaFalse = whenFalse === undefined || whenFalse === holds;
+        const truePins = !viaTrue
+          || (pins(cond.condition, true, depth + 1) || pins(cond.whenTrue, holds, depth + 1));
+        const falsePins = !viaFalse
+          || (pins(cond.condition, false, depth + 1) || pins(cond.whenFalse, holds, depth + 1));
+        return (viaTrue || viaFalse) && truePins && falsePins;
+      }
+      // Anything else is OPEN. This is the default that makes the classifier safe.
+      return false;
+    };
+    const exits = (stmt) => {
+      if (!stmt) return false;
+      if (ts.isContinueStatement(stmt) || ts.isBreakStatement(stmt)
+        || ts.isReturnStatement(stmt) || ts.isThrowStatement(stmt)) return true;
+      return ts.isBlock(stmt) && stmt.statements.length > 0 && stmt.statements.some(exits);
+    };
+    // Conditions that MUST hold for control to reach this node, walking out to the loop. Two
+    // sources: a branch of an enclosing `if` this node sits in, and a preceding `if (…) continue`
+    // in the same block, whose condition must have been FALSE for the node to be reached at all.
+    const narrowedToOneEntry = (node) => {
+      for (let n = node; n !== undefined && n !== cur; n = n.parent) {
+        const parent = n.parent;
+        if (parent === undefined) break;
+        if (ts.isIfStatement(parent)) {
+          if (parent.thenStatement === n && pins(parent.expression, true)) return true;
+          if (parent.elseStatement === n && pins(parent.expression, false)) return true;
+        }
+        if (ts.isBlock(parent)) {
+          const index = parent.statements.indexOf(n);
+          for (const earlier of parent.statements.slice(0, index < 0 ? 0 : index)) {
+            if (ts.isIfStatement(earlier) && earlier.elseStatement === undefined
+              && exits(earlier.thenStatement) && pins(earlier.expression, false)) return true;
+          }
+        }
+      }
+      return false;
+    };
     let read = false;
     const scan = (n) => {
       if (read) return;
       if (ts.isCallExpression(n) && readers.has(calleeText(n.expression))) {
         const arg = n.arguments[0];
-        const mentions = (e) => {
-          if (!e) return false;
-          if (ts.isIdentifier(e)) return e.text === name;
-          let found = false;
-          ts.forEachChild(e, (c) => { if (mentions(c)) found = true; });
-          return found;
-        };
-        if (mentions(arg)) read = true;
+        if (mentions(arg) && !narrowedToOneEntry(n)) read = true;
       }
       ts.forEachChild(n, scan);
     };
@@ -521,7 +908,7 @@ const readsFile = (suite, source, file, env = new Map()) => {
       if (typeof dir === "string") {
         const base = resolve(dir);
         const under = want === base || want.startsWith(base.endsWith("/") ? base : base + "/");
-        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers)) hit = true;
+        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers, evalPath)) hit = true;
       }
     }
     ts.forEachChild(node, visit);
@@ -890,56 +1277,26 @@ const entryPackages = (entry) => {
 };
 
 const normalizedPath = (value) => resolve(value).replaceAll("\\", "/");
+/**
+ * Does this suite LAUNCH the declared entrypoint, in the slot the child actually executes?
+ *
+ * This asked a weaker question: whether the declared path appeared ANYWHERE in a launcher's argv,
+ * with the argv identifier resolved through a flat name->value map. Three facts were asserted that
+ * the program does not have. A name is not a binding, so a same-named `args` in an unrelated
+ * function stood in for the launcher's own and witnessed a launch that never happens. An element is
+ * not the script slot, so a path sitting after `-e` counted as executed when node runs the eval
+ * program and never opens the file. A spelling is not an import, so any callee named `spawnProc`
+ * counted, including one imported from a local helper. A conditional argv resolved to `undefined`
+ * and crashed the walk, which surfaced as a config refused for a TypeError rather than a reason.
+ *
+ * `launchedPaths` already answers the real question, and answers it with evidence: bindings are
+ * resolved by walking outward to the nearest enclosing scope that declares the name, the executed
+ * slot is located by node's own flag rules, launcher aliases come from the child_process import,
+ * and dead code is excluded. An entrypoint is witnessed here when it is one of those paths.
+ */
 const spawnsEntrypoint = (suite, entry, source) => {
-  const variables = new Map();
   const target = normalizedPath(entry);
-  const evalPath = (node) => {
-    if (!node) return undefined;
-    const literal = stringValue(node);
-    if (literal !== undefined) return literal;
-    if (ts.isIdentifier(node)) return variables.get(node.text);
-    if (ts.isPropertyAccessExpression(node) && node.expression.getText() === "import.meta") {
-      if (node.name.text === "dirname") return dirname(resolve(suite));
-      if (node.name.text === "url") return resolve(suite);
-    }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const parts = node.arguments.map(evalPath);
-      if (parts.some((part) => part === undefined)) return undefined;
-      if (node.expression.text === "dirname" && parts.length === 1) return dirname(parts[0]);
-      if (node.expression.text === "join" || node.expression.text === "resolve") return resolve(...parts);
-      if (node.expression.text === "fileURLToPath" && parts.length === 1) return parts[0];
-    }
-    return undefined;
-  };
-  const entryArray = (node) => {
-    if (ts.isIdentifier(node)) node = variables.get(node.text);
-    if (!ts.isArrayLiteralExpression(node)) return false;
-    return node.elements.some((element) => {
-      const value = evalPath(element);
-      return value !== undefined && normalizedPath(value) === target;
-    });
-  };
-  const executableIsNode = (node) => {
-    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
-      && node.expression.text === "process" && node.name.text === "execPath") return true;
-    const value = evalPath(node);
-    return value !== undefined && /(?:^|\/)tsx(?:\.cmd)?$/.test(value.replaceAll("\\", "/"));
-  };
-  let witnessed = false;
-  const visit = (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      variables.set(node.name.text, ts.isArrayLiteralExpression(node.initializer) ? node.initializer : evalPath(node.initializer));
-    }
-    if (ts.isCallExpression(node)) {
-      const callee = ts.isIdentifier(node.expression) ? node.expression.text
-        : ts.isPropertyAccessExpression(node.expression) ? `${node.expression.expression.getText()}.${node.expression.name.text}` : "";
-      if (["spawn", "spawnSync", "spawnProc", "pty.spawn"].includes(callee)
-        && executableIsNode(node.arguments[0]) && node.arguments[1] && entryArray(node.arguments[1])) witnessed = true;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(ast(suite, source));
-  return witnessed;
+  return launchedPaths(suite, source).some((path) => normalizedPath(path) === target);
 };
 
 const packageName = (file) => {

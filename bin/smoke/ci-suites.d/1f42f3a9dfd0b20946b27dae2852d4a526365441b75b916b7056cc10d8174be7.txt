@@ -1,0 +1,5 @@
+# A join denied by the broker must name BOTH plausible causes: the operator's credentials and a
+# delivery daemon whose responder never bound. The old message named only credentials, so an
+# operator whose daemon was the real cause was sent to re-check creds that were already correct
+# (#1576). Credentials stay first, since they remain the likelier cause.
+smoke:join-denial-guidance

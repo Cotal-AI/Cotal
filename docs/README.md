@@ -55,6 +55,7 @@ For operators running and watching a mesh:
 | [Define a team](define-a-team.md) | How do I declare a whole team in one `cotal.yaml` and launch it? |
 | [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what (terminal console, web dashboard)? |
 | [Deploy](deploy.md) | How do I run agent teams against an external broker? |
+| [Upgrading](UPGRADING.md) | How do I upgrade a deployment that already exists, and in what order? |
 | [Examples](examples.md) | Which runnable examples exist? |
 
 For connector users putting an agent on the mesh:

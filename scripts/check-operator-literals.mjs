@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Refuse operator-environment literals in tracked files, commit messages, and pull request text.
 //
-// Four classes are checked:
+// Five classes are checked:
 //   host-name     the runtime host name plus configured literal host tokens, matched whole
 //   public-ipv4   a valid IPv4 literal outside special-use and documentation ranges
 //   shared-ipv4   a host-shaped IPv4 literal in the shared address range
+//   public-ipv6   a valid IPv6 literal in global unicast space outside special-use ranges
 //   home-path     an absolute Unix home directory path
 //
 // Approved tracked-file fixtures live in scripts/operator-literal-allowlist.json. Each exception
@@ -16,6 +17,15 @@
 // Workflow files are excluded from host-name matching because CI configuration must name its pool.
 // Shared-address and public-address network notation is excluded because it names a range, not a
 // host. Finding rows never print the matched token.
+// An IPv6 literal is a finding only inside global unicast space, which leaves most of the
+// special-use registry silent without a separate exclusion list, and the exclusion table below
+// names the four ranges that do fall inside it and must not be reported. That is a reduction of
+// the second list, not a removal of it: a special-use range marked globally reachable can sit
+// inside global unicast and still be reported. 2620:4f:8000::/48, the direct delegation AS112
+// service, is such a range and is deliberately reported, because it is a reachable address and a
+// committed literal pointing at it is as much an operator detail as any other reachable host.
+// An IPv4-mapped address such as the embedded form sits outside global unicast space, so it is
+// classified by the IPv4 rules and never by public-ipv6. That keeps one address to one class.
 //
 // Usage:
 //   node scripts/check-operator-literals.mjs [--range <base>..<head>] [--event <event.json>]
@@ -33,7 +43,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { isIPv4 } from 'node:net';
+import { isIPv4, isIPv6 } from 'node:net';
 import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
@@ -41,11 +51,21 @@ const RULES = new Map([
   ['host-name', 'configured host name'],
   ['public-ipv4', 'public IPv4 literal'],
   ['shared-ipv4', 'shared IPv4 literal'],
+  ['public-ipv6', 'public IPv6 literal'],
   ['home-path', 'absolute home path'],
 ]);
 
-const IPV4_CANDIDATE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g;
+const IPV4_CANDIDATE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d)(?!\.[\dA-Za-z])(?!\.(?!["'`)\]}!?;]*(?:\s|$)))/g;
 const CIDR_SUFFIX = /^\/(?:[0-9]|[12][0-9]|3[0-2])(?![A-Za-z0-9_/])/;
+// A colon run wide enough to hold any IPv6 spelling. node:net decides whether it is an address.
+// The leading guard excludes a letter, a colon and a dot, so a hostname or longer colon run is not
+// cut into from the left. The trailing guards refuse digits and dotted labels while preserving a
+// zero-dot letter-adjacent address as a privacy finding. A trailing sentence period is admitted before
+// punctuation and then whitespace or end of line. A hyphen is NOT excluded, because a diff minus
+// line and a hyphenated identifier are ordinary ways for an operator address to reach this gate,
+// and the IPv4 guard admits them too.
+const IPV6_CANDIDATE = /(?<![0-9A-Za-z:.])(?:[0-9A-Fa-f]{0,4}:){2,8}[0-9A-Fa-f]{0,4}(?:\.\d{1,3}){0,3}(?![0-9:])(?!\.[0-9A-Za-z])(?!\.(?!["'`)\]}!?;]*(?:\s|$)))/g;
+const IPV6_CIDR_SUFFIX = /^\/(?:12[0-8]|1[01][0-9]|[1-9][0-9]|[0-9])(?![A-Za-z0-9_/])/;
 const HOME_PATH = /(?<![A-Za-z0-9._~-])\/(?:home|Users)\/(?!\.\.?\/?(?:$|[^A-Za-z0-9._-]))[A-Za-z0-9_][A-Za-z0-9._-]*(?=\/|$|[^A-Za-z0-9._-])/g;
 
 const NON_PUBLIC_CIDRS = [
@@ -67,6 +87,15 @@ const NON_PUBLIC_CIDRS = [
 ].map(([parts, bits]) => [partsToInt(parts), bits]);
 
 const SHARED_IPV4_BASE = partsToInt([100, 64, 0, 0]);
+// RFC 4291 global unicast. Every other IPv6 block is an allocation, not an operator address.
+const GLOBAL_UNICAST_IPV6 = [[0x2000, 0, 0, 0, 0, 0, 0, 0], 3];
+// The RFC 6890 and RFC 9637 assignments that fall inside global unicast space.
+const NON_PUBLIC_IPV6_CIDRS = [
+  [[0x2001, 0, 0, 0, 0, 0, 0, 0], 23],
+  [[0x2001, 0x0db8, 0, 0, 0, 0, 0, 0], 32],
+  [[0x2002, 0, 0, 0, 0, 0, 0, 0], 16],
+  [[0x3fff, 0, 0, 0, 0, 0, 0, 0], 20],
+];
 const MIN_HOST_TOKEN_LENGTH = 7;
 // A host literal should be rare, so this ceiling stops a vocabulary token before it floods the scan.
 const HOST_TOKEN_FILE_CEILING = 25;
@@ -97,6 +126,76 @@ export function isPublicIPv4(value) {
   return !NON_PUBLIC_CIDRS.some(
     ([base, bits]) => (numeric >>> (32 - bits)) === (base >>> (32 - bits)),
   );
+}
+
+// Both spellings of one address expand to the same eight hextets, so both classify the same way.
+function ipv6ToHextets(value) {
+  let text = value;
+  const embedded = /\d{1,3}(?:\.\d{1,3}){3}$/.exec(text);
+  if (embedded) {
+    const octets = embedded[0].split('.').map(Number);
+    const high = ((octets[0] * 256) + octets[1]).toString(16);
+    const low = ((octets[2] * 256) + octets[3]).toString(16);
+    text = `${text.slice(0, embedded.index)}${high}:${low}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return undefined;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if (halves.length === 1) return head.length === 8 ? head.map((part) => parseInt(part, 16)) : undefined;
+  const fill = 8 - head.length - tail.length;
+  if (fill < 0) return undefined;
+  return [...head, ...Array(fill).fill('0'), ...tail].map((part) => parseInt(part, 16));
+}
+
+function inIPv6Prefix(hextets, prefix, bits) {
+  for (let index = 0; index * 16 < bits; index += 1) {
+    const remaining = bits - (index * 16);
+    const mask = remaining >= 16 ? 0xffff : (0xffff << (16 - remaining)) & 0xffff;
+    if ((hextets[index] & mask) !== (prefix[index] & mask)) return false;
+  }
+  return true;
+}
+
+// A candidate can absorb a delimiting colon, as in a remote copy target where the address is
+// followed by a colon and a path. One trailing colon is dropped so the address behind it is
+// classified, which is what the IPv4 class already does for the same spelling. A token ending in
+// a compressed run keeps both colons, since there the second colon is part of the address.
+function ipv6CandidateBody(token) {
+  if (token.endsWith('::') || !token.endsWith(':')) return token;
+  return token.slice(0, -1);
+}
+
+// An IPv4 address embedded in an IPv6 literal belongs to the IPv4 class, and it has two spellings.
+// The dotted tail is read by the IPv4 candidate pattern directly. The hex spelling of the same
+// address is not, so it is recovered here: the last two hextets of a mapped, compatible or
+// translation form are rebuilt as dotted quads and classified as IPv4. Without this the hex
+// spelling falls in no class at all, because it is outside global unicast as well.
+const IPV6_EMBEDDED_IPV4_PREFIXES = [
+  [[0, 0, 0, 0, 0, 0xffff, 0, 0], 96],
+  [[0, 0, 0, 0, 0, 0, 0, 0], 96],
+  [[0x0064, 0xff9b, 0, 0, 0, 0, 0, 0], 96],
+];
+
+function embeddedIPv4Of(value) {
+  if (!isIPv6(value)) return undefined;
+  const hextets = ipv6ToHextets(value);
+  if (!hextets) return undefined;
+  if (!IPV6_EMBEDDED_IPV4_PREFIXES.some(([prefix, bits]) => inIPv6Prefix(hextets, prefix, bits))) {
+    return undefined;
+  }
+  const high = hextets[6];
+  const low = hextets[7];
+  if (high === 0 && low === 0) return undefined;
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
+export function isPublicIPv6(value) {
+  if (!isIPv6(value)) return false;
+  const hextets = ipv6ToHextets(value);
+  if (!hextets) return false;
+  if (!inIPv6Prefix(hextets, GLOBAL_UNICAST_IPV6[0], GLOBAL_UNICAST_IPV6[1])) return false;
+  return !NON_PUBLIC_IPV6_CIDRS.some(([prefix, bits]) => inIPv6Prefix(hextets, prefix, bits));
 }
 
 function escapeRegExp(value) {
@@ -240,6 +339,25 @@ export function findings(text, where, hostTokens) {
         add('shared-ipv4', lineIndex + 1, match.index + 1);
       } else if (isPublicIPv4(match[0]) && !cidrNotation) {
         add('public-ipv4', lineIndex + 1, match.index + 1);
+      }
+    }
+
+    IPV6_CANDIDATE.lastIndex = 0;
+    for (const match of lineText.matchAll(IPV6_CANDIDATE)) {
+      const body = ipv6CandidateBody(match[0]);
+      const cidrNotation = IPV6_CIDR_SUFFIX.test(lineText.slice(match.index + body.length));
+      const embedded = embeddedIPv4Of(body);
+      if (embedded) {
+        // The dotted tail is already matched by the IPv4 candidate pattern on this same line, so
+        // emitting here too would count one address twice. Only the hex spelling needs recovering.
+        const dottedAlready = /\d{1,3}(?:\.\d{1,3}){3}$/.test(body);
+        if (!dottedAlready && !cidrNotation && isSharedIPv4(embedded)) {
+          add('shared-ipv4', lineIndex + 1, match.index + 1);
+        } else if (!dottedAlready && !cidrNotation && isPublicIPv4(embedded)) {
+          add('public-ipv4', lineIndex + 1, match.index + 1);
+        }
+      } else if (!cidrNotation && isPublicIPv6(body)) {
+        add('public-ipv6', lineIndex + 1, match.index + 1);
       }
     }
 
@@ -469,6 +587,15 @@ function shapeIPv4Count(text) {
   return count;
 }
 
+function shapeIPv6Count(text) {
+  let count = 0;
+  IPV6_CANDIDATE.lastIndex = 0;
+  for (const match of String(text).matchAll(IPV6_CANDIDATE)) {
+    if (isIPv6(ipv6CandidateBody(match[0]))) count += 1;
+  }
+  return count;
+}
+
 function homeFragmentCount(text) {
   return /(?:home|Users)\//.test(String(text)) ? 1 : 0;
 }
@@ -478,6 +605,64 @@ const SELFTEST_HOME = `/${['home', 'fixture-user'].join('/')}`;
 const SELFTEST_MAC_HOME = `/${['Users', 'fixture-user'].join('/')}`;
 const SELFTEST_PUBLIC_IP = [8, 8, 4, 4].join('.');
 const SELFTEST_SHARED_IP = [100, 64, 23, 45].join('.');
+// Assembled from parts so this file never carries an operator-shaped literal of its own.
+const SELFTEST_PUBLIC_IPV6 = ['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':');
+const SELFTEST_PUBLIC_IPV6_EXPANDED = ['2a01', '04f8', '1c17', 'd00d', '0000', '0000', '0000', '0001'].join(':');
+const SELFTEST_PUBLIC_IPV6_PREFIX = ['2a01', '4f8', '1c17', 'd00d', '', ''].join(':');
+const SELFTEST_DOC_IPV6 = ['2001', 'db8', '', '1'].join(':');
+const SELFTEST_DOC_IPV6_PREFIX = ['2001', 'db8', '', ''].join(':');
+const SELFTEST_TEREDO_IPV6 = ['2001', '0', '', '1'].join(':');
+const SELFTEST_6TO4_IPV6 = ['2002', 'c000', '204', '', '1'].join(':');
+const SELFTEST_DOC2_IPV6 = ['3fff', '0', '', '1'].join(':');
+const SELFTEST_AS112_IPV6 = ['2620', '4f', '8000', '', '1'].join(':');
+const SELFTEST_IPV6_SCP = `scp user@${['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':')}:/srv/data`;
+const SELFTEST_IPV6_TRAILING_RUN = ['2a01', '4f8', '1c17', 'd00d', '', ''].join(':');
+// Boundary fixtures. Each sits one step either side of a prefix edge, so an off-by-one in the
+// prefix arithmetic moves the edge across it and a cell says so by name.
+const SELFTEST_IPV6_TRAILING_ZERO_RUN = ['2a01', '4f8', '1c17', 'd00d', '1', '2', '3', '', ''].join(':');
+const SELFTEST_IPV6_GU_FIRST = ['2000', '', '1'].join(':');
+const SELFTEST_IPV6_GU_BELOW = ['1fff', 'ffff', 'ffff', 'ffff', 'ffff', 'ffff', 'ffff', 'ffff'].join(':');
+const SELFTEST_IPV6_GU_ABOVE = ['4000', '', '1'].join(':');
+const SELFTEST_IPV6_GU_HALF = ['3000', '', '1'].join(':');
+const SELFTEST_IPV6_AFTER_2001_23 = ['2001', '200', '', '1'].join(':');
+const SELFTEST_IPV6_INSIDE_2001_23 = ['2001', '100', '', '1'].join(':');
+const SELFTEST_IPV6_AFTER_3FFF_20 = ['3fff', '1000', '', '1'].join(':');
+const SELFTEST_IPV6_NEAR_DB8 = ['2001', 'db0', '', '1'].join(':');
+const SELFTEST_IPV6_HEX_MAPPED = `::ffff:${((8 * 256) + 8).toString(16)}:${((4 * 256) + 4).toString(16)}`;
+const SELFTEST_IPV6_HEX_MAPPED_DOTTED = `::ffff:${[8, 8, 4, 4].join('.')}`;
+const SELFTEST_IPV6_DIFF_LINE = `-${['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':')}`;
+const SELFTEST_SENTENCE_IPV6_ADDRESS = ['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':');
+const SELFTEST_SENTENCE_IPV6 = [
+  `The broker is "${SELFTEST_SENTENCE_IPV6_ADDRESS}."`,
+  `The broker is '${SELFTEST_SENTENCE_IPV6_ADDRESS}.'`,
+  `The broker is (${SELFTEST_SENTENCE_IPV6_ADDRESS}.)`,
+  `The broker is [${SELFTEST_SENTENCE_IPV6_ADDRESS}.]`,
+  `The broker is {${SELFTEST_SENTENCE_IPV6_ADDRESS}.}`,
+  `Use \`${SELFTEST_SENTENCE_IPV6_ADDRESS}.\``,
+  `The broker is ${SELFTEST_SENTENCE_IPV6_ADDRESS}.!`,
+  `The broker is ${SELFTEST_SENTENCE_IPV6_ADDRESS}.?`,
+  `The broker is ${SELFTEST_SENTENCE_IPV6_ADDRESS}.;`,
+  `The broker is ["${SELFTEST_SENTENCE_IPV6_ADDRESS}."]`,
+];
+const SELFTEST_SENTENCE_IPV4_ADDRESS = [95, 217, 134, 22].join('.');
+const SELFTEST_SENTENCE_IPV4 = [
+  `The broker is "${SELFTEST_SENTENCE_IPV4_ADDRESS}."`,
+  `The broker is '${SELFTEST_SENTENCE_IPV4_ADDRESS}.'`,
+  `The broker is (${SELFTEST_SENTENCE_IPV4_ADDRESS}.)`,
+  `The broker is [${SELFTEST_SENTENCE_IPV4_ADDRESS}.]`,
+  `The broker is {${SELFTEST_SENTENCE_IPV4_ADDRESS}.}`,
+  `Use \`${SELFTEST_SENTENCE_IPV4_ADDRESS}.\``,
+  `The broker is ${SELFTEST_SENTENCE_IPV4_ADDRESS}.!`,
+  `The broker is ${SELFTEST_SENTENCE_IPV4_ADDRESS}.?`,
+  `The broker is ${SELFTEST_SENTENCE_IPV4_ADDRESS}.;`,
+  `The broker is ["${SELFTEST_SENTENCE_IPV4_ADDRESS}."]`,
+];
+const SELFTEST_SENTENCE_NAME_TAIL = `Resolve ${[95, 217, 134, 22].join('.')}./path`;
+const SELFTEST_LETTER_ADJACENT_IPV4 = `${SELFTEST_SENTENCE_IPV4_ADDRESS}abc`;
+const SELFTEST_LETTER_ADJACENT_IPV6 = `${SELFTEST_SENTENCE_IPV6_ADDRESS}xyz`;
+const SELFTEST_IPV6_HYPHEN_TAIL = `${['2a01', '4f8', '1c17', 'd00d', '', '1'].join(':')}-node`;
+const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
+const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
 
 const CELL_EXPECTATIONS = new Map([
   ['host-planted', 'primary=1/1 secondary=1/1'],
@@ -499,6 +684,37 @@ const CELL_EXPECTATIONS = new Map([
   ['shared-ip-url-host', 'primary=1/1 secondary=1/1'],
   ['shared-ip-url-userinfo', 'primary=1/1 secondary=1/1'],
   ['shared-ip-url-path', 'primary=0/1 secondary=1/1'],
+  ['ipv6-planted', 'primary=1/1 secondary=1/1'],
+  ['ipv6-expanded', 'primary=1/1 secondary=1/1'],
+  ['ipv6-spelling-pair', 'compressed=1/1 expanded=1/1 same_address=1/1 planted=2/2'],
+  ['ipv6-documentation', 'primary=0/1 secondary=1/1'],
+  ['ipv6-teredo', 'primary=0/1 secondary=1/1'],
+  ['ipv6-6to4', 'primary=0/1 secondary=1/1'],
+  ['ipv6-documentation-3fff', 'primary=0/1 secondary=1/1'],
+  ['ipv6-globally-reachable-special-use', 'primary=1/1 secondary=1/1'],
+  ['ipv6-remote-copy-target', 'primary=1/1 secondary=1/1'],
+  ['ipv6-trailing-compressed-run', 'primary=1/1 secondary=1/1'],
+  ['ipv6-trailing-zero-run-spelling', 'primary=1/1 secondary=1/1'],
+  ['ipv6-boundary-global-unicast-first', 'primary=1/1 secondary=1/1'],
+  ['ipv6-boundary-global-unicast-below', 'primary=0/1 secondary=1/1'],
+  ['ipv6-boundary-global-unicast-above', 'primary=0/1 secondary=1/1'],
+  ['ipv6-boundary-global-unicast-upper-half', 'primary=1/1 secondary=1/1'],
+  ['ipv6-boundary-after-protocol-block', 'primary=1/1 secondary=1/1'],
+  ['ipv6-boundary-inside-protocol-block', 'primary=0/1 secondary=1/1'],
+  ['ipv6-boundary-after-documentation-3fff', 'primary=1/1 secondary=1/1'],
+  ['ipv6-boundary-beside-documentation-db8', 'primary=1/1 secondary=1/1'],
+  ['ipv6-hex-embedded-ipv4', 'ipv6_rule=0/0 ipv4_rule=1/1 hex_and_dotted_agree=1/1'],
+  ['ipv6-diff-removed-line', 'primary=1/1 secondary=1/1'],
+  ['sentence-final-period-ipv6', 'primary=10/10 secondary=10/10'],
+  ['sentence-final-period-ipv4', 'ipv4_rule=10/10'],
+  ['sentence-final-period-refuses-name', 'name_tail=0/0'],
+  ['letter-adjacent-address', 'ipv4_rule=1/1 ipv6_rule=1/1'],
+  ['ipv6-hyphen-suffixed-identifier', 'primary=1/1 secondary=1/1'],
+  ['ipv6-documentation-network', 'primary=0/1 secondary=1/1'],
+  ['ipv6-unique-local', 'primary=0/1 secondary=1/1'],
+  ['ipv6-unique-local-network', 'primary=0/1 secondary=1/1'],
+  ['ipv6-operator-network', 'primary=0/1 secondary=1/1'],
+  ['ipv6-embedded-ipv4', 'ipv6_rule=0/0 ipv4_rule=1/1 planted=1/1'],
   ['home-planted', 'primary=1/1 secondary=1/1'],
   ['home-relative', 'primary=0/1 secondary=1/1'],
   ['mac-home-planted', 'primary=1/1 secondary=1/1'],
@@ -761,6 +977,179 @@ const SELFTEST_CELLS = [
   // SELFTEST_CELL shared-ip-url-path START
   matchCell('shared-ip-url-path', `http://example.test/${SELFTEST_SHARED_IP}/10`, 'shared-ipv4', 0, shapeIPv4Count, 1),
   // SELFTEST_CELL shared-ip-url-path END
+  // SELFTEST_CELL ipv6-planted START
+  matchCell('ipv6-planted', `connect ${SELFTEST_PUBLIC_IPV6} now`, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-planted END
+  // SELFTEST_CELL ipv6-expanded START
+  matchCell('ipv6-expanded', `connect ${SELFTEST_PUBLIC_IPV6_EXPANDED} now`, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-expanded END
+  // SELFTEST_CELL ipv6-spelling-pair START
+  {
+    id: 'ipv6-spelling-pair',
+    measure: () => {
+      const countFor = (text) =>
+        findings(text, 'fixture', [SELFTEST_HOST]).filter((finding) => finding.rule === 'public-ipv6').length;
+      const compressed = countFor(SELFTEST_PUBLIC_IPV6);
+      const expanded = countFor(SELFTEST_PUBLIC_IPV6_EXPANDED);
+      const sameAddress = Number(
+        JSON.stringify(ipv6ToHextets(SELFTEST_PUBLIC_IPV6)) ===
+          JSON.stringify(ipv6ToHextets(SELFTEST_PUBLIC_IPV6_EXPANDED)),
+      );
+      const planted = [SELFTEST_PUBLIC_IPV6, SELFTEST_PUBLIC_IPV6_EXPANDED].filter(
+        (text) => shapeIPv6Count(text) === 1,
+      ).length;
+      return {
+        actual: `compressed=${compressed}/1 expanded=${expanded}/1 same_address=${sameAddress}/1 planted=${planted}/2`,
+        pass: compressed === 1 && expanded === 1 && sameAddress === 1 && planted === 2,
+      };
+    },
+  },
+  // SELFTEST_CELL ipv6-spelling-pair END
+  // SELFTEST_CELL ipv6-documentation START
+  matchCell('ipv6-documentation', SELFTEST_DOC_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-documentation END
+  // SELFTEST_CELL ipv6-documentation-network START
+  matchCell('ipv6-documentation-network', `${SELFTEST_DOC_IPV6_PREFIX}/32`, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-documentation-network END
+  // SELFTEST_CELL ipv6-teredo START
+  matchCell('ipv6-teredo', SELFTEST_TEREDO_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-teredo END
+  // SELFTEST_CELL ipv6-6to4 START
+  matchCell('ipv6-6to4', SELFTEST_6TO4_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-6to4 END
+  // SELFTEST_CELL ipv6-documentation-3fff START
+  matchCell('ipv6-documentation-3fff', SELFTEST_DOC2_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-documentation-3fff END
+  // SELFTEST_CELL ipv6-globally-reachable-special-use START
+  matchCell('ipv6-globally-reachable-special-use', SELFTEST_AS112_IPV6, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-globally-reachable-special-use END
+  // SELFTEST_CELL ipv6-remote-copy-target START
+  matchCell('ipv6-remote-copy-target', SELFTEST_IPV6_SCP, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-remote-copy-target END
+  // SELFTEST_CELL ipv6-trailing-compressed-run START
+  matchCell('ipv6-trailing-compressed-run', `net ${SELFTEST_IPV6_TRAILING_RUN} here`, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-trailing-compressed-run END
+  // SELFTEST_CELL ipv6-trailing-zero-run-spelling START
+  matchCell('ipv6-trailing-zero-run-spelling', `host ${SELFTEST_IPV6_TRAILING_ZERO_RUN} here`, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-trailing-zero-run-spelling END
+  // SELFTEST_CELL ipv6-boundary-global-unicast-first START
+  matchCell('ipv6-boundary-global-unicast-first', SELFTEST_IPV6_GU_FIRST, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-global-unicast-first END
+  // SELFTEST_CELL ipv6-boundary-global-unicast-below START
+  matchCell('ipv6-boundary-global-unicast-below', SELFTEST_IPV6_GU_BELOW, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-global-unicast-below END
+  // SELFTEST_CELL ipv6-boundary-global-unicast-above START
+  matchCell('ipv6-boundary-global-unicast-above', SELFTEST_IPV6_GU_ABOVE, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-global-unicast-above END
+  // SELFTEST_CELL ipv6-boundary-global-unicast-upper-half START
+  matchCell('ipv6-boundary-global-unicast-upper-half', SELFTEST_IPV6_GU_HALF, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-global-unicast-upper-half END
+  // SELFTEST_CELL ipv6-boundary-after-protocol-block START
+  matchCell('ipv6-boundary-after-protocol-block', SELFTEST_IPV6_AFTER_2001_23, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-after-protocol-block END
+  // SELFTEST_CELL ipv6-boundary-inside-protocol-block START
+  matchCell('ipv6-boundary-inside-protocol-block', SELFTEST_IPV6_INSIDE_2001_23, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-inside-protocol-block END
+  // SELFTEST_CELL ipv6-boundary-after-documentation-3fff START
+  matchCell('ipv6-boundary-after-documentation-3fff', SELFTEST_IPV6_AFTER_3FFF_20, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-after-documentation-3fff END
+  // SELFTEST_CELL ipv6-boundary-beside-documentation-db8 START
+  matchCell('ipv6-boundary-beside-documentation-db8', SELFTEST_IPV6_NEAR_DB8, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-boundary-beside-documentation-db8 END
+  // SELFTEST_CELL ipv6-hex-embedded-ipv4 START
+  {
+    id: 'ipv6-hex-embedded-ipv4',
+    measure: () => {
+      const rulesFor = (text) => findings(text, 'fixture', [SELFTEST_HOST]).map((finding) => finding.rule);
+      const hex = rulesFor(SELFTEST_IPV6_HEX_MAPPED);
+      const dotted = rulesFor(SELFTEST_IPV6_HEX_MAPPED_DOTTED);
+      const ipv6Rule = hex.filter((rule) => rule === 'public-ipv6').length;
+      const ipv4Rule = hex.filter((rule) => rule === 'public-ipv4').length;
+      const agree = Number(JSON.stringify(hex) === JSON.stringify(dotted));
+      return {
+        actual: `ipv6_rule=${ipv6Rule}/0 ipv4_rule=${ipv4Rule}/1 hex_and_dotted_agree=${agree}/1`,
+        pass: ipv6Rule === 0 && ipv4Rule === 1 && agree === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL ipv6-hex-embedded-ipv4 END
+  // SELFTEST_CELL ipv6-diff-removed-line START
+  matchCell('ipv6-diff-removed-line', SELFTEST_IPV6_DIFF_LINE, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-diff-removed-line END
+  // SELFTEST_CELL sentence-final-period-ipv6 START
+  {
+    id: 'sentence-final-period-ipv6',
+    measure: () => {
+      const primary = SELFTEST_SENTENCE_IPV6.filter((text) => findings(text, 'fixture', [SELFTEST_HOST]).some((f) => f.rule === 'public-ipv6')).length;
+      const secondary = SELFTEST_SENTENCE_IPV6.filter((text) => shapeIPv6Count(text) === 1).length;
+      return { actual: `primary=${primary}/10 secondary=${secondary}/10`, pass: primary === 10 && secondary === 10 };
+    },
+  },
+  // SELFTEST_CELL sentence-final-period-ipv6 END
+  // SELFTEST_CELL sentence-final-period-ipv4 START
+  {
+    id: 'sentence-final-period-ipv4',
+    measure: () => {
+      const ipv4 = SELFTEST_SENTENCE_IPV4.filter((text) => findings(text, 'fixture', [SELFTEST_HOST]).some((f) => f.rule === 'public-ipv4')).length;
+      return { actual: `ipv4_rule=${ipv4}/10`, pass: ipv4 === 10 };
+    },
+  },
+  // SELFTEST_CELL sentence-final-period-ipv4 END
+  // SELFTEST_CELL sentence-final-period-refuses-name START
+  {
+    id: 'sentence-final-period-refuses-name',
+    measure: () => {
+      const tail = findings(SELFTEST_SENTENCE_NAME_TAIL, 'fixture', [SELFTEST_HOST]).length;
+      return {
+        actual: `name_tail=${tail}/0`,
+        pass: tail === 0,
+      };
+    },
+  },
+  // SELFTEST_CELL sentence-final-period-refuses-name END
+  // SELFTEST_CELL letter-adjacent-address START
+  {
+    id: 'letter-adjacent-address',
+    measure: () => {
+      const ipv4 = findings(SELFTEST_LETTER_ADJACENT_IPV4, 'fixture', [SELFTEST_HOST])
+        .filter((finding) => finding.rule === 'public-ipv4').length;
+      const ipv6 = findings(SELFTEST_LETTER_ADJACENT_IPV6, 'fixture', [SELFTEST_HOST])
+        .filter((finding) => finding.rule === 'public-ipv6').length;
+      return {
+        actual: `ipv4_rule=${ipv4}/1 ipv6_rule=${ipv6}/1`,
+        pass: ipv4 === 1 && ipv6 === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL letter-adjacent-address END
+  // SELFTEST_CELL ipv6-hyphen-suffixed-identifier START
+  matchCell('ipv6-hyphen-suffixed-identifier', SELFTEST_IPV6_HYPHEN_TAIL, 'public-ipv6', 1, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-hyphen-suffixed-identifier END
+  // SELFTEST_CELL ipv6-unique-local START
+  matchCell('ipv6-unique-local', SELFTEST_UNIQUE_LOCAL_IPV6, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-unique-local END
+  // SELFTEST_CELL ipv6-unique-local-network START
+  matchCell('ipv6-unique-local-network', `${SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX}/8`, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-unique-local-network END
+  // SELFTEST_CELL ipv6-operator-network START
+  matchCell('ipv6-operator-network', `${SELFTEST_PUBLIC_IPV6_PREFIX}/64`, 'public-ipv6', 0, shapeIPv6Count, 1),
+  // SELFTEST_CELL ipv6-operator-network END
+  // SELFTEST_CELL ipv6-embedded-ipv4 START
+  {
+    id: 'ipv6-embedded-ipv4',
+    measure: () => {
+      const text = `::ffff:${SELFTEST_PUBLIC_IP}`;
+      const rules = findings(text, 'fixture', [SELFTEST_HOST]);
+      const ipv6Rule = rules.filter((finding) => finding.rule === 'public-ipv6').length;
+      const ipv4Rule = rules.filter((finding) => finding.rule === 'public-ipv4').length;
+      const planted = Number(text.includes(SELFTEST_PUBLIC_IP));
+      return {
+        actual: `ipv6_rule=${ipv6Rule}/0 ipv4_rule=${ipv4Rule}/1 planted=${planted}/1`,
+        pass: ipv6Rule === 0 && ipv4Rule === 1 && planted === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL ipv6-embedded-ipv4 END
   // SELFTEST_CELL home-planted START
   matchCell('home-planted', `file://${SELFTEST_HOME}/file`, 'home-path', 1, homeFragmentCount, 1),
   // SELFTEST_CELL home-planted END

@@ -17,8 +17,8 @@
     {
       "name": "the control-plane wrapper drops its resolved space before delivery credential refresh",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "  await ensureDelivery({ ...o, space });",
-      "replace": "  await ensureDelivery({ ...o, space: undefined });",
+      "find": "  const delivery = await ensureDelivery({ ...o, space });",
+      "replace": "  const delivery = await ensureDelivery({ ...o, space: undefined });",
       "expectRed": "the real ensureControlPlane path accepts an explicit space on a two-account root",
       "cell": "the resolved space is explicitly propagated from ensureControlPlane into ensureDelivery"
     }

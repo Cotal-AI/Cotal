@@ -247,6 +247,9 @@ if (errors.length) {
 }
 
 const { changed, diffSize } = a.all ? { changed: new Set(), diffSize: 0 } : changedSet(root, a.base, head);
+// The exact commit the diff above was taken from, in full, so the printed selection names its own
+// input rather than only its result.
+const resolvedBase = a.all ? undefined : git(root, ["rev-parse", a.base]).trim();
 
 const metadataOnlyExclusions = new Set(a.all ? [] : fixtures
   .filter((fixture) => changed.has(fixture.path)
@@ -276,10 +279,14 @@ const prove = selected.filter((fixture) => !liveRefusedPaths.has(fixture.path));
 // Selection evidence precedes dangling validation. A deleted or renamed declared source is one of
 // the reasons a fixture is selected, so reporting the source error before the selected set would
 // hide the selector result the failure is meant to make observable.
+//
+// The resolved base sha is printed with the counts because the counts alone could not explain
+// themselves: #1520 printed "diff 30 record(s), 30 changed path(s)" for a four-file PR, and naming
+// the base it diffed from is what makes a wrong selection legible from a transcript without a clone.
 console.log(`mutation reproof: ${selected.length} fixture(s) selected from ${fixtures.length}`
   + (a.all
     ? " for a full sweep"
-    : ` (diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
+    : ` (base ${resolvedBase}, diff ${diffSize} record(s), ${changed.size} changed path(s), corpus ${fixtures.length})`));
 if (metadataOnlyExclusions.size > 0)
   console.log(`metadata-only config-path exclusions (${metadataOnlyExclusions.size}):\n${[...metadataOnlyExclusions].map((path) => `  ${path}`).join("\n")}`);
 if (selected.length > 0) console.log(`selected fixture paths:\n${selected.map(({ path }) => `  ${path}`).join("\n")}`);

@@ -125,10 +125,26 @@ const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server
  *
  *  Startup is TRANSACTIONAL. Conn A opens first, and every step after it can throw: an rw source that
  *  rejects, credential bytes `idFromCreds` refuses, conn B's own dial (its pre-dial checkpoint refuses a
- *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open,
- *  the first reconcile. The only `drain()` in this file is inside the handle's `stop()`, and a caller
+ *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open.
+ *  The first reconcile is NOT one of them: `poll()` wraps the whole loop in a catch that logs and has
+ *  zero rethrows, so a failing first reconcile resolves startup instead of rejecting it, and the
+ *  `await poll()` below cannot be the step that strands a connection. Before this change the only
+ *  `drain()` in this file was inside the handle's `stop()`, and a caller
  *  that never receives the handle can never call it — so a reject left the observer connection open for
- *  the life of the process. Everything acquired is drained here before the rejection propagates. */
+ *  the life of the process. The rollback above now drains every connection it recorded before the
+ *  rejection propagates.
+ *
+ *  Scope of the word TRANSACTIONAL, stated rather than assumed: the rollback drains CONNECTIONS, and
+ *  nothing else. It does not clear the rw renewal timer, the safety interval, or the two trigger
+ *  subscriptions, all of which are acquired below. What holds today is narrower than "unreachable":
+ *  four operations run after the timer arm, counting the ones that can reject or acquire rather than
+ *  every call expression. They are `connA.subscribe` twice, the `setInterval`, and `await poll()`. The
+ *  two subject helpers passed as subscribe arguments also execute; they format a string and return.
+ *  The only one of the four that awaits is `await poll()`, which swallows
+ *  its own failures, so the ordinary startup path never rejects down here. `connA.subscribe` on an
+ *  already-closed conn A is the one shape that still could, and it would leak the timer rather than a
+ *  connection. Left as a known gap rather than papered over: a step added below the arm that can
+ *  reject makes this incomplete, and the rollback then has to clear the timer too. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
   const opened: NatsConnection[] = [];
   try {
@@ -273,7 +289,13 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // timer to 1s (delay <= 0), and reconnect EVERY second for the JWT's remaining 25% of life. Fail it
     // like a renewal error so `renewRwOnTimer` retries at 60s with NO resident reconnect. The explicit
     // reload's `expected` already rejects a stale read; this covers the timer path (no expectation sent).
-    if (candidate === currentRwCreds && delay <= 0)
+    //
+    // Compared by GENERATION, not by envelope. The envelope carries the nkey seed and is sensitive to
+    // formatting (`credsFingerprint`'s own contract says so), and `jwtFromCreds` discards the difference:
+    // a store, editor, transport or filesystem round trip that normalises a newline re-serves the SAME
+    // generation in bytes `===` calls different, and the refusal below would not fire. Two envelopes
+    // differing only in their seed block are the same generation too.
+    if (credsFingerprint(candidate) === credsFingerprint(currentRwCreds) && delay <= 0)
       throw new Error("reloadRwCreds: the rw source still holds the previous generation past its renewal point (the renewal owner has not re-signed it - run `cotal doctor auth --fix` or restart the manager); nothing adopted");
     if (!(await brokerAcceptsCreds(opts.servers, candidate, Math.max(500, Math.min(MEMBERSHIP_PREFLIGHT_MS, a.deadline - Date.now())))))
       throw new Error("reloadRwCreds: the broker did not accept the re-signed rw credential; nothing adopted");

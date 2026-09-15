@@ -11,26 +11,38 @@ import {
   resolveService,
   standaloneConnectOpts,
   newIdentity,
+  idFromCreds,
+  principalKey,
+  DEV_OWNER,
   unansweredRequest,
   resolveAuthProvider,
   type FlagValues,
   type ParsedArgs,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
+import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { listPersonas } from "../lib/personas.js";
 import { c, statusBadge } from "../ui.js";
 
-/** `--components` is the fail-loud health pass. Bare `status` remains a broad, recovery-oriented
- * diagnostic; this explicit mode is for an operator or monitor that needs component state and a
- * machine-readable exit disposition rather than a best-effort inventory. */
+/** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
+ * `status` remains a broad, recovery-oriented diagnostic and keeps exit 0; this explicit mode is for
+ * an operator or monitor that needs a component state per component and an exit code to branch on.
+ *
+ * THAT DIVISION IS ABOUT EXIT CODES AND COMPLETENESS, NOT ABOUT TRUTHFULNESS, and #1576 is where the
+ * difference bit. Bare status printed `delivery  running (pid N)` over a daemon whose responder had
+ * never bound — not a broad answer but a specific and wrong one, identical to the line it prints
+ * when delivery is fully healthy, for 22 hours, while spawn/retirement/join all failed. A broad
+ * diagnostic may omit an axis; it may not claim one it never checked. So bare status stays broad and
+ * zero-exit, and the delivery row now names the responder state it actually read (or says plainly
+ * that it did not read it, and points here). */
 export const statusFlags = [
   spaceFlag,
   serverFlag,
@@ -67,9 +79,13 @@ export async function status(args: ParsedArgs): Promise<void> {
   await printMachine();
   printExtensions();
   const selected = resolveSelected(cwd, values);
-  printProject(root, cmd, selected, values);
+  // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
+  // health they never checked. It is read before the folder section because that section renders
+  // the delivery process row, and a live pid means nothing without it.
+  const responder = await readResponderAxis(selected);
+  printProject(root, cmd, selected, values, responder);
   await printRegistry();
-  await printTarget(selected, cmd);
+  await printTarget(selected, cmd, responder);
   if (values.components) await printComponentHealth(cwd, values);
 }
 
@@ -147,7 +163,107 @@ async function printMachine(): Promise<void> {
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }
 
-function printProject(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>): void {
+/** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
+ *  cannot be known (#1576, and the reason is #837).
+ *
+ *  THE HOLDER IS A PRINCIPAL DOT-FORM, NOT THE RAW CREDS ID, and getting that wrong is a live-caught
+ *  mistake rather than a hypothetical: the daemon builds its endpoint with
+ *  `card.id = idFromCreds(creds)`, and the endpoint then REWRITES `card.id` to
+ *  `principalKey(owner, actor).key` — `<owner>.<actor>` — which is what lands in the lease. Comparing
+ *  against the bare id therefore mismatches EVERY healthy daemon, which would turn this check into
+ *  the mirror of the bug it removes: a permanent false "stale" on a perfectly good mesh. A smoke cell
+ *  reads the record a real holder wrote and pins the exact shape, so this cannot regress silently.
+ *
+ *  WHY IT MATTERS AT ALL. Without it, a `ready:true` record left by a daemon that has since died
+ *  reads as health for the rest of the bucket TTL — measured against a real broker, not theorised —
+ *  and a status command that exists to stop false green would print `responder bound` at a mesh that
+ *  cannot spawn, retire or join. Core demands a named holder in `waitForDeliveryLease` for exactly
+ *  this reason.
+ *
+ *  READ-ONLY AND BEST EFFORT. A workspace that never launched a daemon locally (an adopted or remote
+ *  one) has no creds file, and that is not an error: the caller then does not check the holder, the
+ *  same concession `waitForDeliveryLease` makes for an adopted daemon. Any failure yields `undefined`
+ *  rather than a wrong id, because a WRONG expected holder is worse than an unchecked one. */
+async function expectedDeliveryHolder(target: MeshTarget): Promise<string | undefined> {
+  try {
+    const creds = await workspaceSecretStore(target.root).get(
+      deliveryCredsKey(target.space, { injected: false, root: target.root }),
+    );
+    if (!creds) return undefined;
+    // The daemon declares no owner/actor, so the endpoint falls back to DEV_OWNER for the owner and
+    // to the connection id for the actor: `local.<idFromCreds>`. Built through `principalKey` rather
+    // than string concatenation so this tracks the one definition of the dot-form.
+    return principalKey(DEV_OWNER, idFromCreds(creds)).key;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read the delivery responder axis for the bare-status rows (#1576).
+ *
+ *  ONE SHORT-LIVED READ-ONLY CONNECTION, and it must never turn status into a command that fails.
+ *  Everything that can go wrong here — no resolvable target, an unreachable broker, a user-auth mesh
+ *  where status is forbidden to mint, a cred minted before the read grant existed — yields `unknown`,
+ *  which the renderer states as "unchecked" rather than implying either health. The one thing it may
+ *  not do is return `bound` on a failed read; that is the false green this whole change removes.
+ *
+ *  USER MODE IS DELIBERATELY `unknown` RATHER THAN CONNECTED. The flip forbids status from
+ *  static-minting on a user-auth mesh, and borrowing the operator's bearer for a health probe is a
+ *  bigger decision than this fix should make silently. Those operators get the axis from
+ *  `--components`, and the row says so instead of guessing. */
+async function readResponderAxis(selected: Selected): Promise<DeliveryResponderState> {
+  if (!selected.ok) return "unknown";
+  const target = selected.target;
+  if (target.mode === "user") return "unknown";
+  try {
+    const preflight = await preflightTarget(target);
+    if (!preflight.ok) return "unknown";
+    const id = newIdentity();
+    const creds = target.auth ? await mintCreds(target.auth, id, "observer") : undefined;
+    const ep = new CotalEndpoint({
+      space: target.space,
+      servers: target.server,
+      tls: target.tlsRequired,
+      creds,
+      channels: [],
+      consume: false,
+      registerPresence: false,
+      watchPresence: false,
+      watchChannels: false,
+      card: { id: id.id, name: "status-responder", kind: "endpoint" },
+    });
+    ep.on("error", () => {});
+    // NAMED, not anonymous, because the warning census requires every registration in this tree to
+    // declare its disposition and be findable by name (`bin/smoke/endpoint-warning-consumers`). An
+    // anonymous handler is an unnamed consumer, which is the thing that census exists to refuse.
+    // This probe is a one-shot lease read whose own result is the verdict: a recoverable side-channel
+    // warning would add noise to a row that already says `unchecked` when the read does not land.
+    const ignoreResponderWarning = () => {};
+    ep.on("warning", ignoreResponderWarning);
+    await ep.start();
+    try {
+      // The holder is resolved BEFORE the read so a dead daemon's surviving `ready:true` cannot be
+      // mistaken for the live one's (#837): `ready` alone says some daemon bound recently enough that
+      // its record has not expired, which is not the question this row asks.
+      //
+      // This surface reduces a FAILED read to `unchecked`, which is exactly what
+      // `deliveryResponderState` encapsulates, so it is called here rather than hand-rolled. The
+      // `--components` surface deliberately does NOT use it: that surface must tell a missing lease
+      // stream apart from a refused read, and flattening both to `unknown` would erase a
+      // distinction it reports.
+      return await deliveryResponderState(
+        () => ep.readDeliveryLease(0),
+        await expectedDeliveryHolder(target),
+      );
+    } finally {
+      await ep.stop().catch(() => {});
+    }
+  } catch {
+    return "unknown";
+  }
+}
+
+function printProject(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState = "unknown"): void {
   section("This Folder");
   row("root", root);
   // The inventory READ itself can throw (an EACCES/ELOOP on `.cotal/auth`, not just a bad record):
@@ -220,7 +336,13 @@ function printProject(root: string, cmd: string, selected: Selected, values: Fla
     if (component.name === "nats") nats = state;
     const detail = component.name === "manager" && state.live
       ? c.dim(managerHasDeliveryMarker(context.space) ? " · delivery-aware" : " · old/unknown build")
-      : "";
+      // THE #1576 ROW. A live delivery PID is not the fact an operator needs; the responder is.
+      // `formatProc` greens any live pid, which is how `delivery running (pid N)` came to be printed
+      // identically over a bound responder and one that never bound. The suffix names which it is,
+      // and when unbound it names the CONSEQUENCE rather than a reconcile that has not happened yet.
+      : component.name === "delivery"
+        ? deliveryRowNote(state.live, responder)
+        : "";
     row(component.name, `${formatProc(state)}${detail}`);
   }
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
@@ -260,7 +382,7 @@ async function printRegistry(): Promise<void> {
     console.log(c.dim(`  note: current mesh "${current}" is not recorded`));
 }
 
-async function printTarget(selected: Selected, cmd: string): Promise<void> {
+async function printTarget(selected: Selected, cmd: string, responder: DeliveryResponderState = "unknown"): Promise<void> {
   section("Selected Mesh");
   if (!selected.ok) {
     const e = selected.error;
@@ -331,6 +453,18 @@ async function printTarget(selected: Selected, cmd: string): Promise<void> {
     return;
   }
   row("connection", c.green("ok"));
+  // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
+  // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
+  // the question "can I spawn into this mesh right now" actually reduces to. An operator reading a
+  // reachable broker and a running daemon had, before this, no row that said otherwise.
+  if (responder === "unbound")
+    row("delivery responder", c.red(`NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE}`) + c.dim(` · start it with \`${cmd} up\` (or \`${cmd} deliver --space <space>\`)`));
+  else if (responder === "stale")
+    // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
+    // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
+    // into a refusal they will read as a second failure.
+    row("delivery responder", c.red(`NOT BOUND - a DEAD daemon's ready record still holds the lease - ${RESPONDER_UNBOUND_CONSEQUENCE}`) + c.dim(" · it expires on its own; a replacement can then take the shard"));
+  else if (responder === "bound") row("delivery responder", c.green("bound"));
   await liveSnapshot(target).catch((e) => row("live snapshot", c.dim(`unavailable (${(e as Error).message})`)));
 }
 
@@ -515,6 +649,18 @@ function proc(path: string): Proc {
 function formatProc(p: Proc): string {
   if (p.live) return c.green(`running (pid ${p.pid})`);
   return c.dim(p.pid ? `${p.note} (${p.pid})` : (p.note ?? "down"));
+}
+
+/** The delivery row's responder suffix, coloured for the bare-status renderer (#1576).
+ *
+ *  RED, NOT DIM, FOR AN UNBOUND RESPONDER. The state is not a footnote about a component: while it
+ *  holds, the mesh cannot spawn, retire or accept a join, and the whole reported incident is that
+ *  this read as ordinary. `unknown` stays dim and names `--components`, because an unchecked axis
+ *  must not look like a diagnosis in either direction. */
+function deliveryRowNote(live: boolean, responder: DeliveryResponderState): string {
+  const suffix = deliveryRowSuffix(live, responder, `${displayCmd()} status --components`);
+  if (!suffix) return "";
+  return responder === "unbound" || responder === "stale" ? c.red(suffix) : c.dim(suffix);
 }
 
 function section(name: string): void {
@@ -731,13 +877,31 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext):
     const component = await componentEp(target);
     close = component.close;
     const lease = await component.ep.readDeliveryLease(0);
+    // ONE classifier for both surfaces (#1576). `--components` was already right here and bare
+    // status was not, which is exactly how the two came to disagree about a mesh's health; routing
+    // both through `deliveryResponderFromLease` means a future change cannot fix one and leave the
+    // other green. The facts below stay as specific as they were.
+    //
+    // THE HOLDER IS PART OF THE QUESTION (#837). This surface already PRINTED `lease holder …` as a
+    // fact while grading on `ready` alone, so it displayed the evidence that its own verdict was
+    // wrong and did not read it. A ready record belonging to a daemon that is gone keeps this row
+    // `serving` for the rest of the bucket TTL.
+    const state = deliveryResponderFromLease(lease, await expectedDeliveryHolder(target));
     if (!lease) {
-      facts.push("ready lease absent");
+      facts.push("ready lease absent", `responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
       return { name: "delivery", verdict: "not-serving", facts };
     }
     facts.push(`lease holder ${lease.holder}`);
-    facts.push(lease.ready ? "ready" : "starting (lease not ready)");
-    return { name: "delivery", verdict: lease.ready ? "serving" : "not-serving", facts };
+    if (state === "stale") {
+      // Name WHOSE record it is against whom we expected, because this is the one verdict an
+      // operator cannot derive from the other facts on the line.
+      facts.push("ready, but held by a DIFFERENT daemon than this workspace launched (a dead holder's record expires on its own)");
+      facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
+      return { name: "delivery", verdict: "not-serving", facts };
+    }
+    facts.push(state === "bound" ? "ready" : "starting (lease not ready)");
+    if (state !== "bound") facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
+    return { name: "delivery", verdict: state === "bound" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A live recorded daemon with no delivery lease bucket cannot be serving this build's delivery
     // control surface.  A denied/timed-out read is different: it is a refusal and must never read

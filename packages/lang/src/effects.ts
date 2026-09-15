@@ -101,6 +101,17 @@ export interface SpawnRequest {
   readonly persona: string;
   readonly model?: string;
   readonly variant?: string;
+  /** Existing absolute directory on the serving manager's host. Separate from logical worktree identity. */
+  readonly cwd?: string;
+  /**
+   * The manager INSTANCE this spawn is pinned to. A `cwd` is host-local, so it is only meaningful
+   * against a named host; a class-anycast request carrying a local path lands wherever the queue
+   * fell. This is the EXISTING endpoint target descriptor, not a new one: `endpoint` + `instanceId`
+   * is what `describeEndpoint`/`resolveService` already accept (packages/core/src/endpoint-invoke.ts
+   * :100-106), and :113 turns `instanceId` into the `EpRoute { mode: "inst" }` rail. Required
+   * whenever `cwd` is present; omitted `cwd` keeps the legacy class-anycast behaviour exactly.
+   */
+  readonly placement?: { readonly endpoint: string; readonly instanceId: string };
   readonly worktree?: string;
   readonly join?: readonly ChannelHandleValue[];
   readonly role?: string;

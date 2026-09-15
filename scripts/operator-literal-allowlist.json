@@ -33,6 +33,10 @@
     "public-ipv4": {
       "count": 3,
       "reason": "feed address filtering fixtures"
+    },
+    "public-ipv6": {
+      "count": 2,
+      "reason": "well-known public resolver addresses asserted as public"
     }
   },
   "extensions/connector-claude-code/smoke/agui-map.smoke.ts": {
@@ -74,6 +78,10 @@
       "count": 10,
       "reason": "public address classification fixtures"
     },
+    "public-ipv6": {
+      "count": 1,
+      "reason": "well-known public resolver address in a dial policy fixture"
+    },
     "shared-ipv4": {
       "count": 12,
       "reason": "shared address classification fixtures"
@@ -105,8 +113,8 @@
   },
   "implementations/cli/src/lib/join-target.ts": {
     "shared-ipv4": {
-      "count": 2,
-      "reason": "shared address range and user-facing examples"
+      "count": 3,
+      "reason": "shared address range and user-facing examples, including a range boundary constant closing a sentence in a comment"
     }
   },
   "implementations/manager/smoke/attach-auth.smoke.ts": {

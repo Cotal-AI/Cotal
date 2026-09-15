@@ -87,13 +87,16 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
   spawn: {
     kind: "spawn",
     nameRequired: false,
-    options: ["name", "worktree", "join", "role", "permits", "supervise", "onFork"],
+    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork"],
     optionsAt: 1,
-    hashedOptions: ["worktree", "join", "role"],
+    // `placement` is HASHED, beside `cwd`: the target is half the answer to "where does this seat
+    // live". A replay that edits the target must diverge as a migration, not silently reuse the
+    // resolution taken against the old instance (#1616 item 3).
+    hashedOptions: ["cwd", "placement", "worktree", "join", "role"],
     hashesSubject: true,
     opensScope: false,
     signature:
-      "spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork? }) -> AgentHandle",
+      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork? }) -> AgentHandle",
     doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy.",
     example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },

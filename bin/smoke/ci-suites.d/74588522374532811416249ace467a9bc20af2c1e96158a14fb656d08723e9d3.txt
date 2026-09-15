@@ -1,0 +1,2 @@
+# A port lost between pick and bind is a retry, not a dead run.
+smoke:free-port-retry
