@@ -53,7 +53,7 @@ import {
 } from "@cotal-ai/core";
 // Read from core SOURCE, not the package dist: these are the builders under review, and the runtime
 // smoke suite already imports them this way for the same reason.
-import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS } from "../../../packages/core/src/run-driver-grants.js";
+import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS } from "@cotal-ai/core";
 import { canonicalCwd } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 

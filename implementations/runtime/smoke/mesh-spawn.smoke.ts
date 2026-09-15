@@ -67,12 +67,11 @@ import {
 } from "@cotal-ai/core";
 import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMigration, canonicalCwd } from "../src/index.js";
-// Read from core SOURCE, not the package dist: the grant builder is pure, and a source import is
-// what makes the two placement mutants below grade the code under review rather than a stale build.
-import { runMediatorGrants, PLACEMENT_COMMANDS } from "../../../packages/core/src/run-driver-grants.js";
-// Read from LANG SOURCE on purpose, like the core grant builder above: the identity contract under
-// review is the one in src, not whatever a stale dist was compiled from.
-import { PRIMITIVES } from "../../../packages/lang/src/primitives.js";
+// Package imports, not sibling source paths: this package's typecheck pins rootDir to its own tree,
+// so a source import from another package fails TS6059. The fixture entries that mutate core or
+// lang source therefore rebuild that package before the suite runs and after the restore.
+import { runMediatorGrants, PLACEMENT_COMMANDS } from "@cotal-ai/core";
+import { PRIMITIVES } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "meshspawn";
