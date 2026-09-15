@@ -1,5 +1,149 @@
 # @cotal-ai/core
 
+## 0.50.0
+
+### Minor Changes
+
+- 6cc504b: Report an unbound delivery responder instead of a healthy-looking daemon
+
+  A delivery daemon whose `ctl.delivery` responder has not bound blocks spawn, retirement and join,
+  but no operator-facing surface said so. `cotal status` printed `delivery  running (pid N)` off the
+  pidfile alone, which is the identical line it prints when delivery is fully healthy. The daemon's
+  own readiness lease already distinguished the two, and `cotal status --components` already read it,
+  but that pass is opt-in, so an operator watching the ordinary surfaces saw a green control plane
+  while every lifecycle operation failed. The boot path made the same conflation from the other side:
+  when the readiness wait elapsed, `cotal up` logged one info line promising that boot durable joins
+  would reconcile and then reported success, so its caller could not tell a bound responder from an
+  absent one.
+
+  Bare `cotal status` now reads the same readiness lease `--components` reads, and reports the
+  responder as bound, not bound, or unchecked. An unbound responder names its consequence in the same
+  line: no spawn, no retirement, no join until it binds. Bare status remains a broad, recovery
+  oriented diagnostic and still exits 0, and where the lease cannot be read it says the axis was not
+  checked and points at `--components` rather than implying health.
+
+  Readiness is judged against the daemon that is supposed to be serving, not merely against the flag.
+  A daemon that dies without releasing its lease leaves its `ready` record in the bucket until the
+  lease TTL expires it, so for that window a restarted or crashed mesh could still report a bound
+  responder off the previous daemon's record. Both surfaces now compare the lease holder against the
+  daemon this workspace launched and report a leftover record as not bound, naming it as a dead
+  daemon's record that clears on its own. Where the holder genuinely cannot be known, such as an
+  adopted daemon this process did not start, the holder is not checked and behaviour is unchanged.
+
+  `cotal up` either binds the responder or states that it did not and what that prevents; the promise of a reconcile stays, but as
+  a statement that the wait is open ended and that agents do not need respawning, rather than as the
+  only thing said. A denied join now names the delivery daemon as a possible cause alongside
+  credentials, instead of sending an operator holding valid credentials after the wrong hypothesis.
+
+  `cotal doctor auth` no longer reports a healthy fleet as broken. When a daemon re-mints an agent's
+  credential, the previous incarnation's file stays on disk, expired, and every one of those was
+  reported as `EXPIRED - the broker denies this credential` with the remedy `respawn the agent`.
+  Following that remedy destroys live sessions to repair nothing, because the running agent is already
+  using its successor. Superseded incarnations are now recognised from the credential family that
+  names them, reported as leftover files with a cleanup that is explicitly not a respawn, and excluded
+  from the verdict, while a credential that genuinely has no successor is still a problem. The remedy
+  for a recoverable credential now says that a running manager re-mints it and that the agent adopts
+  the new file without being restarted; `respawn` is reserved for material no renewal pass can rescue.
+  The doctor also names an unbound delivery responder when the recorded renewal pass hit one, so the
+  surface an operator reaches for when credentials look wrong can say that credentials are not the
+  fault.
+
+- 87dda9f: The caller half of a durable spawn's physical working directory, pinned to one manager instance
+
+  A durable spawn can name a physical working directory with `cwd`, and doing so requires an explicit
+  `placement` target naming one manager instance as `{ endpoint, instanceId }`. A directory is
+  host-local, so a `cwd` with no target would ride the class anycast queue and land wherever the
+  anycast fell; that combination refuses rather than guessing, with no fallback. The target is
+  hashed into the step identity beside the directory, so a replay retargeted at a different instance
+  diverges as a migration instead of replaying a resolution taken against the old host. Logical
+  `worktree` keeps its meaning and its exclusivity, and a spawn that names neither option hashes
+  exactly the object it hashed before, byte for byte, so recorded runs replay unchanged.
+
+  **Explicit `cwd` placement does not resolve yet on a shipped manager, and refuses by name until it
+  does.** What ships here is the caller half: the language forwards and hashes the options, the
+  runtime asks its pinned target to state the directory's canonical form before it submits anything,
+  and the core grant builder mints the instance-pinned rails that ask would need. The question is
+  asked with a `resolve-cwd` command, and **no manager in this release serves `resolve-cwd`** — the
+  only servers of it are the smoke suites that grade this code. So on a real manager every explicit
+  `cwd` placement ends in a named refusal saying that this manager serves no `resolve-cwd` command
+  and can therefore state no canonical form. That is the intended direction and it is not a crash:
+  nothing is submitted, allocated or launched, and the caller is told why. A non-`ok` reply and a
+  reply whose path is not absolute are refused the same way. Until a manager serves the command,
+  treat `cwd` with `placement` as unavailable rather than as a directory that silently differs from
+  the one you named.
+
+  The grant surface and the serving surface are deliberately asymmetric, and it is worth stating
+  plainly: `runMediatorGrants` does mint the three placement capabilities (`describe`, `resolve-cwd`,
+  `spawn`) for the one named instance when a program names a target, bounded to that instance with
+  no anycast rail and no wildcard, but the manager's hosted-run credential minting never passes a
+  program's placement into it, so an authenticated hosted run receives none of those rows today. The
+  rails are built and graded; nothing production yet asks for them or answers them.
+
+  A malformed `placement` is now refused by name at the call. `placement: null` used to raise a raw
+  `TypeError` from inside the interpreter's identity projection, with no code, no effect kind and no
+  journal entry, because the option reader guarded the option bag being null rather than the value it
+  held. A primitive, an empty record and a half-filled record were quieter and worse: they were
+  forwarded, projected two undefined fields into the step identity, and the run carried on under an
+  identity describing a placement the program never named. All of these are now `L3048`, raised
+  before the step key is minted, so nothing is journalled and the repair is an edit to the program.
+
+- fc6f0b1: Scope an unanswered endpoint verdict to the rail the request rode
+
+  A CLI whose caller carries an issued generation rides the versioned `ep.v1` rail. SPEC 13.15 makes
+  that rail a separate subject space from the legacy `ep` rail and requires an endpoint to serve
+  both, so a manager built before the versioned rail serves `ep` alone and never receives the
+  request. The describe waited out its whole budget and every hosted `cotal run` verb reported that
+  no manager answered on the endpoint rails, asked whether one was running, and offered `--local`,
+  against a manager that was up, on the roster and answering `cotal ps` throughout. `--local` drives
+  the run from the calling process and names the caller as the run's answerer, so an operator who
+  took the suggestion would submit an answer under the wrong identity.
+
+  The unanswered marker now carries the `ep` plane the request was published on, and `describe`
+  names it in its own refusal. `cotal ps` and the other manager verbs state the reachability verdict
+  against that rail instead of against the mesh, and say what silence on a versioned rail does not
+  establish. `cotal run`'s hosted verbs do the same and drop both the question and the `--local`
+  suggestion there, since neither follows from what was observed. On the legacy rail every message is
+  unchanged: there is no second rail its silence could be hiding a manager on.
+
+  No fallback describe is issued on the other rail. A caller holds broker rows for its own rail only,
+  so the request would be refused at publish rather than answered.
+
+### Patch Changes
+
+- 5e23b1d: Keep the versioned rail's subject token out of source comments
+
+  The issued-profile census scans every shipped source for the versioned rail's subject token and
+  allows only core's subject and grant builders to spell it. Five comments in core, the CLI and the
+  runtime spelled the token and failed that cell on main. They now say "the versioned rail" or "the
+  versioned plane". No code changes.
+
+- fe813fe: The membership feed now decides "the renewal owner has not re-signed yet" by credential GENERATION
+  rather than by envelope bytes. The refusal compared two whole creds envelopes with `===`, which tests
+  transport representation rather than identity: the envelope carries the nkey seed and is sensitive to
+  formatting, which is exactly why `credsFingerprint` hashes the JWT instead. The rw source is
+  caller-supplied and opaque — a secret-store adapter, an editor, a filesystem round trip — and any of
+  them can hand back the same credential in a differently formatted envelope. Compared by bytes that
+  read looked like a fresh generation, so it was adopted past its own renewal point, the next renewal
+  tick was floored to one second, and the feed re-read the store every second for the rest of the
+  credential's life. The 60-second retry never applied, because the fetch had not failed: it succeeded
+  and returned unusable material.
+- 55dae63: The membership feed's conn B now refuses to present an rw credential it has already decoded as
+  expired. The cached credential only ever advances through a preflight-proven adoption, so it cannot
+  hold an unproven generation, but a legitimately proven one expires as the clock advances. With
+  re-signing stopped, the broker closed conn B at the credential's `exp` and the client's own redial
+  presented the dead credential: an auth round trip that could only be denied, reported to the host as
+  the broker's "User Authentication Expired" rather than the local cause. The dial is refused before
+  it leaves the process, with separate messages for a feed that can renew and one that cannot, so the
+  diagnostic names the applicable remedy.
+- 7df3498: `startMembershipFeed` no longer leaves its observer connection open when startup fails. Conn A is
+  opened first, and every step after it can throw: an rw credential source that rejects, credential
+  bytes the identity parser refuses, conn B's own dial, either KV open. Before this change the only
+  `drain()` in that file lived inside the handle's `stop()`, and a caller whose startup rejected never
+  receives the handle — so the observer connection stayed open for the life of the process, with
+  nothing left holding a reference to it. Startup is transactional now: every connection acquired so
+  far is drained before the rejection propagates, and the rejection itself is unchanged, so a caller
+  that already handles the failure sees exactly what it saw before.
+
 ## 0.49.0
 
 ### Minor Changes
