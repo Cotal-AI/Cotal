@@ -230,7 +230,7 @@ export function onInstanceOrExit(on: string | undefined, verb: string): string |
  *    an unanswered PINNED call names the instance instead, since three managers may be answering
  *    while the one the operator typed is not there, and "no manager reachable" sends them to the
  *    broker for a typo. Measured on a live three-manager mesh during review. The verdict is also
- *    scoped to the RAIL ({@link unansweredRail}): on `ep.v1` it names that rail and says what the
+ *    scoped to the RAIL ({@link unansweredRail}): on the versioned rail it names that rail and says what the
  *    silence does not establish, because SPEC 13.15 keeps the two rails disjoint at the broker.
  *  - a REGISTRY READ on this side failed ({@link registryReadFailed}: the scatter's freeze or its
  *    reconcile). The managers were not the failure and may all be up; a verdict on them here sent
@@ -246,7 +246,7 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
-    // The verdict is SCOPED TO THE RAIL the request rode (SPEC 13.15). `ep` and `ep.v1` are
+    // The verdict is SCOPED TO THE RAIL the request rode (SPEC 13.15). The legacy and versioned rails are
     // disjoint subject spaces at the broker and an endpoint is required to serve both, so a manager
     // built before the versioned rail subscribes `ep` alone and an issued caller can never see it.
     // "No manager reachable" is then a claim about the mesh drawn from silence on one half of it,

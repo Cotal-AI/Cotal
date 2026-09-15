@@ -513,7 +513,7 @@ function parseAnswerValue(values: RunValues): unknown {
  * On the LEGACY `ep` rail there is one rail and nothing answered on it, so "is a manager running?"
  * is the right question and `--local` is the right remedy.
  *
- * On the VERSIONED `ep.v1` rail it is not. SPEC 13.15 keeps the two rails disjoint at the broker
+ * On the VERSIONED (issued) rail it is not. SPEC 13.15 keeps the two rails disjoint at the broker
  * and requires an endpoint to serve both, so a manager older than the versioned rail subscribes
  * `ep` alone: it is running, it is on the roster, and this caller cannot reach it. #1630 measured
  * both halves of the damage. The question ASSERTS one of two causes, and `--local` is the remedy

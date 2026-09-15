@@ -113,8 +113,8 @@ export async function describeEndpoint(
   const route: EpRoute = opts.instanceId !== undefined ? { mode: "inst", instanceId: opts.instanceId } : { mode: "one" };
   const subject = epRequestSubject(space, { route, endpoint, command: "describe", caller, nonce: n });
   // The plane this describe rides, recorded on the unanswered marker so a surface that renders a
-  // reachability verdict can scope it (SPEC 13.15: `ep` and `ep.v1` are disjoint subject spaces,
-  // an endpoint serves both, and a caller holds rows on one of them only). Silence on `ep.v1` is
+  // reachability verdict can scope it (SPEC 13.15: the legacy and versioned rails are disjoint subject spaces,
+  // an endpoint serves both, and a caller holds rows on one of them only). Silence on the versioned rail is
   // therefore consistent with a responder that predates the versioned rail and serves `ep` alone.
   const rail = epPlaneTokens(caller).join(".");
   const env = {
