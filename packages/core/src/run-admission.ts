@@ -204,7 +204,13 @@ export async function readRunAdmission(jsm: JetStreamManager, space: string, end
   }
   if (admission.space !== space || admission.endpoint !== endpoint || admission.runId !== runId)
     throw new EpEnvelopeError("permission-denied", `run ${runId}'s admission record names other coordinates (${admission.space}/${admission.endpoint}/${admission.runId}); refused (SPEC 14.8)`);
-  const revoked = await readRunRevocation(jsm, space, endpoint, runId);
+  // Its own read of the marker, not a call into the display helper below. Sharing one reader was
+  // tried and measured: a mutation of the helper's key then breaks every host read too, so the
+  // suite dies at `resume` before the cell that grades the table ever runs, and the mutant is
+  // ungradable. The host path also has no business depending on a function whose contract is
+  // written for a listing.
+  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
+  const revoked = marker === undefined ? undefined : revocationSnapshot(marker.value, runId);
   return Object.freeze({ admission, revoked });
 }
 
