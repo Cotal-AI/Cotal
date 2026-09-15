@@ -143,6 +143,63 @@ try {
     '  if (!String(f).endsWith(".ts")) continue;\n' +
     '  readFileSync(join(DIR, String(f)), "utf8");\n' +
     '}\n');
+  // The same narrowing wearing parentheses. A `ParenthesizedExpression` is not a
+  // `BinaryExpression`, so two characters are enough to walk past a classifier that does not
+  // normalize, and the narrowed sweep counts as a sweep again.
+  write("bin/smoke/listing-narrowed-paren.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if ((String(f) !== "src/impl.ts")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The De Morgan spelling. `!(f !== ONE)` means the same thing as `f === ONE`, so a classifier
+  // with no notion of negation grades the two spellings differently.
+  write("bin/smoke/listing-narrowed-negated.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (!(String(f) !== "src/impl.ts")) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The narrowing hidden in one operand of a compound guard. Inside the `then` branch BOTH
+  // operands of `&&` hold, so an operand that pins the entry pins it for the whole branch.
+  write("bin/smoke/listing-narrowed-and.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length > 0) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The compound narrowing in the EXIT form. Control reaches the read only when the whole guard
+  // is false, and a false `||` makes BOTH operands false, so `f !== ONE` being false pins the
+  // entry. `||` is the operand that decomposes here; `&&` is not (see listing-compound-open).
+  write("bin/smoke/listing-narrowed-or.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts" || DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The accept control for the decomposition, and the reason `&&` must NOT decompose under an
+  // exit guard: a false `&&` only says at least one operand is false, so every entry whose name
+  // differs from ONE still reaches the reader. The sweep is open and has to stay counted.
+  write("bin/smoke/listing-compound-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // An ordinary extension filter that happens to be WRITTEN as an equality. It mentions the loop
+  // entry, and the other side is a known string, but `slice(-3)` maps many entries onto one
+  // value, so the guard pins an extension and not an entry. Refusing it would silently drop
+  // coverage with nothing going red.
+  write("bin/smoke/listing-suffix-equality.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f).slice(-3) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
@@ -524,6 +581,37 @@ try {
   config("sweep-skips-one", { suite: ["bin/smoke/listing-skip-one.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("sweep-skips-one");
   check("a sweep that skips one entry is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // Cardinality is a property of the guard, not of how the guard is written, so every spelling of
+  // the same narrowing has to land on the same verdict. Parentheses, a De Morgan negation and an
+  // `&&`/`||` operand are three ways to write `f === ONE` that a spelling-shaped classifier reads
+  // as something else.
+  config("sweep-narrowed-paren", { suite: ["bin/smoke/listing-narrowed-paren.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-paren");
+  check("a narrowing in parentheses is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-paren/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-negated", { suite: ["bin/smoke/listing-narrowed-negated.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-negated");
+  check("a narrowing spelled as a negated inequality is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-negated/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-and", { suite: ["bin/smoke/listing-narrowed-and.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-and");
+  check("a narrowing in one operand of an && guard is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-and/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-or", { suite: ["bin/smoke/listing-narrowed-or.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-or");
+  check("a narrowing in one operand of an || exit guard is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-or/.test(result.stderr), report(result));
+
+  // The two accept controls that keep the decomposition and the projection rule honest. Each one
+  // fails exactly when the corresponding rule is widened too far, which is the direction that
+  // costs coverage silently: a wrongly refused sweep reds nothing, it just stops counting.
+  config("sweep-compound-open", { suite: ["bin/smoke/listing-compound-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-compound-open");
+  check("an && exit guard leaves every other entry going through", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-suffix-equality", { suite: ["bin/smoke/listing-suffix-equality.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-suffix-equality");
+  check("an extension filter written as an equality is still a sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
