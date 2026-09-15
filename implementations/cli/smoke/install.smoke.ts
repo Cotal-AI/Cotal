@@ -9,7 +9,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { isNpx, cotalOnPath, verifiedCotalExecutables } from "../src/lib/self-exec.js";
+import { isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
 import { offerGlobalInstall } from "../src/commands/setup.js";
 
 let failures = 0;
@@ -119,6 +119,44 @@ if (process.platform !== "win32") {
   writeFileSync(userCotal, "#!/bin/sh\nprintf '%s\\n' 'wrapper noise' 'cotal-ai 9.8.7'\n");
   chmodSync(userCotal, 0o755);
   check("recovery probe: version proof must be the first output line", verifiedCotalExecutables({ ...cleanEnv, HOME: home, PATH: prefix }).length === 0);
+}
+
+// 5) #1629: `selfArgv` builds the argv every detached re-exec is spawned with, and it must refuse
+//    an entry that is not the CLI's own. A suite under tsx has `process.argv[1]` pointing at itself,
+//    so the "manager" it re-execs is the suite: on a persistent host that measured 970 generations
+//    in 4.7 hours, each with its own nats-server and holder. The refusal has to be here rather than
+//    in a teardown owner, because the child is unref'd on purpose and nothing can adopt it.
+{
+  const argv = (p: string): string[] | Error => {
+    setArgv(p);
+    try { return selfArgv(); } catch (e) { return e as Error; }
+  };
+  const checkout = argv("/Users/x/repo/bin/cotal.ts");
+  check("the dev-checkout entry `bin/cotal.ts` builds a re-exec argv ending in that entry",
+    Array.isArray(checkout) && checkout[0] === process.execPath && checkout.at(-1) === "/Users/x/repo/bin/cotal.ts");
+  const installed = argv("/usr/local/lib/node_modules/cotal-ai/dist/cotal.js");
+  check("the published entry `dist/cotal.js` builds one too",
+    Array.isArray(installed) && installed.at(-1) === "/usr/local/lib/node_modules/cotal-ai/dist/cotal.js");
+  // The shape `npm i -g cotal-ai` actually runs under: `<prefix>/bin/cotal` is a symlink into the
+  // package and Node leaves argv[1] on the LINK, which has no extension. An extension-only rule
+  // would refuse every global install's manager start, so the bare name is pinned here.
+  const globalLink = argv("/usr/local/bin/cotal");
+  check("a bare `cotal` bin symlink (the global-install shape) builds a re-exec argv",
+    Array.isArray(globalLink) && globalLink.at(-1) === "/usr/local/bin/cotal");
+  const suite = argv("/Users/x/repo/implementations/cli/smoke/delivery-boot-honesty.smoke.ts");
+  check("a `.smoke.ts` entry is REFUSED, not re-execed as a daemon", suite instanceof Error);
+  check("the refusal names the entry it will not re-exec",
+    suite instanceof Error && suite.message.includes("delivery-boot-honesty.smoke.ts"));
+  check("and says what a child spawned from it would actually run",
+    suite instanceof Error && /re-runs it with a cotal subcommand appended/.test(suite.message));
+  check("and names the fixture remedy rather than only the failure",
+    suite instanceof Error && /points `process\.argv\[1\]` at the cotal entry/.test(suite.message));
+  // The stem is the whole check, so a file that merely SITS beside the entry is refused too: a
+  // `bin/run.ts` re-exec would boot the composition root without the Node-version preflight.
+  check("a sibling of the entry is not the entry", argv("/Users/x/repo/bin/run.ts") instanceof Error);
+  check("a process with no entry file at all is refused rather than spawning `[node, undefined]`",
+    (() => { const saved = process.argv[1]; delete (process.argv as (string | undefined)[])[1];
+      try { selfArgv(); return false; } catch { return true; } finally { process.argv[1] = saved; } })());
 }
 
 process.argv[1] = realArgv1;
