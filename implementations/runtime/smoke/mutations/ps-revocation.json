@@ -54,13 +54,13 @@
     {
       "name": "the reader looks at the admission key instead of the revocation marker",
       "file": "packages/core/src/run-admission.ts",
-      "find": "  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));",
-      "replace": "  const marker = await readLeader(jsm, space, admissionKey(endpoint, runId));",
+      "find": "  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));\n  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);",
+      "replace": "  const marker = await readLeader(jsm, space, admissionKey(endpoint, runId));\n  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-command",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
-      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then reports the row as unchecked and prints the record's own state, which reddens the same cell for a different reason."
+      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then reports the row as unchecked and prints the record's own state, which reddens the same cell for a different reason. The anchor spans two lines because the host read beside it is byte-identical on its first line; a single-line target matched both and was refused as ambiguous."
     },
     {
       "name": "the revoker and the reason stop being printed under the table",
