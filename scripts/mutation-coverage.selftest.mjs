@@ -10,9 +10,16 @@ import { fileURLToPath } from "node:url";
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
 const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
 let pass = 0;
+let failed = 0;
+// Normally the first failing cell stops the run, which keeps a failure legible. Grading the
+// MUTANTS needs the opposite: a mutant is only proven to bite when the cell it NAMES reds, and an
+// early exit hides every cell after the first. This reports them all, and still exits non-zero.
+const CONTINUE = process.env.MUTATION_SELFTEST_REPORT_ALL === "1";
 const check = (name, condition, extra) => {
   if (!condition) {
+    failed++;
     console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
+    if (CONTINUE) return;
     rmSync(root, { recursive: true, force: true });
     process.exit(1);
   }
@@ -1392,4 +1399,7 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
-console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, 0 failed`);
+// `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
+// report-all mode, where the run continues, and the exit status follows it rather than the literal.
+console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

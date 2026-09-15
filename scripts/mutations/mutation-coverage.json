@@ -484,17 +484,9 @@
       "cell": "a narrowing against a computed constant is refused"
     },
     {
-      "name": "any equality narrows a sweep, regardless of which way it is spelled",
-      "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (isEq !== holds) return false;",
-      "replace": "      if (!isEq && !isNe) return false;",
-      "expectRed": "a sweep that skips one entry is still open",
-      "cell": "a sweep that skips one entry is still open"
-    },
-    {
       "name": "a parenthesized narrowing is unwrapped before it is classified",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      if (ts.isParenthesizedExpression(cond)) return singleValueEquality(cond.expression, holds);",
+      "find": "      if (ts.isParenthesizedExpression(cond)) return pins(cond.expression, holds, depth + 1);",
       "replace": "      if (ts.isParenthesizedExpression(cond)) return false;",
       "expectRed": "a narrowing in parentheses is still a named read",
       "cell": "a narrowing in parentheses is still a named read"
@@ -502,42 +494,130 @@
     {
       "name": "a prefix `!` flips the sense of the guard rather than being dropped",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        return singleValueEquality(cond.operand, !holds);",
-      "replace": "        return singleValueEquality(cond.operand, holds);",
+      "find": "        return pins(cond.operand, !holds, depth + 1);",
+      "replace": "        return pins(cond.operand, holds, depth + 1);",
       "expectRed": "a narrowing spelled as a negated inequality is still a named read",
       "cell": "a narrowing spelled as a negated inequality is still a named read"
     },
     {
-      "name": "a compound guard is taken apart operand by operand",
+      "name": "a true `&&` carries an operand that pins to the whole branch",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);",
-      "replace": "        return false;",
+      "find": "          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;",
+      "replace": "          return false;",
       "expectRed": "a narrowing in one operand of an && guard is still a named read",
       "cell": "a narrowing in one operand of an && guard is still a named read"
     },
     {
-      "name": "`||` decomposes under a false guard, not just `&&` under a true one",
+      "name": "`&&` decomposes only when it HELD, never when it failed",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;",
-      "replace": "        if (kind !== ts.SyntaxKind.AmpersandAmpersandToken || !holds) return false;",
-      "expectRed": "a narrowing in one operand of an || exit guard is still a named read",
-      "cell": "a narrowing in one operand of an || exit guard is still a named read"
-    },
-    {
-      "name": "each logical operator decomposes in one direction only",
-      "file": "scripts/mutation-coverage.mjs",
-      "find": "        if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;\n        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);",
-      "replace": "        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);",
+      "find": "          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;\n        }",
+      "replace": "          return pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1);\n        }",
       "expectRed": "an && exit guard leaves every other entry going through",
       "cell": "an && exit guard leaves every other entry going through"
     },
     {
+      "name": "a false `||` carries an operand that pins to the fallthrough",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return holds ? false : (pins(cond.left, false, depth + 1) || pins(cond.right, false, depth + 1));",
+      "replace": "          return false;",
+      "expectRed": "a narrowing in one operand of an || exit guard is still a named read",
+      "cell": "a narrowing in one operand of an || exit guard is still a named read"
+    },
+    {
+      "name": "`a !== b` is graded as `a === b` with the sense flipped",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return pinsEquality(eq, !holds);",
+      "replace": "          return pinsEquality(eq, holds);",
+      "expectRed": "a sweep narrowed to one literal path is a named read",
+      "cell": "a sweep narrowed to one literal path is a named read"
+    },
+    {
+      "name": "an equality pins only when it HOLDS, so skipping one entry is not selecting one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!holds) return false;\n      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;",
+      "replace": "      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;",
+      "expectRed": "a sweep that skips one entry is still open",
+      "cell": "a sweep that skips one entry is still open"
+    },
+    {
       "name": "the compared side must be the loop entry, not merely mention it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      return (isEntryItself(cond.left) && known(cond.right)) || (isEntryItself(cond.right) && known(cond.left));",
+      "find": "      return (entryIdentity(cond.left) && known(cond.right)) || (entryIdentity(cond.right) && known(cond.left));",
       "replace": "      return (mentions(cond.left) && known(cond.right)) || (mentions(cond.right) && known(cond.left));",
       "expectRed": "an extension filter written as an equality is still a sweep",
       "cell": "an extension filter written as an equality is still a sweep"
+    },
+    {
+      "name": "a ternary is evaluated rather than left unclassified",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isConditionalExpression(cond)) {",
+      "replace": "      if (false && ts.isConditionalExpression(cond)) {",
+      "expectRed": "a narrowing spelled as a ternary with boolean arms is still a named read",
+      "cell": "a narrowing spelled as a ternary with boolean arms is still a named read"
+    },
+    {
+      "name": "a ternary with boolean arms reduces to its condition",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return pins(cond.condition, whenTrue === holds, depth + 1);",
+      "replace": "          return pins(cond.condition, whenTrue !== holds, depth + 1);",
+      "expectRed": "a narrowing spelled as a ternary with boolean arms is still a named read",
+      "cell": "a narrowing spelled as a ternary with boolean arms is still a named read"
+    },
+    {
+      "name": "every ternary branch that can yield the sense must pin, not just one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        return (viaTrue || viaFalse) && truePins && falsePins;",
+      "replace": "        return (viaTrue || viaFalse) && (truePins || falsePins);",
+      "expectRed": "a ternary whose arms both read leaves the sweep open",
+      "cell": "a ternary whose arms both read leaves the sweep open"
+    },
+    {
+      "name": "a type assertion around the entry is transparent",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e)\n        || ts.isTypeAssertionExpression(e)) return entryIdentity(e.expression, depth + 1);",
+      "replace": "      if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e)\n        || ts.isTypeAssertionExpression(e)) return false;",
+      "expectRed": "a type assertion around the entry does not hide the narrowing",
+      "cell": "a type assertion around the entry does not hide the narrowing"
+    },
+    {
+      "name": "a loop-local const alias is followed to what it was bound to",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const declaration = aliasDeclaration(e);\n        return declaration !== undefined && entryIdentity(declaration.initializer, depth + 1);",
+      "replace": "        return false;",
+      "expectRed": "a loop-local alias of the entry is still the entry",
+      "cell": "a loop-local alias of the entry is still the entry"
+    },
+    {
+      "name": "an aliased entry still reaches the reader that is handed the alias",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const declaration = aliasDeclaration(e);\n        return declaration !== undefined && mentions(declaration.initializer, visited);",
+      "replace": "        return false;",
+      "expectRed": "binding the entry before reading it is still an open sweep",
+      "cell": "binding the entry before reading it is still an open sweep"
+    },
+    {
+      "name": "the callee is RESOLVED to the global String, not matched by its terminal name",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      return ts.isCallExpression(e) && resolvesToGlobalString(e.expression)",
+      "replace": "      return ts.isCallExpression(e) && calleeText(e.expression) === \"String\"",
+      "expectRed": "a projection through a property named String is not the global conversion",
+      "cell": "a projection through a property named String is not the global conversion"
+    },
+    {
+      "name": "a scope that declares String stops it resolving to the global",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (declaresLocally(s, \"String\")) return false;",
+      "replace": "        if (false && declaresLocally(s, \"String\")) return false;",
+      "expectRed": "a local binding that shadows String is not the global conversion",
+      "cell": "a local binding that shadows String is not the global conversion"
+    },
+    {
+      "name": "a guard with no rule is OPEN, so an unknown spelling makes the sweep count",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      // Anything else is OPEN. This is the default that makes the classifier safe.\n      return false;",
+      "replace": "      // Anything else is OPEN. This is the default that makes the classifier safe.\n      return true;",
+      "expectRed": "a guard the classifier cannot evaluate leaves the sweep counting",
+      "cell": "a guard the classifier cannot evaluate leaves the sweep counting"
     }
   ]
 }
