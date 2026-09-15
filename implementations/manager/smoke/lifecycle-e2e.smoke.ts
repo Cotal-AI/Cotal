@@ -165,12 +165,19 @@ try {
   });
   delivery.on("error", () => {});
   await delivery.start();
+  // The single-flight delivery lease, acquired before the rail binds exactly as `runDelivery` does.
+  // `reloadStoreIdentity` answers with the binding that says whether the answering process holds
+  // this space's lease, because the rail is queue-grouped and only the lease holder actually
+  // reloads the standing credentials. Without it this fixture answers as a lease-less responder and
+  // a challenging manager correctly declines to treat its store as the daemon's.
+  const deliveryLeaseRevision = await delivery.acquireDeliveryLease(0);
   await delivery.startPlane3(async () => undefined, {
     evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
       servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
     }),
     reloadStoreIdentity: () => ({ kind: "fs", root: resolve(workspaceRoot) }),
   });
+  await delivery.markDeliveryLeaseReady(0, deliveryLeaseRevision);
   await mgr.start();
 
   // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered

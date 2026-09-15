@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator, NoRespondersError, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   STANDING_RENEWABLE_TTL_SEC,
   foreignRenewalOwnerNote,
   formatSecretStoreIdentity,
+  parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
@@ -62,7 +63,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -900,10 +901,25 @@ function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
   return { kind: "injected", coordinate };
 }
 
-/** True only when the delivery-admin rail has no bound responder. A timeout is a hung rail, not absence. */
-function isAbsentDeliveryAdmin(msg: string): boolean {
-  if (/timeout/i.test(msg)) return false;
-  return /no responders|\b503\b/i.test(msg);
+/**
+ * True only when the broker ITSELF reported that the delivery-admin subject had zero bound
+ * responders, as a typed error rather than as words in a string.
+ *
+ * THIS USED TO MATCH TEXT, AND MATCHING TEXT CANNOT TELL THE TWO CASES APART. The rail decodes a
+ * reply with `JSON.parse`, so a peer that merely QUOTES the phrase produces a parse failure whose
+ * message carries the peer's own body: `JSON.parse("no responders")` throws
+ * `Unexpected token 'o', "no responders" is not valid JSON`, and `/no responders|\b503\b/i`
+ * matches it. A FAILURE TO PARSE was then rendered as a DETERMINATION OF ABSENCE, and the absent
+ * branch remints — so a peer able to put those two words on the rail could make this manager write
+ * credentials into a store the real daemon never reads (#773 in a new place). The same held for a
+ * body containing `503`.
+ *
+ * A parse failure, a hang, a permission denial and an unreadable reply are each NOT a
+ * determination. Only `NoRespondersError` (or a `RequestError` whose `isNoResponders()` is true) is
+ * the broker's own statement that nothing was bound, and only that may be read as absence.
+ */
+function isAbsentDeliveryAdmin(e: unknown): boolean {
+  return e instanceof NoRespondersError || (e instanceof RequestError && e.isNoResponders());
 }
 
 export class Manager {
@@ -1491,31 +1507,47 @@ export class Manager {
    *    serves seats: a space has many managers on many devices, and only the one rooted where the
    *    daemon reads is the renewal owner. Recorded on every pass so `doctor auth` says where
    *    renewal happens.
-   *  - `"absent"`: no bound delivery-admin responder. Not a named store, so the pass proceeds
+   *  - `"absent"`: the BROKER reported no bound delivery-admin responder. Not a named store, so the pass proceeds
    *    writing this store (tests, delayed delivery). A later daemon on a foreign store moves this
    *    manager to `"foreign"` on the next pass rather than being certified by the earlier absence.
    *
-   *  A request timeout is not absence: a hung rail would skip the classification, so it fails
-   *  closed and the pass is skipped with the reason recorded. */
+   *  ABSENCE IS A DETERMINATION, NOT A FAILURE TO DETERMINE. Only the broker's own typed
+   *  no-responder signal may produce `"absent"`; a timeout, a parse failure, a denial and an
+   *  unreadable reply are each a failure to determine, so they throw and the pass is skipped with
+   *  the reason recorded, never reminted through.
+   *
+   *  AND THE ANSWER MUST COME FROM THE PROCESS THAT RELOADS. The delivery-admin rail is
+   *  queue-grouped, so any bound responder can answer; only the delivery lease holder actually
+   *  reloads the standing credentials. An answer from a responder that does not hold the lease is
+   *  not a statement about the reloading process, so it is refused here rather than being allowed
+   *  to certify this manager as the renewal owner. */
   private async classifyDaemonSecretStore(): Promise<{ kind: "shared" } | { kind: "absent" } | { kind: "foreign"; daemon: SecretStoreIdentity }> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
-      const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return { kind: "absent" };
-      throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
+      if (isAbsentDeliveryAdmin(e)) return { kind: "absent" };
+      throw new Error(`could not challenge the delivery daemon's SecretStore: ${(e as Error).message}`);
     }
     if (!reply.ok)
       throw new Error(
         reply.error ?? "delivery daemon refused to name the SecretStore it reloads from",
       );
-    let daemon: SecretStoreIdentity;
+    let answer: DaemonStoreAnswer;
     try {
-      daemon = parseSecretStoreIdentity(reply.data);
+      answer = parseDaemonStoreAnswer(reply.data);
     } catch (e) {
       throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
     }
+    // The rail is queue-grouped: this reply proves only that SOMETHING bound to it answered. Unless
+    // the answerer holds the delivery lease, its store says nothing about where the standing
+    // credentials are reloaded from, and treating it as the daemon's store is what lets a second
+    // responder move this manager onto the remint path. Not a determination, so it throws.
+    if (!answer.holdsDeliveryLease)
+      throw new Error(
+        "the delivery-admin rail was answered by a responder that does not hold this space's delivery lease, so its SecretStore is not the store the daemon reloads from - nothing reminted",
+      );
+    const daemon = answer.identity;
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) return { kind: "foreign", daemon };
     return { kind: "shared" };
   }
@@ -1530,63 +1562,83 @@ export class Manager {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
-      let relation: Awaited<ReturnType<Manager["classifyDaemonSecretStore"]>>;
+      let relation: Awaited<ReturnType<Manager["classifyDaemonSecretStore"]>> | undefined;
       try {
         relation = await this.classifyDaemonSecretStore();
       } catch (e) {
-        // A hung or unreadable rail is not a proof either way: no remint, and the reason is on record.
-        console.error(`! credential renewal: skipped - ${(e as Error).message}`);
+        // A hung, denied or unreadable rail is not a proof either way: NO REMINT, and the reason is
+        // on record. It is not a reason to abandon this manager's OWN credentials either — the same
+        // correction as the foreign branch below, and it matters more here, because binding the
+        // classification to the delivery lease holder makes this branch the one a transiently
+        // unbound or foreign-answered rail lands in. So `relation` stays undefined, the remint is
+        // skipped, and the own-credential duties below still run.
+        console.error(`! credential renewal: the daemon remint was skipped - ${(e as Error).message}`);
         writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results: [], adoption: { ok: false, error: (e as Error).message } });
-        return;
       }
-      if (relation.kind === "foreign") {
+      // A FOREIGN CLASSIFICATION SKIPS THE DAEMON REMINT, AND ONLY THE DAEMON REMINT.
+      //
+      // What "foreign" establishes is narrow: the delivery daemon reloads from another store, so
+      // THIS manager is not the owner of the DAEMON's credentials. It establishes nothing about the
+      // credentials this manager owns outright — its managed-agent statics, its endpoint-serve
+      // credential, its goal-writer, its hosted runs and its session ledger. Those are renewed by
+      // no other process on any host, and `credRenewTimer` is the only thing that drives them.
+      //
+      // This used to be an early `return` sitting ABOVE every one of those duties, so a foreign
+      // manager quietly renewed nothing it owned and died at its own credentials' TTL instead.
+      // A 24-hour class renewed on a TTL/4 tick makes that invisible for a day: A GREEN FIRST DAY
+      // IS EXACTLY WHAT THE BUG LOOKS LIKE. So the remint and its adoption are skipped here, the
+      // owner-elsewhere note is recorded as before, and control FALLS THROUGH to the own-credential
+      // duties below rather than returning past them.
+      const foreign = relation?.kind === "foreign" ? relation.daemon : undefined;
+      let results: Awaited<ReturnType<typeof remintDaemonCreds>> = [];
+      let adoption: RenewalRecord["adoption"];
+      if (foreign) {
         // Not the renewal owner. Say so once per pass, in the record `doctor auth` renders, naming
         // both stores so an operator can find the owner. Nothing is written into this store.
-        const note = foreignRenewalOwnerNote(this.secretStoreIdentity, relation.daemon);
+        const note = foreignRenewalOwnerNote(this.secretStoreIdentity, foreign);
         if (this.renewalOwnerNoteLogged !== note) {
           console.error(`  ${note}`);
           this.renewalOwnerNoteLogged = note;
         }
-        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results: [], renewalOwner: { elsewhere: true, store: formatSecretStoreIdentity(relation.daemon), note } });
-        return;
-      }
-      // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
-      // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
-      // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
-      // `this.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
-      // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
-      // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
-      // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.
-      const results = await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
-        preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
-      });
-      const resigned = results.filter((r) => r.ok);
-      let adoption: RenewalRecord["adoption"];
-      if (resigned.length) {
-        // Hand the daemon the EXPECTED generation per component (SHA-256 of the JWT we just
-        // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
-        const expected: { delivery?: string; membership?: string } = {};
-        for (const r of resigned) {
-          if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint;
-          else if (r.file === MEMBERSHIP_RW_CREDS_KIND && r.fingerprint) expected.membership = r.fingerprint;
+        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results: [], renewalOwner: { elsewhere: true, store: formatSecretStoreIdentity(foreign), note } });
+      } else if (relation !== undefined) {
+        // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
+        // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
+        // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
+        // `this.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
+        // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
+        // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
+        // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.
+        results = await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
+          preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
+        });
+        const resigned = results.filter((r) => r.ok);
+        if (resigned.length) {
+          // Hand the daemon the EXPECTED generation per component (SHA-256 of the JWT we just
+          // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
+          const expected: { delivery?: string; membership?: string } = {};
+          for (const r of resigned) {
+            if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint;
+            else if (r.file === MEMBERSHIP_RW_CREDS_KIND && r.fingerprint) expected.membership = r.fingerprint;
+          }
+          try {
+            const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
+            // Keep the per-component aggregate on BOTH outcomes: on a top-level failure `reply.data`
+            // still carries which component adopted and which was refused, which `doctor auth` renders.
+            adoption = reply.ok
+              ? { ok: true, detail: reply.data }
+              : { ok: false, error: reply.error, detail: reply.data };
+          } catch (e) {
+            adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
+          }
         }
-        try {
-          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
-          // Keep the per-component aggregate on BOTH outcomes: on a top-level failure `reply.data`
-          // still carries which component adopted and which was refused, which `doctor auth` renders.
-          adoption = reply.ok
-            ? { ok: true, detail: reply.data }
-            : { ok: false, error: reply.error, detail: reply.data };
-        } catch (e) {
-          adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
-        }
+        for (const r of results.filter((x) => !x.ok && !x.skipped))
+          console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
+        if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
+        // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
+        // the `doctor auth --fix` writer too), so the results pass straight through.
+        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       }
-      for (const r of results.filter((x) => !x.ok && !x.skipped))
-        console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
-      if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
-      // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
-      // the `doctor auth --fix` writer too), so the results pass straight through.
-      writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       this.warnOnSystemCredExpiry();
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of

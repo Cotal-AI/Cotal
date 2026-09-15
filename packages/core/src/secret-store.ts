@@ -111,6 +111,43 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 }
 
 /**
+ * The delivery daemon's answer to the `reloadStoreIdentity` challenge: the store it reloads from,
+ * PLUS the binding that says whose answer this is.
+ *
+ * THE BINDING IS THE POINT, and it is why this is not just a {@link SecretStoreIdentity}. The
+ * delivery-admin rail is QUEUE-GROUPED, so a request lands on whichever bound responder the broker
+ * picks. Every process holding a `delivery` credential for the space can serve it, while only ONE
+ * of them holds the delivery lease and therefore actually reloads the standing credentials. Taking
+ * the first reply and calling it "the daemon's store" answers a question nobody asked: it reports
+ * the store of AN answerer, and a manager then decides whether to remint based on a process that
+ * may reload nothing. Carrying the answerer's identity and its lease claim lets the caller require
+ * that the store it compares against belongs to the process that reloads the credentials.
+ */
+export interface DaemonStoreAnswer {
+  /** The store the answering process reloads standing credentials from. */
+  identity: SecretStoreIdentity;
+  /** The answering endpoint's wire identity, so the answer names a process rather than a rail. */
+  responder: string;
+  /** Did the answering process hold this space's delivery lease at the moment it answered? False
+   *  is not an accusation, it is the honest reading for a responder that does not own the shard. */
+  holdsDeliveryLease: boolean;
+}
+
+/** Parse a {@link DaemonStoreAnswer} off the wire through the same closed-parser discipline as
+ *  {@link parseSecretStoreIdentity}: a reply that cannot produce every field is a failure to
+ *  determine, raised here, never a partially trusted answer assembled by the caller. */
+export function parseDaemonStoreAnswer(raw: unknown): DaemonStoreAnswer {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("delivery-daemon store answer must be an object");
+  const o = raw as Record<string, unknown>;
+  if (typeof o.responder !== "string" || !o.responder.trim())
+    throw new Error("delivery-daemon store answer requires a non-blank responder identity");
+  if (typeof o.holdsDeliveryLease !== "boolean")
+    throw new Error("delivery-daemon store answer requires holdsDeliveryLease as a boolean (an absent claim is not a false one)");
+  return { identity: parseSecretStoreIdentity(o.identity), responder: o.responder, holdsDeliveryLease: o.holdsDeliveryLease };
+}
+
+/**
  * The note a manager records when it is NOT the daemon-cred renewal owner: the delivery daemon
  * reloads from a store this manager does not write. Both identities appear, so an operator can
  * find the owner. A space has many managers, on the same device or different ones; exactly one of

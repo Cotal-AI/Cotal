@@ -184,7 +184,14 @@ whose store is the one the daemon reloads from. `Manager.start()` and every late
 the daemon's `reloadStoreIdentity`; a manager whose store is foreign starts and serves seats,
 never remints daemon creds (a generation written where the daemon cannot read it is #773), and
 records `renewalOwner.elsewhere` in its renewal record, which `doctor auth` renders as owned
-elsewhere rather than as a problem. The identity is the store the daemon actually
+elsewhere rather than as a problem. Being foreign skips the daemon remint and nothing else: the
+manager still renews the credentials it owns outright, its managed-agent statics, its
+endpoint-serve credential, its goal-writer, its hosted runs and its session ledger, which no other
+process renews for it. A pass whose store challenge fails skips the remint the same way and still
+runs those duties. The daemon's answer names the responder and whether that process holds the
+space's delivery lease: the admin rail is queue-grouped, so any bound responder can answer it while
+only the lease holder reloads the standing credentials, and an answer from a lease-less responder
+does not establish where renewal happens. The identity is the store the daemon actually
 reloads: an injected coordinate, the workstation root only when `--creds` is
 `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
 file's own directory for any other `--creds` path, or the workstation root. Uninjected
@@ -193,7 +200,14 @@ at start, naming both, because membership-rw still uses `findCotalRoot`. A `--cr
 path that is not under any `.cotal` tree is not that case and is not refused here. It never
 walks ancestors with `findCotalRoot`. No bound daemon is not a named
 store, so start proceeds writing this store; a later daemon on a foreign store moves this manager
-to owner-elsewhere on the next pass.
+to owner-elsewhere on the next pass. That case is the broker's own no-responder signal and nothing
+else: a reply the manager cannot decode, a timeout, and a denial are each a failure to determine,
+not a finding of absence, and none of them remints.
+
+Every manager of one space serves identical contracts. SPEC 13.7 requires contract-homogeneous
+classes, so an incompatible generation registers a distinct routable identity, a new endpoint name
+or an explicit version label, until the class is homogeneous again. A mixed class drops `ps`
+censuses and refuses with `no managed agent` against agents that are running.
 The first-party filesystem adapter declares its workspace-root identity on the store itself. Other
 injected adapters declare their stable coordinate on `SecretStore.identity`, or name it in
 `COTAL_SECRET_STORE` on both processes. It never throws: it

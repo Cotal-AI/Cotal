@@ -338,12 +338,17 @@ try {
   });
   delivery.on("error", () => {});
   await delivery.start();
+  // The single-flight delivery lease, before the rail binds, as `runDelivery` does.
+  // `reloadStoreIdentity` answers with the binding saying whether the answerer holds this space's
+  // lease, since the rail is queue-grouped and only the holder reloads the standing credentials.
+  const dlvLeaseRevision = await delivery.acquireDeliveryLease(0);
   await delivery.startPlane3((owner: string, lifecycleUid: string) => delivery!.aclForOwner(owner, lifecycleUid), {
     evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
       servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
     }),
     reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
   });
+  await delivery.markDeliveryLeaseReady(0, dlvLeaseRevision);
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", `${AGENT}.md`), `---\nname: ${AGENT}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${AGENT} persona.\n`);

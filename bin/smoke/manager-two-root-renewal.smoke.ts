@@ -47,7 +47,11 @@ process.env.COTAL_HOME = home;
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
 const {
+  CONTROL_DELIVERY_ADMIN,
+  CotalEndpoint,
+  controlServiceSubject,
   createSpaceAuth,
+  credsFingerprint,
   mintConnectionEvictorCreds,
   mintCreds,
   mintMembershipObserverCreds,
@@ -75,6 +79,20 @@ const until = async (cond: () => boolean, timeoutMs: number, stepMs = 200): Prom
   while (!cond() && Date.now() < deadline) await wait(stepMs);
   return cond();
 };
+/** An adoption schedules a resident wire swap, and the daemon's `nc.reconnect()` unbinds its
+ *  delivery-admin responder for well under a second before `armDeliveryControl` re-binds it. A
+ *  caller arriving inside that window sees a genuine NoResponders, which is a TRANSIENT RIG STATE
+ *  and not the property under test — so the admin-rail probes retry across it. This retries only on
+ *  a THROWN request error; a reply that arrives is returned as-is, refusal included, because a
+ *  refusal is exactly what several cells below are measuring. */
+const railRetry = async <T>(attempt: () => Promise<T>, tries = 20): Promise<T> => {
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try { return await attempt(); }
+    catch (e) { last = e; await wait(300); }
+  }
+  throw last instanceof Error ? last : new Error(String(last));
+};
 
 let pass = 0;
 let fail = 0;
@@ -91,7 +109,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 /** Every cell above is enumerated: a run that silently skipped cells must not read as green. */
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 42;
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -205,8 +223,117 @@ try {
   ok("many managers: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
   ok("daemon B outlives the foreign manager's start and pass", !sinkB.exited);
 
+  // ---- (a) a foreign manager must not abandon its OWN credentials ------------------------------
+  // The foreign classification establishes exactly one thing: the DAEMON's creds are renewed
+  // elsewhere. It says nothing about the credentials this manager owns outright, which no other
+  // process on any host renews. The defect was an early `return` above every one of those duties,
+  // and a 24h class on a TTL/4 tick hides it for a full day — a green first day is what the bug
+  // looks like. So drive the REAL renewal pass again and require that it reached them.
+  //
+  // Instrumented on `Manager.prototype` by DELEGATING wrappers: each duty still runs its shipped
+  // body, the wrapper only records that the pass arrived. A stub would grade the wrapper.
+  const M = mgrA as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const proto = Object.getPrototypeOf(M) as Record<string, (...a: unknown[]) => unknown>;
+  const reached: string[] = [];
+  const originals: Record<string, (...a: unknown[]) => unknown> = {};
+  for (const duty of ["warnOnSystemCredExpiry", "classifyDaemonSecretStore"]) {
+    originals[duty] = proto[duty];
+    proto[duty] = function (this: unknown, ...a: unknown[]) { reached.push(duty); return originals[duty].apply(this, a); };
+  }
+  // The agent-cred READ is the observable proof that the managed-static renewal scan ran: the scan's
+  // first act per slot is a store `get`. Count reads through the manager's own store seam.
+  const secrets = (mgrA as unknown as { secrets: { get(k: string): Promise<string | undefined> } }).secrets;
+  const originalGet = secrets.get.bind(secrets);
+  let agentCredReads = 0;
+  (secrets as { get: (k: string) => Promise<string | undefined> }).get = async (k: string) => { agentCredReads++; return originalGet(k); };
+  // A LIVE managed slot, so the scan has something to walk. `seed` + `secretPaths.creds` are what
+  // the shipped filter requires before it reads the slot's credential.
+  const agents = (mgrA as unknown as { agents: Map<string, unknown> }).agents;
+  agents.set("renewal-probe", { id: newIdentity().id, name: "renewal-probe", lifecycleUid: "l".repeat(26), seed: "SU", secretPaths: { creds: join(segA, "agent-renewal-probe.creds") } });
+
+  const beforeForeignPass = reached.length;
+  await (mgrA as unknown as { renewDaemonCreds(): Promise<void> }).renewDaemonCreds();
+  const recForeign = readRenewalRecord(rootA);
+
+  ok("(a) the foreign pass still classified the daemon's store (the pass really ran)", reached.slice(beforeForeignPass).includes("classifyDaemonSecretStore"), reached.slice(beforeForeignPass));
+  ok("(a) a FOREIGN manager still reaches warnOnSystemCredExpiry (the $SYS expiry warning is its own duty, not the daemon's)", reached.slice(beforeForeignPass).includes("warnOnSystemCredExpiry"), reached.slice(beforeForeignPass));
+  ok("(a) a FOREIGN manager still runs the managed-static renewal scan (it read a managed credential through its own store)", agentCredReads > 0, { agentCredReads });
+  ok("(a) ...and it STILL reminted nothing into the foreign store (skipping only the daemon remint, not the own-credential duties)", recForeign?.results.length === 0 && recForeign?.renewalOwner?.elsewhere === true, recForeign);
+  ok("(a) the foreign pass left root B's delivery cred at the ORIGINAL generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+
+  agents.delete("renewal-probe");
+  (secrets as { get: (k: string) => Promise<string | undefined> }).get = originalGet;
+
+  // ---- (b) absence must be a DETERMINATION, never a text match ---------------------------------
+  // Two separate dangers, measured against the same live rig.
+  //
+  // (b1) A peer that merely ECHOES the phrase. The rail decodes replies with JSON.parse, so a body
+  // of `no responders` throws `Unexpected token 'o', "no responders" is not valid JSON` — which the
+  // shipped `/no responders|\b503\b/i` predicate matched. A FAILURE TO PARSE was then rendered as a
+  // DETERMINATION OF ABSENCE, and the absent branch remints: a peer able to put two words on the
+  // rail could make this manager write creds the real daemon can never read.
+  //
+  // (b2) A second responder naming THIS manager's store. The rail is queue-grouped, so any bound
+  // responder can answer; only the delivery LEASE HOLDER reloads the creds. An unbound answerer's
+  // store must not certify this manager as the renewal owner.
+  //
+  // Both are driven through the SHIPPED classification path, with the honest daemon still live.
+  const classify = () => (mgrA as unknown as { classifyDaemonSecretStore(): Promise<{ kind: string }> }).classifyDaemonSecretStore();
+
+  // CONTROL FIRST, in this same file and this same run: with only the honest daemon bound, the
+  // shipped path still reaches a real verdict. Without this, a refusal below proves only that
+  // something is broken.
+  let controlVerdict: string | undefined;
+  let controlError: string | undefined;
+  try { controlVerdict = (await classify()).kind; } catch (e) { controlError = (e as Error).message; }
+  ok("(b) CONTROL: with only the lease-holding daemon bound, the shipped classification still returns a verdict", controlVerdict === "foreign", { controlVerdict, controlError });
+
+  // A rogue endpoint on the SAME queue group as the daemon's admin rail. It holds a `delivery` cred,
+  // which is what makes this the real danger rather than a hypothetical: the grant permits binding
+  // the rail. It does NOT hold the delivery lease.
+  const rogueId = newIdentity();
+  const rogue = new CotalEndpoint({
+    space: SPACE_DIVERGED, servers: servers1,
+    creds: await mintCreds(auth1, rogueId, "delivery"),
+    card: { id: rogueId.id, name: "rogue-responder", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  rogue.on("error", () => {});
+  await rogue.start();
+
+  // (b1) THE ECHO. Reply with a RAW body quoting the phrase, so the decode fails with the peer's own
+  // words in the message — the exact input the text predicate could not distinguish from absence.
+  const rogueNc = (rogue as unknown as { nc: { subscribe(s: string, o: { queue: string }): AsyncIterable<{ respond(p: string): void }> } }).nc;
+  const echoSub = rogueNc.subscribe(controlServiceSubject(SPACE_DIVERGED, CONTROL_DELIVERY_ADMIN, "*", "*"), { queue: CONTROL_DELIVERY_ADMIN });
+  void (async () => { for await (const m of echoSub) { try { m.respond("no responders"); } catch { /* raced */ } } })().catch(() => {});
+
+  // The honest daemon is still bound, so the queue group hands the request to one of the two. Ask
+  // until the echo answers at least once; a run where it never won is not evidence either way.
+  let echoAbsent = 0, echoRefused = 0, echoOther = 0;
+  const echoReasons: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    try { const r = await classify(); if (r.kind === "absent") echoAbsent++; else echoOther++; }
+    catch (e) { echoRefused++; if (echoReasons.length < 2) echoReasons.push((e as Error).message); }
+  }
+  ok("(b1) a peer body quoting \"no responders\" is NEVER classified as absence (a failure to parse is not a determination)", echoAbsent === 0, { echoAbsent, echoRefused, echoOther });
+  // RIG VALIDITY, and deliberately counted so it does NOT depend on the verdict it is validating.
+  // The honest daemon answers `foreign`; any other outcome means the echo won the queue that round.
+  // Counting only refusals would make this cell red under a mutant that turns those refusals into
+  // false absences, which would blame the rig for a real defect instead of naming the property.
+  const rogueWins = echoAbsent + echoRefused;
+  ok("(b1) ...and the rogue really did win the queue at least once, so the sweep measured something", rogueWins > 0, { rogueWins, echoAbsent, echoRefused, echoOther, echoReasons });
+  ok("(b1) the refusal names the failure rather than asserting absence", echoReasons.every((m) => !/^no responders$/i.test(m)), echoReasons);
+
+  // The absent branch is what a false absence would have reached. Nothing may have been written.
+  ok("(b1) nothing was reminted into root A while the echo was on the rail", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  ok("(b1) nothing was pushed at the daemon's root B either", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+
+  ok("daemon B is still alive after the echo sweep (the rig was live throughout)", !sinkB.exited);
+
   await mgrA.stop({ withAgents: true });
   mgrA = undefined;
+  await rogue.stop().catch(() => {});
+
   if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL");
   await killAndAwaitExit(broker1.srv, "SIGKILL");
 
@@ -252,6 +379,103 @@ try {
   ok("control: the membership adoption is broker-accepted and pinned to its own nkey", detailC.membership?.ok === true && detailC.membership?.brokerAccepted?.identity === rwId2.id, detailC.membership);
   ok("control: the shared root's delivery cred holds the re-signed generation both sides now agree on", readFileSync(join(segC, DELIVERY_CREDS_KIND), "utf8") !== dlvGen2);
   ok("daemon C outlives the adopted pass", !sinkC.exited);
+
+  // ---- (b2) the store answer must be bound to the DELIVERY LEASE HOLDER -------------------------
+  // The rail is queue-grouped, so any process holding a `delivery` credential can bind it and
+  // answer. Only ONE of them holds the lease and actually reloads the standing credentials. Here
+  // the SHARED root is the dangerous direction: a second responder naming THIS manager's store
+  // would classify the manager as `shared` and send it down the remint path on the word of a
+  // process that reloads nothing.
+  //
+  // Control first: the honest lease-holding daemon alone still answers `shared` (asserted by the
+  // adoption cells above, and re-measured here directly so this cell has its own positive control).
+  const classifyC = () => (mgrC as unknown as { classifyDaemonSecretStore(): Promise<{ kind: string }> }).classifyDaemonSecretStore();
+  // `classifyDaemonSecretStore` CATCHES the broker's no-responder signal and returns `absent`
+  // rather than throwing, which is the correct shipped behaviour and precisely why `railRetry` is
+  // the wrong instrument here: there is no throw to retry on. The control phase's adoption has just
+  // scheduled daemon C's resident wire swap, so the rail is genuinely unbound for a moment and the
+  // honest answer during that window IS `absent`. Wait for the responder to come back, then
+  // measure. Measured: without this the control read `absent` and the cell failed on the rig.
+  let sharedControl: string | undefined;
+  for (let i = 0; i < 40; i++) {
+    try { sharedControl = (await classifyC()).kind; } catch (e) { sharedControl = `threw: ${(e as Error).message}`; }
+    if (sharedControl !== "absent") break;
+    await wait(300);
+  }
+  ok("(b2) CONTROL: the lease-HOLDING daemon alone classifies this manager as the renewal owner", sharedControl === "shared", { sharedControl });
+
+  // Now a second responder, holding a real `delivery` cred but NOT the lease, naming root C — this
+  // manager's own store. Under the old first-reply-wins rule its answer is indistinguishable from
+  // the daemon's, so it certifies the manager as the owner.
+  const squatId = newIdentity();
+  const squatter = new CotalEndpoint({
+    space: SPACE_UNIFIED, servers: servers2,
+    creds: await mintCreds(auth2, squatId, "delivery"),
+    card: { id: squatId.id, name: "lease-less-responder", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  squatter.on("error", () => {});
+  await squatter.start();
+  // It serves the rail through the SHIPPED Plane-3 handler, naming root C as its reload store. What
+  // it does NOT have is the delivery lease: daemon C holds that.
+  await squatter.startPlane3(async () => undefined, { reloadStoreIdentity: () => ({ kind: "fs", root: rootC }) });
+
+  let squatShared = 0, squatRefused = 0, squatOther = 0;
+  const squatReasons: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    try { const r = await classifyC(); if (r.kind === "shared") squatShared++; else squatOther++; }
+    catch (e) { squatRefused++; if (squatReasons.length < 2) squatReasons.push((e as Error).message); }
+  }
+  ok("(b2) a lease-LESS responder naming this manager's store is refused at least once (the answer is bound to the process that reloads)", squatRefused > 0, { squatShared, squatRefused, squatOther, squatReasons });
+  ok("(b2) the refusal says the answerer does not hold the delivery lease", squatReasons.some((m) => m.includes("does not hold this space's delivery lease")), squatReasons);
+  await squatter.stop().catch(() => {});
+
+  // ---- (c) a DIFFERENT generation under the SAME daemon identity must be REFUSED ----------------
+  // The expected-generation guard is what makes `reloadCreds` prove the daemon adopted THIS
+  // re-signed generation rather than merely re-reading some file. Its refusal had no cell, so
+  // disabling the guard in the artifact the suite loads left the suite green.
+  //
+  // Same daemon identity throughout: the cred on disk is the one daemon C is running. Only the
+  // GENERATION presented as `expected` diverges, which is the state a torn read or a second store
+  // produces. The identity pin is a different guard and must not be what refuses here.
+  const liveCredC = readFileSync(join(segC, DELIVERY_CREDS_KIND), "utf8");
+  // A REAL second generation for the SAME nkey: signed by the same trusted signer, so nothing but
+  // the generation differs. Never written to disk — it is only the expectation handed to the daemon.
+  //
+  // The wait is load-bearing, not padding: a JWT's `iat` is SECOND-GRANULAR, so a re-sign inside the
+  // same second reproduces the previous generation byte for byte and the "divergent" arm would be
+  // the CURRENT generation wearing a different name. Measured: without this the fingerprints were
+  // equal and the guard correctly accepted, which would have read as a survived mutant.
+  await wait(1100);
+  const divergentGen = await mintCreds(auth2, dlvId2, "delivery");
+  const divergentFingerprint = credsFingerprint(divergentGen);
+  ok("(c) the rig really presents a DIFFERENT generation of the SAME identity (not a different nkey)", divergentFingerprint !== credsFingerprint(liveCredC), { same: divergentFingerprint === credsFingerprint(liveCredC) });
+
+  const supId = newIdentity();
+  const sup = new CotalEndpoint({
+    space: SPACE_UNIFIED, servers: servers2,
+    creds: await mintCreds(auth2, supId, "supervisor"),
+    card: { id: supId.id, name: "renewal-owner", kind: "endpoint" },
+    consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+  });
+  sup.on("error", () => {});
+  await sup.start();
+  try {
+    // POSITIVE CONTROL, same file and same run: the CURRENT generation is accepted. Without it a
+    // refusal below could just mean the rail is broken.
+    const accepted = await railRetry(() => sup.requestDeliveryAdmin("reloadCreds", { expected: { delivery: credsFingerprint(liveCredC) } }, 20_000));
+    ok("(c) CONTROL: the daemon ACCEPTS the generation that is actually on disk", accepted.ok === true, accepted);
+
+    // THE GUARDED REFUSAL: same identity, divergent generation.
+    const refused = await railRetry(() => sup.requestDeliveryAdmin("reloadCreds", { expected: { delivery: divergentFingerprint } }, 20_000));
+    const detail = (refused.data ?? {}) as { delivery?: { ok?: boolean; error?: string } };
+    ok("(c) a DIFFERENT generation under the SAME daemon identity is REFUSED (nothing adopted)", refused.ok === false && detail.delivery?.ok === false, refused);
+    ok("(c) ...and the refusal is the GENERATION mismatch, not the identity pin or a timeout", detail.delivery?.error?.includes("did not match the expected re-signed generation") === true, detail.delivery?.error);
+    ok("(c) the refusal leaks neither the observed nor the expected digest", detail.delivery?.error !== undefined && !detail.delivery.error.includes(divergentFingerprint), detail.delivery?.error);
+  } finally {
+    await sup.stop().catch(() => {});
+  }
+  ok("(c) daemon C survived the refused adoption (a refusal must not disturb the responder)", !sinkC.exited);
 
   ok("every cell ran (silently skipped cells must not read as green)", pass + fail === EXPECTED_CELLS - 1);
 

@@ -4408,8 +4408,27 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: "reloadStoreIdentity: this daemon did not name the SecretStore it reloads from" };
       try {
         const identity = this.plane3.reloadStoreIdentity();
+        // WHO IS ANSWERING is part of the answer. This rail is queue-grouped, so the broker hands
+        // the request to any bound responder, and every process with a `delivery` credential for
+        // the space can bind it — while only the DELIVERY LEASE HOLDER actually reloads the
+        // standing credentials. A bare store identity therefore lets a second responder's store
+        // stand in for the reloading process's, and the manager's remint decision is then made
+        // about a process that reloads nothing. So the reply carries this responder's wire
+        // identity and whether it holds the lease, and the caller requires the binding.
+        //
+        // The lease read is the LIVE row, not a cached claim: a holder that lost the shard must
+        // not keep asserting it. A read that fails is reported as `false` rather than thrown —
+        // "I cannot prove I hold the shard" is exactly what a non-holder's answer says, and it
+        // sends the caller down the same fail-closed path rather than inventing an authority.
+        let holdsDeliveryLease = false;
+        try {
+          const own = await this.readDeliveryLeaseEntry(0);
+          holdsDeliveryLease = own !== undefined && this.ownsDeliveryLease(own.info);
+        } catch {
+          holdsDeliveryLease = false;
+        }
         // Round-trip through the closed parser so a hook cannot smuggle extra fields onto the rail.
-        return { ok: true, data: parseSecretStoreIdentity(identity) };
+        return { ok: true, data: { identity: parseSecretStoreIdentity(identity), responder: this.card.id, holdsDeliveryLease } };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

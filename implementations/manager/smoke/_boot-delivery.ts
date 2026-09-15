@@ -10,9 +10,16 @@
  * Nothing here re-implements a step of the barrier; a stub that answered `verifiedGone` would be a
  * stub of the very thing the barrier trusts.
  *
- * What is NOT reproduced from `runDelivery`: its CLI arg surface, its `.cotal`-root scan-target
- * admission check (the smoke mints the $SYS pair directly from the space auth it already holds),
- * and the singleton delivery lease. Those guard an operator deployment, not the eviction contract.
+ * What is NOT reproduced from `runDelivery`: its CLI arg surface and its `.cotal`-root scan-target
+ * admission check (the smoke mints the $SYS pair directly from the space auth it already holds).
+ * Those guard an operator deployment, not the eviction contract.
+ *
+ * THE DELIVERY LEASE *IS* ACQUIRED, and it stopped being optional. `reloadStoreIdentity` now answers
+ * with the binding that says whether the answering process holds this space's lease, because the
+ * rail is queue-grouped and only the lease holder actually reloads the standing credentials. A
+ * fixture daemon without the lease answers `holdsDeliveryLease:false` and a challenging manager
+ * correctly refuses to treat its store as the daemon's — so the lease here is what makes this stand
+ * in for the real daemon rather than for a lease-less squatter.
  *
  * The caller must hold the space's `SpaceAuth` WITH its in-memory system-account signing seed —
  * i.e. the auth object `createSpaceAuth` just returned, since the $SYS seed is never persisted.
@@ -68,6 +75,10 @@ export async function bootDeliveryDaemon(opts: {
   // A broker teardown at suite end is not a daemon fault; suites assert on their own subject.
   ep.on("error", () => {});
   await ep.start();
+  // BEFORE `startPlane3`, mirroring `runDelivery`: the lease is the single-flight admission to serve
+  // the shard, and the store answer reads the live row. Marked ready after the rail is bound, so
+  // "holds the lease" and "is answering" are the same claim the production daemon makes.
+  let leaseRevision = await ep.acquireDeliveryLease(0);
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
     evictPrincipal: (principal) =>
       evictDeniedPrincipalWithCreds({
@@ -76,12 +87,16 @@ export async function bootDeliveryDaemon(opts: {
       }),
     reloadStoreIdentity: () => reloadStoreIdentity,
   });
+  leaseRevision = await ep.markDeliveryLeaseReady(0, leaseRevision);
   let stopped = false;
   return {
     ep,
     stop: async () => {
       if (stopped) return;
       stopped = true;
+      // The revision this fixture actually holds, so the release is the CAS the API requires;
+      // passing `undefined` is the "I hold no revision" answer and releases nothing.
+      await ep.releaseDeliveryLease(0, leaseRevision).catch(() => {});
       await ep.stop().catch(() => {});
     },
   };

@@ -6,6 +6,7 @@ import {
   divergentSecretStoreRefusal,
   foreignRenewalOwnerNote,
   formatSecretStoreIdentity,
+  parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
 } from "../src/secret-store.js";
@@ -50,5 +51,24 @@ ok("parse injected", parseSecretStoreIdentity({ kind: "injected", coordinate: "k
 throws("parse refuses mixed shape", () => parseSecretStoreIdentity({ kind: "fs", root: "/r", coordinate: "x" }), "admits only");
 throws("parse refuses blank root", () => parseSecretStoreIdentity({ kind: "fs", root: "  " }), "non-blank root");
 throws("parse refuses unknown kind", () => parseSecretStoreIdentity({ kind: "s3", root: "/r" }), "fs\" or \"injected");
+
+// The daemon's store answer carries its BINDING, because the delivery-admin rail is queue-grouped:
+// any bound responder can answer, and only the delivery lease holder actually reloads the standing
+// credentials. A field the parser accepted as absent would be a claim the caller could not check,
+// so each one is required rather than defaulted.
+const answer = parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/daemon-root" }, responder: "local.UABC", holdsDeliveryLease: true });
+ok("parse accepts a fully bound store answer", answer.identity.kind === "fs" && answer.responder === "local.UABC" && answer.holdsDeliveryLease);
+ok("a lease-less answer parses and reports the claim honestly (refusing is the caller's job, not the parser's)",
+  parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX", holdsDeliveryLease: false }).holdsDeliveryLease === false);
+throws("parse refuses an answer with no responder identity", () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, holdsDeliveryLease: true }), "non-blank responder");
+throws("parse refuses a blank responder identity", () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "  ", holdsDeliveryLease: true }), "non-blank responder");
+// An ABSENT lease claim must not read as false: false is a statement, absent is a missing field,
+// and silently defaulting would let an old responder's reply be graded as an honest non-holder.
+throws("parse refuses an ABSENT lease claim rather than defaulting it to false", () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX" }), "holdsDeliveryLease");
+throws("parse refuses a non-boolean lease claim", () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX", holdsDeliveryLease: "true" }), "holdsDeliveryLease");
+// The BARE pre-binding shape is refused: that is the wire form whose first-reply-wins reading let a
+// second responder's store stand in for the reloading process's.
+throws("parse refuses the bare identity shape that carried no binding", () => parseDaemonStoreAnswer({ kind: "fs", root: "/r" }), "non-blank responder");
+throws("parse refuses a non-object answer", () => parseDaemonStoreAnswer("no responders"), "must be an object");
 
 console.log(`\nSECRET-STORE-IDENTITY SMOKE OK  (${pass} passed)`);
