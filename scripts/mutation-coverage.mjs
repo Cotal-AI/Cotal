@@ -509,8 +509,8 @@ const listingIsRead = (call, readers, evalPath) => {
       // `&&` makes both operands true and a false `||` makes both false, so each decomposes in one
       // direction only, and the two swap under negation. The other two pairings say merely that
       // SOME operand did, which narrows nothing: control reaching the read past
-      // `if (f === ONE && other) continue` only means that conjunction was false, and every entry
-      // whose name differs from ONE satisfies that, so the sweep is still open.
+      // `if (f !== ONE && other) continue` only means that conjunction was false, which leaves
+      // `f !== ONE` free, so every entry other than ONE still gets through and the sweep is open.
       if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
         if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;
         return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);

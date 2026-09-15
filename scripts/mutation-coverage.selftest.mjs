@@ -180,13 +180,14 @@ try {
     '  readFileSync(join(DIR, String(f)), "utf8");\n' +
     '}\n');
   // The accept control for the decomposition, and the reason `&&` must NOT decompose under an
-  // exit guard: a false `&&` only says at least one operand is false, so every entry whose name
-  // differs from ONE still reaches the reader. The sweep is open and has to stay counted.
+  // exit guard. A false `&&` only says at least ONE operand was false, so `f !== ONE` is left
+  // free and every entry other than ONE still reaches the reader. Decomposing here would refuse
+  // an open sweep, which is the failure that reds nothing and just stops counting.
   write("bin/smoke/listing-compound-open.smoke.ts",
     'import { readdirSync, readFileSync } from "node:fs";\n' +
     'const DIR = join(ROOT, "packages", "seat");\n' +
     'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
-    '  if (String(f) === "src/impl.ts" && DIR.length === 0) continue;\n' +
+    '  if (String(f) !== "src/impl.ts" && DIR.length === 0) continue;\n' +
     '  readFileSync(join(DIR, String(f)), "utf8");\n' +
     '}\n');
   // An ordinary extension filter that happens to be WRITTEN as an equality. It mentions the loop
