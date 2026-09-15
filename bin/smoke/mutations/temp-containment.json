@@ -50,8 +50,8 @@
     {
       "name": "the target is compared lexically instead of canonically, so a symlink out of the root passes",
       "file": "bin/smoke/_scratch.ts",
-      "find": "    t = physical(target);",
-      "replace": "    t = resolve(target);",
+      "find": "  const abs = resolve(p);",
+      "replace": "  if (true) return resolve(p);\n  const abs = resolve(p);",
       "expectRed": "✗ FAIL: a symlink inside the root whose target is outside it is refused",
       "cell": "✗ FAIL: a symlink inside the root whose target is outside it is refused"
     },
@@ -62,6 +62,30 @@
       "replace": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES && false) {",
       "expectRed": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit",
       "cell": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit"
+    },
+    {
+      "name": "the delete guard goes back to physical(), whose ENOENT fallback is lexical, so a MISSING target under a symlinked parent is certified by its spelling",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "    t = physicalDeepest(target);",
+      "replace": "    t = physical(target);",
+      "expectRed": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling",
+      "cell": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling"
+    },
+    {
+      "name": "the missing tail is joined onto the canonical base WITHOUT re-resolving, so a '..' among the missing segments survives and walks back out of the root",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "      return missing.length === 0 ? real : resolve(join(real, ...missing));",
+      "replace": "      return missing.length === 0 ? real : join(real, ...missing);",
+      "expectRed": "✗ FAIL: a missing target whose tail walks back out of the root is refused",
+      "cell": "✗ FAIL: a missing target whose tail walks back out of the root is refused"
+    },
+    {
+      "name": "the deepest-ancestor walk stops failing closed on a non-ENOENT errno, downgrading an unprovable target to its lexical spelling",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "      if ((e as NodeJS.ErrnoException).code !== \"ENOENT\") throw e;",
+      "replace": "      if (false) throw e;",
+      "expectRed": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling",
+      "cell": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling"
     }
   ]
 }
