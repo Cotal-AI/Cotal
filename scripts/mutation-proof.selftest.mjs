@@ -918,11 +918,22 @@ kr = killTool(["--config", "cfg.json"]);
     { status: kr.status, out: out.slice(0, 600) });
 }
 
+// Same shape as cell 9 above, and for the reason cell 9 gives: `statSync` surfaces a nanosecond
+// timestamp as a millisecond Date and `utimesSync` can only write that precision back, so a
+// faithful restore still lands up to 1ms off. An equality test grades that imprecision as a
+// defect, and whether it does depends on the filesystem underneath — this cell asserted `===` and
+// passed on APFS while failing on the CI runner. The defect this cell exists for is the mtime
+// becoming NOW, so that is what it asks: the restored time predates the restore, and it has not
+// moved from the original by more than the write can account for.
+const restoreStartedMs = Date.now();
 kr = killTool(["--restore-live"]);
+const mtimeRestored = statSync(killImpl).mtimeMs;
 check("--restore-live puts the file back byte for byte, with its timestamp, and clears the record",
-  kr.status === 0 && shaOf(killImpl) === shaOriginal && statSync(killImpl).mtimeMs === mtimeOriginal
+  kr.status === 0 && shaOf(killImpl) === shaOriginal
+    && mtimeRestored < restoreStartedMs && Math.abs(mtimeRestored - mtimeOriginal) <= 1
     && killStatus() === "" && recordsHere().length === 0,
-  { status: kr.status, sha: shaOf(killImpl) === shaOriginal, mtime: statSync(killImpl).mtimeMs === mtimeOriginal, tree: killStatus() });
+  { status: kr.status, sha: shaOf(killImpl) === shaOriginal, mtimeOriginal, mtimeRestored,
+    movedMs: mtimeRestored - mtimeOriginal, restoreStartedMs, tree: killStatus() });
 
 kr = killTool(["--config", "cfg.json"]);
 check("...and an ordinary proof runs again afterwards", kr.status === 0 && stripAnsi(kr.stdout).includes("KILLED"), kr.stdout.slice(-300));
