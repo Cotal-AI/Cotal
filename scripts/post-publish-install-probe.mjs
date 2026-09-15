@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync }
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -263,7 +264,7 @@ export async function probe() {
 }
 
 // CLI entry
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (isMainEntry(import.meta.url)) {
   const result = await probe();
   console.log(`\nINSTALL PROBE ${result.pass ? "PASSED" : "FAILED"} (version ${result.version})`);
   process.exit(result.pass ? 0 : 1);

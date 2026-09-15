@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.github.com";
@@ -249,7 +250,7 @@ function printResult(result) {
   console.log(`verdict: ${result.green ? "GREEN" : "NOT GREEN"}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainEntry(import.meta.url)) {
   const raw = process.argv[2];
   if (!/^\d+$/.test(raw ?? "")) {
     console.error("usage: pnpm pr-head-gate <pull-request-number>");

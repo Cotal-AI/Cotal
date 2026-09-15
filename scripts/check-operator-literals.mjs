@@ -46,6 +46,7 @@ import {
 import { isIPv4, isIPv6 } from 'node:net';
 import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { isMainEntry } from './main-entry.mjs';
 
 const RULES = new Map([
   ['host-name', 'configured host name'],
@@ -1647,6 +1648,6 @@ function main(argv, runtime = {}) {
   return allFindings.length > 0 ? 1 : 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainEntry(import.meta.url)) {
   process.exitCode = main(process.argv);
 }
