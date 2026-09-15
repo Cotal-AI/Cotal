@@ -90,8 +90,14 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
   try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
+    // A rejection is a named failure, never an escape: a mutant that makes the handler throw must
+    // red the cell that called it, not kill the process before the completion marker prints.
+    const got = await Promise.race([
+      p.then((v) => ({ v })).catch((e: unknown) => ({ threw: `${(e as Error)?.name}: ${(e as Error)?.message?.slice(0, 200)}` })),
+      late,
+    ]);
     if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
+    if ("threw" in got) { fail++; console.log(`  ✗ FAIL: ${what} threw`, got.threw); return undefined; }
     return got.v;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
