@@ -360,11 +360,11 @@
     {
       "name": "the return enumerator descends into nested functions, attributing their returns to readExactVersion",
       "file": "bin/smoke/npm-publish-preflight.smoke.ts",
-      "find": "    if (isFunctionLike(node)) return;\n",
-      "replace": "    if (false && isFunctionLike(node)) return;\n",
+      "find": "    if (isReturnScopeBoundary(node)) return;\n    if (ts.isReturnStatement(node)) found.push(node);\n",
+      "replace": "    if (false && isReturnScopeBoundary(node)) return;\n    if (ts.isReturnStatement(node)) found.push(node);\n",
       "expectRed": "a return inside a nested function is not attributed to readExactVersion",
       "cell": "a return inside a nested function is not attributed to readExactVersion",
-      "note": "The false-positive half of the enumerator: a helper closure's return is not readExactVersion's. Without the boundary the enumerator would red the shipped source for a value the function never returns."
+      "note": "The false-positive half of the enumerator: a helper closure's return is not readExactVersion's. Without the boundary the enumerator would red the shipped source for a value the function never returns. Re-anchored when the boundary predicate was renamed to isReturnScopeBoundary and the ladder walk gained the same guard: the single line now occurs TWICE in this file, so the anchor is the two-line code-only window that pins the CENSUS walk specifically. The bare line would have been ambiguous, and the nearest comment would have been unique for free and load-bearing for a docs commit."
     },
     {
       "name": "a CENSUS_BUCKETS entry drifts off the exported predicate onto an equivalent inline copy",
@@ -383,6 +383,42 @@
       "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
       "cell": "the verdict ladder buckets rows by calling the exported predicates by name",
       "note": "The other half of the same drift: exports that the ladder no longer calls are decoration, and a test grading them would grade nothing the release path runs."
+    },
+    {
+      "name": "the census enumerator goes back to last-match-wins, so a nested same-name declaration replaces the target",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "  const declared = parsed.statements.filter(\n    (statement): statement is ts.FunctionDeclaration =>\n      ts.isFunctionDeclaration(statement) && statement.name?.text === name,\n  );\n",
+      "replace": "  const declared: ts.FunctionDeclaration[] = [];\n  parsed.forEachChild(function find(node: ts.Node): void {\n    if (ts.isFunctionDeclaration(node) && node.name?.text === name) { declared.length = 0; declared.push(node); }\n    node.forEachChild(find);\n  });\n",
+      "expectRed": "a nested same-name readExactVersion decoy cannot replace the shipped declaration",
+      "cell": "a nested same-name readExactVersion decoy cannot replace the shipped declaration, so a poisoned real function is still enumerated and refused",
+      "note": "Rule 1, the census half. Restores the exact retired lookup: a recursive walk that keeps only the LAST declaration of the name. The decoy cell then reads a clean nested copy while the real function returns an out-of-domain value, which is the defeat a panel drove. Grades the instrument, not the subject: without this the pin could be quietly relaxed back to the shape it replaced."
+    },
+    {
+      "name": "the return-walk boundary drops back to the hand-rolled union that omits constructors and static blocks",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "const isReturnScopeBoundary = (node: ts.Node): boolean =>\n  ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);\n",
+      "replace": "const isReturnScopeBoundary = (node: ts.Node): boolean => ts.isFunctionDeclaration(node)\n  || ts.isFunctionExpression(node)\n  || ts.isArrowFunction(node)\n  || ts.isMethodDeclaration(node)\n  || ts.isGetAccessor(node)\n  || ts.isSetAccessor(node);\n",
+      "expectRed": "a return inside a constructor is not attributed to readExactVersion",
+      "cell": "a return inside a constructor is not attributed to readExactVersion, so a local class does not red the enumerator with a value the function never returns",
+      "note": "Rule 2. The retired six-way union omitted ConstructorDeclaration and ClassStaticBlockDeclaration, so a local class constructor's return was attributed to the enclosing function and reddened a clean source with five enumerated returns. ts.isFunctionLike is the compiler's own answer; the static block is named separately because the compiler does not consider it function-like."
+    },
+    {
+      "name": "a shadowing nested readExactVersion is appended to the shipped source beside a poisoned real one",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n  }\n}\n",
+      "replace": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n  }\n  if (pkg.name === \"never\") return response;\n}\n\nfunction readExactVersionShadowHolder() {\n  async function readExactVersion(pkg, registryBase, fetchImpl) {\n    if (pkg) return \"present\";\n    if (registryBase) return \"absent\";\n    if (fetchImpl) return `unknown:shadow`;\n    return `unknown:shadow-tail`;\n  }\n  return readExactVersion;\n}\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "the 5 return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "note": "The shadowing-declaration mutation for the census enumerator, applied to the SHIPPED source rather than a synthetic one. It poisons the real function with an unpinnable return AND appends a nested clean decoy of the same name. Under the retired last-match-wins lookup the decoy won and this cell stayed green at four returns; under the top-level pin the real function is read and its out-of-domain return refused."
+    },
+    {
+      "name": "a shadowing nested preflightNpmPublish is appended inside the ladder beside a drifted comparison",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  function preflightNpmPublishShadowHolder() {\n    async function preflightNpmPublish(shadowRows) {\n      return shadowRows.filter((row) => isUnknownRegistry(row.registry));\n    }\n    return preflightNpmPublish;\n  }\n  void preflightNpmPublishShadowHolder;\n  const unknown = rows.filter((row) => row.registry.startsWith(\"unknown:\"));\n",
+      "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "cell": "the verdict ladder buckets rows by calling the exported predicates by name, so CENSUS_BUCKETS cannot drift into a parallel copy that agrees today and diverges later",
+      "note": "The shadowing-declaration mutation for the ladder enumerator. It drifts the real ladder off the exported unknown predicate AND declares a nested decoy of the same name that calls it, which is the laundering shape measured to keep this cell green both under the retired last-wins lookup and, later, under the top-level pin before the walk was given a function boundary. Both halves of that repair are required for this to red."
     }
   ]
 }
