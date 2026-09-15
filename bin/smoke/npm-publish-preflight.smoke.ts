@@ -1253,24 +1253,32 @@ for (const [bucket, predicate] of BUCKET_PREDICATE_BY_NAME) {
 // FIXTURE's own find/replace strings, and the verdict expression is lifted out of the shipped file
 // BY AST rather than by text match. The shipped tree is graded by the three rung cells above, which
 // is where a drift SHOULD red. Down here a red means the reading itself broke.
-const shippedVerdictStatement = ((): string | null => {
-  const parsed = ts.createSourceFile("preflight-npm-publish.mjs", preflightSource, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
-  const located = soleTopLevelFunction(parsed, "preflightNpmPublish");
-  if (located.fn === null) return null;
-  const statement = located.fn.body!.statements.find((node) =>
-    ts.isVariableStatement(node)
-    && node.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === "registryVerdict"));
-  return statement ? statement.getText(parsed) : null;
-})();
-check(
-  "the shipped registryVerdict statement is lifted out of the module by AST, so the skeleton below carries the real verdict expression and cannot be rotted by a reformat",
-  typeof shippedVerdictStatement === "string" && shippedVerdictStatement.includes("registryVerdict"),
-  { shippedVerdictStatement },
-);
-const ladderSkeleton = (unknownLine: string, presentLine: string, absentLine: string): string =>
+// The verdict expression is SYNTHETIC, written out here in full, and that is a correction rather
+// than a first choice. The first version lifted the shipped `registryVerdict` statement out of the
+// module by AST, on the reasoning that a real expression cannot go stale. It can: the rename mutant
+// rewrites that very statement, so the lifted text changed under the mutant, the skeleton stopped
+// being the clean control it claims to be, and `mutation-proof` graded that mutant WRONG-RED with
+// five reds in the transcript instead of one clean named red. AST-lifting is not rot-proof, it is
+// rot-with-more-steps: it still reads the file the mutants edit.
+//
+// A synthetic verdict cannot rot because nothing edits it. What it can do is DRIFT away from the
+// shipped ladder's real shape, which would make every cell below grade a strawman, so that risk is
+// paid for directly by the cell after it: the same three shipped bucket lines are fed through this
+// skeleton and through the SHIPPED module, and both readings must agree. That is what ties the
+// skeleton to reality, and it is a comparison of two readings rather than a copy of one text.
+const SKELETON_VERDICT = "  const registryVerdict = unknown.length > 0\n"
+  + "    ? \"inconclusive\"\n"
+  + "    : absent.length === rows.length\n"
+  + "      ? \"all-absent\"\n"
+  + "      : present.length === rows.length\n"
+  + "        ? \"all-present\"\n"
+  + "        : present.length > 0\n"
+  + "          ? \"mixed\"\n"
+  + "          : \"incomplete\";\n";
+const ladderSkeleton = (unknownLine: string, presentLine: string, absentLine: string, verdict = SKELETON_VERDICT): string =>
   "export async function preflightNpmPublish(rows) {\n"
   + unknownLine + presentLine + absentLine
-  + `  ${shippedVerdictStatement ?? "const registryVerdict = \"skeleton-has-no-verdict\";"}\n`
+  + verdict
   + "  return registryVerdict;\n"
   + "}\n";
 const DEAD_CALL_ENTRIES = [
@@ -1303,6 +1311,12 @@ const cleanLadderFlow = ladderConsumedBuckets(cleanLadderSkeleton);
 // green throughout. Recorded because an order-sensitive control would red on any rung reorder,
 // which is a refactor this pin has no business forbidding.
 const cleanLadderCallees = [...(cleanLadderFlow.bindings ?? []).map((binding) => binding.callee)].sort();
+// THE TIE TO REALITY for the synthetic verdict above. If the shipped ladder ever stops matching
+// this skeleton's shape -- a fourth rung, a different consumption pattern, a rung that reads
+// something else -- the two readings diverge and this reds, so the cells below cannot quietly
+// drift into grading a strawman. It compares READINGS and not TEXT, which is why a mutant that
+// rewrites the shipped verdict reds the rung cells above rather than rotting this one.
+const shippedLadderCallees = [...(consumedBindings ?? []).map((binding) => binding.callee)].sort();
 check(
   "the skeleton built from the three fixture find strings reads as all three exported predicates, so the laundering cells below run on an instrument that can say yes",
   cleanLadderFlow.bindings !== null
@@ -1310,6 +1324,12 @@ check(
     && JSON.stringify(cleanLadderCallees)
       === JSON.stringify(["isAbsentRegistry", "isPresentRegistry", "isUnknownRegistry"]),
   { bindings: cleanLadderFlow.bindings, refusal: cleanLadderFlow.why },
+);
+check(
+  "the synthetic skeleton and the shipped module read as the same three predicates, so the laundering cells below grade a stand-in that still matches the ladder that ships",
+  cleanLadderCallees.length === 3
+    && JSON.stringify(cleanLadderCallees) === JSON.stringify(shippedLadderCallees),
+  { skeleton: cleanLadderCallees, shipped: shippedLadderCallees },
 );
 for (const [index, entry] of deadCallEntries.entries()) {
   const launderedLines = [...cleanLines];
