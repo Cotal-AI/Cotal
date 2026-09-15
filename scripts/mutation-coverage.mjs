@@ -474,20 +474,54 @@ const listingIsRead = (call, readers, evalPath) => {
       ts.forEachChild(e, (c) => { if (mentions(c)) found = true; });
       return found;
     };
+    // Is this expression the loop entry ITSELF, rather than something merely computed from it?
+    // `mentions` is an any-occurrence walk, which is what a reader's argument needs but is too
+    // loose for an equality: `String(f).slice(-3) !== ".ts"` mentions `f` and sits next to a known
+    // string, yet it pins an EXTENSION and not an entry. Only an identity-preserving projection
+    // counts here, meaning one that sends distinct entries to distinct values. A bare identifier
+    // is one, and `String(f)` is one because it fixes the representation and nothing else.
+    // `f.slice(…)`, `basename(f)`, `f.toLowerCase()` and `f + x` are NOT: each sends many entries
+    // onto the same value, so an equality against a single known string leaves the sweep open.
+    const isEntryItself = (e) => {
+      if (!e) return false;
+      if (ts.isParenthesizedExpression(e)) return isEntryItself(e.expression);
+      if (ts.isIdentifier(e)) return e.text === name;
+      return ts.isCallExpression(e) && calleeText(e.expression) === "String"
+        && e.arguments.length === 1 && isEntryItself(e.arguments[0]);
+    };
     // Does this condition admit exactly ONE value of the loop variable when it evaluates to
     // `holds`? A side counts as a single known string when the path evaluator resolves it, which
-    // covers a literal and a constant the program computes, and the other side has to be derived
-    // from the loop variable, or the equality says nothing about which entries get through.
+    // covers a literal and a constant the program computes, and the other side has to be the loop
+    // entry itself, or the equality says nothing about which entries get through.
     const singleValueEquality = (cond, holds) => {
-      if (!cond || !ts.isBinaryExpression(cond)) return false;
+      if (!cond) return false;
+      // Normalize the spelling before classifying, so the same guard grades the same however it is
+      // written. Parentheses carry no meaning. `!` inverts the sense rather than dropping out, so
+      // it flips `holds`: reaching a read guarded by `!(f !== ONE)` being TRUE is reaching it with
+      // `f !== ONE` being FALSE, which is exactly the case that pins the entry.
+      if (ts.isParenthesizedExpression(cond)) return singleValueEquality(cond.expression, holds);
+      if (ts.isPrefixUnaryExpression(cond) && cond.operator === ts.SyntaxKind.ExclamationToken) {
+        return singleValueEquality(cond.operand, !holds);
+      }
+      if (!ts.isBinaryExpression(cond)) return false;
       const kind = cond.operatorToken.kind;
+      // A compound guard pins the entry when an operand that pins it is KNOWN to have held. A true
+      // `&&` makes both operands true and a false `||` makes both false, so each decomposes in one
+      // direction only, and the two swap under negation. The other two pairings say merely that
+      // SOME operand did, which narrows nothing: control reaching the read past
+      // `if (f === ONE && other) continue` only means that conjunction was false, and every entry
+      // whose name differs from ONE satisfies that, so the sweep is still open.
+      if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
+        if ((kind === ts.SyntaxKind.AmpersandAmpersandToken) !== holds) return false;
+        return singleValueEquality(cond.left, holds) || singleValueEquality(cond.right, holds);
+      }
       const isEq = kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken;
       const isNe = kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken;
       if (!isEq && !isNe) return false;
       // `f === LIT` pins the entry when it HOLDS; `f !== LIT` pins it when it does NOT.
       if (isEq !== holds) return false;
       const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;
-      return (mentions(cond.left) && known(cond.right)) || (mentions(cond.right) && known(cond.left));
+      return (isEntryItself(cond.left) && known(cond.right)) || (isEntryItself(cond.right) && known(cond.left));
     };
     const exits = (stmt) => {
       if (!stmt) return false;
