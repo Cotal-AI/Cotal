@@ -41,6 +41,19 @@ const stripAnsi = (s) => s.replace(/\[[0-9;]*m/g, "");
 const verdictIs = (out, v) =>
   out.split("\n").some((l) => stripAnsi(l).startsWith(v + " "));
 
+/** The records the tool leaves in tmpdir for files under `dir`. Filtered by the path each record
+ *  carries, because tmpdir is shared: a bare count here would be reading someone else's proof. */
+const liveRecordsIn = (dir) => {
+  const real = realpathSync(dir);
+  return readdirSync(tmpdir())
+    .filter((n) => n.startsWith("mutation-proof-") && n.endsWith(".live.json"))
+    .map((n) => {
+      const path = join(tmpdir(), n);
+      try { return { path, body: JSON.parse(readFileSync(path, "utf8")) }; } catch { return undefined; }
+    })
+    .filter((e) => typeof e?.body?.file === "string" && e.body.file.startsWith(`${real}/`));
+};
+
 // ---- a fixture repo: one guard, one suite that depends on it, one that does not ----------------
 mkdirSync(join(root, "src"), { recursive: true });
 writeFileSync(
@@ -104,6 +117,12 @@ let r = runTool([
 ]);
 check("a killed mutation exits 0 and reports KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
 check("...and a multi-line target matches (the compiled shape of a guard)", !r.stdout.includes("not found"));
+// A proof that finished cleans up after itself, its record included. Graded HERE rather than beside
+// the killed-proof cells at the end, and the position is load-bearing: a record left behind by a
+// completed run makes the deliberately dirtied file in `a dirty tree is refused` look like a
+// previous run's leftover, so that cell would redden first and name the wrong thing.
+check("a proof that completes leaves no record behind", liveRecordsIn(root).length === 0,
+  liveRecordsIn(root).map((e) => e.path));
 
 // 2. THE ONE THAT MATTERS: a mutation the suite does NOT catch must be reported, not passed.
 // Paired with a KILLING control in the SAME FILE, which is what licenses the SURVIVED verdict:
@@ -850,20 +869,14 @@ execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c comm
 const killTool = (args) => spawnSync(process.execPath, [TOOL, ...args], { cwd: killRoot, encoding: "utf8", timeout: 120_000 });
 const killStatus = () => execSync("git status --porcelain", { cwd: killRoot, encoding: "utf8" }).trim();
 const shaOf = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
-const realKillRoot = realpathSync(killRoot);
-/** Records in tmpdir that name a file in THIS fixture. tmpdir is shared, so a bare count would be
- *  reading someone else's proof. */
-const recordsHere = () => readdirSync(tmpdir())
-  .filter((n) => n.startsWith("mutation-proof-") && n.endsWith(".live.json"))
-  .map((n) => ({ path: join(tmpdir(), n), body: (() => { try { return JSON.parse(readFileSync(join(tmpdir(), n), "utf8")); } catch { return undefined; } })() }))
-  .filter((e) => typeof e.body?.file === "string" && e.body.file.startsWith(`${realKillRoot}/`));
+const recordsHere = () => liveRecordsIn(killRoot);
 
 const shaOriginal = shaOf(killImpl);
 
-// A proof that finishes normally leaves nothing behind. Asserted BEFORE the kill so a later
-// leftover cannot be confused with one this fixture started with.
+// The fixture starts from a completed proof, so a record found after the kill below cannot be one
+// this fixture arrived with.
 let kr = killTool(["--config", "cfg.json"]);
-check("a proof that completes leaves no record and no backup behind",
+check("the kill fixture starts from a completed proof with nothing left behind",
   kr.status === 0 && recordsHere().length === 0 && killStatus() === "",
   { status: kr.status, records: recordsHere().map((e) => e.path), tree: killStatus() });
 

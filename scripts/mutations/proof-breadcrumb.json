@@ -29,15 +29,15 @@
     "",
     "THIS SUITE IS FAIL-FAST, so each mutation's named cell has to be the FIRST cell it reddens or",
     "the verdict points at the wrong line. The ordering was checked one mutation at a time rather",
-    "than assumed: the new cells run last, in the order record-cleared, kill, refusal, restore,",
-    "stale, bad-backup, and each mutation above leaves every cell before its own green.",
+    "than assumed: the record-cleared cell runs early, right after the first completed proof, because a record",
+    "left behind reddens `a dirty tree is refused` first otherwise; measured, not reasoned about.",
     "",
     "NO top-level `completionMarker`, for the reason `restore-mtime.json` states about this same",
     "suite: it is fail-fast, so its success banner is not printed on a red run, and a completion",
     "marker pointed at it turns every genuine kill INCONCLUSIVE.",
     "",
     "NOT ASSERTED, and recorded rather than implied: the cell `a proof that completes leaves no",
-    "record and no backup behind` cannot discriminate on a tree that has no records at all, so it",
+    "record behind` cannot discriminate on a tree that has no records at all, so it",
     "passes vacuously against the pre-fix tool. It is graded here by mutation three, which is the",
     "only thing that gives it meaning."
   ],
@@ -63,8 +63,8 @@
       "file": "scripts/mutation-proof.mjs",
       "find": "      rmSync(crumbFor(path), { force: true });",
       "replace": "      void path;",
-      "cell": "a proof that completes leaves no record and no backup behind",
-      "expectRed": "a proof that completes leaves no record and no backup behind"
+      "cell": "a proof that completes leaves no record behind",
+      "expectRed": "a proof that completes leaves no record behind"
     },
     {
       "name": "--restore-live puts the bytes back and lets the timestamp move to now",
