@@ -12,11 +12,12 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-proof.mjs");
 const root = mkdtempSync(join(tmpdir(), "mutation-selftest-"));
@@ -73,9 +74,9 @@ mkdirSync(join(root, "smoke"), { recursive: true });
 writeFileSync(join(root, "smoke", "suite.mjs"), readFileSync(join(root, "suite.mjs"), "utf8"));
 execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm fixture", { cwd: root });
 
-const runTool = (args) =>
+const runTool = (args, options = {}) =>
   spawnSync(process.execPath, [TOOL, ...args], {
-    cwd: root,
+    cwd: options.cwd ?? root,
     encoding: "utf8",
     timeout: 120_000,
     // Prove the tool overrides this only for commands it launches rather than relying on ambient
@@ -806,6 +807,243 @@ r = runTool([
 ]);
 check("an ERROR raised before the run says there was no run, not that the run was silent",
   stripAnsi(r.stdout).includes("(no run:") && !stripAnsi(r.stdout).includes("produced NO output"), r.stdout.slice(-400));
+
+
+// ---------------------------------------------------------------------------
+// The working tree is a shared mutable resource while a proof runs (#1574).
+// ---------------------------------------------------------------------------
+
+// Keyed the way the tool keys it: on the REAL path, so `/var/...` and
+// `/private/var/...` do not become two locks on one tree.
+const lockFor = (dir) =>
+  join(tmpdir(), `mutation-proof-lock-${createHash("sha1").update(realpathSync(dir)).digest("hex").slice(0, 12)}.json`);
+
+const plantLock = (dir, pid) =>
+  writeFileSync(lockFor(dir), JSON.stringify({ pid, started: "2026-01-01T00:00:00Z", cwd: dir, command: "an earlier proof" }));
+
+const adHoc = [
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)",
+  "--replace", "if (false)",
+  "--expect-red", "oversized values are refused",
+];
+
+// A LIVE peer: this process is the one holding it, and it is certainly alive.
+plantLock(root, process.pid);
+r = runTool(adHoc);
+// Graded on WHICH refusal, not merely on the exit code: the stale branch below
+// also refuses with 3, so `status === 3` alone passes for a tool that lost the
+// live check entirely and mistook a running peer for a corpse.
+check("a second proof refuses while another holds the tree",
+  r.status === 3 && stripAnsi(r.stdout).includes("already running against this tree"), r.stdout.slice(-300));
+check("...and names the live pid, so the refusal is actionable",
+  stripAnsi(r.stdout).includes(`pid ${process.pid}`), r.stdout.slice(-300));
+check("...and does NOT report it as a run that died, which would send the reader hunting a corpse",
+  !stripAnsi(r.stdout).includes("died without restoring"), r.stdout.slice(-300));
+r = runTool([...adHoc, "--clear-lock"]);
+check("--clear-lock refuses to clear a LIVE lock", r.status === 3 && stripAnsi(r.stdout).includes("still alive"), r.stdout.slice(-300));
+
+// A STALE lock: the pid is gone, so a previous run died without restoring. No
+// handler can catch SIGKILL, which makes this the only defence against it.
+rmSync(lockFor(root), { force: true });
+plantLock(root, 0x7ffffffe);  // a pid that cannot be running
+r = runTool(adHoc);
+check("a stale lock refuses rather than proceeding into a possibly mutated tree",
+  r.status === 3 && stripAnsi(r.stdout).includes("died without restoring"), r.stdout.slice(-400));
+check("...and says how to recover instead of leaving the reader to guess",
+  stripAnsi(r.stdout).includes("--clear-lock"), r.stdout.slice(-400));
+
+r = runTool([...adHoc, "--clear-lock"]);
+check("--clear-lock clears a stale lock and the proof runs", r.status === 0 && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
+check("...and the tree is clean afterwards, which is the accept control for the whole section",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "", "tree dirty after a normal run");
+check("...and the lock is released, so the next proof is not refused by this one",
+  !existsSync(lockFor(root)), lockFor(root));
+
+// The lock keys on the TREE, not the launch directory: a run from a package
+// subdirectory, or through a symlink to the root, must meet the same lock. The
+// symlink half is the Linux equivalent of the macOS `/var` vs `/private/var`
+// case that the earlier version got wrong, and a case-folding developer machine
+// cannot observe it — this builds the symlink explicitly.
+{
+  const sub = join(root, "packages", "seat");
+  mkdirSync(sub, { recursive: true });
+  const link = join(dirname(root), `${basename(root)}-link`);
+  // `unlinkSync`, not `rmSync`: the target is a symlink TO a directory, which
+  // `rmSync` refuses without `recursive` — and `recursive` would follow it and
+  // delete the fixture.
+  try { unlinkSync(link); } catch { /* not there */ }
+  symlinkSync(root, link, "dir");
+
+  plantLock(root, process.pid);
+  let r = runTool(adHoc, { cwd: sub });
+  check("a proof launched from a SUBDIRECTORY meets the same tree lock",
+    r.status === 3 && stripAnsi(r.stdout).includes("already running against this tree"), r.stdout.slice(-300));
+  r = runTool(adHoc, { cwd: link });
+  check("a proof launched through a SYMLINK to the root meets it too",
+    r.status === 3 && stripAnsi(r.stdout).includes("already running against this tree"), r.stdout.slice(-300));
+  rmSync(lockFor(root), { force: true });
+  unlinkSync(link);
+}
+
+// A restore that FAILS must fail closed. Before this, `releaseEverything`
+// deregistered the undo before calling it and removed the lock unconditionally,
+// so a failed restore left a mutated file on disk with nothing recording it and
+// nothing to stop the next run from grading that tree. `afterRestore` exiting
+// non-zero is the reachable shape: the source is byte-identical again, so `git
+// status` reads clean, while whatever it builds is still compiled from the
+// mutant.
+{
+  rmSync(lockFor(root), { force: true });
+  writeFileSync(
+    join(root, "after-fails.json"),
+    JSON.stringify({
+      suite: ["smoke/suite.mjs"],
+      command: `${process.execPath} suite.mjs`,
+      mutations: [{
+        name: "its rebuild cannot run",
+        file: "src/impl.js", find: "if (n > 10)", replace: "if (false)",
+        expectRed: "oversized values are refused",
+        afterRestore: `${process.execPath} -e "process.exit(1)"`,
+      }],
+    }),
+  );
+  execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm after-fails", { cwd: root });
+
+  const first = runTool(["--config", "after-fails.json"]);
+  check("a failed afterRestore is reported as a failed restore, not as a verdict",
+    stripAnsi(first.stdout).includes("RESTORE FAILED"), first.stdout.slice(-300));
+  check("...and the tree lock is KEPT, so the next run cannot grade this tree",
+    existsSync(lockFor(root)), lockFor(root));
+  const held = JSON.parse(readFileSync(lockFor(root), "utf8"));
+  check("...and the lock records WHICH file the restore could not put back",
+    Array.isArray(held.restoreFailed) && held.restoreFailed.includes("src/impl.js"),
+    JSON.stringify(held).slice(0, 160));
+
+  // The pid in that lock is the first run's, and it is gone, so this is the
+  // stale branch: it must refuse and say what it knows rather than reclaim.
+  const second = runTool(["--config", "after-fails.json"]);
+  const out = stripAnsi(second.stdout);
+  check("the next proof refuses on that lock and names the file",
+    second.status === 3 && out.includes("restore FAILED") && out.includes("src/impl.js"),
+    out.slice(-400));
+
+  rmSync(lockFor(root), { force: true });
+  execSync("git checkout -- . && git clean -fdq", { cwd: root });
+}
+
+// The one deterministic discriminator for HOW the lock is taken. A dangling
+// symlink at the lock path reads as absent to `existsSync` and as present to an
+// exclusive create: `O_CREAT | O_EXCL` fails EEXIST, a plain write follows the
+// link and lands on its target. So an acquisition that asks before it writes
+// believes it won the lock AND writes through the link, every run, while the
+// exclusive create refuses, every run. The concurrent cell above only catches
+// that shape when the race happens to interleave.
+{
+  rmSync(lockFor(root), { force: true });
+  const elsewhere = join(dirname(root), `${basename(root)}-lock-target.json`);
+  try { unlinkSync(elsewhere); } catch { /* not there */ }
+  symlinkSync(elsewhere, lockFor(root));
+
+  const r = runTool(adHoc);
+
+  check("a dangling symlink at the lock path is taken as held, not as absent",
+    r.status === 3, `exit ${r.status}: ${stripAnsi(r.stdout).slice(-200)}`);
+  check("...and nothing is written through it",
+    !existsSync(elsewhere), elsewhere);
+
+  try { unlinkSync(lockFor(root)); } catch { /* the tool may have moved it */ }
+  rmSync(lockFor(root), { force: true });
+  try { unlinkSync(elsewhere); } catch { /* not there */ }
+}
+
+// Acquisition, graded by starting the tool rather than by calling `node:fs`
+// here. The previous version of this cell wrote the lock itself with `wx` and
+// asserted the second write threw, which grades the platform: the tool was
+// never launched, so a change to how IT acquires could not redden it.
+{
+  rmSync(lockFor(root), { force: true });
+  const RUNNERS = 6;
+  const runs = await Promise.all(
+    Array.from({ length: RUNNERS }, () =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [TOOL, ...adHoc], {
+          cwd: root,
+          env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        child.stdout.on("data", (d) => { out += d; });
+        child.stderr.on("data", (d) => { out += d; });
+        child.once("exit", (code) => resolve({ code, out: stripAnsi(out) }));
+      })),
+  );
+  const refused = runs.filter((r) => r.code === 3 && r.out.includes("already running against this tree"));
+  check("starting several proofs at once lets exactly one through the tree lock",
+    runs.length - refused.length === 1, `${runs.length - refused.length} of ${RUNNERS} got in`);
+  check("...and every loser is refused by the LOCK, not by something else",
+    refused.length === RUNNERS - 1, refused.map((r) => r.code).join(","));
+  rmSync(lockFor(root), { force: true });
+}
+
+// The loser must not write over the winner's lock on its way to refusing. An
+// acquisition that truncates first and asks afterwards passes the cell above
+// (it still refuses) and fails this one, because the bytes it refused over are
+// no longer there.
+{
+  rmSync(lockFor(root), { force: true });
+  plantLock(root, process.pid);
+  const planted = readFileSync(lockFor(root), "utf8");
+  const r = runTool(adHoc);
+  check("a refused proof leaves the holder's lock byte-identical",
+    r.status === 3 && readFileSync(lockFor(root), "utf8") === planted,
+    readFileSync(lockFor(root), "utf8").slice(0, 120));
+  rmSync(lockFor(root), { force: true });
+}
+
+// A killed proof must leave the tree byte-identical. Gated on an OBSERVED
+// applied mutation, not on a fixed delay: a timer that lands between fixtures
+// reads clean and would pass as a clean bill of health (#1581).
+const slow = join(root, "slow-suite.mjs");
+// Long enough that the kill can land inside the MUTATED run, short enough that
+// the baseline before it does not dominate this suite's own runtime.
+writeFileSync(slow, "console.log('  ✓ started'); setTimeout(() => { console.log('  ✓ done'); }, 4_000);\n");
+// Committed, so the only thing `git status` can report during the run is the
+// mutation itself — an untracked fixture would read as a failed restore.
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm slow-suite", { cwd: root });
+const child = spawn(process.execPath, [TOOL,
+  "--command", `${process.execPath} slow-suite.mjs`,
+  "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
+  "--expect-red", "oversized values are refused",
+], { cwd: root, stdio: "ignore" });
+let observedApplied = false;
+for (let i = 0; i < 600 && !observedApplied; i++) {
+  observedApplied = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() !== "";
+  if (!observedApplied) await new Promise((done) => setTimeout(done, 50));
+}
+check("the kill lands while a mutation is really applied (the control that would otherwise lie)", observedApplied);
+child.kill("SIGTERM");
+// Both arguments of `exit` are kept: the tree and the lock say the handler
+// RAN, and only the status says it re-raised instead of returning a tidy 0.
+let killedCode, killedSignal;
+await new Promise((done) =>
+  child.once("exit", (code, signal) => {
+    killedCode = code;
+    killedSignal = signal;
+    done();
+  }),
+);
+await new Promise((done) => setTimeout(done, 250));
+check("a killed proof leaves the tree byte-identical to its pre-run state",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }));
+check("...and releases the lock, so the next proof is not blocked by a corpse",
+  !existsSync(lockFor(root)), lockFor(root));
+check("...and the exit status still reports the signal, not a tidy 0",
+  killedSignal === "SIGTERM" && killedCode === null,
+  `code=${killedCode} signal=${killedSignal}`);
+
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);
