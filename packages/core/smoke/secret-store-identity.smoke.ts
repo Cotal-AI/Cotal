@@ -68,7 +68,25 @@ throws("parse refuses an ABSENT lease claim rather than defaulting it to false",
 throws("parse refuses a non-boolean lease claim", () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX", holdsDeliveryLease: "true" }), "holdsDeliveryLease");
 // The BARE pre-binding shape is refused: that is the wire form whose first-reply-wins reading let a
 // second responder's store stand in for the reloading process's.
-throws("parse refuses the bare identity shape that carried no binding", () => parseDaemonStoreAnswer({ kind: "fs", root: "/r" }), "non-blank responder");
+// It is now caught by the closed-key check rather than by the missing responder, because `kind` and
+// `root` are not fields of an ANSWER at all. Still refused, and the reason names the real fault: the
+// reply is the wrong shape entirely, not an answer that forgot one field.
+throws("parse refuses the bare identity shape that carried no binding", () => parseDaemonStoreAnswer({ kind: "fs", root: "/r" }), "admits only");
 throws("parse refuses a non-object answer", () => parseDaemonStoreAnswer("no responders"), "must be an object");
+// CLOSED IN BOTH DIRECTIONS. `parseSecretStoreIdentity` has always refused an unknown key, and this
+// parser documents the same discipline, but it accepted extra top-level fields: a reply could carry
+// anything alongside the three admitted ones and be read as a valid answer. An ignored field is a
+// part of the reply nobody looked at, which is precisely the reading this wire shape exists to end,
+// so it is refused and named instead.
+throws("parse refuses an UNKNOWN top-level key rather than ignoring it (closed parser, same as the identity parser)",
+  () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX", holdsDeliveryLease: true, leaseRevision: 7 }),
+  "admits only");
+throws("...and the refusal NAMES the unknown key, so an operator sees which field was not understood",
+  () => parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX", holdsDeliveryLease: true, spoofed: true }),
+  "spoofed");
+// POSITIVE CONTROL for the two cells above, in the same file and the same run: the admitted shape
+// still parses. Without it, a parser that refused EVERY answer would pass both refusal cells.
+ok("CONTROL: the admitted three-field shape still parses after the extra-key refusal",
+  parseDaemonStoreAnswer({ identity: { kind: "fs", root: "/r" }, responder: "local.UX", holdsDeliveryLease: true }).responder === "local.UX");
 
 console.log(`\nSECRET-STORE-IDENTITY SMOKE OK  (${pass} passed)`);

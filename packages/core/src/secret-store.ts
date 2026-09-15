@@ -128,18 +128,34 @@ export interface DaemonStoreAnswer {
   identity: SecretStoreIdentity;
   /** The answering endpoint's wire identity, so the answer names a process rather than a rail. */
   responder: string;
-  /** Did the answering process hold this space's delivery lease at the moment it answered? False
-   *  is not an accusation, it is the honest reading for a responder that does not own the shard. */
+  /** Did the answering process say it held this space's delivery lease at the moment it answered?
+   *
+   *  THIS IS THE ANSWERER'S OWN CLAIM, NOT A VERIFIED FACT, and a caller that decides anything on it
+   *  alone is trusting a boolean the answerer chose. `false` is the honest reading for a responder
+   *  that does not own the shard, and it is useful exactly because an honest non-holder sends it. A
+   *  responder that is not honest can send `true`. A caller requiring the answer to come from the
+   *  process that reloads must verify the binding itself, by reading the lease row and comparing its
+   *  holder against {@link DaemonStoreAnswer.responder}. */
   holdsDeliveryLease: boolean;
 }
 
 /** Parse a {@link DaemonStoreAnswer} off the wire through the same closed-parser discipline as
  *  {@link parseSecretStoreIdentity}: a reply that cannot produce every field is a failure to
- *  determine, raised here, never a partially trusted answer assembled by the caller. */
+ *  determine, raised here, never a partially trusted answer assembled by the caller. CLOSED means
+ *  closed in both directions: an unknown top-level key is refused rather than ignored, matching
+ *  `parseSecretStoreIdentity`, so a reply carrying a field this version does not know about is a
+ *  failure to determine instead of an answer that was silently read as something narrower than it
+ *  claimed to be. */
 export function parseDaemonStoreAnswer(raw: unknown): DaemonStoreAnswer {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new Error("delivery-daemon store answer must be an object");
   const o = raw as Record<string, unknown>;
+  const ADMITTED = ["identity", "responder", "holdsDeliveryLease"];
+  const unknown = Object.keys(o).filter((k) => !ADMITTED.includes(k));
+  if (unknown.length)
+    throw new Error(
+      `delivery-daemon store answer admits only {identity, responder, holdsDeliveryLease} (unknown: ${unknown.sort().join(", ")})`,
+    );
   if (typeof o.responder !== "string" || !o.responder.trim())
     throw new Error("delivery-daemon store answer requires a non-blank responder identity");
   if (typeof o.holdsDeliveryLease !== "boolean")

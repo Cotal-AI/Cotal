@@ -32,19 +32,34 @@ foreign manager, and on a pass whose store challenge failed. On a 24-hour class 
 quarter-TTL tick, the previous behaviour looked green for a full day before the manager died at its
 own credentials' expiry.
 
-Absence is a determination, not a failure to determine. The delivery-admin rail decodes replies as
-JSON, so a peer that merely quotes `no responders` produced a parse failure whose message carried
-those words, and the previous text match read it as proof that no daemon was bound, which is the
-path that remints. Absence now comes only from the broker's own typed no-responder signal; a parse
-failure, a timeout, a denial, and an unreadable reply are each not a determination and never remint.
+Absence is a determination the manager makes for itself, from a fact no responder can send. The
+delivery-admin rail is queue-grouped, so any process permitted to serve it decides what a requester
+observes, and that includes the outcome a requester would read as an empty rail: a NATS client builds
+its typed no-responder error out of a reply carrying an empty payload and a 503 status header, so a
+responder that does not hold the delivery lease can produce it. Testing the rail's own outcome cannot
+separate the two cases, at any level of precision, because a responder is what produces that outcome.
+So the manager reads the delivery lease row itself, under its own credential, and classifies absence
+only when no daemon holds the shard. A rail that produces nothing while a lease is live is refused and
+named, and a lease row that cannot be read is undetermined. Neither remints.
 
-The store answer is bound to the process that reloads the credentials. That rail is queue-grouped,
-so any process holding a `delivery` credential can answer it, while only the delivery lease holder
-actually reloads. The daemon's answer now carries the responder's identity and its lease claim, and
-a manager refuses to treat a lease-less responder's store as the daemon's.
+The lease claim is bound to something the manager verifies rather than to a boolean the reply asserts.
+The daemon's answer still carries the answerer's identity and its own lease claim, but a claim is a
+value the answerer chose, and a responder that does not hold the lease can assert it as easily as an
+honest one reports the truth. The manager reads the lease row's recorded holder and requires the
+answerer to be that principal; the reply's own claim is kept as a cross-check that must agree, so an
+honest non-holder is still refused by its own admission, but the binding that decides is measured
+locally. Managers carry a read-only keyed grant on the delivery bucket for those two reads. The lease
+keeps its single writer, the `delivery` credential, because a credential able to write the row could
+manufacture the fact the check reads.
+
+`parseDaemonStoreAnswer` now refuses an unknown top-level key instead of ignoring it, matching the
+closed-parser discipline its own documentation claimed and `parseSecretStoreIdentity` already had.
 
 `smoke:manager-two-root-renewal` proves the two-root composition starts, reminted nothing into
 either root, and recorded the owner-elsewhere note; that a foreign manager still reaches its own
-renewal duties; that a peer body quoting the absence phrase is never classified as absence; that a
-lease-less responder naming the manager's own store is refused; and that a different generation
-under the same daemon identity is refused. Its control phase still proves the unified root adopts.
+renewal duties, and so does a pass whose store challenge failed to reach a verdict; that neither a
+peer body quoting the absence phrase nor a peer reply in the empty-payload-plus-503-status-header
+shape is ever classified as absence; that a lease-less responder naming the manager's own store is
+refused, whether it answers honestly or asserts the lease claim outright; and that a different
+generation under the same daemon identity is refused. Its control phase still proves the unified root
+adopts. `smoke:delivery-lease-grant` proves the manager's new read is present and stays read-only.

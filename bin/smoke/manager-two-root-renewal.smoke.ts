@@ -46,6 +46,9 @@ for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete pro
 process.env.COTAL_HOME = home;
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
+// The reply-shape arm below needs the client's own status-header builder, so the bytes it puts on
+// the rail are the bytes the library recognises rather than a hand-rolled imitation of them.
+const { headers: natsHeaders } = await import("@nats-io/transport-node");
 const {
   CONTROL_DELIVERY_ADMIN,
   CotalEndpoint,
@@ -109,7 +112,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 /** Every cell above is enumerated: a run that silently skipped cells must not read as green. */
-const EXPECTED_CELLS = 42;
+const EXPECTED_CELLS = 54;
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -261,6 +264,44 @@ try {
   ok("(a) ...and it STILL reminted nothing into the foreign store (skipping only the daemon remint, not the own-credential duties)", recForeign?.results.length === 0 && recForeign?.renewalOwner?.elsewhere === true, recForeign);
   ok("(a) the foreign pass left root B's delivery cred at the ORIGINAL generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
 
+  // ---- (a2) a pass whose classification FAILED must also reach the own-credential duties --------
+  // The foreign branch above is one of two ways a pass can skip the daemon remint. The other is a
+  // classification that could not reach a verdict at all, and it carries the same obligation for the
+  // same reason: failing to learn where the daemon reloads from establishes nothing about the
+  // credentials this manager owns outright, which no other process on any host renews.
+  //
+  // THIS PATH IS NOW THE COMMON ONE, not an edge. Binding the classification to the delivery lease
+  // means a rail answered by a non-holder, a rail that produces nothing while a lease is live, and a
+  // lease row that cannot be read ALL land here rather than in the foreign branch. An ungraded
+  // fall-through here would therefore be a manager that quietly renews nothing it owns whenever the
+  // rail is contested, and a 24-hour class on a quarter-TTL tick makes that invisible for a day.
+  //
+  // Drive the REAL pass with the classification forced to throw, and require the duties below it to
+  // have run. The failure is injected at the classification seam only; everything downstream is
+  // shipped code reached by shipped control flow.
+  const classifyOriginal = originals.classifyDaemonSecretStore;
+  proto.classifyDaemonSecretStore = function () {
+    reached.push("classifyDaemonSecretStore");
+    return Promise.reject(new Error("smoke: forced classification failure (the rail could not be resolved)"));
+  };
+  const secretsFail = (mgrA as unknown as { secrets: { get(k: string): Promise<string | undefined> } }).secrets;
+  const originalGetFail = secretsFail.get.bind(secretsFail);
+  let failPathCredReads = 0;
+  (secretsFail as { get: (k: string) => Promise<string | undefined> }).get = async (k: string) => { failPathCredReads++; return originalGetFail(k); };
+  agents.set("renewal-probe-failpath", { id: newIdentity().id, name: "renewal-probe-failpath", lifecycleUid: "l".repeat(26), seed: "SU", secretPaths: { creds: join(segA, "agent-renewal-probe-failpath.creds") } });
+  const beforeFailPass = reached.length;
+  await (mgrA as unknown as { renewDaemonCreds(): Promise<void> }).renewDaemonCreds();
+  const recFail = readRenewalRecord(rootA);
+
+  ok("(a2) a pass whose classification FAILED still reaches warnOnSystemCredExpiry (the own-credential duties are not the daemon's)", reached.slice(beforeFailPass).includes("warnOnSystemCredExpiry"), reached.slice(beforeFailPass));
+  ok("(a2) ...and it still runs the managed-static renewal scan (it read a managed credential through its own store)", failPathCredReads > 0, { failPathCredReads });
+  ok("(a2) ...and it reminted NOTHING, recording the failure to determine rather than writing through it", recFail?.results.length === 0 && recFail?.adoption?.ok === false, recFail);
+  ok("(a2) the failed pass left both roots at the ORIGINAL generation", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1 && readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+
+  agents.delete("renewal-probe-failpath");
+  (secretsFail as { get: (k: string) => Promise<string | undefined> }).get = originalGetFail;
+  proto.classifyDaemonSecretStore = classifyOriginal;
+
   agents.delete("renewal-probe");
   (secrets as { get: (k: string) => Promise<string | undefined> }).get = originalGet;
 
@@ -303,7 +344,9 @@ try {
 
   // (b1) THE ECHO. Reply with a RAW body quoting the phrase, so the decode fails with the peer's own
   // words in the message — the exact input the text predicate could not distinguish from absence.
-  const rogueNc = (rogue as unknown as { nc: { subscribe(s: string, o: { queue: string }): AsyncIterable<{ respond(p: string): void }> } }).nc;
+  // The subscription handle carries `unsubscribe` as well as the iterator: this arm has to be able
+  // to leave the queue group before the next one binds it, not merely stop answering.
+  const rogueNc = (rogue as unknown as { nc: { subscribe(s: string, o: { queue: string }): AsyncIterable<{ respond(p: string): void }> & { unsubscribe(): void } } }).nc;
   const echoSub = rogueNc.subscribe(controlServiceSubject(SPACE_DIVERGED, CONTROL_DELIVERY_ADMIN, "*", "*"), { queue: CONTROL_DELIVERY_ADMIN });
   void (async () => { for await (const m of echoSub) { try { m.respond("no responders"); } catch { /* raced */ } } })().catch(() => {});
 
@@ -313,7 +356,7 @@ try {
   const echoReasons: string[] = [];
   for (let i = 0; i < 12; i++) {
     try { const r = await classify(); if (r.kind === "absent") echoAbsent++; else echoOther++; }
-    catch (e) { echoRefused++; if (echoReasons.length < 2) echoReasons.push((e as Error).message); }
+    catch (e) { echoRefused++; echoReasons.push((e as Error).message); }
   }
   ok("(b1) a peer body quoting \"no responders\" is NEVER classified as absence (a failure to parse is not a determination)", echoAbsent === 0, { echoAbsent, echoRefused, echoOther });
   // RIG VALIDITY, and deliberately counted so it does NOT depend on the verdict it is validating.
@@ -330,9 +373,78 @@ try {
 
   ok("daemon B is still alive after the echo sweep (the rig was live throughout)", !sinkB.exited);
 
+  // (b1) SECOND ARM, THE SHAPE THE CLIENT ITSELF TURNS INTO A NO-RESPONDER ERROR.
+  //
+  // The arm above sweeps ONE reply shape, and the guard it stands for is a class: a responder able
+  // to serve this rail cannot manufacture a determination of absence. A single-shape cell reads as
+  // coverage of that class without being it, and this is the shape that got through. The NATS client
+  // constructs the typed no-responder error from the reply MESSAGE when it has an empty payload and
+  // a 503 status header (`@nats-io/nats-core` 3.4.0, `lib/nats.js:325`), so a bound responder
+  // sending those bytes produces, in the requester, the identical value a genuinely empty rail
+  // produces. A predicate applied to that value cannot tell the two apart at any level of precision,
+  // which is why the fix reads the delivery lease row instead.
+  //
+  // Same rogue endpoint, same real `delivery` credential, same queue group: only the reply shape
+  // differs from the arm above, so the two arms together measure the CLASS rather than an instance.
+  //
+  // THE ECHO ARM IS RETIRED FIRST, AND THAT ORDERING IS LOAD-BEARING. Both rogues bind the SAME
+  // queue group, so leaving the echo bound would let it keep winning rounds of the sweep below and
+  // put ITS refusals (a parse failure) among the reasons this arm reads. Unsubscribing before
+  // stopping the endpoint is the part that actually removes it from the group: `stop()` alone
+  // tears the connection down asynchronously, and the arm below could start while the broker still
+  // had the subscription. Measured: without this the header arm's message assertion failed on
+  // roughly one run in three, with all its captured reasons belonging to the echo.
+  echoSub.unsubscribe();
+  await rogue.stop().catch(() => {});
+
+  const rogueHdrId = newIdentity();
+  const rogueHdr = new CotalEndpoint({
+    space: SPACE_DIVERGED, servers: servers1,
+    creds: await mintCreds(auth1, rogueHdrId, "delivery"),
+    card: { id: rogueHdrId.id, name: "rogue-503-responder", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  rogueHdr.on("error", () => {});
+  await rogueHdr.start();
+  const hdrNc = (rogueHdr as unknown as {
+    nc: { subscribe(s: string, o: { queue: string }): AsyncIterable<{ respond(p: Uint8Array, o: { headers: unknown }): void }> };
+  }).nc;
+  const hdrSub = hdrNc.subscribe(controlServiceSubject(SPACE_DIVERGED, CONTROL_DELIVERY_ADMIN, "*", "*"), { queue: CONTROL_DELIVERY_ADMIN });
+  void (async () => {
+    for await (const m of hdrSub) {
+      try { m.respond(new Uint8Array(0), { headers: natsHeaders(503, "No Responders") }); } catch { /* raced */ }
+    }
+  })().catch(() => {});
+
+  // RIG VALIDITY FIRST, and it is measured rather than assumed: the shape has to actually reach the
+  // requester as the typed no-responder error, or this arm would pass for the wrong reason (a
+  // responder that never won the queue proves nothing about the guard).
+  let hdrAbsent = 0, hdrRefused = 0, hdrOther = 0;
+  // EVERY refusal reason across the whole sweep, not the first few. A truncated sample turns this
+  // arm's message assertion into a statement about CAPTURE ORDER rather than about behaviour, and
+  // a cell that can fail while the guard holds is worse than no cell: it trains a reader to
+  // discount a red. The count cells above are the ones that grade the guard; this list only has to
+  // show that the refusal, when it happens, says the right thing.
+  const hdrReasons: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    try { const r = await classify(); if (r.kind === "absent") hdrAbsent++; else hdrOther++; }
+    catch (e) { hdrRefused++; hdrReasons.push((e as Error).message); }
+  }
+  ok("(b1) a peer reply of EMPTY PAYLOAD + 503 STATUS HEADER is NEVER classified as absence (the client builds the typed no-responder error from those bytes)", hdrAbsent === 0, { hdrAbsent, hdrRefused, hdrOther, hdrReasons });
+  ok("(b1) ...and the 503-header rogue really did win the queue at least once, so this arm measured something", hdrAbsent + hdrRefused > 0, { hdrAbsent, hdrRefused, hdrOther });
+  // The refusal must name what actually happened: the manager read the lease row, found the shard
+  // held, and therefore knows the empty rail outcome did not come from an empty rail.
+  //
+  // Guarded on `hdrRefused`, because "no refusal happened" and "a refusal said the wrong thing" are
+  // different facts and only the second is a defect here. The honest daemon can win all twelve
+  // rounds, which is a rig outcome the cell above already accounts for.
+  ok("(b1) the refusal says the rail was answered while a lease is live, rather than asserting absence", hdrRefused === 0 || hdrReasons.some((m) => m.includes("while a delivery lease for this space is live")), { hdrRefused, hdrReasons });
+  ok("(b1) nothing was reminted into root A while the 503-header rogue was on the rail", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  ok("(b1) nothing was pushed at the daemon's root B either, under the 503-header rogue", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
+  await rogueHdr.stop().catch(() => {});
+
   await mgrA.stop({ withAgents: true });
   mgrA = undefined;
-  await rogue.stop().catch(() => {});
 
   if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL");
   await killAndAwaitExit(broker1.srv, "SIGKILL");
@@ -390,16 +502,23 @@ try {
   // Control first: the honest lease-holding daemon alone still answers `shared` (asserted by the
   // adoption cells above, and re-measured here directly so this cell has its own positive control).
   const classifyC = () => (mgrC as unknown as { classifyDaemonSecretStore(): Promise<{ kind: string }> }).classifyDaemonSecretStore();
-  // `classifyDaemonSecretStore` CATCHES the broker's no-responder signal and returns `absent`
-  // rather than throwing, which is the correct shipped behaviour and precisely why `railRetry` is
-  // the wrong instrument here: there is no throw to retry on. The control phase's adoption has just
-  // scheduled daemon C's resident wire swap, so the rail is genuinely unbound for a moment and the
-  // honest answer during that window IS `absent`. Wait for the responder to come back, then
-  // measure. Measured: without this the control read `absent` and the cell failed on the rig.
+  // THE RECONNECT WINDOW IS A TRANSIENT RIG STATE, AND ITS HONEST ANSWER IS NOW A REFUSAL.
+  //
+  // The control phase's adoption has just scheduled daemon C's resident wire swap, so its
+  // delivery-admin responder is unbound for well under a second while it re-binds. During that
+  // window the rail produces nothing WHILE daemon C still holds the lease, and the shipped
+  // classification refuses rather than reporting absence: from the manager's side that is
+  // indistinguishable from a responder answering in the no-responder reply shape, and the
+  // fail-closed reading is the whole point of the fix. (Before the fix the same window read as
+  // `absent`, which is why this loop used to retry on that value instead.)
+  //
+  // So retry across BOTH transient readings and measure once the responder is back. Retrying on a
+  // refusal is safe for what this cell grades: the refusals THIS cell must not mask are the ones the
+  // (b2) arms below produce with a rogue on the rail, and no rogue is bound yet here.
   let sharedControl: string | undefined;
   for (let i = 0; i < 40; i++) {
     try { sharedControl = (await classifyC()).kind; } catch (e) { sharedControl = `threw: ${(e as Error).message}`; }
-    if (sharedControl !== "absent") break;
+    if (sharedControl !== "absent" && !sharedControl.startsWith("threw:")) break;
     await wait(300);
   }
   ok("(b2) CONTROL: the lease-HOLDING daemon alone classifies this manager as the renewal owner", sharedControl === "shared", { sharedControl });
@@ -421,14 +540,70 @@ try {
   await squatter.startPlane3(async () => undefined, { reloadStoreIdentity: () => ({ kind: "fs", root: rootC }) });
 
   let squatShared = 0, squatRefused = 0, squatOther = 0;
+  // The (b2) arms share the same hazard the (b1) header arm was measured to hit: a truncated
+  // sample makes a message assertion depend on which responder won the first races rather than on
+  // what the refusal said. Both arms below therefore keep EVERY reason.
   const squatReasons: string[] = [];
   for (let i = 0; i < 12; i++) {
     try { const r = await classifyC(); if (r.kind === "shared") squatShared++; else squatOther++; }
-    catch (e) { squatRefused++; if (squatReasons.length < 2) squatReasons.push((e as Error).message); }
+    catch (e) { squatRefused++; squatReasons.push((e as Error).message); }
   }
   ok("(b2) a lease-LESS responder naming this manager's store is refused at least once (the answer is bound to the process that reloads)", squatRefused > 0, { squatShared, squatRefused, squatOther, squatReasons });
-  ok("(b2) the refusal says the answerer does not hold the delivery lease", squatReasons.some((m) => m.includes("does not hold this space's delivery lease")), squatReasons);
+  // Guarded on the refusal count for the same reason as the (b1) header arm: the cell above already
+  // reds if no refusal happened, so this one should speak only to what a refusal SAID. Two cells
+  // reddening for one cause tells a reader less, not more.
+  ok("(b2) the refusal says the answerer does not hold the delivery lease", squatRefused === 0 || squatReasons.some((m) => m.includes("does not hold this space's delivery lease")), { squatRefused, squatReasons });
   await squatter.stop().catch(() => {});
+
+  // (b2) SECOND ARM: A RAW NON-OWNER REPLY THAT SIMPLY ASSERTS THE CLAIM.
+  //
+  // The arm above serves the rail through the SHIPPED Plane-3 handler, which reads the live lease
+  // row and therefore answers `holdsDeliveryLease:false` honestly because it does not hold it. That
+  // grades the caller against an HONEST non-holder and nothing more. The property the caller needs
+  // is different: the claim must be bound to something the manager verifies, so that a responder
+  // choosing to assert `true` cannot select the remint path. Nothing forces a responder to use the
+  // shipped handler, so this arm bypasses it and replies with a hand-built control reply asserting
+  // the claim while daemon C actually holds the lease.
+  //
+  // Under a caller that checks only the claim's SHAPE, this arm classifies `shared` and the manager
+  // remints on the word of a process that reloads nothing. Under a caller that reads the lease row
+  // and requires the answerer to BE the holder, it is refused by name.
+  const liarId = newIdentity();
+  const liar = new CotalEndpoint({
+    space: SPACE_UNIFIED, servers: servers2,
+    creds: await mintCreds(auth2, liarId, "delivery"),
+    card: { id: liarId.id, name: "claiming-responder", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  liar.on("error", () => {});
+  await liar.start();
+  // Raw subscribe on the same queue group, answering WITHOUT the shipped handler. The reply is a
+  // well-formed ControlReply carrying a well-formed DaemonStoreAnswer: it passes the parser, it
+  // names this manager's own store, and it asserts the lease claim. Everything about it is valid
+  // except that it is not true, which is the whole point: validity is not provenance.
+  const liarNc = (liar as unknown as { nc: { subscribe(s: string, o: { queue: string }): AsyncIterable<{ respond(p: string): void }> } }).nc;
+  const liarSub = liarNc.subscribe(controlServiceSubject(SPACE_UNIFIED, CONTROL_DELIVERY_ADMIN, "*", "*"), { queue: CONTROL_DELIVERY_ADMIN });
+  void (async () => {
+    for await (const m of liarSub) {
+      try {
+        m.respond(JSON.stringify({
+          ok: true,
+          data: { identity: { kind: "fs", root: rootC }, responder: liarId.id, holdsDeliveryLease: true },
+        }));
+      } catch { /* raced */ }
+    }
+  })().catch(() => {});
+
+  let liarShared = 0, liarRefused = 0, liarOther = 0;
+  const liarReasons: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    try { const r = await classifyC(); if (r.kind === "shared") liarShared++; else liarOther++; }
+    catch (e) { liarRefused++; liarReasons.push((e as Error).message); }
+  }
+  ok("(b2) a raw non-owner reply ASSERTING holdsDeliveryLease:true is refused at least once (the claim is bound to the lease row, not to the reply)", liarRefused > 0, { liarShared, liarRefused, liarOther, liarReasons });
+  ok("(b2) the refusal names the answerer and the ACTUAL lease holder, so the claim was checked rather than believed", liarRefused === 0 || liarReasons.some((m) => m.includes("which is not the holder of this space's delivery lease")), { liarRefused, liarReasons });
+  ok("(b2) ...and the claiming responder really did win the queue at least once, so this arm measured something", liarRefused + liarOther > 0 && liarRefused > 0, { liarShared, liarRefused, liarOther });
+  await liar.stop().catch(() => {});
 
   // ---- (c) a DIFFERENT generation under the SAME daemon identity must be REFUSED ----------------
   // The expected-generation guard is what makes `reloadCreds` prove the daemon adopted THIS

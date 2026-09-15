@@ -188,10 +188,13 @@ elsewhere rather than as a problem. Being foreign skips the daemon remint and no
 manager still renews the credentials it owns outright, its managed-agent statics, its
 endpoint-serve credential, its goal-writer, its hosted runs and its session ledger, which no other
 process renews for it. A pass whose store challenge fails skips the remint the same way and still
-runs those duties. The daemon's answer names the responder and whether that process holds the
+runs those duties. The daemon's answer names the responder and whether that process claims the
 space's delivery lease: the admin rail is queue-grouped, so any bound responder can answer it while
-only the lease holder reloads the standing credentials, and an answer from a lease-less responder
-does not establish where renewal happens. The identity is the store the daemon actually
+only the lease holder reloads the standing credentials. Neither part of that answer is taken on
+trust, because both are values the answerer chose. The manager reads the delivery lease row itself
+and requires the answerer to be the holder recorded there, and it determines an absent daemon from
+that same row rather than from the rail's outcome, which a responder can shape. A lease row it
+cannot read is undetermined, and nothing is reminted on an undetermined pass. The identity is the store the daemon actually
 reloads: an injected coordinate, the workstation root only when `--creds` is
 `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
 file's own directory for any other `--creds` path, or the workstation root. Uninjected
@@ -246,8 +249,8 @@ injects the one `SecretStore` the manager uses for **the signer itself (the spli
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
 hosted renewal. The store declares the same identity on both processes, or both set
-`COTAL_SECRET_STORE` to the same coordinate. The manager
-refuses to remint when the daemon names a different store, including a daemon that binds after
+`COTAL_SECRET_STORE` to the same coordinate. A manager whose store the daemon does not read starts
+and serves seats, and remints no daemon credential, including when the daemon binds after
 start. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a

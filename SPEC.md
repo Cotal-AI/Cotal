@@ -4158,8 +4158,24 @@ single-function profiles, each granting only the verbs its function needs and no
   root, so passing that store explicitly names the real operator layout without an ambient coordinate. Uninjected `--creds`
   that names one real workstation while process cwd resolves another is refused at start, because
   membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
-  case. A manager whose remint store diverges is refused before that remint, including a daemon that
-  bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
+  case. The reply carries three fields, `{identity, responder, holdsDeliveryLease}`, parsed closed:
+  the store the answerer reloads from, the answerer's own wire identity, and the answerer's own claim
+  to hold this space's delivery lease. An unknown top-level key is refused rather than ignored.
+  A manager whose remint store diverges from the daemon's is NOT refused: it starts, serves seats, and
+  remints no daemon credential, recording that renewal is owned elsewhere. A space has many managers,
+  and only the one rooted where the daemon reads is the renewal owner. The same holds for a daemon that
+  bound after manager start, which moves that manager to the foreign classification on its next pass.
+  Neither field of the reply is trusted as a statement about the reloading process: the rail is
+  queue-grouped, so any process permitted to serve it can answer, and both the answerer's identity and
+  its lease claim are values that answerer chose. The requester verifies the binding itself, by reading
+  the delivery lease row for shard 0 under its own credential and requiring `responder` to be the
+  recorded holder; `holdsDeliveryLease` is a cross-check that must agree, not the authority. Absence of
+  a delivery daemon is determined the same way, from the lease row rather than from the rail's outcome:
+  a client synthesises its typed no-responder error from a reply carrying an empty payload and a 503
+  status header, so a bound responder can produce that outcome, and absence therefore requires the
+  lease read to show no live row. A lease row that cannot be read is undetermined and never authorizes
+  a remint. Managers carry a read-only keyed grant on the delivery bucket for these reads; the lease
+  keeps its single writer, the `delivery` credential. And `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement
   minted to the `supervisor` profile **and to the trusted auth path** (§9/§10), which is the

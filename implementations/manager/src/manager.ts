@@ -901,24 +901,34 @@ function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
   return { kind: "injected", coordinate };
 }
 
+/** The delivery shard whose lease decides who reloads the standing credentials. Hardcoded to 0
+ *  because that is the only shard the shipped daemon serves: `runDelivery` rejects any other layout
+ *  (`implementations/delivery/src/delivery.ts`, `shards !== 1 || shard !== 0`). Named rather than
+ *  spelled `0` at each use so a future multi-shard layout has one place to carry the shard in the
+ *  challenge instead of several literals to find. */
+const DELIVERY_SHARD = 0;
+
 /**
- * True only when the broker ITSELF reported that the delivery-admin subject had zero bound
- * responders, as a typed error rather than as words in a string.
+ * Did the `reloadStoreIdentity` challenge come back with NOTHING to read on the rail?
  *
- * THIS USED TO MATCH TEXT, AND MATCHING TEXT CANNOT TELL THE TWO CASES APART. The rail decodes a
- * reply with `JSON.parse`, so a peer that merely QUOTES the phrase produces a parse failure whose
- * message carries the peer's own body: `JSON.parse("no responders")` throws
- * `Unexpected token 'o', "no responders" is not valid JSON`, and `/no responders|\b503\b/i`
- * matches it. A FAILURE TO PARSE was then rendered as a DETERMINATION OF ABSENCE, and the absent
- * branch remints — so a peer able to put those two words on the rail could make this manager write
- * credentials into a store the real daemon never reads (#773 in a new place). The same held for a
- * body containing `503`.
+ * THIS IS NOT A DETERMINATION OF ABSENCE, AND IT MUST NOT BE USED AS ONE. It answers a narrower
+ * question: did the request fail in the shape a rail with no bound responder produces. That is only
+ * a reason to go and check, because the value is not the broker's own statement. The NATS client
+ * CONSTRUCTS the typed no-responder error from the reply message it receives, when that message has
+ * an empty payload and carries a 503 status header (`@nats-io/nats-core` 3.4.0, `lib/nats.js:325`,
+ * `msg.data?.length === 0 && msg.headers?.code === 503`). The delivery-admin rail is queue-grouped,
+ * so a responder that does not hold the delivery lease can send a reply of that shape and the
+ * requesting client will hand its caller the same typed error the broker's own absence produces.
  *
- * A parse failure, a hang, a permission denial and an unreadable reply are each NOT a
- * determination. Only `NoRespondersError` (or a `RequestError` whose `isNoResponders()` is true) is
- * the broker's own statement that nothing was bound, and only that may be read as absence.
+ * TWO ROUNDS OF THIS FIX FAILED ON EXACTLY THAT POINT. v1 matched the error's text, which a peer
+ * could quote in a body. v2 matched the error's TYPE, which a peer can manufacture from the bytes
+ * above. Both are properties of a value a responder can influence, which is why the shape of the
+ * test was never the problem: no test applied to the rail's own outcome can rule out a responder,
+ * because a responder is what produces that outcome. So this predicate now only ROUTES the caller
+ * to a fact established elsewhere ({@link Manager.classifyDaemonSecretStore}), and every caller
+ * must treat it that way.
  */
-function isAbsentDeliveryAdmin(e: unknown): boolean {
+function railAnsweredNothing(e: unknown): boolean {
   return e instanceof NoRespondersError || (e instanceof RequestError && e.isNoResponders());
 }
 
@@ -1511,22 +1521,52 @@ export class Manager {
    *    writing this store (tests, delayed delivery). A later daemon on a foreign store moves this
    *    manager to `"foreign"` on the next pass rather than being certified by the earlier absence.
    *
-   *  ABSENCE IS A DETERMINATION, NOT A FAILURE TO DETERMINE. Only the broker's own typed
-   *  no-responder signal may produce `"absent"`; a timeout, a parse failure, a denial and an
-   *  unreadable reply are each a failure to determine, so they throw and the pass is skipped with
-   *  the reason recorded, never reminted through.
+   *  ABSENCE IS DETERMINED BY THIS MANAGER, FROM A FACT NO RESPONDER CAN SEND.
    *
-   *  AND THE ANSWER MUST COME FROM THE PROCESS THAT RELOADS. The delivery-admin rail is
-   *  queue-grouped, so any bound responder can answer; only the delivery lease holder actually
-   *  reloads the standing credentials. An answer from a responder that does not hold the lease is
-   *  not a statement about the reloading process, so it is refused here rather than being allowed
-   *  to certify this manager as the renewal owner. */
+   *  Both previous rounds tested the RAIL'S OWN OUTCOME and were defeated the same way. The rail is
+   *  queue-grouped, so any process permitted to serve it decides what the requester observes:
+   *  quoting a phrase in a body defeated the text test, and an empty payload carrying a 503 status
+   *  header defeats the typed test, because the client library builds that typed error out of those
+   *  bytes. Narrowing the accepted shape a third time would fail a third time, since every shape the
+   *  rail can produce is a shape a responder can produce.
+   *
+   *  So absence is no longer read off the rail at all. The delivery lease row is a KV key whose only
+   *  writer is the `delivery` credential's `lease.*` grant; this manager reads it ITSELF
+   *  ({@link CotalEndpoint.deliveryShardHeld}) under its own credential. `"absent"` requires that
+   *  read to come back with NO live row: a positive fact about the shard, established by the
+   *  requester, which no reply on any rail participates in. A responder can still deny a
+   *  determination by answering (that throws, and nothing remints), but it can no longer MANUFACTURE
+   *  one, which is the direction that writes credentials.
+   *
+   *  A read that fails is an unknown, never an absence: it throws, like a timeout, a parse failure
+   *  and a denial, and the pass is skipped with the reason recorded rather than reminted through.
+   *
+   *  AND THE ANSWER MUST COME FROM THE PROCESS THAT RELOADS. Only the delivery lease holder actually
+   *  reloads the standing credentials. The reply carries the answerer's own identity and its own
+   *  lease claim, but a claim is a thing the answerer chose to send, and a responder that does not
+   *  hold the lease can assert `true` as easily as `false`. So the claim is not what is trusted: the
+   *  manager reads the lease row's HOLDER itself and requires the answerer to BE that principal.
+   *  The reply's own boolean is kept as a cross-check and must agree, so an honest non-holder is
+   *  still refused by its own admission, but the binding that decides is the one measured here. */
   private async classifyDaemonSecretStore(): Promise<{ kind: "shared" } | { kind: "absent" } | { kind: "foreign"; daemon: SecretStoreIdentity }> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
-      if (isAbsentDeliveryAdmin(e)) return { kind: "absent" };
+      // The rail produced nothing to read. That is a reason to CHECK whether a daemon holds the
+      // shard, not an answer: the same outcome is reachable by a responder replying in the shape
+      // the client turns into a no-responder error. The lease row settles it, read here.
+      if (railAnsweredNothing(e)) {
+        const held = await this.ep.deliveryShardHeld(DELIVERY_SHARD);
+        if (held === false) return { kind: "absent" };
+        // `true`: something holds the shard, so the empty rail outcome did not come from an empty
+        // rail. `undefined`: the row could not be read, which is an unknown. Neither may remint.
+        throw new Error(
+          held === true
+            ? "the delivery-admin rail produced a no-responder outcome while a delivery lease for this space is live, so the reloading process was not absent - the rail was answered by something that does not hold the lease; nothing reminted"
+            : "the delivery-admin rail produced a no-responder outcome and this manager could not read the delivery lease to determine whether a daemon holds the shard, so absence is undetermined - nothing reminted",
+        );
+      }
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${(e as Error).message}`);
     }
     if (!reply.ok)
@@ -1539,13 +1579,26 @@ export class Manager {
     } catch (e) {
       throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
     }
-    // The rail is queue-grouped: this reply proves only that SOMETHING bound to it answered. Unless
-    // the answerer holds the delivery lease, its store says nothing about where the standing
-    // credentials are reloaded from, and treating it as the daemon's store is what lets a second
-    // responder move this manager onto the remint path. Not a determination, so it throws.
+    // The answerer's own claim first, so an honest non-holder is refused by its own admission and
+    // the operator-facing reason names that. This is the CHEAP half of the test and not the binding
+    // one: a responder that does not hold the lease can assert `true` here just as easily.
     if (!answer.holdsDeliveryLease)
       throw new Error(
         "the delivery-admin rail was answered by a responder that does not hold this space's delivery lease, so its SecretStore is not the store the daemon reloads from - nothing reminted",
+      );
+    // THE BINDING TEST, measured by this manager rather than asserted by the answerer. The lease
+    // row's holder is read here under this manager's own credential; the answerer must BE that
+    // principal. A reply asserting the claim while some other process holds the shard fails here,
+    // which is the case the previous round's shape check could not see. An unreadable row is an
+    // unknown and refuses too: this test may never be satisfied by failing to run.
+    const holder = await this.ep.deliveryLeaseHolder(DELIVERY_SHARD);
+    if (holder === undefined)
+      throw new Error(
+        "this manager could not read the delivery lease row, so it cannot verify that the answering responder is the process that reloads the standing credentials - nothing reminted",
+      );
+    if (holder !== answer.responder)
+      throw new Error(
+        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of this space's delivery lease (${holder}), so its SecretStore is not the store the daemon reloads from - nothing reminted`,
       );
     const daemon = answer.identity;
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) return { kind: "foreign", daemon };
