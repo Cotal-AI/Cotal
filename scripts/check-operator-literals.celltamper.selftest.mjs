@@ -33,7 +33,8 @@
  * this docblock is current, and every other figure in this file carries its own date.
  *
  * #1614 added four cells while this branch sat in review, moving the scanner from 61 to 65 cells
- * and this suite from 149 to 173 checks. That is why the labelled figures below read 61 and 149.
+ * and this suite from 149 to 173 checks; the inline-registry check added in this revision takes
+ * the suite to 175. That is why the labelled figures below read 61 and 149.
  *
  * THE MEASUREMENT. A discriminator is alive only if it can still say NO. For each subject cell we
  * TAMPER the cell's planted subject so the property the secondary asserts is genuinely destroyed,
@@ -936,7 +937,7 @@ const workdir = makeWorkdir();
  * feed `guardSafe` both answers directly, and they assert `makeWorkdir`'s own postcondition.
  *
  * Killed by, each run at this head and each observed red:
- *   `const guardSafe = (path) => true;`  -> exit 1, 172/173, red on the rejecting check BY NAME.
+ *   `const guardSafe = (path) => true;`  -> exit 1, 174/175, red on the rejecting check BY NAME.
  *     This is the one the fixture scores, because `expectRed` needs a named check row to match.
  *   `const guardSafe = (path) => false;` -> exit 1, but it THROWS out of makeWorkdir at module load
  *     ("no usable working directory: a copied scanner would exit 0 having run nothing") before any
@@ -1119,8 +1120,15 @@ try {
   // added to the scanner never had to reach the registry: #1614 added four and the suite stayed
   // green with the registry four entries short, under a comment claiming both directions. A
   // registry that only has to shrink stops describing the thing it indexes without ever going red.
+  // The real reading and BOTH planted controls go through this one function on purpose. An earlier
+  // revision of this check called `compareCellSets` separately for the real comparison and for each
+  // control, and that was measured to be hollow: replacing the real call with a constant
+  // `{ onlyInMarkers: [], onlyInParsed: [] }` left the suite at a full green, because the controls
+  // exercised a different call than the one the verdict was read from. That is this file's own
+  // subject reproduced inside the check meant to close it, so the reading is shared instead.
+  const compareRegistry = (registry, sourceInline) => compareCellSets(registry, sourceInline);
   const inlineRegistry = INLINE_CELLS.map((entry) => entry.name);
-  const registryVsSource = compareCellSets(inlineRegistry, inventory.inline);
+  const registryVsSource = compareRegistry(inlineRegistry, inventory.inline);
   check(
     "inline registry: INLINE_CELLS names exactly the inline cells the inventory finds, in both directions",
     inventory.inline.length > 0
@@ -1130,8 +1138,8 @@ try {
 
   // Both directions get their own planted positive, because a control on one says nothing about the
   // other, and it is the source -> registry direction that was missing and must be shown to bite.
-  const plantedUnregistered = compareCellSets(inlineRegistry, [...inventory.inline, "planted-inline-cell"]);
-  const plantedUnsourced = compareCellSets([...inlineRegistry, "planted-registry-cell"], inventory.inline);
+  const plantedUnregistered = compareRegistry(inlineRegistry, [...inventory.inline, "planted-inline-cell"]);
+  const plantedUnsourced = compareRegistry([...inlineRegistry, "planted-registry-cell"], inventory.inline);
   check(
     "inline registry control: an unregistered inline cell and an unsourced registry name are each reported",
     plantedUnregistered.onlyInParsed.length === 1
