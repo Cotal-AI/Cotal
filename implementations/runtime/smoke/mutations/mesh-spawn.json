@@ -2,7 +2,7 @@
   "suite": [
     "implementations/runtime/smoke/mesh-spawn.smoke.ts"
   ],
-  "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, and a cancelled loser's seat is released by the discharge",
+  "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, a cancelled loser's seat is released by the discharge, and a manager call refused before any effect is re-issued rather than raised as the effect's failure",
   "command": "pnpm smoke:runtime-mesh-spawn",
   "completionMarker": "mesh-spawn.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-spawn.json",
@@ -214,6 +214,24 @@
       "note": "#1616 item 3, identity half, ENACTED RATHER THAN DESCRIBED. This replaces an entry that removed the string \"placement\" from `hashedOptions` in primitives.ts: that is METADATA, and the cell it named (`PRIMITIVES.spawn.hashedOptions.includes(\"placement\")`) reads the same metadata back, so the pair graded one array against itself. Measured at this head: deleting THIS projection leaves that metadata cell evaluating to `true` while a real retargeted replay stops diverging, so the mutant could pass while the behaviour it claimed to grade was broken. The anchor is now the projection the runtime actually hashes, and the cell is the LIVE replay in 3e row 5, which drives a run onto one manager instance and re-drives the same run id from a source whose only edit is the instance id. With the projection gone the two input hashes match, the recorded entry replays, and no divergence is raised. `mesh-spawn.smoke.ts` imports `@cotal-ai/lang` as a PACKAGE (dist), so the lang build in `command` is what puts the mutant in front of the suite and the `afterRestore` rebuild is what keeps a mutant-built dist out of the tree.",
       "command": "pnpm --filter @cotal-ai/lang build && pnpm smoke:runtime-mesh-spawn",
       "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "the not-executed bind refusal is returned to the effect instead of re-issued",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) return reply;",
+      "replace": "      return reply;",
+      "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "note": "#1638. The repair removed: every manager call hands the responder's pre-effect refusal back to the effect, so a spawn the class queue gave to another member raises L4000 and ends the run. The forced arm binds an incarnation nothing serves, so the refusal is guaranteed and the red is deterministic rather than a queue draw."
+    },
+    {
+      "name": "the re-issue keeps the stale class handle instead of re-describing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;\n      this.managerService = undefined;",
+      "replace": "      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;",
+      "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "note": "#1638, the other half. The call is re-issued but the handle carrying the refused bind is kept, so every attempt declares the same incarnation and meets the same refusal. It reds because the forced arm binds an incarnation nothing serves; a repair that re-issues without re-describing is indistinguishable from a working one whenever the queue happens to cooperate."
     }
   ]
 }
