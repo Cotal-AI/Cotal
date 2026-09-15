@@ -27,7 +27,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parsePid, probeLiveness } from "@cotal-ai/workspace";
 
 /**
@@ -53,6 +53,45 @@ function physical(p: string): string {
         `path, which cannot see a physical .cotal ancestor`,
       { cause: e },
     );
+  }
+}
+
+/**
+ * The physical path of a target that MAY NOT EXIST YET: the deepest existing ancestor, canonicalized,
+ * with the still-missing tail appended.
+ *
+ * WHY THIS IS NOT {@link physical}. `physical` answers ENOENT with the LEXICAL path, and that is
+ * right for the job it was written for — finding a `.cotal` ancestor of a candidate base that does
+ * not exist yet, where a missing directory is a perfectly good candidate. It is NOT right for a
+ * delete guard, and a delete guard inheriting that resolver is the whole defect: a lexical string
+ * cannot see a symlink, so if any PARENT of the missing target points outside the root, the spelling
+ * still looks contained. Measured at 87fe6991d: with `root/link -> <outside>`, `root/link/exists`
+ * was REFUSED and `root/link/future` was ACCEPTED, and a file under the real `<outside>` was
+ * destroyed through the accepted path. Same shape, opposite verdicts, and the accepted one is the
+ * dangerous one.
+ *
+ * The symlink ITSELF exists, so walking up to the deepest thing that does exist and canonicalizing
+ * THAT sees through it. Non-ENOENT errnos still propagate: `physical` fails closed and so does this.
+ */
+function physicalDeepest(p: string): string {
+  const abs = resolve(p);
+  const missing: string[] = [];
+  let dir = abs;
+  for (;;) {
+    try {
+      const real = realpathSync.native(dir);
+      // The tail is re-joined onto a CANONICAL base, then resolved again: a `..` among the missing
+      // segments must not survive the join and walk back out of the root it was just checked against.
+      return missing.length === 0 ? real : resolve(join(real, ...missing));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      const parent = dirname(dir);
+      // `/` itself failed to resolve, so there is no existing ancestor to stand on and nothing to be
+      // canonical about. Fall back to the lexical form rather than looping forever.
+      if (parent === dir || !isAbsolute(dir)) return abs;
+      missing.unshift(basename(dir));
+      dir = parent;
+    }
   }
 }
 
@@ -100,6 +139,12 @@ export function cotalRootCaptor(start: string): string | null {
  * resolves away physically. STRICT, because deleting the root itself IS the incident, so equal-to
  * is a refusal and not a pass.
  *
+ * A MISSING TARGET IS RESOLVED THROUGH ITS DEEPEST EXISTING ANCESTOR ({@link physicalDeepest}), not
+ * through its spelling. `rmSync(…, { force: true })` is willing to be handed an already-absent path,
+ * so "it does not exist" cannot be assumed away here — and a target that does not exist YET is
+ * exactly the one a plain lexical fallback certifies while a symlinked parent carries the delete
+ * outside the root.
+ *
  * THROWS rather than declining. A leaked scratch is recoverable and a wrong delete is not, so a
  * cleanup that cannot PROVE containment must fail its suite rather than quietly skip and let the
  * caller believe it tidied up.
@@ -111,7 +156,7 @@ export function assertContainedIn(target: string, root: string, what = "delete t
   // is about `.cotal` ancestors and would send the reader to the wrong defect.
   let t: string;
   try {
-    t = physical(target);
+    t = physicalDeepest(target);
   } catch (e) {
     throw new Error(
       `refusing to recursively delete ${what} ${target}: its physical path could not be established ` +
