@@ -196,20 +196,28 @@ try {
     missingEscapes,
   );
 
-  // FAIL CLOSED ON AN ERRNO THAT IS NOT ENOENT. Walking up to the deepest existing ancestor must not
-  // turn "I could not resolve this" into "it does not exist yet, so trust its spelling": that is the
-  // same silent downgrade `physical` documents, reintroduced one level down.
+  // FAIL CLOSED ON AN ERRNO THAT IS NOT ENOENT. Walking the spelling must not turn "I could not
+  // resolve this" into "it does not exist yet, so trust its spelling": that is the same silent
+  // downgrade `physical` documents, reintroduced one level down.
   //
   // ELOOP, via a symlink cycle, rather than EACCES via chmod 000: a chmod-based cell grades nothing
   // when the suite runs as root (CI containers routinely do), passing for the wrong reason. A cycle
   // is refused by the kernel for every uid.
+  //
+  // THE ERRNO IS GRADED, NOT JUST THE REFUSAL, and that is what makes this cell bite. A cycled
+  // symlink EXISTS, so `lstat` succeeds on it and the dangling-symlink branch would ALSO refuse it —
+  // just with the wrong diagnosis, blaming a missing referent for what is really a cycle. Measured:
+  // with the non-ENOENT propagation disarmed the target was still refused and this cell still passed
+  // until it began requiring the errno by name, which made that mutant a survivor reading as
+  // coverage. Naming the errno is the behaviour here, because it is what sends the reader to the
+  // right defect.
   const cyclic = join(root, "cycle-a");
   symlinkSync(join(root, "cycle-b"), cyclic);
   symlinkSync(cyclic, join(root, "cycle-b"));
   const unresolvable = refusal(() => assertContainedIn(join(cyclic, "future"), root));
   check(
     "a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling",
-    unresolvable !== null && /could not be established/.test(unresolvable),
+    unresolvable !== null && /could not be established/.test(unresolvable) && /\bELOOP\b/.test(unresolvable),
     unresolvable,
   );
 
