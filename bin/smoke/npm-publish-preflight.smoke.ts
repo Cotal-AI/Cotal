@@ -1135,6 +1135,30 @@ check(
 // reads all fail to satisfy it. There is no guard to relax: the laundering call is simply never
 // looked at.
 //
+// WHICH declaration that call binds to is asked of the COMPILER'S BINDER, not of a scope walk
+// written here. The retired version walked the callee's scope chain itself, testing each enclosing
+// SourceFile, Block, function-like and catch clause for a same-name declaration. Every revision of
+// that walk was a better ENUMERATION of the ways a name can be rebound, and every revision was
+// defeated by a shape it did not enumerate. Measured at the head that shipped it, on a tree where
+// all 143 cells were green:
+//
+//   a same-name predicate in the ladder's DESTRUCTURED parameter list  ->  143 passed, 0 failed
+//   `{ var isUnknownRegistry = ... }` in a sibling block, hoisted      ->  143 passed, 0 failed
+//
+// The first escaped because the walk filtered parameters on `ts.isIdentifier(parameter.name)` and
+// the shipped ladder's only parameter is an ObjectBindingPattern, so every binding inside it was
+// invisible. The second escaped because `var` hoists to the function scope while the walk read
+// only the statements of the block it was handed. Both are live shadows: the second changes what a
+// real 404/404/410 census returns, from inconclusive to incomplete.
+//
+// There are more shapes than a list here will hold, so this reading stops listing them.
+// `getSymbolAtLocation` on the call's expression is the answer the language itself uses, aliases
+// are followed with `getAliasedSymbol` so a re-export resolves to its origin, and the callee is
+// accepted only when that symbol IS the module's exported symbol of the same name, which must have
+// exactly one declaration and that declaration must be the top-level one. Refusal is by SYMBOL
+// IDENTITY. Binding patterns, `var` hoisting, parameters, catch clauses and every shape not
+// thought of here are already modelled by the binder, because it is the binder that decides them.
+//
 // `rows` is consumed too (`rows.length`) and is deliberately NOT a bucket binding: its initialiser
 // is `[]`, not a `.filter()` call. Partitioning on the initialiser SHAPE rather than on the binding
 // NAME is what makes this survive a rename. A ladder that computes `absentRows` inline and reads
@@ -1142,12 +1166,49 @@ check(
 // here even though a correct `absent` binding is still declared and still calls isAbsentRegistry
 // one line above. That variant is graded below, because it is the same laundering with the dead
 // call made live, and a fix that only knew the name `absent` would miss it.
+// A Program over the single module, so the reading below can ask the checker which declaration a
+// call binds to. Nothing outside this source is resolved: `noResolve` and `noLib` keep the program
+// to the one file, so the answer is about this text and never about whatever happens to sit on disk
+// beside it. The SourceFile handed to the host is the same node the reading walks, so a symbol the
+// checker returns and a node this file inspects are the same objects.
+const CHECKED_MODULE_FILENAME = "preflight-npm-publish.mjs";
+function checkedModule(source: string): { parsed: ts.SourceFile; checker: ts.TypeChecker } {
+  const parsed = ts.createSourceFile(CHECKED_MODULE_FILENAME, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const host: ts.CompilerHost = {
+    getSourceFile: (name) => (name === CHECKED_MODULE_FILENAME ? parsed : undefined),
+    getDefaultLibFileName: () => "lib.d.ts",
+    writeFile: () => {},
+    getCurrentDirectory: () => "/",
+    getCanonicalFileName: (name) => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+    fileExists: (name) => name === CHECKED_MODULE_FILENAME,
+    readFile: (name) => (name === CHECKED_MODULE_FILENAME ? source : undefined),
+  };
+  const program = ts.createProgram([CHECKED_MODULE_FILENAME], {
+    allowJs: true,
+    noResolve: true,
+    noLib: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    types: [],
+  }, host);
+  return { parsed: program.getSourceFile(CHECKED_MODULE_FILENAME)!, checker: program.getTypeChecker() };
+}
+
+// An `export { f }` clause produces an ALIAS symbol, which is a different object from the symbol
+// the declaration creates. Comparing those two by identity would refuse a module that exports its
+// predicates in a trailing clause rather than inline, which is a refactor this pin has no business
+// forbidding, so both sides are followed to their origin before they are compared.
+const unalias = (checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol =>
+  (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
+
 type BucketBinding = { name: string; callee: string | null; initializer: string; calleeWhy: string | null };
 type LadderBindingEnumeration =
   | { bindings: BucketBinding[]; why: null }
   | { bindings: null; why: string };
 function ladderConsumedBuckets(source: string): LadderBindingEnumeration {
-  const parsed = ts.createSourceFile("preflight-npm-publish.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const { parsed, checker } = checkedModule(source);
   const located = soleTopLevelFunction(parsed, "preflightNpmPublish");
   if (located.fn === null) return { bindings: null, why: located.why };
   // The ladder's own statement list, not a recursive walk. A declaration nested in a block, in a
@@ -1162,62 +1223,33 @@ function ladderConsumedBuckets(source: string): LadderBindingEnumeration {
             (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
           )
         : []);
-  const declarationsInStatements = (statements: readonly ts.Statement[], name: string): ts.Declaration[] =>
-    statements.flatMap<ts.Declaration>((statement) => {
-      if (ts.isVariableStatement(statement)) {
-        return statement.declarationList.declarations.filter(
-          (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
-        );
-      }
-      if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name?.text === name) {
-        return [statement];
-      }
-      return [];
-    });
-  const topLevelExport = (name: string): { declaration: ts.Declaration | null; why: string | null } => {
-    const matches = parsed.statements.flatMap((statement) => {
-      if (!ts.isVariableStatement(statement)) return [];
-      return statement.declarationList.declarations
-        .filter((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name)
-        .map((declaration) => ({ declaration, statement }));
-    });
+  // An export the module declares under a name, as ONE symbol. `getExportsOfModule` is the
+  // checker's own export table, so `export const f = ...`, a separate `export { f }`, and a
+  // re-export all arrive here the same way, and an alias is followed to the thing it names rather
+  // than compared as the alias record.
+  const moduleSymbol = checker.getSymbolAtLocation(parsed);
+  const moduleExports = moduleSymbol ? checker.getExportsOfModule(moduleSymbol) : [];
+  const exportedSymbol = (name: string): { symbol: ts.Symbol | null; why: string | null } => {
+    const matches = moduleExports.filter((exported) => exported.name === name);
     if (matches.length !== 1) {
+      return { symbol: null, why: `${name}: ${matches.length} module exports found under that name, and exactly 1 is required` };
+    }
+    const target = unalias(checker, matches[0]);
+    const declarations = target.declarations ?? [];
+    if (declarations.length !== 1) {
       return {
-        declaration: null,
-        why: `${name}: ${matches.length} top-level variable declarations found, and exactly 1 exported declaration is required`,
+        symbol: null,
+        why: `${name}: the export resolves to a symbol with ${declarations.length} declarations, and exactly 1 is required`
+          + ` (0 means nothing declares it here; 2 or more means which declaration ships is ambiguous)`,
       };
     }
-    const exported = matches[0].statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
-    if (!exported) return { declaration: null, why: `${name}: the sole top-level variable declaration is not exported` };
-    return { declaration: matches[0].declaration, why: null };
-  };
-  const declarationsInScope = (scope: ts.Node, name: string): ts.Declaration[] => {
-    if (ts.isSourceFile(scope) || ts.isBlock(scope)) return declarationsInStatements(scope.statements, name);
-    if (ts.isFunctionLike(scope)) {
-      return scope.parameters.filter(
-        (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === name,
-      );
+    const declaration = declarations[0];
+    if (declaration.parent === undefined || !ts.isVariableDeclarationList(declaration.parent)
+      || declaration.parent.parent === undefined || !ts.isVariableStatement(declaration.parent.parent)
+      || declaration.parent.parent.parent !== parsed) {
+      return { symbol: null, why: `${name}: the export's sole declaration is not a top-level variable declaration in this module` };
     }
-    if (ts.isCatchClause(scope) && scope.variableDeclaration
-      && ts.isIdentifier(scope.variableDeclaration.name) && scope.variableDeclaration.name.text === name) {
-      return [scope.variableDeclaration];
-    }
-    return [];
-  };
-  const resolveCallee = (identifier: ts.Identifier): { declaration: ts.Declaration | null; why: string | null } => {
-    for (let current: ts.Node | undefined = identifier.parent; current; current = current.parent) {
-      if (!ts.isSourceFile(current) && !ts.isBlock(current) && !ts.isFunctionLike(current) && !ts.isCatchClause(current)) continue;
-      const matches = declarationsInScope(current, identifier.text);
-      if (matches.length === 0) continue;
-      if (matches.length > 1) {
-        return {
-          declaration: null,
-          why: `${identifier.text}: ${matches.length} same-name declarations found in one scope on the callee's scope chain`,
-        };
-      }
-      return { declaration: matches[0], why: null };
-    }
-    return { declaration: null, why: `${identifier.text}: no declaration resolves on the callee's scope chain` };
+    return { symbol: target, why: null };
   };
   const verdict = declarationsOf("registryVerdict");
   if (verdict.length !== 1) {
@@ -1272,14 +1304,19 @@ function ladderConsumedBuckets(source: string): LadderBindingEnumeration {
     let calleeWhy: string | null = "the filter callback body is not a direct identifier call";
     if (ts.isCallExpression(arrow.body) && ts.isIdentifier(arrow.body.expression)) {
       const identifier = arrow.body.expression;
-      const exported = topLevelExport(identifier.text);
-      const resolved = resolveCallee(identifier);
-      if (exported.declaration === null) {
+      const exported = exportedSymbol(identifier.text);
+      // The binder's answer for THIS call site, not a lookup this file re-implements.
+      const raw = checker.getSymbolAtLocation(identifier);
+      const resolved = raw ? unalias(checker, raw) : null;
+      if (resolved === null) {
+        calleeWhy = `${identifier.text}: the checker resolves no symbol for the consumed call's callee`;
+      } else if ((resolved.declarations ?? []).length !== 1) {
+        calleeWhy = `${identifier.text}: the consumed call's callee resolves to a symbol with `
+          + `${(resolved.declarations ?? []).length} declarations, and exactly 1 is required`;
+      } else if (exported.symbol === null) {
         calleeWhy = exported.why;
-      } else if (resolved.declaration === null) {
-        calleeWhy = resolved.why;
-      } else if (resolved.declaration !== exported.declaration) {
-        calleeWhy = `${identifier.text}: the consumed call resolves to a same-name declaration in the function's scope chain, not the top-level exported declaration`;
+      } else if (resolved !== exported.symbol) {
+        calleeWhy = `${identifier.text}: the consumed call's callee resolves to a different symbol than the top-level exported declaration`;
       } else {
         callee = identifier.text;
         calleeWhy = null;
@@ -1304,7 +1341,7 @@ const BUCKET_PREDICATE_BY_NAME = [
 ] as const;
 for (const [bucket, predicate] of BUCKET_PREDICATE_BY_NAME) {
   check(
-    `the ${bucket} rung's consumed callee resolves to the top-level exported ${predicate} declaration with no same-name declaration shadowing it`,
+    `the ${bucket} rung's consumed callee resolves by symbol identity to the module's exported ${predicate}, whose sole declaration is the top-level one`,
     consumedCallees.filter((callee) => callee === predicate).length === 1,
     { callees: consumedCallees, bindings: consumedBindings, refusal: consumedLadder.why },
   );
@@ -1409,15 +1446,88 @@ for (const [index, [bucket, predicate]] of BUCKET_PREDICATE_BY_NAME.entries()) {
   const shadowedFlow = ladderConsumedBuckets(shadowedSkeleton);
   const shadowedBinding = shadowedFlow.bindings?.find((binding) => binding.name === bucket);
   check(
-    `scope-resolution control: a same-name local ${predicate} declaration is refused on the ${bucket} binding while the other exported bindings still resolve`,
+    `symbol-identity control: a same-name local ${predicate} declaration is refused on the ${bucket} binding while the other exported bindings still resolve`,
     shadowedFlow.bindings !== null
       && shadowedFlow.bindings.length === 3
       && shadowedBinding?.callee === null
-      && shadowedBinding.calleeWhy?.includes("same-name declaration in the function's scope chain") === true
+      && shadowedBinding.calleeWhy?.includes("resolves to a different symbol than the top-level exported declaration") === true
       && shadowedFlow.bindings.filter((binding) => binding.name !== bucket).every((binding) => binding.callee !== null),
     { bindings: shadowedFlow.bindings, refusal: shadowedFlow.why },
   );
 }
+// THE PLACEMENTS THE RETIRED SCOPE WALK COULD NOT SEE, graded here on the skeleton so this file
+// records what changed and why rather than only that something changed. Neither of these is a new
+// scope kind added to a list: both are inputs on which the binder is asked the same single
+// question, and both would need a separate hand-written rule under the retired walk. They are
+// controls on the instrument; the shipped tree is graded by the three rung cells above, and the
+// fixture carries one mutant per placement so a regression reds there too.
+//
+// `var` hoists out of the block it is written in and contends at the FUNCTION scope, which is the
+// scope the rung's call is in. The retired walk read a block's own statements and the enclosing
+// function's parameters, and so attributed this declaration to the block and never to the function.
+const HOISTED_VAR_SHADOWS = [
+  ["unknown", "isUnknownRegistry", "  { var isUnknownRegistry = (registry) => registry.startsWith(\"unknown:\") && registry !== \"unknown:410\"; }\n"],
+  ["absent", "isAbsentRegistry", "  { var isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\"; }\n"],
+] as const;
+for (const [bucket, predicate, hoisted] of HOISTED_VAR_SHADOWS) {
+  const index = BUCKET_PREDICATE_BY_NAME.findIndex(([name]) => name === bucket);
+  const hoistedLines = [...cleanLines];
+  hoistedLines[index] = hoisted + hoistedLines[index];
+  const hoistedFlow = ladderConsumedBuckets(ladderSkeleton(hoistedLines[0], hoistedLines[1], hoistedLines[2]));
+  const hoistedBinding = hoistedFlow.bindings?.find((binding) => binding.name === bucket);
+  check(
+    `symbol-identity control: a sibling-block var ${predicate} hoists to the ladder's own scope and is refused on the ${bucket} binding, which the retired scope walk attributed to the block and missed`,
+    hoistedFlow.bindings !== null
+      && hoistedFlow.bindings.length === 3
+      && hoistedBinding?.callee === null
+      && hoistedBinding.calleeWhy?.includes("resolves to a different symbol than the top-level exported declaration") === true
+      && hoistedFlow.bindings.filter((binding) => binding.name !== bucket).every((binding) => binding.callee !== null),
+    { bindings: hoistedFlow.bindings, refusal: hoistedFlow.why },
+  );
+}
+// And the shipped ladder's actual parameter shape. `preflightNpmPublish` takes ONE destructured
+// options object, so a same-name predicate given a default inside that pattern is a live binding
+// over the whole function body. The retired walk filtered parameters on `ts.isIdentifier(name)`,
+// and an ObjectBindingPattern is not an identifier, so every binding inside it was invisible: the
+// absent rung printed a green tick claiming no shadow while a widened shadow was in fact bound.
+const destructuredParameterSkeleton = ladderSkeleton(cleanLines[0], cleanLines[1], cleanLines[2])
+  .split("export async function preflightNpmPublish(rows) {\n")
+  .join("export async function preflightNpmPublish({ rows, isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\" }) {\n");
+const destructuredParameterFlow = ladderConsumedBuckets(destructuredParameterSkeleton);
+const destructuredParameterBinding = destructuredParameterFlow.bindings?.find((binding) => binding.name === "absent");
+check(
+  "positive control: the destructured-parameter skeleton really rebinds isAbsentRegistry in the ladder's parameter list, so the cell below is not grading an unchanged input",
+  destructuredParameterSkeleton !== cleanLadderSkeleton
+    && destructuredParameterSkeleton.includes("isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\" }) {"),
+  { changed: destructuredParameterSkeleton !== cleanLadderSkeleton },
+);
+check(
+  "symbol-identity control: a same-name isAbsentRegistry inside the ladder's destructured parameter list is refused on the absent binding, which the retired scope walk could not see because the parameter name is a binding pattern",
+  destructuredParameterFlow.bindings !== null
+    && destructuredParameterFlow.bindings.length === 3
+    && destructuredParameterBinding?.callee === null
+    && destructuredParameterBinding.calleeWhy?.includes("resolves to a different symbol than the top-level exported declaration") === true
+    && destructuredParameterFlow.bindings.filter((binding) => binding.name !== "absent").every((binding) => binding.callee !== null),
+  { bindings: destructuredParameterFlow.bindings, refusal: destructuredParameterFlow.why },
+);
+// The other direction, and the reason symbol identity is compared after following aliases rather
+// than as raw symbols. A module that declares its predicates plainly and exports them in a trailing
+// `export { ... }` clause binds the rung to the SAME thing; the export table entry is an alias
+// record and is a different object. Comparing the raw symbols would refuse this clean module, which
+// is a false red on a legitimate refactor.
+const aliasExportSkeleton = ladderSkeleton(cleanLines[0], cleanLines[1], cleanLines[2])
+  .split("export const ").join("const ")
+  .split("export async function preflightNpmPublish(rows) {\n")
+  .join("export { isUnknownRegistry, isPresentRegistry, isAbsentRegistry };\nexport async function preflightNpmPublish(rows) {\n");
+const aliasExportFlow = ladderConsumedBuckets(aliasExportSkeleton);
+check(
+  "an export clause rather than an inline export modifier still resolves all three rungs, so following aliases is what makes symbol identity the right comparison rather than a stricter one",
+  aliasExportSkeleton !== cleanLadderSkeleton
+    && aliasExportSkeleton.includes("export { isUnknownRegistry, isPresentRegistry, isAbsentRegistry };")
+    && JSON.stringify([...(aliasExportFlow.bindings ?? []).map((binding) => binding.callee)].sort())
+      === JSON.stringify(["isAbsentRegistry", "isPresentRegistry", "isUnknownRegistry"]),
+  { bindings: aliasExportFlow.bindings, refusal: aliasExportFlow.why },
+);
 check(
   "the synthetic skeleton and shipped module resolve the same three top-level exported predicate declarations without same-name local shadows, so the laundering cells below grade a stand-in that still matches the ladder that ships",
   cleanLadderCallees.length === 3
