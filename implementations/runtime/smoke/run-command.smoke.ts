@@ -284,9 +284,72 @@ let P = "";
   c("and the concurrent drives did drive: activations advanced past the original", tokens.length > 2, tokens);
 }
 
+// ── 9) revoke: the table learns what the admission store already knows ───────────────────────
+//
+// A revocation is a create-only marker in the admission store, and nothing rewrites the run record
+// (SPEC 14.8). The record is written only by a driver, so a driver that dies mid-run leaves
+// `running` behind with nothing left to write anything else. `resume` reads the marker and
+// refuses; the table read the record alone and listed a revoked run as live for as long as it
+// existed, which an operator counting capacity from it counts as capacity.
+//
+// Driven against a run that is genuinely mid-flight rather than a completed one: the checkpoint
+// program holds it open, so the record really does say `running` while these cells read it, and
+// the control below is a live `running` row rather than an arranged one.
+{
+  reset();
+  const driven = wf(["start"], { file: CHECKPOINT }).catch(() => undefined);
+  let R: string | undefined;
+  for (let i = 0; i < 100 && R === undefined; i += 1) { await wait(50); R = startedId(); }
+  const rid = R ?? "";
+  let openPause = false;
+  for (let i = 0; i < 100 && !openPause; i += 1) {
+    await wait(200);
+    const back = await journal(rid).catch(() => undefined);
+    for (const r of back?.records ?? []) {
+      if (r.record.kind !== "step") continue;
+      const e = r.record.entry as JournalEntry;
+      if (e.kind === "checkpoint" && e.state === "pending") openPause = true;
+    }
+  }
+  c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
+
+  // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
+  // table, one read before the marker exists.
+  reset();
+  await wf(["ps"]);
+  const before = captured().split("\n").find((l) => l.startsWith(rid)) ?? "";
+  c("ps prints running for the run before it is revoked", before.includes("running"), before);
+
+  reset();
+  await wf(["revoke", rid], { by: "smoke-operator", reason: "broker outage" });
+  c("revoke acknowledges with the revoker and the reason",
+    captured().includes("revoked by smoke-operator (broker outage)"), captured());
+  c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
+    captured().includes(`run ps now lists ${rid} as revoked`), captured());
+
+  reset();
+  await wf(["ps"]);
+  const after = captured().split("\n").find((l) => l.startsWith(rid)) ?? "";
+  c("ps prints revoked for it afterwards, whatever the record says",
+    after.includes("revoked") && !after.includes("running"), after);
+  c("...with the revoker and the reason under the table, since the columns carry neither",
+    captured().includes(`${EP}/${rid}: revoked by smoke-operator (broker outage)`), captured());
+
+  // NO TERMINAL FACT. A revoke must not make a run `failed` or `released`: no host drove it there,
+  // the journal owns the facts, and the change above is display.
+  const revokedRec = await record(rid);
+  c("and the run record is untouched, so no host is credited with an outcome it never wrote",
+    revokedRec?.status?.value.state === "running", revokedRec?.status?.value.state);
+
+  // Settle the held driver so the suite leaves no drive behind it. Bounded, and its result is not
+  // a cell: what a revoked run's answer does is decided at the effect, and is graded elsewhere.
+  await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
+  await Promise.race([driven, wait(15_000)]);
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 23;
+const DECLARED = 30;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

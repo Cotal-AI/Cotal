@@ -174,6 +174,12 @@ takeover or manager restart continues the run. Revoking twice is not an error, a
 reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
+`ps` reads the marker beside each run record and prints `revoked` for a run that carries one,
+whatever state the record itself holds, with the revoker and the reason under the table. The
+record is display only here: a revoke writes no terminal state, because no host drove the run to
+one and the journal owns the facts. A run whose marker could not be read keeps the state its
+record carries and is named under the table as unchecked.
+
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
 `journal` prints what an open pause asks beneath its step key, which is the address `answer` takes
