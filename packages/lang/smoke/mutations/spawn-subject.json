@@ -2,7 +2,7 @@
   "suite": [
     "packages/lang/smoke/options.smoke.ts"
   ],
-  "guard": "An effect's option bag is read as the table says: every accepted key is forwarded to the handler, the hashed ones decide divergence on a resume, and a subject the table cannot read is refused rather than coerced",
+  "guard": "An effect's option bag is read as the table says: every accepted key is forwarded to the handler, the hashed ones decide divergence on a resume, and a subject the table cannot read is refused rather than coerced; and a `placement` that is not an { endpoint, instanceId } pair of non-empty strings is refused by name before the identity projection reads into it",
   "command": "pnpm smoke:lang-options",
   "completionMarker": "options.smoke:",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/spawn-subject.json   # --config resolves against the repo root, never the cwd",
@@ -10,7 +10,13 @@
     "Batch B2 (2026-09-03), from a full-code audit: the record form of `spawn` read its persona",
     "through `String(...)`, so `spawn({ model: \"m\" })` resolved to the literal persona",
     "\"undefined\" and carried it into the input hash, the step name and the handler's request.",
-    "A missing persona is `undefined` crossing an effect boundary, which is what L3041 names."
+    "A missing persona is `undefined` crossing an effect boundary, which is what L3041 names.",
+    "",
+    "#1628 (2026-09-15): `option()` guards the option BAG being null, not the VALUE it holds, so",
+    "`placement: null` was forwarded, cast, and dereferenced by the step-identity projection as a raw",
+    "TypeError - with no code, no effect kind and no journal entry, at the exact place the runtime's",
+    "own named refusal was written to speak. A primitive, an empty record and a half-filled record",
+    "were quieter and worse: forwarded too, projecting two undefined fields into the identity."
   ],
   "mutations": [
     {
@@ -21,6 +27,36 @@
       "expectRed": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
       "cell": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
       "note": "Measured 2026-09-03: KILLED. Thrown red: `Error: FAIL: a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\" - {\"code\":\"L4000\",\"kind\":\"handler-fault\"}` — without the refusal the persona \"undefined\" reaches the handler and faults there instead, which is the whole point. Its completion is named on an EARLY printed line rather than the suite summary: options.smoke's `ok` THROWS on the first failure, so a killed mutant never reaches `options.smoke:` and a summary marker would grade every kill here as inconclusive.",
+      "completionMarker": "ok the object form forwards the model"
+    },
+    {
+      "name": "the placement guard is removed entirely",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (placementValue !== undefined && !isPlacementPair(placementValue))",
+      "replace": "      if (false)",
+      "expectRed": "`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
+      "cell": "`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
+      "note": "The whole guard disarmed: `placement: null` is forwarded again and the identity projection dereferences `.endpoint` on it, which is the exact raw TypeError this fix exists to replace with a named refusal. Every shape cell reds, and the FIRST one printed is the null one, which is why the completionMarker below is an early line rather than the suite summary: options.smoke's `ok` THROWS on first failure, so a killed mutant never reaches `options.smoke:`.",
+      "completionMarker": "ok the object form forwards the model"
+    },
+    {
+      "name": "the placement guard admits null, a primitive and an array",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  if (v === null || typeof v !== \"object\" || Array.isArray(v)) return false;",
+      "replace": "  if (v === null) return true;\n  if (typeof v !== \"object\" || Array.isArray(v)) return true;",
+      "expectRed": "`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
+      "cell": "`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
+      "note": "The KIND half of the shape test inverted while the key half survives. This is the mutant that a null-only fix would survive and a shape fix does not: `null`, a primitive and an array are all admitted as placements again, so the null crashes in the projection and the other two project two undefined fields into the step identity. A guard that only special-cased `null` would still red the null cell here, which is why the primitive and array cells exist beside it.",
+      "completionMarker": "ok the object form forwards the model"
+    },
+    {
+      "name": "a half-named placement is accepted as a pair",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  return typeof r.endpoint === \"string\" && r.endpoint.length > 0\n    && typeof r.instanceId === \"string\" && r.instanceId.length > 0;",
+      "replace": "  return typeof r.endpoint === \"string\" || typeof r.instanceId === \"string\";",
+      "expectRed": "a partial placement is refused, and the message names the MISSING half rather than the given one",
+      "cell": "a partial placement is refused, and the message names the MISSING half rather than the given one",
+      "note": "BOTH-HALVES weakened to either-half, and the emptiness rule dropped with it. `{ endpoint: \"m\" }` is then accepted and projects `instanceId: undefined` into the step identity: the run continues pinned to a target it only half names. This is the quiet shape the original defect had, as distinct from the loud null, so it is graded by its own cell and its own mutant rather than folded into the null's.",
       "completionMarker": "ok the object form forwards the model"
     }
   ]
