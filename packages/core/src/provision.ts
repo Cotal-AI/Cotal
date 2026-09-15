@@ -70,7 +70,11 @@ import {
   MEMBERSHIP_INBOX_PREFIX,
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
+  livenessSubject,
+  livenessServeFilter,
+  livenessReplyGrant,
 } from "./subjects.js";
+import { LIVENESS_PLANES } from "./liveness.js";
 import {
   epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
   operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
@@ -1299,6 +1303,20 @@ export function permissionsFor(
     // daemon (NOT the manager). The reply rides this same subtree (`ctl.delivery.<o>.<a>.reply.<n>`, in
     // sub.allow below) so the daemon can answer without broad inbox-publish — see CONTROL_DELIVERY.
     controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor),
+    // THE PEER-READABLE LIVENESS PROBE (#1577) — one publish row per plane, each pinned to THIS
+    // agent's own principal slots, so a peer asks as itself and can never forge a probe from
+    // another. This is the row that makes liveness askable by a NON-OWNER: without it, the only
+    // hypothesis a peer could form for any failure was "my credentials are wrong", because the
+    // subjects that answer "is the manager alive" were owner-only.
+    //
+    // WHAT THIS DOES NOT GRANT, which is the half that keeps it from being a back door. It is
+    // PUBLISH ON A REQUEST SUBJECT, not a read of anything. The agent gains NO grant on the manager
+    // bucket (still absent by deliberate omission, below) and NO new read of the delivery bucket.
+    // The answer it can obtain is one enum per plane, because the responder reduces the lease row
+    // before replying and the row never crosses the wire. It cannot subscribe the SERVE filter
+    // either: `live.<plane>.*.*` is not in `sub.allow`, so an agent cannot impersonate a responder
+    // and answer a peer's probe with a comforting lie.
+    ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, pr.owner, pr.actor)),
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
     // STREAM.INFO: CHAT (join watermark, recall drop-marker, channel-list counts — a documented
@@ -1467,9 +1485,15 @@ export function permissionsFor(
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
+  // Liveness answers (#1577) ride the probe's OWN request subtree, exactly like the delivery
+  // control replies above and for the same reason: the responder answers without needing broad
+  // inbox-publish. One row per plane, pinned to this agent's principal, so it can hear answers to
+  // ITS OWN probes and nothing else — it cannot subscribe a peer's reply lane and harvest answers
+  // addressed elsewhere.
+  const livenessReplies = LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`);
   // Manager control replies ride the v0.4 ep reply rail (in `epSub`, keyed on the caller triple) —
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail (1d).
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...subChat, ...epSub] } };
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...livenessReplies, ...subChat, ...epSub] } };
 }
 
 /** The long-lived SUPERVISOR permission set (closure (ii), residual 2) — the always-on manager daemon
@@ -1517,13 +1541,31 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         // files it requests `reloadCreds` here so adoption is an explicit, auditable event. Self-scoped
         // request subject (its own owner+actor slots), bounded reply subtree in sub.allow below.
         controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor),
+        // LIVENESS REPLIES for the MANAGER plane (#1577), bounded to the `.reply.` leaf under a
+        // caller's own request subject. The supervisor is the natural responder for this plane: it
+        // is the process that HOLDS the manager lease, so it is the one that can answer the
+        // question honestly without anyone else being granted a read of the lease row.
+        //
+        // REPLIES ONLY, exactly like the delivery daemon's `ctl.delivery.*.*.reply.>`. The row stops
+        // at the leaf, so the supervisor cannot publish to the liveness REQUEST subjects themselves
+        // and therefore cannot forge a probe from a peer.
+        livenessReplyGrant(space, "manager"),
       ],
     },
     sub: {
       // Own reply inbox + the delivery-admin reply subtree for its OWN requests. NO chat/inst/dlv
       // native sub (the supervisor reads no feed), NO manager control-tier serve (1d: that moved to
       // the endpoint-serve credential), NO broad `$JS.>`/`$KV.>` (the residual-2 read/admin path is gone).
-      allow: [`_INBOX_${pr.connId}.>`, `${controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor)}.>`],
+      //
+      // PLUS the manager-plane liveness SERVE filter (#1577): `live.manager.*.*`, queue-grouped, so
+      // any credentialed peer's presence probe reaches the lease holder. This is a serve
+      // subscription on a presence-only rail, not a widening of what the supervisor may read: the
+      // request body is empty and the subject carries only the caller's own principal.
+      allow: [
+        `_INBOX_${pr.connId}.>`,
+        `${controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor)}.>`,
+        livenessServeFilter(space, "manager"),
+      ],
     },
   };
 }
@@ -1555,6 +1597,12 @@ function remoteManagerPermissions(
   const gateKey = epgateKey("manager", iid);
   const credPrefix = epcredFamilyPrefix("manager", iid);
   const repairKey = eprepairKey("manager", iid);
+  // The SUPERVISOR actor of the pair, which is the one that runs `Manager.start()` and therefore
+  // the only one that binds the manager plane's liveness responder (`service.ts` hands
+  // `credentials.supervisor` to the manager; the executor gets the instance-scoped registration
+  // surface). The liveness rows below are pinned to it so the executor does not carry authority to
+  // answer a probe it never serves.
+  const isSupervisorActor = pin.actor === `manager_${iid}`;
   const recordKeys = [
     recordSpecKey(RECORD_KINDS.svc, ["manager", iid]),
     recordStatusKey(RECORD_KINDS.svc, ["manager", iid]),
@@ -1589,9 +1637,35 @@ function remoteManagerPermissions(
         `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
         ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),
         `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+        // LIVENESS REPLIES for the MANAGER plane (#1577), bounded to the `.reply.` leaf under a
+        // caller's own request subject — the same row and the same bound as the local supervisor
+        // profile holds.
+        //
+        // WHY THIS PROFILE NEEDS IT AT ALL. `Manager.start()` binds the manager plane's liveness
+        // responder unconditionally, and a remote manager runs the same `start()` under this
+        // credential. Without the serve subscription below the bind is denied, and a peer probing
+        // the manager plane then gets the broker's own no-responders answer, which this surface
+        // grades `unbound` — a definite verdict about the plane, produced by a gap in a credential,
+        // while the remote manager is bound and serving. A surface that exists to stop a failure to
+        // find out being rendered as a finding must not render its own missing grant as one.
+        //
+        // REPLIES ONLY. The row stops at the leaf, so a remote manager cannot publish to the
+        // liveness REQUEST subjects and therefore cannot forge a probe that appears to come from a
+        // peer, exactly as the supervisor row cannot.
+        ...(isSupervisorActor ? [livenessReplyGrant(space, "manager")] : []),
       ],
     },
-    sub: { allow: [`_INBOX_${pr.connId}.>`] },
+    sub: {
+      allow: [
+        `_INBOX_${pr.connId}.>`,
+        // The manager-plane liveness SERVE filter (#1577): `live.manager.*.*`, queue-grouped, so a
+        // credentialed peer's presence probe reaches this instance. A serve subscription on a
+        // presence-only rail and not a widening of what a remote manager may read: the request body
+        // is empty and the subject carries only the caller's own principal. The MANAGER plane only —
+        // this credential cannot serve `delivery`, so each plane still answers for itself.
+        ...(isSupervisorActor ? [livenessServeFilter(space, "manager")] : []),
+      ],
+    },
   };
 }
 
@@ -2512,11 +2586,21 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // The privileged delivery-admin rail (D5 slice 5/6): same replies-only shape. Requests reach the
     // daemon on the sub below; only the supervisor cred can PUBLISH them (nats-server is the boundary).
     `${p}.ctl.delivery-admin.*.*.reply.>`,
+    // LIVENESS REPLIES for the DELIVERY plane (#1577) — same replies-only shape as the two control
+    // rails above. The daemon is the only process that can grade its own responder honestly: it
+    // knows its own incarnation, so a predecessor's `ready:true` corpse in the lease classifies as
+    // stale rather than as its own health. Bounded to the `.reply.` leaf, so it cannot publish to
+    // the request subjects and forge a probe from a peer.
+    livenessReplyGrant(space, "delivery"),
   ];
   const sub = [
     `_INBOX_${pr.connId}.>`,
     `${p}.ctl.delivery.*.*`, // serve the delivery control service (queue-grouped; owner+actor caller slots)
     `${p}.ctl.delivery-admin.*.*`, // serve the privileged admin rail (reloadCreds; eviction executor next)
+    // Serve the delivery plane's liveness probe (#1577), queue-grouped. Presence-only: the handler
+    // reduces the lease row to one enum before replying, so this subscription lets the daemon ANSWER
+    // a peer without any peer gaining a read of the lease.
+    livenessServeFilter(space, "delivery"),
   ];
   return { pub: { allow: pub }, sub: { allow: sub } };
 }

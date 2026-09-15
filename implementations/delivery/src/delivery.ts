@@ -553,6 +553,12 @@ async function runStartedDelivery(
     principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
     reloadStoreIdentity: () => reloadStoreIdentity,
   });
+  // The peer-readable liveness responder (#1577), bound BEFORE the ready flip below and
+  // deliberately so. It answers from the lease at PROBE time, so during the window between binding
+  // the loops and flipping ready it answers `unbound` — which is the truth, and is the whole point:
+  // a surface that only came up once everything was healthy could never report the unhealthy state
+  // it exists to report. Presence only; the lease row never crosses the wire.
+  ep.serveDeliveryLiveness(shard);
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
   // not merely that the single-flight slot was claimed.

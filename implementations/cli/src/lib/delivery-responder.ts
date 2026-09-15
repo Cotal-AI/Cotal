@@ -27,10 +27,20 @@
  * which wraps the read. `--components` must tell a missing lease stream apart from a refused read
  * and reports them as different verdicts, so it does its own read and calls the pure classifier
  * directly. Neither surface grades a lease by any other rule.
+ *
+ * WHERE THE CLASSIFIER NOW LIVES (#1577). The rule itself moved to `@cotal-ai/core`'s `liveness.ts`,
+ * because a THIRD surface needed it: the peer-readable liveness probe, which answers a credentialed
+ * non-owner asking which plane is broken. The two names below are now thin aliases of the core
+ * functions rather than a second copy — a copy would have meant a mutant could red one surface and
+ * leave the other green, which is the exact drift this module was created to prevent. The docblocks
+ * for the rules themselves are on the core definitions.
  */
 import type { DeliveryLeaseInfo } from "@cotal-ai/core";
+import { responderFromLease, responderStateFromReader, type ResponderState } from "@cotal-ai/core";
 
-/** What is known about the responder, as opposed to the process.
+/** What is known about the responder, as opposed to the process. THE definition now lives in core
+ *  ({@link ResponderState}) so the liveness probe and these status surfaces grade identically; this
+ *  alias keeps the CLI's existing spelling.
  *
  *  `unknown` IS A FIRST-CLASS ANSWER AND MUST NOT BE FOLDED INTO `bound`. A lease read can fail for
  *  reasons that say nothing about the daemon (no target resolved, broker unreachable, a denied read
@@ -43,7 +53,7 @@ import type { DeliveryLeaseInfo } from "@cotal-ai/core";
  *  is kept distinct from `unbound` because the OPERATOR'S NEXT MOVE DIFFERS: an unbound responder is
  *  usually still starting and wants waiting, while a stale record wants the TTL to expire (or a real
  *  replacement to take the slot) and is evidence the daemon DIED rather than never arrived. */
-export type DeliveryResponderState = "bound" | "unbound" | "stale" | "unknown";
+export type DeliveryResponderState = ResponderState;
 
 /** The consequence, in the operator's terms rather than the daemon's.
  *
@@ -81,10 +91,7 @@ export function deliveryResponderFromLease(
   lease: DeliveryLeaseInfo | undefined,
   expectedHolder?: string,
 ): DeliveryResponderState {
-  if (lease === undefined) return "unbound";
-  if (lease.ready !== true) return "unbound";
-  if (expectedHolder !== undefined && lease.holder !== expectedHolder) return "stale";
-  return "bound";
+  return responderFromLease(lease, expectedHolder);
 }
 
 /** Read the axis through a caller-supplied lease reader, mapping a FAILED read to `unknown` rather
@@ -98,11 +105,7 @@ export async function deliveryResponderState(
   readLease: () => Promise<DeliveryLeaseInfo | undefined>,
   expectedHolder?: string,
 ): Promise<DeliveryResponderState> {
-  try {
-    return deliveryResponderFromLease(await readLease(), expectedHolder);
-  } catch {
-    return "unknown";
-  }
+  return responderStateFromReader(readLease, expectedHolder);
 }
 
 /** The bare-`status` process row's delivery suffix: what the recorded PROCESS means once the

@@ -350,7 +350,20 @@ const SEAMS: Seam[] = [
   // `find`/`replace` STRINGS in bin/smoke/mutations/attach-open-mode.json, which arrived on main,
   // and it counts because this reader scans text and a mutation body is text that will become
   // code. All three state `tls` explicitly, so the seam itself is unchanged.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 156, untypecheckedSites: 116 },
+  // 156/116 -> 158/118: two smoke-side connections in packages/core/smoke/liveness-peer.smoke.ts,
+  // both in the peer-readable liveness suite (#1577) and both under `smoke/`, so each of the two
+  // counts moves by the same two. Named individually, because a count that moves by the right
+  // amount for the wrong reason is the failure this pin exists to catch:
+  //   • `probeNc` — the fixture's own target control, which proves it is talking to ITS OWN broker
+  //     before it reports on anything (being pointed at another broker looks identical to being
+  //     refused by this one);
+  //   • `rawNc`  — the raw connection that reads a REAL reply frame's key set, since a TypeScript
+  //     type cannot stop a handler attaching an extra field.
+  // Both state `tls` explicitly, so the seam itself is unchanged. The `standaloneConnectOpts` near
+  // the top of that file is the IMPORT and is not a call site; this reader counts calls. The two
+  // are named by IDENTIFIER rather than by line, because a line number in a comment is stale the
+  // next time anything is inserted above it, and then it points a reader at the wrong call.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 158, untypecheckedSites: 118 },
 ];
 
 /**
