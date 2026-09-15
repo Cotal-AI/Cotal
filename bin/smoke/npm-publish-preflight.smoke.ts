@@ -581,6 +581,49 @@ check(
 // mistaken for the outer function's.
 const preflightSource = readFileSync(join(ROOT, "scripts/preflight-npm-publish.mjs"), "utf8");
 
+// Which declaration the enumerator grades is itself a claim, and it used to be an unguarded one.
+// The retired lookup was a recursive `forEachChild` that assigned to `target` on every match, so
+// the LAST declaration named `readExactVersion` anywhere in the file won. A second declaration
+// nested inside any other function therefore replaced the real one silently, and a panel drove
+// exactly that: appending a nested same-name helper with four in-domain returns made the cell
+// read the clean decoy while the real, poisoned function returned an out-of-domain value. The
+// enumeration stayed at four returns, so the printed count offered no signal either.
+//
+// The shipped function is a TOP-LEVEL declaration, so the lookup is restricted to
+// `parsed.statements`. Nothing nested can be selected, because nothing nested is looked at. Zero
+// matches and more than one match are both refusals rather than a silent pick, and the COUNT goes
+// into the reason, because "not found" and "found three" send a reader to different repairs.
+type TopLevelLookup =
+  | { fn: ts.FunctionDeclaration; why: null }
+  | { fn: null; why: string };
+function soleTopLevelFunction(parsed: ts.SourceFile, name: string): TopLevelLookup {
+  const declared = parsed.statements.filter(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  if (declared.length !== 1) {
+    return {
+      fn: null,
+      why: `${name}: ${declared.length} top-level function declarations found, and exactly 1 is required`
+        + ` (0 means the enumerator grades nothing; 2 or more means which one ships is ambiguous)`,
+    };
+  }
+  const [only] = declared;
+  if (!only.body) return { fn: null, why: `${name}: 1 top-level function declaration found, but it has no body to enumerate` };
+  return { fn: only, why: null };
+}
+
+// The boundary the return walk stops at, pinned in ONE place so both halves of the claim are the
+// same predicate. The retired version was a hand-rolled six-way union that omitted
+// `ConstructorDeclaration` and `ClassStaticBlockDeclaration`, so a return inside a local class
+// constructor was attributed to the enclosing function and counted as one of its returns. That is
+// the false-positive direction: it reds a clean source for a value the function never returns.
+// `ts.isFunctionLike` is the compiler's own answer and covers constructors, methods, accessors,
+// function declarations and expressions and arrows. A class static block is NOT function-like to
+// the compiler and so is named separately.
+const isReturnScopeBoundary = (node: ts.Node): boolean =>
+  ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);
+
 // A return is IN DOMAIN only if the parser can prove its value from the syntax alone:
 //   - a string literal exactly "present" or "absent"; or
 //   - any template whose HEAD text begins "unknown:", which is a static prefix guarantee. The
@@ -592,28 +635,22 @@ const preflightSource = readFileSync(join(ROOT, "scripts/preflight-npm-publish.m
 // DOMAIN and reds. Refusing to reason about values the syntax does not pin is the point: an
 // extractor that guesses is an extractor that can be fooled.
 type CensusReturn = { text: string; inDomain: boolean; why: string };
-function censusReturnsOf(source: string): CensusReturn[] | null {
+type CensusEnumeration =
+  | { returns: CensusReturn[]; why: null }
+  | { returns: null; why: string };
+function censusReturnsOf(source: string): CensusEnumeration {
   const parsed = ts.createSourceFile("preflight-npm-publish.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
-  let target: ts.FunctionDeclaration | undefined;
-  parsed.forEachChild(function find(node: ts.Node): void {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === "readExactVersion") target = node;
-    node.forEachChild(find);
-  });
-  if (!target?.body) return null;
-  const isFunctionLike = (node: ts.Node): boolean => ts.isFunctionDeclaration(node)
-    || ts.isFunctionExpression(node)
-    || ts.isArrowFunction(node)
-    || ts.isMethodDeclaration(node)
-    || ts.isGetAccessor(node)
-    || ts.isSetAccessor(node);
+  const located = soleTopLevelFunction(parsed, "readExactVersion");
+  if (located.fn === null) return { returns: null, why: located.why };
+  const target = located.fn;
   const found: ts.ReturnStatement[] = [];
   const walk = (node: ts.Node): void => {
-    if (isFunctionLike(node)) return;
+    if (isReturnScopeBoundary(node)) return;
     if (ts.isReturnStatement(node)) found.push(node);
     node.forEachChild(walk);
   };
-  target.body.forEachChild(walk);
-  return found.map((statement) => {
+  target.body!.forEachChild(walk);
+  const returns = found.map((statement) => {
     const text = statement.getText(parsed);
     const expression = statement.expression;
     if (!expression) return { text, inDomain: false, why: "bare return: yields undefined, which no census bucket claims" };
@@ -632,14 +669,16 @@ function censusReturnsOf(source: string): CensusReturn[] | null {
     }
     return { text, inDomain: false, why: `${ts.SyntaxKind[expression.kind]}: the syntax does not pin the value, so it cannot be proved to land in a bucket` };
   });
+  return { returns, why: null };
 }
 
-const censusReturns = censusReturnsOf(preflightSource);
+const censusEnumeration = censusReturnsOf(preflightSource);
+const censusReturns = censusEnumeration.returns;
 const outOfDomainReturns = (censusReturns ?? []).filter((entry) => !entry.inDomain).map((entry) => `${entry.text} -- ${entry.why}`);
 check(
   `the ${censusReturns?.length ?? 0} return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed`,
   censusReturns !== null && censusReturns.length >= 4 && outOfDomainReturns.length === 0,
-  censusReturns === null ? "readExactVersion was not found as a function declaration in the shipped source" : outOfDomainReturns,
+  censusReturns === null ? censusEnumeration.why : outOfDomainReturns,
 );
 
 // The extractor is itself an instrument, so it is graded here rather than trusted. Each case
@@ -669,7 +708,7 @@ function skeleton(inject: string): string {
     "}",
   ].join("\n");
 }
-const cleanSkeleton = censusReturnsOf(skeleton("    // nothing injected"));
+const cleanSkeleton = censusReturnsOf(skeleton("    // nothing injected")).returns;
 check(
   "positive control: the unmodified skeleton parses to exactly the shipped function's four in-domain returns, so the escape cases below grade a faithful copy",
   cleanSkeleton !== null && cleanSkeleton.length === 4 && cleanSkeleton.every((entry) => entry.inDomain),
@@ -724,7 +763,7 @@ const escapeResults = escapes.map((escape) => {
   const source = skeleton(escape.inject);
   const parsedForCheck = ts.createSourceFile("x.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
   const parses = ((parsedForCheck as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics ?? []).length === 0;
-  const returns = censusReturnsOf(source);
+  const returns = censusReturnsOf(source).returns;
   const caught = (returns ?? []).some((entry) => !entry.inDomain);
   return { ...escape, parses, caught, returns };
 });
@@ -743,11 +782,80 @@ check(
 // A nested function's return belongs to the nested function. Enumerating it would red the
 // shipped source for a value readExactVersion never returns, so the walk must stop at any
 // function boundary. This is the FALSE-POSITIVE half of the extractor's grading.
-const nestedOnly = censusReturnsOf(skeleton("    const helper = () => \"nested-out-of-domain\";\n    const helper2 = function () { return \"also-nested\"; };\n    void helper; void helper2;"));
+const nestedOnly = censusReturnsOf(skeleton("    const helper = () => \"nested-out-of-domain\";\n    const helper2 = function () { return \"also-nested\"; };\n    void helper; void helper2;")).returns;
 check(
   "a return inside a nested function is not attributed to readExactVersion, so the enumerator does not red on a value the function never returns",
   nestedOnly !== null && nestedOnly.length === 4 && nestedOnly.every((entry) => entry.inDomain),
   nestedOnly,
+);
+
+// Location, graded four ways. The three cases below are the shapes that defeated the retired
+// last-match-wins lookup, plus the boundary shapes the retired hand-rolled union missed. Each is
+// a source the parser accepts, so none of them is refused for the wrong reason.
+//
+// 1. THE SHADOW. A second `readExactVersion` nested inside another function, carrying four
+// in-domain returns, while the real one returns an out-of-domain value. Under the retired lookup
+// the decoy won and the cell read four clean returns; under the top-level pin the decoy is never
+// looked at and the real function's poisoned return is enumerated and refused.
+const shadowedCensus = censusReturnsOf(
+  skeleton("    if (response.status === 418) return \"outside-domain\";")
+  + "\nfunction wrapper() {\n"
+  + "  async function readExactVersion(pkg, registryBase, fetchImpl) {\n"
+  + "    if (pkg) return \"present\";\n"
+  + "    if (registryBase) return \"absent\";\n"
+  + "    if (fetchImpl) return `unknown:decoy`;\n"
+  + "    return `unknown:decoy-tail`;\n"
+  + "  }\n"
+  + "  return readExactVersion;\n"
+  + "}\n",
+);
+check(
+  "a nested same-name readExactVersion decoy cannot replace the shipped declaration, so a poisoned real function is still enumerated and refused",
+  shadowedCensus.returns !== null
+    && shadowedCensus.returns.some((entry) => !entry.inDomain && entry.text.includes("outside-domain")),
+  { why: shadowedCensus.why, returns: shadowedCensus.returns?.map((entry) => `${entry.text} -- ${entry.why}`) },
+);
+
+// 2. A constructor is a function boundary. `ts.isFunctionLike` says so; the retired six-way union
+// did not, so a local class constructor's return was counted as one of readExactVersion's and the
+// clean skeleton reddened with five enumerated returns. This is the FALSE-POSITIVE direction.
+const constructorReturn = censusReturnsOf(
+  skeleton("    class Local { constructor() { return \"ctor-out-of-domain\"; } }\n    void Local;"),
+).returns;
+check(
+  "a return inside a constructor is not attributed to readExactVersion, so a local class does not red the enumerator with a value the function never returns",
+  constructorReturn !== null && constructorReturn.length === 4 && constructorReturn.every((entry) => entry.inDomain),
+  constructorReturn,
+);
+
+// 3. A class static block is also a boundary, and it is the one `ts.isFunctionLike` does NOT
+// cover, which is why the boundary predicate names it separately. Disclosed limitation: a
+// `return` inside a static block is accepted by the TypeScript parser but REJECTED by node as an
+// illegal return statement, so this shape is not a commit that could really land. It grades the
+// boundary predicate, not a reachable production defect, and is kept for that reason alone.
+const staticBlockReturn = censusReturnsOf(
+  skeleton("    class Local { static { return \"static-out-of-domain\"; } }\n    void Local;"),
+).returns;
+check(
+  "a return inside a class static block is not attributed to readExactVersion, so the boundary covers the one shape ts.isFunctionLike does not",
+  staticBlockReturn !== null && staticBlockReturn.length === 4 && staticBlockReturn.every((entry) => entry.inDomain),
+  staticBlockReturn,
+);
+
+// 4. Two top-level declarations of the target are AMBIGUOUS, not a silent pick of either. The
+// count is required in the refusal, because "found 0" and "found 2" are different repairs and a
+// refusal that does not say which sends the reader to the wrong one.
+const ambiguousCensus = censusReturnsOf(
+  skeleton("    // first declaration")
+  + "\n"
+  + skeleton("    // second declaration"),
+);
+check(
+  "two top-level readExactVersion declarations red as ambiguous rather than resolving to either, and the refusal carries the count",
+  ambiguousCensus.returns === null
+    && typeof ambiguousCensus.why === "string"
+    && ambiguousCensus.why.includes("2 top-level function declarations found"),
+  ambiguousCensus.why,
 );
 
 // Bucket membership, derived from the SHIPPED predicates rather than transcribed.
@@ -798,14 +906,22 @@ check(
 // would let the exported table drift away from the shipped ladder and quietly restore the
 // transcription defect one layer up. So read the ladder with the same parser used on the
 // returns and require that each bucket's filter callback CALLS the exported predicate by name.
-function ladderFilterCallees(source: string): string[] | null {
+//
+// The same top-level pin applies here, and for a sharper reason than symmetry. This enumerator
+// selected `preflightNpmPublish` by the identical last-match-wins recursive walk, so a decoy
+// declaration of that name nested anywhere in the file replaced the shipped ladder. Measured: with
+// the CENSUS_BUCKETS drift mutation applied so the real ladder inlines the absent comparison, a
+// nested decoy that calls all three predicates by name returned this cell to GREEN. The defeat is
+// not hypothetical and it hides a real drift, so location is pinned to exactly one top-level
+// declaration and any other count is a refusal carrying its count.
+type LadderEnumeration =
+  | { callees: string[]; why: null }
+  | { callees: null; why: string };
+function ladderFilterCallees(source: string): LadderEnumeration {
   const parsed = ts.createSourceFile("preflight-npm-publish.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
-  let fn: ts.FunctionDeclaration | undefined;
-  parsed.forEachChild(function find(node: ts.Node): void {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === "preflightNpmPublish") fn = node;
-    node.forEachChild(find);
-  });
-  if (!fn?.body) return null;
+  const located = soleTopLevelFunction(parsed, "preflightNpmPublish");
+  if (located.fn === null) return { callees: null, why: located.why };
+  const fn = located.fn;
   const callees: string[] = [];
   const walk = (node: ts.Node): void => {
     // `rows.filter((row) => <callee>(row.registry))`
@@ -820,15 +936,67 @@ function ladderFilterCallees(source: string): string[] | null {
     }
     node.forEachChild(walk);
   };
-  fn.body.forEachChild(walk);
-  return callees;
+  fn.body!.forEachChild(walk);
+  return { callees, why: null };
 }
-const ladderCallees = ladderFilterCallees(preflightSource);
+const ladderEnumeration = ladderFilterCallees(preflightSource);
+const ladderCallees = ladderEnumeration.callees;
 const bucketPredicateNames = ["isUnknownRegistry", "isPresentRegistry", "isAbsentRegistry"];
 check(
   "the verdict ladder buckets rows by calling the exported predicates by name, so CENSUS_BUCKETS cannot drift into a parallel copy that agrees today and diverges later",
   ladderCallees !== null && bucketPredicateNames.every((name) => ladderCallees.includes(name)),
-  { ladderCallees, required: bucketPredicateNames },
+  { ladderCallees, locationRefusal: ladderEnumeration.why, required: bucketPredicateNames },
+);
+
+// 5. The ladder's own shadow, which is the case that actually hides a drift rather than merely
+// confusing an instrument. The source below is the SHIPPED file with the drift applied by name
+// (the exported absent predicate inlined, exactly what fixture entry 44 does) AND a nested decoy
+// `preflightNpmPublish` that calls all three predicates by name. Under the retired last-wins
+// lookup the decoy replaced the real ladder and this cell went green while the shipped ladder had
+// already drifted. Under the top-level pin the decoy is invisible and the drift is still seen.
+//
+// The drift is applied here by the same string the fixture uses, so the two cannot diverge
+// silently: if the shipped line is reworded, this substitution stops changing the source and the
+// assertion below that it DID change fails first, which is a louder failure than a quiet green.
+const ladderDriftFind = "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n";
+const ladderDriftReplace = "  const absent = rows.filter((row) => row.registry === \"absent\");\n";
+const driftedLadderSource = preflightSource.split(ladderDriftFind).join(ladderDriftReplace);
+check(
+  "positive control: the ladder drift used by the decoy cell really changes the shipped source, so that cell is not grading an unmodified file",
+  driftedLadderSource !== preflightSource && preflightSource.split(ladderDriftFind).length - 1 === 1,
+  { occurrences: preflightSource.split(ladderDriftFind).length - 1, changed: driftedLadderSource !== preflightSource },
+);
+const shadowedLadder = ladderFilterCallees(
+  driftedLadderSource
+  + "\nfunction ladderWrapper() {\n"
+  + "  async function preflightNpmPublish(rows) {\n"
+  + "    const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n"
+  + "    const present = rows.filter((row) => isPresentRegistry(row.registry));\n"
+  + "    const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n"
+  + "    return { unknown, present, absent };\n"
+  + "  }\n"
+  + "  return preflightNpmPublish;\n"
+  + "}\n",
+);
+check(
+  "a nested same-name preflightNpmPublish decoy cannot restore this cell to green, so a ladder that has drifted off the exported predicate is still caught",
+  shadowedLadder.callees !== null && !shadowedLadder.callees.includes("isAbsentRegistry"),
+  { callees: shadowedLadder.callees, locationRefusal: shadowedLadder.why },
+);
+// And the ambiguity refusal for this enumerator too, with its count, so the pin is graded on both
+// enumerators rather than assumed to transfer.
+const ambiguousLadder = ladderFilterCallees(
+  preflightSource
+  + "\nasync function preflightNpmPublish(rows) {\n"
+  + "  return rows.filter((row) => isAbsentRegistry(row.registry));\n"
+  + "}\n",
+);
+check(
+  "two top-level preflightNpmPublish declarations red as ambiguous rather than resolving to either, and the refusal carries the count",
+  ambiguousLadder.callees === null
+    && typeof ambiguousLadder.why === "string"
+    && ambiguousLadder.why.includes("2 top-level function declarations found"),
+  ambiguousLadder.why,
 );
 check(
   "each CENSUS_BUCKETS entry is the exported predicate object itself, so grading through the table grades the function the ladder calls",
