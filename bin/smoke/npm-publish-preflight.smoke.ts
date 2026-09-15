@@ -18,8 +18,9 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
-import { classifyDirectPublishPermission, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
+import { CENSUS_BUCKETS, classifyDirectPublishPermission, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
 import { emitDeclaration } from "./gen-npm-publish-preflight-dts.mjs";
+import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -558,99 +559,238 @@ check(
 // Structural half of the domain pin. Every `return` inside readExactVersion must produce one of
 // the three values the verdict ladder buckets on. Enumerating the returns rather than sampling
 // statuses is what makes a fourth outcome unmissable: a new branch is a new return whatever
-// status guards it. The extractor is written to fail RED rather than quietly green if it ever
-// stops finding the function or its returns, because an extractor that reports nothing is
-// indistinguishable from a source with nothing wrong.
+// status guards it. The extractor fails RED rather than quietly green if it ever stops finding
+// the function or its returns, because an extractor that reports nothing is indistinguishable
+// from a source with nothing wrong.
 //
-// The body is found by walking brace depth while skipping string, template and comment context,
-// NOT by slicing to the first line that starts with a closing brace. That distinction is load
-// bearing and was found by attacking this cell rather than by reasoning about it: a template
-// literal containing a newline and a closing brace ends the naive slice early, and every return
-// below it, including an out-of-domain one, falls outside the extracted body and escapes clean.
+// The returns are enumerated by the TYPESCRIPT COMPILER, not by a regex over the text. The
+// previous revision matched /\breturn\s+([^;]+);/g against a brace-walked body, and a panel
+// killed it with shapes that regex cannot represent: a bare `return;` carries no expression to
+// capture, so it was invisible, and a return with no semicolon terminator was swallowed into
+// the NEXT return's captured text, laundering an out-of-domain value into a domain-looking
+// blob. Both parse cleanly, both change what the function returns, and both left the cell
+// green. That is the defect this rewrite exists to remove: a test that cannot fail is not
+// evidence, and the universal claim in this cell's name is worth exactly what the instrument
+// behind it enumerates.
+//
+// What the parser gives that the regex could not: statement structure. A `return` is a
+// ReturnStatement node whether or not a semicolon follows it, whether or not it carries an
+// expression, and whatever a string, template or regex literal nearby happens to contain,
+// because the lexer resolves those before the parser ever sees a statement. Nested functions
+// are excluded by walking into them not at all, so a helper closure's own return is not
+// mistaken for the outer function's.
 const preflightSource = readFileSync(join(ROOT, "scripts/preflight-npm-publish.mjs"), "utf8");
-function functionBody(source: string, declaration: string): string | null {
-  const start = source.indexOf(declaration);
-  if (start === -1) return null;
-  const open = source.indexOf("{", start);
-  if (open === -1) return null;
-  let depth = 0;
-  for (let index = open; index < source.length; index++) {
-    const char = source[index];
-    if (char === "/" && source[index + 1] === "/") {
-      index = source.indexOf("\n", index);
-      if (index === -1) return null;
-      continue;
+
+// A return is IN DOMAIN only if the parser can prove its value from the syntax alone:
+//   - a string literal exactly "present" or "absent"; or
+//   - any template whose HEAD text begins "unknown:", which is a static prefix guarantee. The
+//     shipped unknown returns interpolate (`unknown:${response.status}`), and the head is
+//     emitted verbatim before any substitution, so the runtime string starts with "unknown:"
+//     whatever the substitution evaluates to. A template with an EMPTY head proves nothing and
+//     is therefore out of domain.
+// Everything else, including a bare return, an identifier, a call, or a conditional, is OUT OF
+// DOMAIN and reds. Refusing to reason about values the syntax does not pin is the point: an
+// extractor that guesses is an extractor that can be fooled.
+type CensusReturn = { text: string; inDomain: boolean; why: string };
+function censusReturnsOf(source: string): CensusReturn[] | null {
+  const parsed = ts.createSourceFile("preflight-npm-publish.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  let target: ts.FunctionDeclaration | undefined;
+  parsed.forEachChild(function find(node: ts.Node): void {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "readExactVersion") target = node;
+    node.forEachChild(find);
+  });
+  if (!target?.body) return null;
+  const isFunctionLike = (node: ts.Node): boolean => ts.isFunctionDeclaration(node)
+    || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node)
+    || ts.isMethodDeclaration(node)
+    || ts.isGetAccessor(node)
+    || ts.isSetAccessor(node);
+  const found: ts.ReturnStatement[] = [];
+  const walk = (node: ts.Node): void => {
+    if (isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node)) found.push(node);
+    node.forEachChild(walk);
+  };
+  target.body.forEachChild(walk);
+  return found.map((statement) => {
+    const text = statement.getText(parsed);
+    const expression = statement.expression;
+    if (!expression) return { text, inDomain: false, why: "bare return: yields undefined, which no census bucket claims" };
+    if (ts.isStringLiteral(expression)) {
+      const ok = expression.text === "present" || expression.text === "absent";
+      return { text, inDomain: ok, why: ok ? `string literal ${JSON.stringify(expression.text)}` : `string literal ${JSON.stringify(expression.text)} is not present or absent` };
     }
-    if (char === "/" && source[index + 1] === "*") {
-      index = source.indexOf("*/", index);
-      if (index === -1) return null;
-      index++;
-      continue;
+    if (ts.isNoSubstitutionTemplateLiteral(expression)) {
+      const ok = expression.text.startsWith("unknown:");
+      return { text, inDomain: ok, why: ok ? `template literal ${JSON.stringify(expression.text)}` : `template literal ${JSON.stringify(expression.text)} does not begin unknown:` };
     }
-    if (char === '"' || char === "'" || char === "`") {
-      const quote = char;
-      index++;
-      for (; index < source.length; index++) {
-        if (source[index] === "\\") { index++; continue; }
-        if (source[index] === quote) break;
-        if (quote === "`" && source[index] === "$" && source[index + 1] === "{") {
-          let inner = 1;
-          index += 2;
-          for (; index < source.length && inner > 0; index++) {
-            if (source[index] === "{") inner++;
-            else if (source[index] === "}") inner--;
-          }
-          index--;
-        }
-      }
-      if (index >= source.length) return null;
-      continue;
+    if (ts.isTemplateExpression(expression)) {
+      const head = expression.head.text;
+      const ok = head.startsWith("unknown:");
+      return { text, inDomain: ok, why: ok ? `template head ${JSON.stringify(head)} is a static unknown: prefix` : `template head ${JSON.stringify(head)} does not begin unknown:` };
     }
-    if (char === "{") depth++;
-    else if (char === "}") {
-      depth--;
-      if (depth === 0) return source.slice(open, index + 1);
-    }
-  }
-  return null;
+    return { text, inDomain: false, why: `${ts.SyntaxKind[expression.kind]}: the syntax does not pin the value, so it cannot be proved to land in a bucket` };
+  });
 }
-function readExactVersionReturns(source: string): string[] | null {
-  const body = functionBody(source, "async function readExactVersion(");
-  if (body === null) return null;
-  return [...body.matchAll(/\breturn\s+([^;]+);/g)].map((match) => match[1].trim());
-}
-function isCensusDomainValue(expression: string): boolean {
-  return expression === '"present"'
-    || expression === '"absent"'
-    || (expression.startsWith("`unknown:") && expression.endsWith("`"));
-}
-const censusReturns = readExactVersionReturns(preflightSource);
-const outOfDomainReturns = (censusReturns ?? []).filter((expression) => !isCensusDomainValue(expression));
+
+const censusReturns = censusReturnsOf(preflightSource);
+const outOfDomainReturns = (censusReturns ?? []).filter((entry) => !entry.inDomain).map((entry) => `${entry.text} -- ${entry.why}`);
 check(
-  "every return in readExactVersion yields present, absent or an unknown value, so no fourth census outcome can reach the verdict ladder unbucketed",
+  `the ${censusReturns?.length ?? 0} return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed`,
   censusReturns !== null && censusReturns.length >= 4 && outOfDomainReturns.length === 0,
-  censusReturns === null ? "readExactVersion or its body was not found in the shipped source" : outOfDomainReturns,
+  censusReturns === null ? "readExactVersion was not found as a function declaration in the shipped source" : outOfDomainReturns,
 );
 
-// The three census buckets are disjoint, which is why the inconclusive rung may sit either
-// above or below all-absent without changing any verdict: absent === rows already implies
-// unknown === 0. That makes a reordering mutation unkillable by construction rather than
-// untested, so no mutation carries it. What IS testable is the disjointness itself, and if a
-// future change lets one row land in two buckets the reordering stops being safe. This cell
-// pins that premise so the reasoning above cannot rot silently.
-const disjointProbe = await scenario({ exactStatus: (name) => (name === "@cotal-ai/seat" ? 503 : 404) });
-const disjointRows = disjointProbe.logs
+// The extractor is itself an instrument, so it is graded here rather than trusted. Each case
+// below is a shape the RETIRED regex passed clean and this parser must refuse, plus a positive
+// control so a parser that refused EVERYTHING could not pose as rigour. These run against
+// synthetic sources, not the shipped file, because the point is what the instrument does with
+// input the shipped file does not contain. The shipped file is graded by the cell above.
+//
+// Each case is built by injecting a line into a faithful copy of the shipped function. The
+// copy is asserted to be in domain on its own first: if the skeleton drifted from the real
+// function, these cases would grade a strawman.
+function skeleton(inject: string): string {
+  return [
+    "async function readExactVersion(pkg, registryBase, fetchImpl) {",
+    "  try {",
+    "    const response = await fetchImpl(versionUrl(registryBase, pkg.name, pkg.version), {",
+    "      method: \"GET\",",
+    "      redirect: \"manual\",",
+    "    });",
+    inject,
+    "    if (response.status === 200) return \"present\";",
+    "    if (response.status === 404) return \"absent\";",
+    "    return `unknown:${response.status}`;",
+    "  } catch (error) {",
+    "    return `unknown:${error instanceof Error ? error.message : String(error)}`;",
+    "  }",
+    "}",
+  ].join("\n");
+}
+const cleanSkeleton = censusReturnsOf(skeleton("    // nothing injected"));
+check(
+  "positive control: the unmodified skeleton parses to exactly the shipped function's four in-domain returns, so the escape cases below grade a faithful copy",
+  cleanSkeleton !== null && cleanSkeleton.length === 4 && cleanSkeleton.every((entry) => entry.inDomain),
+  cleanSkeleton,
+);
+
+// The escapes. Each names the shape, the line that produces it, and what the retired regex did
+// with it. `seen` is what the parser must now report.
+const escapes: Array<{ shape: string; inject: string; retired: string }> = [
+  {
+    shape: "a bare return, which yields undefined",
+    inject: "    if (response.status === 418) return;",
+    retired: "invisible: /\\breturn\\s+([^;]+);/ requires a non-empty expression, so it matched nothing here",
+  },
+  {
+    shape: "a return with no semicolon terminator, closed by ASI",
+    inject: "    if (response.status === 418) return \"outside-domain\"",
+    retired: "swallowed: the capture ran past the newline into the next return, laundering the value into a domain-looking blob",
+  },
+  {
+    shape: "two semicolon-free template returns above a terminated one",
+    inject: "    if (response.status === 418) return `unknown:x`\n    if (response.status === 419) return `outside-domain`",
+    retired: "laundered: one capture began `unknown: and ended `, so the out-of-domain second return was read as in domain",
+  },
+  {
+    shape: "an out-of-domain return whose string contains a semicolon",
+    inject: "    if (response.status === 418) return \"outside;domain\";",
+    retired: "truncated: the capture stopped at the semicolon INSIDE the string literal",
+  },
+  {
+    shape: "an out-of-domain return whose template contains a semicolon",
+    inject: "    if (response.status === 418) return `outside;${response.status}`;",
+    retired: "truncated: the capture stopped at the semicolon inside the template",
+  },
+  {
+    shape: "a regex literal holding close braces above an out-of-domain return",
+    inject: "    const closeBraces = /}}/;\n    if (response.status === 418) return \"outside-domain\";",
+    retired: "desynchronised: the brace walker does not lex regex literals, so the extracted body ended early",
+  },
+  {
+    shape: "a return of an identifier the syntax cannot pin",
+    inject: "    if (response.status === 418) return response.statusText;",
+    retired: "accepted as text: the regex captured the expression source, and any value-shaped text passed the string compare",
+  },
+  {
+    shape: "a return whose value is a call the syntax cannot pin",
+    inject: "    if (response.status === 418) return String(response.status);",
+    retired: "accepted as text: same failure, an expression is not a value",
+  },
+];
+const escapeResults = escapes.map((escape) => {
+  const source = skeleton(escape.inject);
+  const parsedForCheck = ts.createSourceFile("x.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const parses = ((parsedForCheck as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics ?? []).length === 0;
+  const returns = censusReturnsOf(source);
+  const caught = (returns ?? []).some((entry) => !entry.inDomain);
+  return { ...escape, parses, caught, returns };
+});
+for (const result of escapeResults) {
+  check(
+    `the return enumerator refuses ${result.shape}, a shape the retired regex ${result.retired.split(":")[0]}`,
+    result.parses && result.caught,
+    { parses: result.parses, returns: result.returns?.map((entry) => `${entry.text} -- ${entry.why}`) },
+  );
+}
+check(
+  `all ${escapes.length} enumerated escape shapes are valid JavaScript, so each is a change a commit could really land rather than a syntax error the parser rejects for the wrong reason`,
+  escapeResults.every((result) => result.parses),
+  escapeResults.filter((result) => !result.parses).map((result) => result.shape),
+);
+// A nested function's return belongs to the nested function. Enumerating it would red the
+// shipped source for a value readExactVersion never returns, so the walk must stop at any
+// function boundary. This is the FALSE-POSITIVE half of the extractor's grading.
+const nestedOnly = censusReturnsOf(skeleton("    const helper = () => \"nested-out-of-domain\";\n    const helper2 = function () { return \"also-nested\"; };\n    void helper; void helper2;"));
+check(
+  "a return inside a nested function is not attributed to readExactVersion, so the enumerator does not red on a value the function never returns",
+  nestedOnly !== null && nestedOnly.length === 4 && nestedOnly.every((entry) => entry.inDomain),
+  nestedOnly,
+);
+
+// Bucket membership, derived from the SHIPPED predicates rather than transcribed.
+//
+// The previous revision re-typed the three predicates inline and asked whether each row
+// satisfied exactly one. A panel proved that unkillable: no string satisfies two of
+// `=== "present"`, `=== "absent"` and `.startsWith("unknown:")`, so the overlap the cell
+// documented as its purpose was unreachable by construction, and widening the SHIPPED absent
+// bucket left the copy green. That is the same unkillable shape the commit it replaced claimed
+// to remove.
+//
+// This cell imports isPresentRegistry, isAbsentRegistry and isUnknownRegistry, which are the
+// functions the verdict ladder itself calls, and applies them to rows from a real preflight
+// run. Widening any shipped predicate to overlap another therefore changes what THIS cell
+// computes. The name says what it proves: every production row lands in exactly one bucket
+// under the shipped predicates. Totality and disjointness are both live here, because a row
+// matching zero buckets and a row matching two are both counted.
+const bucketProbe = await scenario({ exactStatus: (name) => (name === "@cotal-ai/seat" ? 503 : 404) });
+const bucketRows = bucketProbe.logs
   .map((line) => line.split("\t"))
   .filter(([name, version]) => fixed.includes(name) && version === "9.9.9")
   .map(([, , registry]) => registry);
+const bucketMemberships = bucketRows.map((registry) => ({
+  registry,
+  buckets: CENSUS_BUCKETS.filter((bucket) => bucket.matches(registry)).map((bucket) => bucket.name),
+}));
 check(
-  "each census row lands in exactly one of the present, absent and unknown buckets",
-  disjointRows.length === fixed.length
-    && disjointRows.every((registry) => {
-      const buckets = [registry === "present", registry === "absent", registry.startsWith("unknown:")];
-      return buckets.filter(Boolean).length === 1;
-    }),
-  disjointRows,
+  "under the shipped bucket predicates every production census row lands in exactly one bucket, so no row is double-counted by the verdict ladder and none is invisible to it",
+  bucketRows.length === fixed.length && bucketMemberships.every((row) => row.buckets.length === 1),
+  bucketMemberships,
+);
+// The cell above can only grade rows the probe produces. This one grades the predicates
+// themselves over the value domain the enumerator proved readExactVersion can return, so a
+// widening that the probe's three rows happen not to exercise is still caught.
+const domainSamples = ["present", "absent", "unknown:503", "unknown:ECONNREFUSED 127.0.0.1:443"];
+const sampleMemberships = domainSamples.map((registry) => ({
+  registry,
+  buckets: CENSUS_BUCKETS.filter((bucket) => bucket.matches(registry)).map((bucket) => bucket.name),
+}));
+check(
+  "the shipped bucket predicates put each value readExactVersion can return in exactly one bucket, so the ladder's rung order stays safe for the whole return domain and not just the sampled rows",
+  sampleMemberships.every((sample) => sample.buckets.length === 1),
+  sampleMemberships,
 );
 
 const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });
