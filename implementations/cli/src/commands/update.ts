@@ -227,7 +227,13 @@ async function reportRunningManager(flags: Record<string, unknown>): Promise<"no
   }, "control-caller-admin");
   const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
   if (!status.ok) {
-    if (status.unanswered && /no manager reachable/i.test(status.error ?? "")) return "none";
+    // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
+    // core's answer-provenance marker; the headline beside it is operator prose and is now scoped to
+    // the rail the caller rode (#1630), so this call, which runs under an issued control caller, saw
+    // `no manager answered on the ep.v1 rail` and threw instead of reporting "none". The string test
+    // was redundant the day it was written: this call passes no `--on`, so an unanswered reply here
+    // can only ever be the unpinned verdict.
+    if (status.unanswered) return "none";
     throw new Error(status.error ?? "manager status request failed");
   }
   const seats = await askManager(target.space, target.server, "ps", undefined, target.auth);

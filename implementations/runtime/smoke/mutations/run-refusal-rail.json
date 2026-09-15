@@ -1,0 +1,28 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/run-command-usage.smoke.ts"
+  ],
+  "guard": "a hosted run verb refuses an unanswered manager describe against the rail it rode, and offers --local only where nothing else could have answered",
+  "command": "pnpm smoke:runtime-run-command-usage",
+  "completionMarker": "run-command-usage:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/run-refusal-rail.json",
+  "why": [
+    "The single sentence this replaces was measured in #1630 against a manager that was running the",
+    "whole time. Its two halves fail differently. The question sends an operator to hunt a process",
+    "that is up, which costs time. `--local` drives the run in the calling process and names the",
+    "caller as its answerer, so an operator who follows the tool's own advice submits a run answer",
+    "under the wrong identity; the seat on that mesh declined and left its answer unsubmitted.",
+    "",
+    "The mutation restores the pre-fix sentence for every rail, which is the exact regression, and",
+    "the cell that catches it asserts on both halves rather than on the headline alone."
+  ],
+  "mutations": [
+    {
+      "name": "the refusal returns to one rail-blind sentence, with the question and the --local remedy on every rail",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  if (rail === undefined || rail === \"ep\")\n    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;\n  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;\n",
+      "replace": "  return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;\n",
+      "expectRed": "versioned rail: neither the false question nor the --local remedy that follows from it is printed"
+    }
+  ]
+}
