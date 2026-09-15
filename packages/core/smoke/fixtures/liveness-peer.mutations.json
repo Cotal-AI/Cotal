@@ -1,6 +1,6 @@
 {
-  "command": "TMPDIR=/home/cotal/.cotal/jcode-scratch/w1577-tmp ./node_modules/.bin/tsx packages/core/smoke/liveness-peer.smoke.ts",
-  "progressPattern": "✓",
+  "command": "pnpm smoke:liveness-peer",
+  "progressPattern": "\u2713",
   "minTicks": 33,
   "mutations": [
     {
