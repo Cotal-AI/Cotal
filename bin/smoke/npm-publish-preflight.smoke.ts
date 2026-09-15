@@ -1142,7 +1142,7 @@ check(
 // here even though a correct `absent` binding is still declared and still calls isAbsentRegistry
 // one line above. That variant is graded below, because it is the same laundering with the dead
 // call made live, and a fix that only knew the name `absent` would miss it.
-type BucketBinding = { name: string; callee: string | null; initializer: string };
+type BucketBinding = { name: string; callee: string | null; initializer: string; calleeWhy: string | null };
 type LadderBindingEnumeration =
   | { bindings: BucketBinding[]; why: null }
   | { bindings: null; why: string };
@@ -1162,6 +1162,63 @@ function ladderConsumedBuckets(source: string): LadderBindingEnumeration {
             (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
           )
         : []);
+  const declarationsInStatements = (statements: readonly ts.Statement[], name: string): ts.Declaration[] =>
+    statements.flatMap<ts.Declaration>((statement) => {
+      if (ts.isVariableStatement(statement)) {
+        return statement.declarationList.declarations.filter(
+          (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
+        );
+      }
+      if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name?.text === name) {
+        return [statement];
+      }
+      return [];
+    });
+  const topLevelExport = (name: string): { declaration: ts.Declaration | null; why: string | null } => {
+    const matches = parsed.statements.flatMap((statement) => {
+      if (!ts.isVariableStatement(statement)) return [];
+      return statement.declarationList.declarations
+        .filter((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name)
+        .map((declaration) => ({ declaration, statement }));
+    });
+    if (matches.length !== 1) {
+      return {
+        declaration: null,
+        why: `${name}: ${matches.length} top-level variable declarations found, and exactly 1 exported declaration is required`,
+      };
+    }
+    const exported = matches[0].statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+    if (!exported) return { declaration: null, why: `${name}: the sole top-level variable declaration is not exported` };
+    return { declaration: matches[0].declaration, why: null };
+  };
+  const declarationsInScope = (scope: ts.Node, name: string): ts.Declaration[] => {
+    if (ts.isSourceFile(scope) || ts.isBlock(scope)) return declarationsInStatements(scope.statements, name);
+    if (ts.isFunctionLike(scope)) {
+      return scope.parameters.filter(
+        (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === name,
+      );
+    }
+    if (ts.isCatchClause(scope) && scope.variableDeclaration
+      && ts.isIdentifier(scope.variableDeclaration.name) && scope.variableDeclaration.name.text === name) {
+      return [scope.variableDeclaration];
+    }
+    return [];
+  };
+  const resolveCallee = (identifier: ts.Identifier): { declaration: ts.Declaration | null; why: string | null } => {
+    for (let current: ts.Node | undefined = identifier.parent; current; current = current.parent) {
+      if (!ts.isSourceFile(current) && !ts.isBlock(current) && !ts.isFunctionLike(current) && !ts.isCatchClause(current)) continue;
+      const matches = declarationsInScope(current, identifier.text);
+      if (matches.length === 0) continue;
+      if (matches.length > 1) {
+        return {
+          declaration: null,
+          why: `${identifier.text}: ${matches.length} same-name declarations found in one scope on the callee's scope chain`,
+        };
+      }
+      return { declaration: matches[0], why: null };
+    }
+    return { declaration: null, why: `${identifier.text}: no declaration resolves on the callee's scope chain` };
+  };
   const verdict = declarationsOf("registryVerdict");
   if (verdict.length !== 1) {
     return {
@@ -1211,10 +1268,24 @@ function ladderConsumedBuckets(source: string): LadderBindingEnumeration {
     if (init.arguments.length !== 1) continue;
     const arrow = init.arguments[0];
     if (!ts.isArrowFunction(arrow)) continue;
-    const callee = ts.isCallExpression(arrow.body) && ts.isIdentifier(arrow.body.expression)
-      ? arrow.body.expression.text
-      : null;
-    bindings.push({ name, callee, initializer: init.getText(parsed) });
+    let callee: string | null = null;
+    let calleeWhy: string | null = "the filter callback body is not a direct identifier call";
+    if (ts.isCallExpression(arrow.body) && ts.isIdentifier(arrow.body.expression)) {
+      const identifier = arrow.body.expression;
+      const exported = topLevelExport(identifier.text);
+      const resolved = resolveCallee(identifier);
+      if (exported.declaration === null) {
+        calleeWhy = exported.why;
+      } else if (resolved.declaration === null) {
+        calleeWhy = resolved.why;
+      } else if (resolved.declaration !== exported.declaration) {
+        calleeWhy = `${identifier.text}: the consumed call resolves to a same-name declaration in the function's scope chain, not the top-level exported declaration`;
+      } else {
+        callee = identifier.text;
+        calleeWhy = null;
+      }
+    }
+    bindings.push({ name, callee, initializer: init.getText(parsed), calleeWhy });
   }
   return { bindings, why: null };
 }
@@ -1233,7 +1304,7 @@ const BUCKET_PREDICATE_BY_NAME = [
 ] as const;
 for (const [bucket, predicate] of BUCKET_PREDICATE_BY_NAME) {
   check(
-    `the value the ${bucket} rung of registryVerdict consumes is initialised by a call to the exported ${predicate}, so that rung reads a value the shipped predicate produced`,
+    `the ${bucket} rung's consumed callee resolves to the top-level exported ${predicate} declaration with no same-name declaration shadowing it`,
     consumedCallees.filter((callee) => callee === predicate).length === 1,
     { callees: consumedCallees, bindings: consumedBindings, refusal: consumedLadder.why },
   );
@@ -1276,7 +1347,10 @@ const SKELETON_VERDICT = "  const registryVerdict = unknown.length > 0\n"
   + "          ? \"mixed\"\n"
   + "          : \"incomplete\";\n";
 const ladderSkeleton = (unknownLine: string, presentLine: string, absentLine: string, verdict = SKELETON_VERDICT): string =>
-  "export async function preflightNpmPublish(rows) {\n"
+  "export const isUnknownRegistry = (registry) => registry.startsWith(\"unknown:\");\n"
+  + "export const isPresentRegistry = (registry) => registry === \"present\";\n"
+  + "export const isAbsentRegistry = (registry) => registry === \"absent\";\n"
+  + "export async function preflightNpmPublish(rows) {\n"
   + unknownLine + presentLine + absentLine
   + verdict
   + "  return registryVerdict;\n"
@@ -1325,8 +1399,27 @@ check(
       === JSON.stringify(["isAbsentRegistry", "isPresentRegistry", "isUnknownRegistry"]),
   { bindings: cleanLadderFlow.bindings, refusal: cleanLadderFlow.why },
 );
+for (const [index, [bucket, predicate]] of BUCKET_PREDICATE_BY_NAME.entries()) {
+  const shadowedLines = [...cleanLines];
+  const localPredicate = bucket === "unknown"
+    ? `  const ${predicate} = (registry) => registry.startsWith("unknown:");\n`
+    : `  const ${predicate} = (registry) => registry === "${bucket}";\n`;
+  shadowedLines[index] = localPredicate + shadowedLines[index];
+  const shadowedSkeleton = ladderSkeleton(shadowedLines[0], shadowedLines[1], shadowedLines[2]);
+  const shadowedFlow = ladderConsumedBuckets(shadowedSkeleton);
+  const shadowedBinding = shadowedFlow.bindings?.find((binding) => binding.name === bucket);
+  check(
+    `scope-resolution control: a same-name local ${predicate} declaration is refused on the ${bucket} binding while the other exported bindings still resolve`,
+    shadowedFlow.bindings !== null
+      && shadowedFlow.bindings.length === 3
+      && shadowedBinding?.callee === null
+      && shadowedBinding.calleeWhy?.includes("same-name declaration in the function's scope chain") === true
+      && shadowedFlow.bindings.filter((binding) => binding.name !== bucket).every((binding) => binding.callee !== null),
+    { bindings: shadowedFlow.bindings, refusal: shadowedFlow.why },
+  );
+}
 check(
-  "the synthetic skeleton and the shipped module read as the same three predicates, so the laundering cells below grade a stand-in that still matches the ladder that ships",
+  "the synthetic skeleton and shipped module resolve the same three top-level exported predicate declarations without same-name local shadows, so the laundering cells below grade a stand-in that still matches the ladder that ships",
   cleanLadderCallees.length === 3
     && JSON.stringify(cleanLadderCallees) === JSON.stringify(shippedLadderCallees),
   { skeleton: cleanLadderCallees, shipped: shippedLadderCallees },
