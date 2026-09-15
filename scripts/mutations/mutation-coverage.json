@@ -512,8 +512,8 @@
       "file": "scripts/mutation-coverage.mjs",
       "find": "          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;\n        }",
       "replace": "          return pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1);\n        }",
-      "expectRed": "an && exit guard leaves every other entry going through",
-      "cell": "an && exit guard leaves every other entry going through"
+      "expectRed": "a false && leaves the entry free, so the sweep is still open",
+      "cell": "a false && leaves the entry free, so the sweep is still open"
     },
     {
       "name": "a false `||` carries an operand that pins to the fallthrough",
@@ -568,8 +568,8 @@
       "file": "scripts/mutation-coverage.mjs",
       "find": "        return (viaTrue || viaFalse) && truePins && falsePins;",
       "replace": "        return (viaTrue || viaFalse) && (truePins || falsePins);",
-      "expectRed": "a ternary whose arms both read leaves the sweep open",
-      "cell": "a ternary whose arms both read leaves the sweep open"
+      "expectRed": "a ternary guard pins only when every arm that reaches the read pins",
+      "cell": "a ternary guard pins only when every arm that reaches the read pins"
     },
     {
       "name": "a type assertion around the entry is transparent",

@@ -294,14 +294,38 @@ try {
     '  const where = String(f) === "src/impl.ts" ? String(f) : String(f);\n' +
     '  readFileSync(join(DIR, where), "utf8");\n' +
     '}\n');
-  // A guard the classifier has NO rule for, over a sweep that really is open. The default has to be
-  // OPEN: an unrecognised guard makes the sweep COUNT. This is the cell that would red if some
-  // future edit made "unclassified" mean "pins".
+  // A guard the classifier has NO rule for, over a sweep that really is open. The guard is a bare
+  // CALL, so it reaches the final `return false` of `pins` rather than any rule above it -- that is
+  // the point of the cell, and a guard shaped like `a && b` would be answered by the `&&` rule and
+  // grade nothing here. The default has to be OPEN: an unrecognised guard makes the sweep COUNT.
   write("bin/smoke/listing-unknown-guard.smoke.ts",
     'import { readdirSync, readFileSync } from "node:fs";\n' +
     'const DIR = join(ROOT, "packages", "seat");\n' +
     'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
-    '  if (String(f).length % 7 === 3 && !String(f).includes("zz")) continue;\n' +
+    '  if (String(f).startsWith("zz")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The `&&` exit guard in its POSITIVE form. Control reaches the read when the conjunction was
+  // FALSE, which says only that at least one operand was false, so `String(f) === ONE` is left free
+  // and every other entry still gets through. Decomposing a false `&&` would refuse this open
+  // sweep. The existing compound-open control spells the equality with `!==`, which cannot tell a
+  // direction-blind decomposition apart from a correct one: both answer "does not pin" there.
+  write("bin/smoke/listing-and-exit-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length > 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // A ternary GUARD whose arms are conditions rather than boolean literals. Control reaches the
+  // read when the ternary is false, and that can happen down EITHER arm, so the entry is pinned
+  // only if both arms pin it. Here the `then` arm does and the `else` arm does not, so the sweep is
+  // open. A rule that accepted one pinning arm would refuse it.
+  write("bin/smoke/listing-ternary-arms.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (DIR.length > 0 ? String(f) !== "src/impl.ts" : DIR.length === 0) continue;\n' +
     '  readFileSync(join(DIR, String(f)), "utf8");\n' +
     '}\n');
   write("packages/seat/smoke/parked-import.smoke.ts",
@@ -757,6 +781,19 @@ try {
   config("sweep-ternary-open", { suite: ["bin/smoke/listing-ternary-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("sweep-ternary-open");
   check("a ternary whose arms both read leaves the sweep open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control that actually grades the DIRECTION of the `&&` rule. `sweep-compound-open`
+  // spells its equality with `!==`, which a direction-blind decomposition answers the same way, so
+  // it cannot tell the two apart; this one can.
+  config("sweep-and-exit-open", { suite: ["bin/smoke/listing-and-exit-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-and-exit-open");
+  check("a false && leaves the entry free, so the sweep is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control for a ternary GUARD with non-literal arms: reaching the read can happen down
+  // either arm, so one pinning arm is not enough to pin the entry.
+  config("sweep-ternary-arms", { suite: ["bin/smoke/listing-ternary-arms.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-ternary-arms");
+  check("a ternary guard pins only when every arm that reaches the read pins", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
   // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
