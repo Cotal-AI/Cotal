@@ -420,6 +420,42 @@
       "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
       "cell": "the verdict ladder buckets rows by calling the exported predicates by name, so CENSUS_BUCKETS cannot drift into a parallel copy that agrees today and diverges later",
       "note": "The shadowing-declaration mutation for the ladder enumerator. It drifts the real ladder off the exported unknown predicate AND declares a nested decoy of the same name that calls it, which is the laundering shape measured to keep this cell green both under the retired last-wins lookup and, later, under the top-level pin before the walk was given a function boundary. Both halves of that repair are required for this to red."
+    },
+    {
+      "name": "the unknown bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  const unknown = rows.filter((row) => row.registry.startsWith(\"unknown:\"));\n  if (false) { rows.filter((row) => isUnknownRegistry(row.registry)); }\n",
+      "expectRed": "the value the unknown rung of registryVerdict consumes is initialised by a call to the exported isUnknownRegistry",
+      "cell": "the value the unknown rung of registryVerdict consumes is initialised by a call to the exported isUnknownRegistry, so that rung reads a value the shipped predicate produced",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the present bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "replace": "  const present = rows.filter((row) => row.registry === \"present\");\n  if (false) { rows.filter((row) => isPresentRegistry(row.registry)); }\n",
+      "expectRed": "the value the present rung of registryVerdict consumes is initialised by a call to the exported isPresentRegistry",
+      "cell": "the value the present rung of registryVerdict consumes is initialised by a call to the exported isPresentRegistry, so that rung reads a value the shipped predicate produced",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the absent bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const absent = rows.filter((row) => row.registry === \"absent\");\n  if (false) { rows.filter((row) => isAbsentRegistry(row.registry)); }\n",
+      "expectRed": "the value the absent rung of registryVerdict consumes is initialised by a call to the exported isAbsentRegistry",
+      "cell": "the value the absent rung of registryVerdict consumes is initialised by a call to the exported isAbsentRegistry, so that rung reads a value the shipped predicate produced",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the absent rung is redirected to an inline copy while a live call to the exported predicate remains beside it",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absent.length === rows.length\n",
+      "replace": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n  const absentRows = rows.filter((row) => row.registry === \"absent\");\n  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absentRows.length === rows.length\n",
+      "expectRed": "a ladder that keeps a live isAbsentRegistry binding but reads an inline copy in the verdict is still caught",
+      "cell": "a ladder that keeps a live isAbsentRegistry binding but reads an inline copy in the verdict is still caught, so the pin follows the value registryVerdict consumes and not the presence of a correct binding beside it",
+      "note": "The dead call made LIVE, which is why it is a separate entry rather than a variant of the three above. `absent` is still declared, still calls isAbsentRegistry, and is now genuinely reachable, so every reading that asks whether the predicate is called says yes and a pin that resolved buckets by NAME would also say yes. The verdict reads `absentRows`. It also rots nothing: the shipped absent line is left byte-identical, so the three controls that anchor on that line stay green and this mutant's red is unambiguous."
     }
   ]
 }

@@ -1106,6 +1106,314 @@ check(
   CENSUS_BUCKETS.map((bucket) => bucket.name),
 );
 
+// 6. DATA FLOW, not text presence. Everything above this point asks "does the ladder's text
+// contain a call to each exported predicate". That question is satisfiable by a call that can
+// never run, and a dead call is cheap to write.
+//
+// Measured at this head with only the enumerator above in place, each bucket drifted ALONE to an
+// inline comparison with a dead `if (false)` call to its predicate left beside it:
+//
+//   unknown  drifted + dead call  ->  119 passed, 0 failed   NOT CAUGHT
+//   present  drifted + dead call  ->  119 passed, 0 failed   NOT CAUGHT
+//   absent   drifted + dead call  ->  116 passed, 3 failed   NOT CAUGHT EITHER
+//
+// The `absent` row is the trap. Its three reds are the positive control and the two decoy cells
+// above, all of which anchor on the exact `absent` line the drift rewrote, so they fail because
+// their anchors rotted rather than because anything detected the drift. A cell that reds because
+// its anchor rotted is indistinguishable from a cell that reds because it caught something, and
+// the difference is the whole verdict. The rot-only control at the end of this section separates
+// them: it rewrites that same line WITHOUT changing the data flow, and the reading below stays
+// green while those anchors rot.
+//
+// The question that matters is "does the value `registryVerdict` consumes come from the exported
+// predicate". So this reading resolves it: take the sole top-level ladder, take the sole
+// `registryVerdict` declaration in the ladder's OWN statement list, read the identifiers its
+// initialiser actually consumes, resolve each of those to a declaration in that same statement
+// list, and require the bucket bindings among them to be INITIALISED by a call of an exported
+// predicate. A call that is not the initialiser of a consumed binding is unreachable from this
+// reading by construction, so a dead call, a nested call, and a call in a branch the verdict never
+// reads all fail to satisfy it. There is no guard to relax: the laundering call is simply never
+// looked at.
+//
+// `rows` is consumed too (`rows.length`) and is deliberately NOT a bucket binding: its initialiser
+// is `[]`, not a `.filter()` call. Partitioning on the initialiser SHAPE rather than on the binding
+// NAME is what makes this survive a rename. A ladder that computes `absentRows` inline and reads
+// THAT in the verdict still has three bucket bindings, one of which calls no predicate, and reds
+// here even though a correct `absent` binding is still declared and still calls isAbsentRegistry
+// one line above. That variant is graded below, because it is the same laundering with the dead
+// call made live, and a fix that only knew the name `absent` would miss it.
+type BucketBinding = { name: string; callee: string | null; initializer: string };
+type LadderBindingEnumeration =
+  | { bindings: BucketBinding[]; why: null }
+  | { bindings: null; why: string };
+function ladderConsumedBuckets(source: string): LadderBindingEnumeration {
+  const parsed = ts.createSourceFile("preflight-npm-publish.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const located = soleTopLevelFunction(parsed, "preflightNpmPublish");
+  if (located.fn === null) return { bindings: null, why: located.why };
+  // The ladder's own statement list, not a recursive walk. A declaration nested in a block, in a
+  // dead branch, or inside another function is not what this scope's `registryVerdict` reads, so
+  // it is not looked at. This is the same reason the walks above stop at a function boundary,
+  // applied to bindings instead of to calls.
+  const statements = [...located.fn.body!.statements];
+  const declarationsOf = (name: string): ts.VariableDeclaration[] =>
+    statements.flatMap((statement) =>
+      ts.isVariableStatement(statement)
+        ? statement.declarationList.declarations.filter(
+            (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
+          )
+        : []);
+  const verdict = declarationsOf("registryVerdict");
+  if (verdict.length !== 1) {
+    return {
+      bindings: null,
+      why: `registryVerdict: ${verdict.length} declarations found in the ladder's own scope, and exactly 1 is required`
+        + ` (0 means the verdict was renamed or moved out of this scope and this reading grades nothing;`
+        + ` 2 or more means which one the ladder reads is ambiguous)`,
+    };
+  }
+  const initializer = verdict[0].initializer;
+  if (!initializer) {
+    return { bindings: null, why: "registryVerdict: the sole declaration has no initialiser, so it consumes nothing and there is no data flow to pin" };
+  }
+  // Only the identifiers the verdict expression actually READS. `unknown.length` reads `unknown`,
+  // and descending generically would also collect a phantom binding called `length`, so a property
+  // access contributes its object and never its property name.
+  const consumed: string[] = [];
+  const readIdentifiers = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      if (!consumed.includes(node.text)) consumed.push(node.text);
+      return;
+    }
+    if (ts.isPropertyAccessExpression(node)) { readIdentifiers(node.expression); return; }
+    node.forEachChild(readIdentifiers);
+  };
+  readIdentifiers(initializer);
+  // A consumed name declared more than once in the same scope is a refusal and not a silent pick,
+  // for the same reason the top-level lookups above refuse: two candidates mean the reader cannot
+  // say which value the verdict sees, and choosing one quietly is how an enumerator gets fooled.
+  const doubled = consumed.filter((name) => declarationsOf(name).length > 1);
+  if (doubled.length > 0) {
+    return {
+      bindings: null,
+      why: `${doubled.join(", ")}: consumed by registryVerdict and declared more than once in the ladder's own scope,`
+        + ` so which value the verdict reads is ambiguous`,
+    };
+  }
+  const bindings: BucketBinding[] = [];
+  for (const name of consumed) {
+    const declared = declarationsOf(name);
+    if (declared.length !== 1) continue;
+    const init = declared[0].initializer;
+    // The bucket-binding shape: `<rows>.filter(<single arrow>)`. Anything else is a consumed local
+    // that is not a bucket (`rows` itself is the live example) and is not graded here.
+    if (!init || !ts.isCallExpression(init)) continue;
+    if (!ts.isPropertyAccessExpression(init.expression) || init.expression.name.text !== "filter") continue;
+    if (init.arguments.length !== 1) continue;
+    const arrow = init.arguments[0];
+    if (!ts.isArrowFunction(arrow)) continue;
+    const callee = ts.isCallExpression(arrow.body) && ts.isIdentifier(arrow.body.expression)
+      ? arrow.body.expression.text
+      : null;
+    bindings.push({ name, callee, initializer: init.getText(parsed) });
+  }
+  return { bindings, why: null };
+}
+const consumedLadder = ladderConsumedBuckets(preflightSource);
+const consumedBindings = consumedLadder.bindings;
+const consumedCallees = (consumedBindings ?? []).map((binding) => binding.callee);
+check(
+  "the verdict ladder consumes exactly three bucket bindings, so the data-flow reading grades the whole ladder rather than whichever subset of it still parses",
+  consumedBindings !== null && consumedBindings.length === 3,
+  { bindings: consumedBindings, refusal: consumedLadder.why },
+);
+const BUCKET_PREDICATE_BY_NAME = [
+  ["unknown", "isUnknownRegistry"],
+  ["present", "isPresentRegistry"],
+  ["absent", "isAbsentRegistry"],
+] as const;
+for (const [bucket, predicate] of BUCKET_PREDICATE_BY_NAME) {
+  check(
+    `the value the ${bucket} rung of registryVerdict consumes is initialised by a call to the exported ${predicate}, so that rung reads a value the shipped predicate produced`,
+    consumedCallees.filter((callee) => callee === predicate).length === 1,
+    { callees: consumedCallees, bindings: consumedBindings, refusal: consumedLadder.why },
+  );
+}
+// The three laundering mutations, applied here by the fixture's OWN strings so the cells and the
+// fixture cannot drift apart. Resolved by name first and loudly, because a by-name lookup that
+// misses is silent: the cells beneath it would still run and still pass on an undefined entry.
+// Everything from here to the refusals grades the READING'S POWER, and it does so on a skeleton
+// rather than on the shipped file. That placement is the lesson of the `absent` trap, applied to my
+// own cells. A control that builds its input by substituting a literal shipped line is disarmed by
+// the very mutation it exists to grade: apply the absent mutant and that substitution matches
+// nothing, so the control reds for rot while the detector reds for detection, and the two are
+// indistinguishable in the transcript. Measured on the first version of this section: the present
+// dead-call mutant produced 2 reds, only 1 of which was detection.
+//
+// So the skeleton is assembled from parts that a drift cannot rot: the bucket lines come from the
+// FIXTURE's own find/replace strings, and the verdict expression is lifted out of the shipped file
+// BY AST rather than by text match. The shipped tree is graded by the three rung cells above, which
+// is where a drift SHOULD red. Down here a red means the reading itself broke.
+const shippedVerdictStatement = ((): string | null => {
+  const parsed = ts.createSourceFile("preflight-npm-publish.mjs", preflightSource, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const located = soleTopLevelFunction(parsed, "preflightNpmPublish");
+  if (located.fn === null) return null;
+  const statement = located.fn.body!.statements.find((node) =>
+    ts.isVariableStatement(node)
+    && node.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === "registryVerdict"));
+  return statement ? statement.getText(parsed) : null;
+})();
+check(
+  "the shipped registryVerdict statement is lifted out of the module by AST, so the skeleton below carries the real verdict expression and cannot be rotted by a reformat",
+  typeof shippedVerdictStatement === "string" && shippedVerdictStatement.includes("registryVerdict"),
+  { shippedVerdictStatement },
+);
+const ladderSkeleton = (unknownLine: string, presentLine: string, absentLine: string): string =>
+  "export async function preflightNpmPublish(rows) {\n"
+  + unknownLine + presentLine + absentLine
+  + `  ${shippedVerdictStatement ?? "const registryVerdict = \"skeleton-has-no-verdict\";"}\n`
+  + "  return registryVerdict;\n"
+  + "}\n";
+const DEAD_CALL_ENTRIES = [
+  ["unknown", "isUnknownRegistry", "the unknown bucket binding drifts off its exported predicate while a dead call to it remains"],
+  ["present", "isPresentRegistry", "the present bucket binding drifts off its exported predicate while a dead call to it remains"],
+  ["absent", "isAbsentRegistry", "the absent bucket binding drifts off its exported predicate while a dead call to it remains"],
+] as const;
+const deadCallEntries = DEAD_CALL_ENTRIES.map(([bucket, predicate, name]) => ({ bucket, predicate, name, matched: fixtureEntry(name) }));
+check(
+  "all three dead-call laundering entries resolve in the fixture by name, so a renamed entry fails loudly instead of silently deleting the cells below it",
+  deadCallEntries.every((entry) => entry.matched.length === 1),
+  deadCallEntries.map((entry) => ({ name: entry.name, matches: entry.matched.length })),
+);
+// That the fixture's `find` strings still match the SHIPPED file exactly once is a real
+// requirement, and it is deliberately NOT asserted here: `bin/smoke/mutation-fixtures.smoke.ts`
+// already checks presence and uniqueness for every anchor in the tree, and asserting it again in
+// this suite is precisely what would rot under these mutants. One owner per claim.
+const cleanLines = deadCallEntries.map((entry) => entry.matched[0]?.find ?? "");
+const cleanLadderSkeleton = ladderSkeleton(cleanLines[0], cleanLines[1], cleanLines[2]);
+const cleanLadderFlow = ladderConsumedBuckets(cleanLadderSkeleton);
+// POSITIVE CONTROL ON THE INSTRUMENT, before any laundering is graded through it. A reading that
+// answered "no predicate" for every input would kill every mutant below for free, and would be
+// indistinguishable from a working one on those cells alone. This is the input where the answer
+// must be all three, and it doubles as proof that the fixture's `find` strings are the correct
+// shape rather than merely present.
+// Compared as a SET, not as a sequence. The bindings come back in the order the verdict CONSUMES
+// them, which is unknown, absent, present, and not the order they are declared in. Asserting the
+// declaration order here failed on the first run, and it was this assertion that was wrong rather
+// than the reading: the three rung cells above already grade each predicate individually and were
+// green throughout. Recorded because an order-sensitive control would red on any rung reorder,
+// which is a refactor this pin has no business forbidding.
+const cleanLadderCallees = [...(cleanLadderFlow.bindings ?? []).map((binding) => binding.callee)].sort();
+check(
+  "the skeleton built from the three fixture find strings reads as all three exported predicates, so the laundering cells below run on an instrument that can say yes",
+  cleanLadderFlow.bindings !== null
+    && cleanLadderFlow.bindings.length === 3
+    && JSON.stringify(cleanLadderCallees)
+      === JSON.stringify(["isAbsentRegistry", "isPresentRegistry", "isUnknownRegistry"]),
+  { bindings: cleanLadderFlow.bindings, refusal: cleanLadderFlow.why },
+);
+for (const [index, entry] of deadCallEntries.entries()) {
+  const launderedLines = [...cleanLines];
+  launderedLines[index] = entry.matched[0]?.replace ?? "";
+  const launderedSkeleton = ladderSkeleton(launderedLines[0], launderedLines[1], launderedLines[2]);
+  check(
+    `positive control: the ${entry.bucket} dead-call laundering entry's replace really differs from its find, so the two cells below it are not grading an unchanged skeleton`,
+    entry.matched.length === 1 && launderedSkeleton !== cleanLadderSkeleton,
+    { changed: launderedSkeleton !== cleanLadderSkeleton, find: entry.matched[0]?.find, replace: entry.matched[0]?.replace },
+  );
+  // The other half of the control, and the reason this reading exists rather than being a second
+  // opinion on the same evidence: the text-presence enumerator is DEFEATED by this exact source.
+  // If this cell ever goes green the laundering stopped working, and the cell below it would then
+  // be proving nothing.
+  const textualCallees = ladderFilterCallees(launderedSkeleton).callees;
+  check(
+    `the ${entry.bucket} dead-call laundering still satisfies the text-presence reading, so that reading alone would ship this drifted ladder green`,
+    textualCallees !== null && textualCallees.includes(entry.predicate),
+    { callees: textualCallees },
+  );
+  const launderedFlow = ladderConsumedBuckets(launderedSkeleton);
+  check(
+    `a dead call to ${entry.predicate} does not satisfy the ${entry.bucket} rung, because the value registryVerdict consumes no longer comes from that predicate`,
+    launderedFlow.bindings !== null
+      && launderedFlow.bindings.length === 3
+      && !launderedFlow.bindings.map((binding) => binding.callee).includes(entry.predicate),
+    { bindings: launderedFlow.bindings, refusal: launderedFlow.why },
+  );
+}
+// The rename variant: the same laundering with the dead call made LIVE. The correct `absent`
+// binding is still declared and still calls isAbsentRegistry, so every reading that asks whether
+// the predicate is called, or whether a binding of that name is correct, says yes. The verdict
+// reads `absentRows` instead. Graded because a pin that resolved buckets by NAME would pass this
+// while the shipped ladder had drifted.
+const renamedSkeleton = ladderSkeleton(
+  cleanLines[0],
+  cleanLines[1],
+  cleanLines[2] + "  const absentRows = rows.filter((row) => row.registry === \"absent\");\n",
+).split(": absent.length === rows.length").join(": absentRows.length === rows.length");
+check(
+  "positive control: the rename-laundering skeleton really differs from the clean one and really redirects the absent rung, so the cell below is not grading an unchanged input",
+  renamedSkeleton !== cleanLadderSkeleton && renamedSkeleton.includes("absentRows.length === rows.length"),
+  { changed: renamedSkeleton !== cleanLadderSkeleton, redirected: renamedSkeleton.includes("absentRows.length === rows.length") },
+);
+const renamedFlow = ladderConsumedBuckets(renamedSkeleton);
+check(
+  "a ladder that keeps a live isAbsentRegistry binding but reads an inline copy in the verdict is still caught, so the pin follows the value registryVerdict consumes and not the presence of a correct binding beside it",
+  renamedFlow.bindings !== null
+    && renamedFlow.bindings.length === 3
+    && !renamedFlow.bindings.map((binding) => binding.callee).includes("isAbsentRegistry"),
+  { bindings: renamedFlow.bindings, refusal: renamedFlow.why },
+);
+// THE ROT-ONLY CONTROL, and the cell that makes every mutant verdict in this section readable.
+// Renaming the arrow parameter rewrites the exact absent line that the older decoy cells anchor
+// on, so it rots those anchors precisely as a real drift would, while changing nothing about which
+// predicate produces the consumed value. If this reading were secretly text-sensitive it would red
+// here. It does not, so a red from this reading is detection.
+const reparameterizedSkeleton = ladderSkeleton(
+  cleanLines[0],
+  cleanLines[1],
+  "  const absent = rows.filter((entry) => isAbsentRegistry(entry.registry));\n",
+);
+check(
+  "renaming the absent filter's arrow parameter rots every control anchored on that line's text yet leaves the data-flow reading byte-identical, so a red from this reading is detection and never anchor rot",
+  reparameterizedSkeleton !== cleanLadderSkeleton
+    && !reparameterizedSkeleton.includes(cleanLines[2])
+    && JSON.stringify([...(ladderConsumedBuckets(reparameterizedSkeleton).bindings ?? []).map((binding) => binding.callee)].sort())
+      === JSON.stringify(cleanLadderCallees),
+  {
+    changed: reparameterizedSkeleton !== cleanLadderSkeleton,
+    anchorRotted: !reparameterizedSkeleton.includes(cleanLines[2]),
+    calleesAfter: ladderConsumedBuckets(reparameterizedSkeleton).bindings?.map((binding) => binding.callee),
+    calleesClean: cleanLadderFlow.bindings?.map((binding) => binding.callee),
+  },
+);
+// And the refusals for this reading, graded rather than assumed to transfer from the enumerators
+// above. Two verdict declarations is ambiguous; a decoy top-level ladder is refused by the shared
+// top-level pin.
+const ambiguousVerdict = ladderConsumedBuckets(
+  cleanLadderSkeleton.split("  const registryVerdict").join("  const registryVerdict = \"all-absent\";\n  const registryVerdict"),
+);
+check(
+  "two registryVerdict declarations in the ladder's own scope red as ambiguous rather than resolving to either, and the refusal carries the count",
+  ambiguousVerdict.bindings === null
+    && typeof ambiguousVerdict.why === "string"
+    && ambiguousVerdict.why.includes("2 declarations found in the ladder's own scope"),
+  ambiguousVerdict.why,
+);
+const ambiguousFlowTarget = ladderConsumedBuckets(
+  cleanLadderSkeleton
+  + "\nasync function preflightNpmPublish(rows) {\n"
+  + "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n"
+  + "  const registryVerdict = absent.length;\n"
+  + "  return registryVerdict;\n"
+  + "}\n",
+);
+check(
+  "two top-level preflightNpmPublish declarations red as ambiguous for the data-flow reading too, so its location claim is pinned on the same terms as the enumerators above",
+  ambiguousFlowTarget.bindings === null
+    && typeof ambiguousFlowTarget.why === "string"
+    && ambiguousFlowTarget.why.includes("2 top-level function declarations found"),
+  ambiguousFlowTarget.why,
+);
+
 const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });
 check(
   "one fixed-group package missing from the recursive publish set refuses",
