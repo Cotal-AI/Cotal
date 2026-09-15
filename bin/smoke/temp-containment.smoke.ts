@@ -80,11 +80,53 @@ check(
 // string compare and is still a delete of somebody else's directory.
 const link = join(root, "link-to-outside");
 symlinkSync(outside, link);
+// The `exists` half of the pair below needs a real directory on the far side of the link, so the two
+// targets differ in EXACTLY one property: whether the thing at the end of the path exists yet.
+mkdirSync(join(outside, "exists"));
 const viaSymlink = refusal(() => assertContainedIn(link, root));
 check(
   "a symlink inside the root whose target is outside it is refused",
   viaSymlink !== null && viaSymlink.includes(outside),
   viaSymlink,
+);
+
+// THE PAIR THAT MAKES THE DEFECT LEGIBLE. Same shape, and before the deepest-existing-ancestor fix,
+// OPPOSITE verdicts: `exists` was refused because realpath could resolve it, while `future` was
+// ACCEPTED because a missing target fell back to its LEXICAL spelling, which cannot see that `link`
+// points out of the root. Reproduced twice at 87fe6991d, once with real data loss outside the root
+// through the accepted path. The missing one is the cell that matters; the existing one is kept
+// beside it so a regression that re-splits the pair is visible as a pair.
+const underLinkExists = refusal(() => assertContainedIn(join(link, "exists"), root));
+check(
+  "a target under a symlinked parent is refused when it exists",
+  underLinkExists !== null && underLinkExists.includes(outside),
+  underLinkExists,
+);
+
+const underLinkMissing = refusal(() => assertContainedIn(join(link, "future"), root));
+check(
+  "a MISSING target under a symlinked parent is refused, not certified by its spelling",
+  underLinkMissing !== null && underLinkMissing.includes(outside),
+  underLinkMissing,
+);
+
+// The deepest existing ancestor of this target IS the root, and the tail is still missing. It must
+// stay allowed, or the fix above would trade the bypass for a guard that cannot approve a legitimate
+// not-yet-created child - which is how a containment fix gets reverted wholesale.
+const missingInsideRoot = refusal(() => assertContainedIn(join(root, "not-yet"), root));
+check(
+  "a missing target whose deepest existing ancestor IS the root is still allowed",
+  missingInsideRoot === null,
+  missingInsideRoot,
+);
+
+// The missing segments are re-resolved after the join, so a `..` in the tail cannot walk back out
+// of the root it was just checked against. Lexically this reads as inside the root.
+const missingEscapes = refusal(() => assertContainedIn(join(root, "not-yet", "..", "..", "elsewhere"), root));
+check(
+  "a missing target whose tail walks back out of the root is refused",
+  missingEscapes !== null,
+  missingEscapes,
 );
 
 // POSITIVE CONTROL. Without this, a guard that refused unconditionally would pass every cell above
