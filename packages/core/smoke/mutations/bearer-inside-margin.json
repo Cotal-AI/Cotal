@@ -2,30 +2,65 @@
   "suite": [
     "packages/core/smoke/bearer-inside-margin.smoke.ts"
   ],
-  "guard": "a bearer source returning a token already inside its refresh margin is refused, so BEARER_RETRY_MS applies instead of the 5s floor",
+  "guard": "on a bearer REFRESH the endpoint refuses material that is already dead and material the source merely re-served, and keeps arming a short-TTL source at the 5s floor",
   "command": "pnpm smoke:bearer-inside-margin",
   "completionMarker": "BEARER INSIDE MARGIN",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/bearer-inside-margin.json",
   "why": [
-    "Adopting a token already inside its own refresh margin arms the next refresh from a non-positive",
-    "delay, which armBearerRefresh floors to 5s. The next read returns the same near-dead token, so the",
-    "loop runs at 5s for its remaining life while the 15s BEARER_RETRY_MS backoff is bypassed: the fetch",
-    "did not fail, it succeeded and returned material that is not usable.",
-    "The named cell counts source reads in a window longer than the 5s floor and shorter than the 15s",
-    "backoff, so it grades the loop itself rather than the message. The sibling cells - the warning text",
-    "and the cache staying on the last good token - cannot grade it alone: a future change could emit",
-    "that message, or leave the cache alone, and still re-read at the floor.",
-    "This fixture cannot tell the narrowed rule from the original one: its stale token does not advance the expiry, so BOTH rules refuse it. What tells them apart is `smoke:expiry-renewal:auth`, which mints 5s bearers against the 60s margin — the original rule turned that suite red, the narrowed one leaves it green. The pair is the evidence, not a mutation here."
+    "Adopting a token that cannot carry the next cycle arms the next refresh from a non-positive delay,",
+    "which armBearerRefresh floors to 5s. When the source returns nothing new, the next read gets that",
+    "same token and the loop runs at 5s for its remaining life while the 15s BEARER_RETRY_MS backoff is",
+    "bypassed: the fetch did not fail, it succeeded and returned material that is not usable.",
+    "The floor itself is not the defect and must survive: expiry-renewal mints 5s bearers against the",
+    "60s margin, so for that deployment 5s IS the renewal cadence. That is why one cell counts reads",
+    "from a REFUSED source (none in 12s) and a second counts reads from a HEALTHY short-TTL source",
+    "(at least two in the same window). A change that widened the refusal into a blanket backoff would",
+    "pass the first and fail the second.",
+    "The two refusals answer different questions and are graded separately. Expiry is graded on its own",
+    "because an advance-only rule adopts a candidate dying at now-5s over a held one that died at",
+    "now-60s. Re-serve is graded on byte identity because exp carries one second of resolution, so a",
+    "key rotation re-signing the same claims, and a same-second re-read, both return NEW material whose",
+    "exp has not moved; an advancement test refuses those.",
+    "Sibling cells (the warning text, the cache staying on the last good token) cannot grade any of this",
+    "alone: a future change could emit the message, or leave the cache alone, and still re-read at the",
+    "floor or still adopt."
   ],
   "mutations": [
     {
-      "name": "a non-advancing token is adopted instead of refused",
+      "name": "an expired candidate is adopted when it advances the held one",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!initial && nextRefreshMs <= 0 && !advanced)",
-      "replace": "      if (!initial && nextRefreshMs <= 0 && advanced)",
-      "expectRed": "the refusal backs off past the 5s floor (no re-read in 12s)",
-      "cell": "the refusal backs off past the 5s floor (no re-read in 12s)",
-      "note": "Flipping the advance test, not deleting the guard: a deleted guard also reds the cell, but so would any change that stops the refusal firing. Inverting it keeps the refusal armed for exactly the tokens that ARE fresh — the shape `expiry-renewal` depends on — so the cell fails if the rule ever goes back to refusing a short lifetime."
+      "find": "        if (expiryMs <= Date.now())",
+      "replace": "        if (expiryMs <= Date.now() && expiryMs <= bearerExpiryMs(held))",
+      "expectRed": "an expired candidate is refused even though it ADVANCES the held one",
+      "cell": "an expired candidate is refused even though it ADVANCES the held one",
+      "note": "This reinstates the exact rule review rejected rather than deleting the guard, so the cell fails only for the reason it exists. A deleted guard also reds this cell, but so would any change that stops the refusal firing at all; making the refusal conditional on NOT advancing keeps it armed for every other expired token."
+    },
+    {
+      "name": "the re-serve test goes back to an advancement comparison",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)",
+      "replace": "        if (expiryMs <= bearerExpiryMs(held) && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)",
+      "expectRed": "a re-signed token carrying the same exp IS adopted",
+      "cell": "a re-signed token carrying the same exp IS adopted",
+      "note": "The false refusal that advancement produces, and the reason the shipped test is byte identity. A token re-signed under a rotated key carries the same exp, so an advancement test calls it stale and backs off 15s against material the broker has just started requiring."
+    },
+    {
+      "name": "a non-positive delay is clamped to BEARER_RETRY_MS",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.armBearerRefresh(expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);",
+      "replace": "      const d = expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS; this.armBearerRefresh(d <= 0 ? CotalEndpoint.BEARER_RETRY_MS : d);",
+      "expectRed": "a healthy short-TTL source still renews at the floor (>= 2 reads in 12s)",
+      "cell": "a healthy short-TTL source still renews at the floor (>= 2 reads in 12s)",
+      "note": "Backing every inside-margin token off to the failure cadence looks like a fix for the loop and is not: a deployment whose whole TTL sits inside the margin then holds a dead token for two thirds of every cycle. This mutation is the reason the loop is closed at the source test instead of the timer."
+    },
+    {
+      "name": "both refusals are applied with no token held",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (held !== undefined) {",
+      "replace": "      if (held !== undefined || true) {",
+      "expectRed": "the initial fetch is adopted even when it is already expired",
+      "cell": "the initial fetch is adopted even when it is already expired",
+      "note": "Both refusals protect a cached token, so with no cache there is nothing to protect and start() has to come up on whatever the source has. bindConnection's pre-dial guard is what speaks for a dead first token, and it names the remedy; refusing here instead leaves the endpoint with no bearer at all and the authenticator presenting undefined."
     }
   ]
 }

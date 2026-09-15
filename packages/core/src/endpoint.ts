@@ -783,27 +783,44 @@ export class CotalEndpoint extends EventEmitter {
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
-      // A source that keeps handing back the SAME near-dead token cannot carry the next cycle: the
-      // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
-      // returns that same token again - a 5s loop against the auth service for its remaining life,
-      // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
-      // material that is not usable. Same rule the creds path applies to an un-re-signed generation.
-      //
-      // The test is "did NOT advance", not "is inside the margin". A short lifetime is not by itself
-      // a defect: an auth service may legitimately issue tokens whose whole TTL sits inside the
-      // margin (`expiry-renewal` mints 5s bearers against a 60s margin), and refusing those makes
-      // renewal impossible for that deployment. What is never usable is a token that expires no
-      // later than the one already held - the source did not re-issue anything.
-      //
-      // Not on the initial fetch: there is no previous token to keep, and `start()` must be able to
-      // come up on whatever the source has.
+      // Two refusals, answering different questions, and both of them are about protecting what is
+      // ALREADY held. So both are scoped to there BEING something held, which is the same set as
+      // `!initial` but names the thing the rules actually depend on: on the first fetch there is no
+      // cache to lose, `start()` has to come up on whatever the source has, and the pre-dial guard
+      // in {@link bindConnection} is what speaks for a dead first token.
       const expiryMs = bearerExpiryMs(bearer);
-      const nextRefreshMs = expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS;
-      const advanced = this.currentBearer === undefined || expiryMs > bearerExpiryMs(this.currentBearer);
-      if (!initial && nextRefreshMs <= 0 && !advanced)
-        throw new Error("the bearer source returned a token that expires no later than the one already held (the auth service has not issued a fresh one) - nothing adopted");
+      const held = this.currentBearer;
+      if (held !== undefined) {
+        // ALREADY DEAD, whatever else is true of it. Advancement is deliberately not part of this
+        // test: a candidate expiring at now-5s does advance a held one that died at now-60s, so an
+        // advance-only rule adopts it - overwriting the cache with material nothing can dial,
+        // skipping the recoverable warning because the fetch did not throw, and arming the next
+        // read off a non-positive delay. The creds path draws its line on expiry alone too, in
+        // {@link presentableCreds} (#1572).
+        if (expiryMs <= Date.now())
+          throw new Error("the bearer source returned a token that has already expired - nothing adopted");
+        // THE SAME BYTES BACK AGAIN from a source whose token cannot carry the next cycle: the
+        // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
+        // returns that same token - a 5s loop against the auth service for the rest of its life,
+        // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
+        // nothing new (#1561).
+        //
+        // The test is byte identity, not expiry, and not advancement. `exp` carries one second of
+        // resolution, so a key rotation re-signing the same claims under a new key - and a healthy
+        // short-TTL source read twice inside one wall-clock second - both hand back a token whose
+        // `exp` has not moved. That is genuinely re-issued material, which an advancement test
+        // refuses and this one adopts. It is the question the creds path asks with
+        // `credsFingerprint`: did the source re-issue ANYTHING (#1572).
+        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)
+          throw new Error("the bearer source re-served the token already held and it cannot carry another cycle (the auth service has not issued a fresh one) - nothing adopted");
+      }
       this.currentBearer = bearer;
-      this.armBearerRefresh(nextRefreshMs);
+      // A non-positive delay is NOT clamped to BEARER_RETRY_MS. A deployment whose whole token TTL
+      // sits inside the margin is legitimate - `expiry-renewal` mints 5s bearers against the 60s
+      // margin - and for it the 5s floor IS the renewal cadence. Backing that source off to 15s
+      // leaves a 5s token dead for two thirds of every cycle. What made #1561 a pointless loop was
+      // the source returning nothing new, which is refused above, not the cadence itself.
+      this.armBearerRefresh(expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     } catch (e) {
       if (initial) throw e;
       this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
