@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:temp-containment
  */
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,18 +143,50 @@ try {
   );
 
   // A `..` AFTER A SYMLINK BELONGS TO THE PHYSICAL PREFIX, NOT TO THE SPELLING. `resolve()` on entry
-  // applied it textually before any symlink was read, so this was certified as `root/SIBLING.txt`
-  // while the kernel reads it as `<outside>/../SIBLING.txt`. REFUSED at the pre-fix base 1d389afb and
-  // ACCEPTED at e6a831e36: this PR introduced it.
+  // applied it textually before any symlink was read, so `link/../X` was certified as `root/X` while
+  // the kernel reads it as `<outside>/../X`, outside the root.
   //
-  // BUILT AS A LITERAL STRING. `join(link, "..", "SIBLING.txt")` collapses the `..` at the CALL SITE,
-  // so the guard never sees the case at all — that mismeasurement is why this was first reported as
-  // pre-existing rather than as the regression it is.
-  const dotdotAfterLink = refusal(() => assertContainedIn(`${link}/../SIBLING.txt`, root));
+  // TWO SHAPES, AND THEY TOOK DIFFERENT CODE PATHS, so one cell cannot stand for both. `physical()`
+  // can only realpath a target that EXISTS, which is why the verdicts differed:
+  //
+  //                     EXISTING sibling   MISSING sibling
+  //   base 1d389afb        REFUSED            ACCEPTED
+  //   head e6a831e36       ACCEPTED           ACCEPTED
+  //
+  // The EXISTING shape is the regression THIS PR introduced: at the base, `physical()` realpathed the
+  // existing target and caught it, and the deepest-ancestor commit lost that. The MISSING shape is
+  // PRE-EXISTING, because the old ENOENT fallback accepted it too. Both are refused now. Measured on
+  // this box against both shas, not taken on report.
+  //
+  // BUILT AS LITERAL STRINGS. `join(link, "..", "X")` collapses the `..` at the CALL SITE, so the
+  // guard never sees the case at all. That mismeasurement is how this defect was first reported as
+  // pre-existing, and testing only the missing shape is how that reading survived a second look.
+  //
+  // A NESTED FIXTURE, because the `..` lands on the physical PARENT of the link's referent and the
+  // EXISTING shape needs a real file sitting there. Nesting it under `root` keeps that file inside
+  // what the teardown already removes, instead of writing a `SIBLING.txt` into the shared temp root.
+  const ddBase = join(root, "dotdot");
+  const ddRoot = join(ddBase, "inner-root");
+  const ddOutside = join(ddBase, "outside");
+  mkdirSync(ddRoot, { recursive: true });
+  mkdirSync(ddOutside, { recursive: true });
+  const ddLink = join(ddRoot, "link");
+  symlinkSync(ddOutside, ddLink);
+  // The physical landing point of `<ddRoot>/link/../<name>` is `<ddBase>/<name>`: out of `ddRoot`
+  // entirely. One name exists there and one does not, which is the only difference between the cells.
+  writeFileSync(join(ddBase, "SIBLING.txt"), "precious");
+  const dotdotExisting = refusal(() => assertContainedIn(`${ddLink}/../SIBLING.txt`, ddRoot));
   check(
-    "a `..` after a symlink is applied to the physical prefix, so it cannot walk back into the root",
-    dotdotAfterLink !== null && dotdotAfterLink.includes(root),
-    dotdotAfterLink,
+    "a `..` after a symlink is refused when the sibling it lands on EXISTS (the shape this PR regressed)",
+    dotdotExisting !== null && dotdotExisting.includes(ddRoot),
+    dotdotExisting,
+  );
+
+  const dotdotMissing = refusal(() => assertContainedIn(`${ddLink}/../ABSENT.txt`, ddRoot));
+  check(
+    "a `..` after a symlink is refused when the sibling it lands on is MISSING (pre-existing, also closed)",
+    dotdotMissing !== null && dotdotMissing.includes(ddRoot),
+    dotdotMissing,
   );
 
   // ACCEPT CONTROL, AND THE ONE WITH NO ALARM ATTACHED. Over-refusal is the failure mode a regression

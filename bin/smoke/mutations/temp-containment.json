@@ -92,8 +92,8 @@
       "file": "bin/smoke/_scratch.ts",
       "find": "  const abs = isAbsolute(p) ? p : `${process.cwd()}${sep}${p}`;",
       "replace": "  const abs = resolve(p);",
-      "expectRed": "✗ FAIL: a `..` after a symlink is applied to the physical prefix, so it cannot walk back into the root",
-      "cell": "✗ FAIL: a `..` after a symlink is applied to the physical prefix, so it cannot walk back into the root"
+      "expectRed": "✗ FAIL: a `..` after a symlink is refused when the sibling it lands on EXISTS (the shape this PR regressed)",
+      "cell": "✗ FAIL: a `..` after a symlink is refused when the sibling it lands on EXISTS (the shape this PR regressed)"
     },
     {
       "name": "the positive control mints unguarded again, so a TMPDIR over the socket budget kills the suite with a raw stack instead of skipping by name",
