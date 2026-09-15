@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
-import { CENSUS_BUCKETS, classifyDirectPublishPermission, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
+import { CENSUS_BUCKETS, classifyDirectPublishPermission, isAbsentRegistry, isPresentRegistry, isUnknownRegistry, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
 import { emitDeclaration } from "./gen-npm-publish-preflight-dts.mjs";
 import ts from "typescript";
 import { readFileSync } from "node:fs";
@@ -791,6 +791,52 @@ check(
   "the shipped bucket predicates put each value readExactVersion can return in exactly one bucket, so the ladder's rung order stays safe for the whole return domain and not just the sampled rows",
   sampleMemberships.every((sample) => sample.buckets.length === 1),
   sampleMemberships,
+);
+// CENSUS_BUCKETS is the handle this suite grades through, so it must be the SAME predicates the
+// ladder applies, not a parallel list that agrees today. Found by attacking the cells above:
+// rewriting one CENSUS_BUCKETS entry to an equivalent inline arrow left every cell green, which
+// would let the exported table drift away from the shipped ladder and quietly restore the
+// transcription defect one layer up. So read the ladder with the same parser used on the
+// returns and require that each bucket's filter callback CALLS the exported predicate by name.
+function ladderFilterCallees(source: string): string[] | null {
+  const parsed = ts.createSourceFile("preflight-npm-publish.mjs", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  let fn: ts.FunctionDeclaration | undefined;
+  parsed.forEachChild(function find(node: ts.Node): void {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "preflightNpmPublish") fn = node;
+    node.forEachChild(find);
+  });
+  if (!fn?.body) return null;
+  const callees: string[] = [];
+  const walk = (node: ts.Node): void => {
+    // `rows.filter((row) => <callee>(row.registry))`
+    if (ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === "filter"
+      && node.arguments.length === 1) {
+      const arrow = node.arguments[0];
+      if (ts.isArrowFunction(arrow) && ts.isCallExpression(arrow.body) && ts.isIdentifier(arrow.body.expression)) {
+        callees.push(arrow.body.expression.text);
+      }
+    }
+    node.forEachChild(walk);
+  };
+  fn.body.forEachChild(walk);
+  return callees;
+}
+const ladderCallees = ladderFilterCallees(preflightSource);
+const bucketPredicateNames = ["isUnknownRegistry", "isPresentRegistry", "isAbsentRegistry"];
+check(
+  "the verdict ladder buckets rows by calling the exported predicates by name, so CENSUS_BUCKETS cannot drift into a parallel copy that agrees today and diverges later",
+  ladderCallees !== null && bucketPredicateNames.every((name) => ladderCallees.includes(name)),
+  { ladderCallees, required: bucketPredicateNames },
+);
+check(
+  "each CENSUS_BUCKETS entry is the exported predicate object itself, so grading through the table grades the function the ladder calls",
+  CENSUS_BUCKETS.length === 3
+    && CENSUS_BUCKETS.find((bucket) => bucket.name === "unknown")?.matches === isUnknownRegistry
+    && CENSUS_BUCKETS.find((bucket) => bucket.name === "present")?.matches === isPresentRegistry
+    && CENSUS_BUCKETS.find((bucket) => bucket.name === "absent")?.matches === isAbsentRegistry,
+  CENSUS_BUCKETS.map((bucket) => bucket.name),
 );
 
 const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });

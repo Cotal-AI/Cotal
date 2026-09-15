@@ -365,6 +365,24 @@
       "expectRed": "a return inside a nested function is not attributed to readExactVersion",
       "cell": "a return inside a nested function is not attributed to readExactVersion",
       "note": "The false-positive half of the enumerator: a helper closure's return is not readExactVersion's. Without the boundary the enumerator would red the shipped source for a value the function never returns."
+    },
+    {
+      "name": "a CENSUS_BUCKETS entry drifts off the exported predicate onto an equivalent inline copy",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  { name: \"absent\", matches: isAbsentRegistry },\n",
+      "replace": "  { name: \"absent\", matches: (registry) => registry === \"absent\" },\n",
+      "expectRed": "each CENSUS_BUCKETS entry is the exported predicate object itself",
+      "cell": "each CENSUS_BUCKETS entry is the exported predicate object itself",
+      "note": "Found by attacking the bucket cells: the table this suite grades through agreed with the ladder today but was free to diverge, which would restore the transcription defect one layer up. Identity, not equality, is what makes grading through CENSUS_BUCKETS mean anything."
+    },
+    {
+      "name": "the verdict ladder stops calling the exported bucket predicate and inlines the comparison",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const absent = rows.filter((row) => row.registry === \"absent\");\n",
+      "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "cell": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "note": "The other half of the same drift: exports that the ladder no longer calls are decoration, and a test grading them would grade nothing the release path runs."
     }
   ]
 }
