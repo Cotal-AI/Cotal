@@ -201,6 +201,102 @@ try {
     '  if (String(f).slice(-3) !== ".ts") continue;\n' +
     '  readFileSync(join(DIR, String(f)), "utf8");\n' +
     '}\n');
+  // #1605 v3. Each of these is a spelling that defeated v1 or v2, and each is a ROW of the table
+  // in the design record rather than a grammar case in the classifier. A future spelling is added
+  // here, as another row, and the classifier does not grow a case to match it.
+  //
+  // The ternary. A `ConditionalExpression` is not a `BinaryExpression`, so v2 walked straight past
+  // a guard that admits exactly one entry. `pins` evaluates it instead of matching it: with
+  // boolean-literal arms it reduces to its condition.
+  write("bin/smoke/listing-narrowed-ternary.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" ? true : false) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The TypeScript `as` wrapper. Erased before the program runs, so it cannot change which entries
+  // reach the read, yet `AsExpression` appears zero times in the v2 classifier.
+  write("bin/smoke/listing-narrowed-as.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f as string) !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The loop-local alias, in the shape where the READER still spells `String(f)`. The guard tests
+  // a second name for the same value, so the entry is pinned just as hard as if it were inlined.
+  write("bin/smoke/listing-narrowed-alias.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  if (entry !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The SAME narrowing in the shape sol probed, where the alias is also what the reader is handed.
+  // The two shapes disagreed across harnesses at v2 and they must land on one verdict: the guard
+  // admits one entry either way, so both are named reads.
+  write("bin/smoke/listing-narrowed-alias-read.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  if (entry !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, entry), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE ALIAS RULE, and a false refusal that is live at `cbf0ab8c3`. This
+  // sweep names nothing at all: it just binds the entry before reading it. v2 refused it because
+  // `mentions` did not follow the binding, so the reader's argument looked unrelated to the loop.
+  // Nothing reds when that happens; coverage simply stops counting, which is why an accept control
+  // is the only thing that can catch it.
+  write("bin/smoke/listing-alias-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  readFileSync(join(DIR, entry), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE RESOLUTION RULE. `helper.String` is a many-to-one projection that
+  // merely spells its terminal name `String`, and the sweep it filters is open. v2 compared the
+  // callee's terminal name, called it the global conversion, and refused this legitimate sweep.
+  write("bin/smoke/listing-helper-string.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const helper = { String: (v) => globalThis.String(v).slice(-3) };\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (helper.String(f) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, globalThis.String(f)), "utf8");\n' +
+    '}\n');
+  // The same, through a LOCAL BINDING that shadows the global `String`. Resolution has to consult
+  // the scope chain, not the spelling, or a shadowed projection is blessed as identity.
+  write("bin/smoke/listing-shadowed-string.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const String = (v) => globalThis.String(v).slice(-3);\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, globalThis.String(f)), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE TERNARY RULE: a ternary whose arms BOTH read. Whichever way the
+  // condition goes the loop reads the entry it is on, so no entry is excluded and the sweep is
+  // open. A ternary rule that pinned on the condition alone would refuse this.
+  write("bin/smoke/listing-ternary-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const where = String(f) === "src/impl.ts" ? String(f) : String(f);\n' +
+    '  readFileSync(join(DIR, where), "utf8");\n' +
+    '}\n');
+  // A guard the classifier has NO rule for, over a sweep that really is open. The default has to be
+  // OPEN: an unrecognised guard makes the sweep COUNT. This is the cell that would red if some
+  // future edit made "unclassified" mean "pins".
+  write("bin/smoke/listing-unknown-guard.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f).length % 7 === 3 && !String(f).includes("zz")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
   write("packages/seat/smoke/parked-import.smoke.ts",
     'async function never() { return await import("../src/impl.js"); }\n' +
     'console.log("nothing calls never");\n');
@@ -613,6 +709,54 @@ try {
   config("sweep-suffix-equality", { suite: ["bin/smoke/listing-suffix-equality.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("sweep-suffix-equality");
   check("an extension filter written as an equality is still a sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1605 v3: one cell per row of the design record's table. These are the spellings that defeated
+  // v1 and v2. They are recorded as ROWS, not as grammar cases, because the classifier now answers
+  // the cardinality question by resolution and three-valued evaluation rather than by matching.
+  config("sweep-narrowed-ternary", { suite: ["bin/smoke/listing-narrowed-ternary.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-ternary");
+  check("a narrowing spelled as a ternary with boolean arms is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-ternary/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-as", { suite: ["bin/smoke/listing-narrowed-as.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-as");
+  check("a type assertion around the entry does not hide the narrowing", result.status !== 0 && /REFUSED sweep-narrowed-as/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-alias", { suite: ["bin/smoke/listing-narrowed-alias.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-alias");
+  check("a loop-local alias of the entry is still the entry", result.status !== 0 && /REFUSED sweep-narrowed-alias/.test(result.stderr), report(result));
+
+  // The disputed row, pinned in BOTH harnesses. sol measured this shape as accepted and the
+  // maintainer's harness measured it as refused; the two fixtures differ only in whether the READER
+  // is handed the alias. Cardinality does not depend on that, so both must refuse.
+  config("sweep-narrowed-alias-read", { suite: ["bin/smoke/listing-narrowed-alias-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-alias-read");
+  check("an alias that is also what the reader is handed is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-alias-read/.test(result.stderr), report(result));
+
+  // The four accept controls. Each one fails exactly when the corresponding rule over-refuses,
+  // which is the direction with no alarm attached: a wrongly refused sweep reds nothing, it just
+  // stops counting. v2 shipped exactly such a regression in the two below.
+  config("sweep-alias-open", { suite: ["bin/smoke/listing-alias-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-alias-open");
+  check("binding the entry before reading it is still an open sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-helper-string", { suite: ["bin/smoke/listing-helper-string.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-helper-string");
+  check("a projection through a property named String is not the global conversion", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-shadowed-string", { suite: ["bin/smoke/listing-shadowed-string.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-shadowed-string");
+  check("a local binding that shadows String is not the global conversion", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-ternary-open", { suite: ["bin/smoke/listing-ternary-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-ternary-open");
+  check("a ternary whose arms both read leaves the sweep open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
+  // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
+  // ever inverted, a named read would masquerade as a sweep and this cell would red.
+  config("sweep-unknown-guard", { suite: ["bin/smoke/listing-unknown-guard.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-unknown-guard");
+  check("a guard the classifier cannot evaluate leaves the sweep counting", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
 
   config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
   result = run("uncalled-dynamic-import");
