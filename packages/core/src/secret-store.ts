@@ -111,9 +111,76 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 }
 
 /**
- * The construction-time refusal when the manager's remint store and the daemon's reload
- * source are not one authority. Both identities appear in the message; a refusal that
- * declines to start without naming them is the same defect wearing a different error.
+ * The delivery daemon's answer to the `reloadStoreIdentity` challenge: the store it reloads from,
+ * PLUS the binding that says whose answer this is.
+ *
+ * THE BINDING IS THE POINT, and it is why this is not just a {@link SecretStoreIdentity}. The
+ * delivery-admin rail is QUEUE-GROUPED, so a request lands on whichever bound responder the broker
+ * picks. Every process holding a `delivery` credential for the space can serve it, while only ONE
+ * of them holds the delivery lease and therefore actually reloads the standing credentials. Taking
+ * the first reply and calling it "the daemon's store" answers a question nobody asked: it reports
+ * the store of AN answerer, and a manager then decides whether to remint based on a process that
+ * may reload nothing. Carrying the answerer's identity and its lease claim lets the caller require
+ * that the store it compares against belongs to the process that reloads the credentials.
+ */
+export interface DaemonStoreAnswer {
+  /** The store the answering process reloads standing credentials from. */
+  identity: SecretStoreIdentity;
+  /** The answering endpoint's wire identity, so the answer names a process rather than a rail. */
+  responder: string;
+  /** Did the answering process say it held this space's delivery lease at the moment it answered?
+   *
+   *  THIS IS THE ANSWERER'S OWN CLAIM, NOT A VERIFIED FACT, and a caller that decides anything on it
+   *  alone is trusting a boolean the answerer chose. `false` is the honest reading for a responder
+   *  that does not own the shard, and it is useful exactly because an honest non-holder sends it. A
+   *  responder that is not honest can send `true`. A caller requiring the answer to come from the
+   *  process that reloads must verify the binding itself, by reading the lease row and comparing its
+   *  holder against {@link DaemonStoreAnswer.responder}. */
+  holdsDeliveryLease: boolean;
+}
+
+/** Parse a {@link DaemonStoreAnswer} off the wire through the same closed-parser discipline as
+ *  {@link parseSecretStoreIdentity}: a reply that cannot produce every field is a failure to
+ *  determine, raised here, never a partially trusted answer assembled by the caller. CLOSED means
+ *  closed in both directions: an unknown top-level key is refused rather than ignored, matching
+ *  `parseSecretStoreIdentity`, so a reply carrying a field this version does not know about is a
+ *  failure to determine instead of an answer that was silently read as something narrower than it
+ *  claimed to be. */
+export function parseDaemonStoreAnswer(raw: unknown): DaemonStoreAnswer {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("delivery-daemon store answer must be an object");
+  const o = raw as Record<string, unknown>;
+  const ADMITTED = ["identity", "responder", "holdsDeliveryLease"];
+  const unknown = Object.keys(o).filter((k) => !ADMITTED.includes(k));
+  if (unknown.length)
+    throw new Error(
+      `delivery-daemon store answer admits only {identity, responder, holdsDeliveryLease} (unknown: ${unknown.sort().join(", ")})`,
+    );
+  if (typeof o.responder !== "string" || !o.responder.trim())
+    throw new Error("delivery-daemon store answer requires a non-blank responder identity");
+  if (typeof o.holdsDeliveryLease !== "boolean")
+    throw new Error("delivery-daemon store answer requires holdsDeliveryLease as a boolean (an absent claim is not a false one)");
+  return { identity: parseSecretStoreIdentity(o.identity), responder: o.responder, holdsDeliveryLease: o.holdsDeliveryLease };
+}
+
+/**
+ * The note a manager records when it is NOT the daemon-cred renewal owner: the delivery daemon
+ * reloads from a store this manager does not write. Both identities appear, so an operator can
+ * find the owner. A space has many managers, on the same device or different ones; exactly one of
+ * them, the one rooted where the daemon reads, remints the daemon credentials. The others start,
+ * serve seats, and record this instead of writing a generation the daemon can never read (#773).
+ */
+export function foreignRenewalOwnerNote(self: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
+  return (
+    `daemon credential renewal is owned elsewhere: this manager's store is ${formatSecretStoreIdentity(self)} ` +
+    `while the delivery daemon reloads from ${formatSecretStoreIdentity(daemon)}. This manager serves seats ` +
+    `and does not remint daemon creds; the manager rooted at the daemon's store is the renewal owner.`
+  );
+}
+
+/**
+ * Kept for callers that still name a divergent pair as a refusal (the delivery daemon's own
+ * `--creds`-vs-cwd check). A manager no longer refuses on this: see {@link foreignRenewalOwnerNote}.
  */
 export function divergentSecretStoreRefusal(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
   return (

@@ -132,7 +132,10 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
       return { ok: true, data: result };
     }
     if (req.op === "reloadStoreIdentity")
-      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
+      // The store answer carries its BINDING: which process answered, and whether that process holds
+      // the delivery lease. This fixture stands in for the lease-holding daemon, so it claims the
+      // lease; an answer without the claim is refused as not-a-determination.
+      return { ok: true, data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: ep.ref().id, holdsDeliveryLease: true } };
     return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
   }, { boundReply: true });
   return ep;

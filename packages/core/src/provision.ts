@@ -1487,6 +1487,7 @@ export function permissionsFor(
  *  actor, provision, purge, or tamper with a stream. */
 function supervisorPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, MKV = `KV_${managerBucket(space)}`;
+  const DKV = `KV_${deliveryBucket(space)}`;
   // 1d: the supervisor no longer serves the manager control tiers — the manager's control surface
   // is its v0.4 `service` endpoint, served on a SEPARATE connection under its own `endpoint-serve`
   // credential (its rails are that credential's grant, not the supervisor's). The supervisor now
@@ -1512,6 +1513,24 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         `$JS.API.CONSUMER.CREATE.${PKV}.>`, // kv.watch ordered consumer (roster)
         `$JS.API.CONSUMER.INFO.${PKV}.>`,
         "$JS.FC.>", // ordered-consumer flow control
+        // Delivery lease/readiness KV: READ ONLY, a keyed point-get, and it is what makes the
+        // manager's daemon-store challenge a determination rather than a report.
+        //
+        // The manager has to answer two questions before it may re-sign a daemon credential: does a
+        // delivery daemon hold this space's shard at all, and is the process that just answered the
+        // queue-grouped admin rail that holder. Both were previously taken from the rail's own
+        // outcome, and the rail is served by whichever permitted responder the broker picks, so both
+        // answers were things a responder could choose. The lease row is the fact neither a reply nor
+        // a missing reply can produce: one key, one writer (the `delivery` cred's `lease.*` grant),
+        // read here under the supervisor's own credential.
+        //
+        // NO `$KV.${deliveryBucket(space)}` PUBLISH, deliberately and permanently. The lease has
+        // exactly one writer because a second one could claim or clobber the single-flight slot and
+        // split a durable's delivery; a read grant added so the manager can VERIFY a claim must never
+        // become the authority to make one. STREAM.INFO + STREAM.MSG.GET is the keyed-read pair, the
+        // same shape `kvPointRead` uses for the buckets an operator surface reads and never writes.
+        `$JS.API.STREAM.INFO.${DKV}`,
+        `$JS.API.STREAM.MSG.GET.${DKV}`,
         // The ONE control service the supervisor CALLS (D5 slice 5): the delivery daemon's privileged
         // admin rail — the manager is the class-2 renewal owner, and after re-signing the daemon creds
         // files it requests `reloadCreds` here so adoption is an explicit, auditable event. Self-scoped
@@ -1550,6 +1569,7 @@ function remoteManagerPermissions(
     throw new Error(`permissionsFor: remote-manager actor must be the server-selected manager_${iid} or manager_exec_${iid} for instance ${iid}`);
   const PKV = `KV_${presenceBucket(space)}`;
   const MKV = `KV_${managerBucket(space)}`;
+  const DKV = `KV_${deliveryBucket(space)}`;
   const AUTH = epAuthBucket(space);
   const REC = recordsBucket(space);
   const gateKey = epgateKey("manager", iid);
@@ -1575,6 +1595,12 @@ function remoteManagerPermissions(
         `$JS.API.CONSUMER.CREATE.${PKV}.>`,
         `$JS.API.CONSUMER.INFO.${PKV}.>`,
         "$JS.FC.>",
+        // The same READ-ONLY delivery-lease point read the local supervisor carries, for the same
+        // reason: a remote manager runs the identical daemon-store challenge and must establish the
+        // shard's holder itself rather than accept the answering responder's account of it. Read
+        // only; the lease keeps its single writer.
+        `$JS.API.STREAM.INFO.${DKV}`,
+        `$JS.API.STREAM.MSG.GET.${DKV}`,
         // This instance's manager service registration + credential family only.
         `$KV.${AUTH}.${gateKey}`,
         `$KV.${AUTH}.${repairKey}`,

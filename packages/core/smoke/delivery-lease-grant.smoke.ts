@@ -40,13 +40,22 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  so that is supplied rather than dropping the profile from the sweep: a profile skipped because it
  *  was awkward to construct is a profile nobody is checking. */
 function pubRows(profile: string): string[] {
+  // A profile that REFUSES to mint without its pin is supplied one rather than dropped from the
+  // sweep: a profile skipped because it was awkward to construct is a profile nobody is checking.
+  // `remote-manager` additionally pins the actor to the server-selected `manager_<instanceId>`, so
+  // the principal is rebuilt to match rather than the pin bent to fit the shared one.
   const extra = profile === "deprovisioner"
     ? { deprovisionTarget: { principal: `${DEV_OWNER}.departed`, lifecycleUid: pr.lifecycleUid } }
-    : {};
+    : profile === "remote-manager"
+      ? { remoteManager: { instanceId: pr.lifecycleUid, owner: DEV_OWNER, actor: `manager_${pr.lifecycleUid}` } }
+      : {};
+  const principal = profile === "remote-manager"
+    ? { ...pr, actor: `manager_${pr.lifecycleUid}` }
+    : pr;
   const perms = permissionsFor(
     profile as Parameters<typeof permissionsFor>[0],
     SPACE,
-    pr as never,
+    principal as never,
     { lifecycleUid: pr.lifecycleUid, ...extra } as never,
   ) as { pub?: { allow?: string[]; deny?: string[] } };
   return perms.pub?.allow ?? [];
@@ -89,6 +98,32 @@ for (const profile of ["observer", "admin"]) {
 for (const profile of ["observer", "admin"]) {
   const rows = pubRows(profile);
   check(`CELL: \`${profile}\` CANNOT write the lease key (one writer: the delivery cred)`,
+    !grants(rows, WRITE_PUT), { profile, offenders: rows.filter((r) => subjectMatches(r, WRITE_PUT)) });
+  check(`CELL: \`${profile}\` CANNOT delete the delivery bucket`,
+    !grants(rows, WRITE_DELETE), { profile, offenders: rows.filter((r) => subjectMatches(r, WRITE_DELETE)) });
+  check(`CELL: \`${profile}\` CANNOT purge the delivery bucket`,
+    !grants(rows, WRITE_PURGE), { profile, offenders: rows.filter((r) => subjectMatches(r, WRITE_PURGE)) });
+}
+
+// ---------- the manager's own read, and the same confinement over it ----------
+// The supervisor credential is the manager's always-on connection, and the daemon-store challenge
+// now settles two questions from the lease row rather than from the rail: does anything hold this
+// space's shard, and is the process that answered the queue-grouped admin rail that holder. Both
+// were previously taken from what a responder sent, and the rail is served by whichever permitted
+// responder the broker picks. Without this grant the manager cannot establish either fact itself and
+// the challenge falls back to a report; with it, the challenge is a measurement.
+//
+// `remote-manager` carries it for the same reason: it runs the identical challenge.
+for (const profile of ["supervisor", "remote-manager"]) {
+  const rows = pubRows(profile);
+  check(`CELL: \`${profile}\` can read the delivery lease record (the challenge verifies the holder itself)`,
+    grants(rows, READ_GET), { profile, DLVKV });
+  check(`CELL: \`${profile}\` can see the delivery bucket at all (STREAM.INFO)`,
+    grants(rows, READ_INFO), { profile, DLVKV });
+  // THE HALF THAT MATTERS MORE, and the reason this grant is a point-read pair rather than a
+  // convenience: a credential that could WRITE the row could manufacture the very fact the challenge
+  // reads, which would put the determination back in the hands of a participant.
+  check(`CELL: \`${profile}\` CANNOT write the lease key (reading a claim must never become authority to make one)`,
     !grants(rows, WRITE_PUT), { profile, offenders: rows.filter((r) => subjectMatches(r, WRITE_PUT)) });
   check(`CELL: \`${profile}\` CANNOT delete the delivery bucket`,
     !grants(rows, WRITE_DELETE), { profile, offenders: rows.filter((r) => subjectMatches(r, WRITE_DELETE)) });

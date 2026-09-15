@@ -171,6 +171,10 @@ export interface RenewalRecord {
   results: RemintResult[];
   /** The daemon's explicit reloadCreds adoption outcome; absent when nothing was re-signed. */
   adoption?: { ok: boolean; detail?: unknown; error?: string };
+  /** Present when this manager is NOT the daemon-cred renewal owner: the delivery daemon reloads
+   *  from `store`, which this manager does not write, so the pass reminted nothing. Not a problem
+   *  for `doctor auth`: the owner is another manager of the same space, on this device or another. */
+  renewalOwner?: { elsewhere: true; store: string; note: string };
 }
 
 export function renewalRecordPath(root: string): string {

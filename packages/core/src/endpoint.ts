@@ -3639,6 +3639,41 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.readDeliveryLeaseEntry(shardIndex))?.info;
   }
 
+  /**
+   * Is a delivery daemon HOLDING this shard right now, read by THIS process from the lease row?
+   *
+   * THE POINT IS WHO ESTABLISHES THE FACT. Everything a requester learns from a request/reply rail
+   * is, in the end, something a responder chose to send: the delivery-admin rail is queue-grouped,
+   * so any process permitted to serve it decides what arrives, including the shape the client
+   * library turns into a typed no-responder error (an empty payload carrying a 503 status header).
+   * A caller that must distinguish "no daemon holds this shard" from "something answered me" cannot
+   * get that from the reply, because a reply is exactly what it is trying to rule out.
+   *
+   * The lease row is the other kind of fact. It is a KV key in the per-space delivery bucket whose
+   * only writer is the `delivery` credential's own `lease.*` grant, it is read here over the
+   * broker's KV API under THIS endpoint's credential, and no reply on any rail can produce it. So a
+   * caller asking "is the shard held" gets an answer no responder participates in.
+   *
+   * `undefined` is a genuine unknown and is NEVER an absence: a read that throws (a denied or
+   * unreadable bucket, a broker that will not answer) must not be collapsed into "nothing is
+   * there", which is the same conflation of failure with determination this method exists to end.
+   * Callers requiring absence must treat `undefined` as a failure to determine.
+   */
+  async deliveryShardHeld(shardIndex: number): Promise<boolean | undefined> {
+    try { return (await this.readDeliveryLeaseEntry(shardIndex)) !== undefined; }
+    catch { return undefined; }
+  }
+
+  /** The principal recorded as holding a shard's delivery lease, read by THIS process from the row,
+   *  or `undefined` when no row is live or the read failed. The counterpart to
+   *  {@link deliveryShardHeld} for a caller that must compare an answerer against the holder rather
+   *  than take the answerer's word for which one it is. Same caveat: `undefined` is an unknown, not
+   *  a statement that nobody holds the shard. */
+  async deliveryLeaseHolder(shardIndex: number): Promise<string | undefined> {
+    try { return (await this.readDeliveryLeaseEntry(shardIndex))?.info.holder; }
+    catch { return undefined; }
+  }
+
   /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
    *  CAS release are argued against, so a caller re-establishing ownership after a failed renew
    *  needs the BROKER's sequence, not the one it last cached: a renew can fail with its write
@@ -4408,8 +4443,27 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: "reloadStoreIdentity: this daemon did not name the SecretStore it reloads from" };
       try {
         const identity = this.plane3.reloadStoreIdentity();
+        // WHO IS ANSWERING is part of the answer. This rail is queue-grouped, so the broker hands
+        // the request to any bound responder, and every process with a `delivery` credential for
+        // the space can bind it — while only the DELIVERY LEASE HOLDER actually reloads the
+        // standing credentials. A bare store identity therefore lets a second responder's store
+        // stand in for the reloading process's, and the manager's remint decision is then made
+        // about a process that reloads nothing. So the reply carries this responder's wire
+        // identity and whether it holds the lease, and the caller requires the binding.
+        //
+        // The lease read is the LIVE row, not a cached claim: a holder that lost the shard must
+        // not keep asserting it. A read that fails is reported as `false` rather than thrown —
+        // "I cannot prove I hold the shard" is exactly what a non-holder's answer says, and it
+        // sends the caller down the same fail-closed path rather than inventing an authority.
+        let holdsDeliveryLease = false;
+        try {
+          const own = await this.readDeliveryLeaseEntry(0);
+          holdsDeliveryLease = own !== undefined && this.ownsDeliveryLease(own.info);
+        } catch {
+          holdsDeliveryLease = false;
+        }
         // Round-trip through the closed parser so a hook cannot smuggle extra fields onto the rail.
-        return { ok: true, data: parseSecretStoreIdentity(identity) };
+        return { ok: true, data: { identity: parseSecretStoreIdentity(identity), responder: this.card.id, holdsDeliveryLease } };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
