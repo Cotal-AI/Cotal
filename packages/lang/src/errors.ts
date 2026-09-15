@@ -80,6 +80,14 @@ export const CATALOG = {
   L3045: "`waitUntil` probe is not a function",
   L3046: "`waitUntil` needs a cadence and a deadline",
   L3047: "`waitUntil` cadence is zero, or does not divide its deadline usefully",
+  // `spawn`'s `placement` names WHICH MANAGER INSTANCE hosts the seat, and it is the one option
+  // whose value the identity projection reads INTO rather than hashing whole. A value that is not
+  // an `{ endpoint, instanceId }` pair therefore has nowhere to be refused later: the projection
+  // dereferences it, and `null` raised a raw `TypeError` — a host crash where the runtime had
+  // written a named refusal — before any journal entry, code or effect kind existed to carry the
+  // diagnosis. It is refused HERE, at the call, for the same reason L3046 is: the computed bag is
+  // the case the validator cannot see, and the author needs the shape named rather than a stack.
+  L3048: "`spawn` placement is not an endpoint and instanceId pair",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",
