@@ -9,20 +9,31 @@
  * independent instruments. A `primary` (the scanner's real `findings()`) and a `secondary` (a
  * small reader asserting the subject genuinely carries what the cell claims to plant). Hollow a
  * secondary out to a constant, `() => 1`, and the cell still reports `status=PASS`, the summary
- * still reports `cells=61/61 status=PASS`, and the process still exits 0.
+ * still reports `cells=65/65 status=PASS`, and the process still exits 0.
  *
  * Measured by hollowing three different secondaries one at a time, each inside its own cell block:
- *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=61/61 status=PASS   SURVIVED
- *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=61/61 status=PASS   SURVIVED
- *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=61/61 status=PASS   SURVIVED
- * against a same-session behaviour control proving the scanner is not simply blind: weakening the
- * real CIDR_SUFFIX pattern gave exit 2, cells=54/61 status=FAIL. A dead discriminator is invisible
- * to the instrument it belongs to, while dead behaviour is not.
+ *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=65/65 status=PASS   SURVIVED
+ *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=65/65 status=PASS   SURVIVED
+ *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=65/65 status=PASS   SURVIVED
+ * against a same-session behaviour control proving the scanner is not simply blind: dropping the
+ * trailing `(?![A-Za-z0-9_/])` from the real CIDR_SUFFIX pattern gave exit 2, cells=61/65
+ * status=FAIL, reddening exactly the four cells that grade that lookahead (public-cidr-alpha-tail,
+ * public-cidr-slash-tail, shared-cidr-alpha-tail, shared-cidr-slash-tail). The weakening is spelled
+ * out because "weakening the pattern" is not reproducible and the cell count depends on which
+ * weakening. A dead discriminator is invisible to the instrument it belongs to, while dead
+ * behaviour is not.
  *
- * These figures are re-derivable at THIS head, which is deliberate. They previously cited a prior
- * sha, and a reviewer pointed out that a historical claim wearing the same clothes as a live one is
- * precisely this suite's own subject. Every number in this file should be reproducible from the
- * file it sits in.
+ * THE FIGURES IN THIS DOCBLOCK are re-derivable at THIS head and were re-derived here. That is
+ * deliberate: they previously cited a prior sha, and a reviewer pointed out that a historical claim
+ * wearing the same clothes as a live one is precisely this suite's own subject.
+ *
+ * FIGURES FURTHER DOWN THAT DESCRIBE A PAST DEFECT OR A PAST REVIEW ROUND are labelled with the
+ * head they were measured at and are deliberately NOT restated here. A dated figure that says how
+ * old it is beats a fresh-looking figure under an old pin. So the claim is narrowed on purpose:
+ * this docblock is current, and every other figure in this file carries its own date.
+ *
+ * #1614 added four cells while this branch sat in review, moving the scanner from 61 to 65 cells
+ * and this suite from 149 to 173 checks. That is why the labelled figures below read 61 and 149.
  *
  * THE MEASUREMENT. A discriminator is alive only if it can still say NO. For each subject cell we
  * TAMPER the cell's planted subject so the property the secondary asserts is genuinely destroyed,
@@ -391,7 +402,8 @@ const CASES = [
   // `scanCell` RECEIVES its measure as an argument, so `allowlisted-fixture` having a case said
   // nothing whatever about these four, and review measured the consequence: hollowing two of these
   // readers to a constant that satisfies its own expectation left `scanEntries` uncalled, the
-  // scanner reporting `cells=61/61 status=PASS`, and this suite fully green. Two cells graded by
+  // scanner reporting `cells=61/61 status=PASS` (DATED: measured at the then-current 61-cell head,
+  // before #1614; the scanner builds 65 cells now), and this suite fully green. Two cells graded by
   // nothing, reported as graded by their family. The coverage rule now groups by reader, which put
   // all four here as uncovered singletons, and this is that debt paid rather than renamed.
   //
@@ -833,8 +845,20 @@ const FACTORIES = [
  * a full green, with a same-run positive control proving the cell really was reached.
  *
  * The FIELD each one reports is a property of that cell's own code and cannot be read off the
- * array, so this list is written out. It is held to the source rather than trusted: the inventory
- * check below requires it to match the inline cells actually present, in both directions.
+ * array, so this list is written out. It is held to the source rather than trusted: the registry
+ * check below requires it to match the inline cells the AST inventory finds, IN BOTH DIRECTIONS.
+ *
+ * THAT CHECK IS NEW, AND IT IS WHY THIS ARRAY NOW READS 14 RATHER THAN 10. This comment already
+ * claimed bidirectionality and the code did not provide it: the only enforced direction was
+ * claimed -> source (`census: every cell this suite names is actually declared in the scanner`,
+ * which filters these names against the scanner's markers). Nothing checked source -> claimed, so
+ * when #1614 added four INLINE cells they never reached this array and the suite stayed green at
+ * 173/173 with the registry four entries short. Being listed here is not coverage and never was,
+ * so the gap cost no grading; it cost the registry its accuracy, silently.
+ *
+ * A comment asserting a guarantee the code does not provide is a stale figure in prose form. The
+ * guarantee is now implemented rather than the sentence deleted, because the next four cells are
+ * already coming.
  */
 const INLINE_CELLS = [
   { name: "ipv6-spelling-pair", secondaryField: "planted" },
@@ -847,6 +871,12 @@ const INLINE_CELLS = [
   { name: "production-main-wiring", secondaryField: "skip_rows" },
   { name: "production-short-token-guard", secondaryField: "reason_rows" },
   { name: "production-token-ceiling-guard", secondaryField: "reason_rows" },
+  // #1614's four, added to the scanner while this branch sat in review. They were absent from this
+  // registry and nothing made that fail, which is the defect the both-directions check below fixes.
+  { name: "sentence-final-period-ipv6", secondaryField: "secondary" },
+  { name: "sentence-final-period-ipv4", secondaryField: "ipv4_rule" },
+  { name: "letter-adjacent-address", secondaryField: "ipv6_rule" },
+  { name: "sentence-final-period-refuses-name", secondaryField: "name_tail" },
 ];
 
 /**
@@ -906,7 +936,7 @@ const workdir = makeWorkdir();
  * feed `guardSafe` both answers directly, and they assert `makeWorkdir`'s own postcondition.
  *
  * Killed by, each run at this head and each observed red:
- *   `const guardSafe = (path) => true;`  -> exit 1, 148/149, red on the rejecting check BY NAME.
+ *   `const guardSafe = (path) => true;`  -> exit 1, 172/173, red on the rejecting check BY NAME.
  *     This is the one the fixture scores, because `expectRed` needs a named check row to match.
  *   `const guardSafe = (path) => false;` -> exit 1, but it THROWS out of makeWorkdir at module load
  *     ("no usable working directory: a copied scanner would exit 0 having run nothing") before any
@@ -966,8 +996,8 @@ try {
   // scanner's 65 cells are inline object literals built by no factory at all, so no factory
   // enumeration, however perfect, can see them. A reviewer proved the cost rather than arguing it:
   // hollowing `workflow-host-exclusion`'s inline discriminator to a constant left the scanner at
-  // cells=61/61 exit 0 AND this suite at a full green, with a same-run positive control showing the
-  // cell really was reached. Live code that both instruments declined to grade.
+  // cells=61/61 exit 0 AND this suite at a full green (DATED: measured at the then-current 61-cell
+  // head, before #1614), with a same-run positive control showing the cell really was reached. Live code that both instruments declined to grade.
   //
   // Two earlier readers were defeated here and both failures came from reading TEXT rather than
   // structure: `function matchCell(` -> `function matchCell (` silently shrank the denominator, and
@@ -1053,7 +1083,8 @@ try {
   // reviewer defeated it with a single-token edit. Renaming one START marker
   // (`ip-zero` -> `ip-private`, a cell id already in use) kept the count at 61 while LOSING one id
   // and DUPLICATING another, leaving a START/END pair mismatched. Every row still read
-  // `markers=61 parsed_cells=61 ... unaccounted=0` and the suite passed in full.
+  // `markers=61 parsed_cells=61 ... unaccounted=0` and the suite passed in full. (DATED: that round
+  // was measured at the then-current 61-cell head, before #1614.)
   //
   // Two totals can agree while the things they count differ, so equal counts prove nothing about
   // membership. Duplicates are what make that possible, and a duplicate id is independently fatal:
@@ -1079,6 +1110,35 @@ try {
     "census: the marker reader and the parsed cell array name the same cells, not merely as many",
     declaredCells.length > 0 && onlyInMarkers.length === 0 && onlyInParsed.length === 0,
     `markers=${declaredCells.length} parsed=${parsedIds.length} (factory=${parsedIds.length - inventory.inline.length} inline=${inventory.inline.length})${onlyInMarkers.length ? ` MARKER ONLY [${onlyInMarkers.join(", ")}]` : ""}${onlyInParsed.length ? ` PARSED ONLY [${onlyInParsed.join(", ")}]` : ""}`,
+  );
+
+  // THE INLINE REGISTRY IS HELD TO THE SOURCE IN BOTH DIRECTIONS.
+  //
+  // `INLINE_CELLS` records the field each inline cell's own reader reports, which cannot be read
+  // off the AST. Until this check existed only claimed -> source was enforced, so an inline cell
+  // added to the scanner never had to reach the registry: #1614 added four and the suite stayed
+  // green with the registry four entries short, under a comment claiming both directions. A
+  // registry that only has to shrink stops describing the thing it indexes without ever going red.
+  const inlineRegistry = INLINE_CELLS.map((entry) => entry.name);
+  const registryVsSource = compareCellSets(inlineRegistry, inventory.inline);
+  check(
+    "inline registry: INLINE_CELLS names exactly the inline cells the inventory finds, in both directions",
+    inventory.inline.length > 0
+      && registryVsSource.onlyInMarkers.length === 0 && registryVsSource.onlyInParsed.length === 0,
+    `registry=${inlineRegistry.length} inventory=${inventory.inline.length}${registryVsSource.onlyInParsed.length ? ` NOT IN REGISTRY [${registryVsSource.onlyInParsed.join(", ")}]` : ""}${registryVsSource.onlyInMarkers.length ? ` NOT IN SOURCE [${registryVsSource.onlyInMarkers.join(", ")}]` : ""}`,
+  );
+
+  // Both directions get their own planted positive, because a control on one says nothing about the
+  // other, and it is the source -> registry direction that was missing and must be shown to bite.
+  const plantedUnregistered = compareCellSets(inlineRegistry, [...inventory.inline, "planted-inline-cell"]);
+  const plantedUnsourced = compareCellSets([...inlineRegistry, "planted-registry-cell"], inventory.inline);
+  check(
+    "inline registry control: an unregistered inline cell and an unsourced registry name are each reported",
+    plantedUnregistered.onlyInParsed.length === 1
+      && plantedUnregistered.onlyInParsed[0] === "planted-inline-cell"
+      && plantedUnsourced.onlyInMarkers.length === 1
+      && plantedUnsourced.onlyInMarkers[0] === "planted-registry-cell",
+    `planted_unregistered=${plantedUnregistered.onlyInParsed.length}/1 [${plantedUnregistered.onlyInParsed.join(", ")}] planted_unsourced=${plantedUnsourced.onlyInMarkers.length}/1 [${plantedUnsourced.onlyInMarkers.join(", ")}]`,
   );
 
   // The parsed reader must not have SKIPPED anything in that array. See its refusal branch: an
@@ -1154,7 +1214,7 @@ try {
   // literal so the AST reader does not count it, and it carries no comments so the marker reader
   // does not either. Both readers agreed at 61/61 while the scanner ran 62 cells, and the scanner's
   // own summary said `cells=61/61 status=PASS` because its denominator is the expectation map
-  // rather than the array. Three readers, one silence, measured.
+  // rather than the array. (DATED: measured at the then-current 61-cell head, before #1614.) Three readers, one silence, measured.
   //
   // Bidirectional set equality cannot escape that: it proves the two inputs name the same cells,
   // never that either input is complete. So the third input is the RUN: every `cell=` id the
@@ -1634,7 +1694,8 @@ try {
   // arguments>)` and the argument text stays verbatim, so the tamper still finds its anchor and
   // still applies, while the scan is never evaluated. That much is true, and at the SCANNER level
   // it is a genuine hollow: `node --check` passes, the scan never runs, and the scanner's own
-  // self-test reports `cells=61/61 status=PASS` at exit 0, blind to it.
+  // self-test reports `cells=61/61 status=PASS` at exit 0, blind to it. (The rows in this block are
+  // DATED: measured at the then-current 61-cell head, before #1614.)
   //
   // The suite kills it anyway, measured on the real file rather than reasoned about:
   //
