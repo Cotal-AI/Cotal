@@ -34,7 +34,9 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const IID = "1".repeat(26);
-const VERDICT = /no manager reachable|did not answer/;
+// Every shape of the reachability verdict, so a NEGATIVE assertion on it cannot be satisfied by
+// a rewording. The rail-scoped form (#1630) is a third spelling of the same claim.
+const VERDICT = /no manager reachable|no manager answered on the ep\.|did not answer/;
 const ep = (code: ConstructorParameters<typeof EpEnvelopeError>[0], message: string, details?: ConstructorParameters<typeof EpEnvelopeError>[2]) => new EpEnvelopeError(code, message, details);
 const unansweredMark = { kind: EP_UNANSWERED, endpoint: "manager", command: "ps" };
 const registryMark = { kind: EP_REGISTRY_READ_FAILED, endpoint: "manager", command: "ps" };
@@ -75,6 +77,13 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
   const l = epRailFailure(ep("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", [{ ...v1Mark, rail: "ep" }]));
   c("legacy rail: the verdict is unchanged and carries no 13.15 tail",
     l.unanswered === true && l.error?.startsWith("no manager reachable on the ep rails (") === true && !l.error.includes("13.15"), l);
+  // THE SEAM A CALLER MUST DECIDE ON, pinned because one stopped: `cotal update`'s
+  // `reportRunningManager` read "no manager is running" off the HEADLINE, which this change reworded
+  // for an issued caller, so it threw instead of reporting "none". `unanswered` is the fact, it is
+  // rail-independent, and an unpinned call cannot produce the other wording, so a caller that keys
+  // on it survives every rewording of the sentence beside it.
+  c("the `unanswered` marker is the same on both rails, so a caller never has to read the headline",
+    r.unanswered === true && l.unanswered === true && r.error !== l.error, { versioned: r.error, legacy: l.error });
 }
 {
   // endpoint-invoke.ts:179 the responder's OWN ok:false describe reply, rethrown under its code (unmarked).
