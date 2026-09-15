@@ -72,14 +72,6 @@
       "cell": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling"
     },
     {
-      "name": "the missing tail is joined onto the canonical base WITHOUT re-resolving, so a '..' among the missing segments survives and walks back out of the root",
-      "file": "bin/smoke/_scratch.ts",
-      "find": "      return missing.length === 0 ? real : resolve(join(real, ...missing));",
-      "replace": "      return missing.length === 0 ? real : join(real, ...missing);",
-      "expectRed": "✗ FAIL: a missing target whose tail walks back out of the root is refused",
-      "cell": "✗ FAIL: a missing target whose tail walks back out of the root is refused"
-    },
-    {
       "name": "the deepest-ancestor walk stops failing closed on a non-ENOENT errno, downgrading an unprovable target to its lexical spelling",
       "file": "bin/smoke/_scratch.ts",
       "find": "      if ((e as NodeJS.ErrnoException).code !== \"ENOENT\") throw e;",

@@ -120,13 +120,17 @@ check(
   missingInsideRoot,
 );
 
-// The missing segments are re-resolved after the join, so a `..` in the tail cannot walk back out
-// of the root it was just checked against.
+// A `..` in the tail of a MISSING target must not walk back out of the root. This is a boundary
+// cell, not a mutant-graded one, and deliberately so: `resolve()` normalizes the path on entry to
+// the resolver, so `..` is gone before the deepest-ancestor walk ever starts and every element of
+// the missing tail is a plain basename. A mutant that removed the re-resolve I first wrote around
+// the re-join SURVIVED, because that re-resolve was dead code — normalization had already happened.
+// The cell stays because the PROPERTY is worth pinning against a future resolver that stops
+// normalizing at entry; the dead mutant and the dead code both went, rather than shipping a NO-OP
+// that would have read as coverage (#1627).
 //
-// BUILT AS A RAW STRING, NOT WITH join(). `join(root, "not-yet", "..", "..", "x")` collapses the
-// `..` at the CALL SITE and hands the guard an already-escaped path, which the outside-the-root
-// branch catches for an entirely different reason — so the cell passed while grading nothing about
-// the re-resolve, and its mutant SURVIVED. The `..` has to still be in the string the guard receives.
+// BUILT AS A RAW STRING, NOT WITH join(): `join(root, "not-yet", "..", "..", "x")` collapses the
+// `..` at the CALL SITE, so the guard would never see it at all.
 const missingEscapes = refusal(() => assertContainedIn(`${root}/not-yet/../../elsewhere`, root));
 check(
   "a missing target whose tail walks back out of the root is refused",

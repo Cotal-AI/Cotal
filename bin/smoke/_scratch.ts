@@ -80,9 +80,11 @@ function physicalDeepest(p: string): string {
   for (;;) {
     try {
       const real = realpathSync.native(dir);
-      // The tail is re-joined onto a CANONICAL base, then resolved again: a `..` among the missing
-      // segments must not survive the join and walk back out of the root it was just checked against.
-      return missing.length === 0 ? real : resolve(join(real, ...missing));
+      // `abs` was normalized by `resolve` on entry, so every element of `missing` is a plain
+      // basename: `..` cannot survive into the tail, and re-resolving this join would be dead code.
+      // Proven, not assumed — a mutant that dropped a `resolve()` around this join was a NO-OP and
+      // SURVIVED, which is what sent me to look.
+      return missing.length === 0 ? real : join(real, ...missing);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       const parent = dirname(dir);
