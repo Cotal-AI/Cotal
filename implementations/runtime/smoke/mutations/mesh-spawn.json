@@ -205,13 +205,13 @@
       "note": "#1616 item 3, dispatch half. With the inst-rail resolve skipped, every placed spawn resolves through the class `one` queue the real manager still answers, so a target naming an instance that does not exist SUCCEEDS and launches a child instead of refusing."
     },
     {
-      "name": "the placement target leaves the step identity",
-      "file": "packages/lang/src/primitives.ts",
-      "find": "    hashedOptions: [\"cwd\", \"placement\", \"worktree\", \"join\", \"role\"],",
-      "replace": "    hashedOptions: [\"cwd\", \"worktree\", \"join\", \"role\"],",
-      "expectRed": "the placement target is hashed into the step identity beside cwd, so a retarget diverges",
-      "cell": "the placement target is hashed into the step identity beside cwd, so a retarget diverges",
-      "note": "#1616 item 3, identity half. Unhashed, a replay that names a DIFFERENT manager instance keys to the same step and replays the resolution taken against the old instance rather than diverging as a migration.",
+      "name": "the placement target is dropped from the step-identity PROJECTION",
+      "file": "packages/lang/src/perform.ts",
+      "find": "          ...(req.placement !== undefined\n            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }\n            : {}),\n",
+      "replace": "",
+      "expectRed": "a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",
+      "cell": "a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",
+      "note": "#1616 item 3, identity half, ENACTED RATHER THAN DESCRIBED. This replaces an entry that removed the string \"placement\" from `hashedOptions` in primitives.ts: that is METADATA, and the cell it named (`PRIMITIVES.spawn.hashedOptions.includes(\"placement\")`) reads the same metadata back, so the pair graded one array against itself. Measured at this head: deleting THIS projection leaves that metadata cell evaluating to `true` while a real retargeted replay stops diverging, so the mutant could pass while the behaviour it claimed to grade was broken. The anchor is now the projection the runtime actually hashes, and the cell is the LIVE replay in 3e row 5, which drives a run onto one manager instance and re-drives the same run id from a source whose only edit is the instance id. With the projection gone the two input hashes match, the recorded entry replays, and no divergence is raised. `mesh-spawn.smoke.ts` imports `@cotal-ai/lang` as a PACKAGE (dist), so the lang build in `command` is what puts the mutant in front of the suite and the `afterRestore` rebuild is what keeps a mutant-built dist out of the tree.",
       "command": "pnpm --filter @cotal-ai/lang build && pnpm smoke:runtime-mesh-spawn",
       "afterRestore": "pnpm --filter @cotal-ai/lang build"
     }

@@ -639,8 +639,12 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     wrong !== null && wrong !== undefined && placements.length === wrongBefore,
     { err: wrong === null ? "resolved" : String((wrong as Error)?.message ?? wrong).slice(0, 140),
       launches: placements.length - wrongBefore });
-  // ITEM 3, identity half. Killed by M20 "the placement target leaves the step identity": unhashed,
-  // a replay that retargets another instance reuses the old resolution instead of diverging.
+  // ITEM 3, identity half, THE TABLE'S HALF ONLY. This reads `PRIMITIVES.spawn`, so it grades the
+  // TABLE: that the option is declared and declared hashed. It is deliberately NOT the cell any
+  // mutant of the projection names, because it cannot be: deleting the projection in `perform.ts`
+  // leaves this assertion evaluating to `true`, measured. The BEHAVIOUR that the table describes is
+  // graded by the live retargeted replay in row 5 of 3e below, and that is what the re-anchored
+  // M20 reddens. Two cells, because the table and the projection are two things that can disagree.
   c("the placement target is hashed into the step identity beside cwd, so a retarget diverges",
     PRIMITIVES.spawn.hashedOptions.includes("placement") && PRIMITIVES.spawn.hashedOptions.includes("cwd")
       && PRIMITIVES.spawn.options.includes("placement"),
@@ -800,9 +804,12 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   // Not the static `hashedOptions` check in 3d: a real run is driven, its spawn settles on A, and
   // the SAME run id is then re-driven from a source whose only edit is the placement instance id.
   // The interpreter's journal lookup must call that divergence rather than replay A's recorded
-  // resolution under B's name. Killed by M20 "the placement target leaves the step identity"
-  // (drop `placement` from `PRIMITIVES.spawn.hashedOptions`): the two hashes then match, the
-  // recorded entry replays, and nothing diverges.
+  // resolution under B's name. Killed by M20 "the placement target is dropped from the step-identity
+  // PROJECTION", which deletes the `placement` spread from the spawn projection in
+  // `packages/lang/src/perform.ts`: the two hashes then match, the recorded entry replays, and
+  // nothing diverges. The mutant used to remove `"placement"` from `hashedOptions` in
+  // `primitives.ts` instead and name the STATIC cell in 3d, which reads that same array back — one
+  // metadata array graded against itself, able to pass while this replay was broken.
   const place5 = (iid: string) => `{ endpoint: ${JSON.stringify(EP)}, instanceId: ${JSON.stringify(iid)} }`;
   const prog5 = (iid: string) => `const d = await spawn("roamer", { name: "pinned", cwd: ${JSON.stringify(preparedRoot)}, placement: ${place5(iid)} });\nlog("seat", d.agent);\nawait sleep("8s", { name: "park" });`;
   const parked = driven({ space: SPACE, endpoint: EP, kv, runId: "sp-3e", lease: lease(), source: prog5(MGR_IID), handler: mk("sp-3e") });
