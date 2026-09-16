@@ -137,7 +137,7 @@ A completed timer records its sleep step as `ok`.
 ### If `cotal_run` is missing
 
 1. Call `cotal_orientation` and check the connector version, capabilities and tool list.
-   Upgrade an older installation using the [upgrade guide](UPGRADING.md).
+   Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
 2. Have the operator add `run` to the persona's existing `capabilities` list, for example
    `capabilities: [spawn, run]`. `spawn` alone does not expose `cotal_run`. Setup leaves existing
    personas unchanged except for its [byte-exact legacy migration](getting-started.md).
