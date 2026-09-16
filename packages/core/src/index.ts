@@ -36,6 +36,7 @@ export * from "./resolve.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./secret-store.js";
+export * from "./delivery-store-proof.js";
 export * from "./provision.js";
 export * from "./space-auth.js";
 export * from "./streams.js";

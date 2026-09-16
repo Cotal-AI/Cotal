@@ -48,6 +48,9 @@ export interface DeliveryLeaseInfo {
    *  Optional because rows written by daemons from before this field exist in live buckets; a row
    *  without one cannot be proven ours (some other process wrote it), which is the safe reading. */
   incarnation?: string;
+  /** Ephemeral process key and reload-store certificate for challenged admin replies. */
+  proofKey?: string;
+  proofAttestation?: Record<string, unknown>;
   since: number;
   ready: boolean;
 }

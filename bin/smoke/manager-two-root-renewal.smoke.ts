@@ -59,6 +59,8 @@ const {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  newArtifactSigner,
+  signDeliveryStoreAnswer,
   probeConnect,
   serverConfig,
   setupSpaceStreams,
@@ -552,7 +554,7 @@ try {
   // Guarded on the refusal count for the same reason as the (b1) header arm: the cell above already
   // reds if no refusal happened, so this one should speak only to what a refusal SAID. Two cells
   // reddening for one cause tells a reader less, not more.
-  ok("(b2) the refusal says the answerer does not hold the delivery lease", squatRefused === 0 || squatReasons.some((m) => m.includes("does not hold this space's delivery lease")), { squatRefused, squatReasons });
+  ok("(b2) the refusal says the answerer lacks a reload-store-certified process key", squatRefused === 0 || squatReasons.some((m) => m.includes("no reload-store-certified process key")), { squatRefused, squatReasons });
   await squatter.stop().catch(() => {});
 
   // (b2) SECOND ARM: A RAW NON-OWNER REPLY THAT SIMPLY ASSERTS THE CLAIM.
@@ -577,6 +579,10 @@ try {
   });
   liar.on("error", () => {});
   await liar.start();
+  const copiedLease = await liar.readDeliveryLease(0);
+  if (!copiedLease?.incarnation) throw new Error("copied-credential arm could not read the live lease incarnation");
+  const copiedResponder = copiedLease.holder;
+  const forgedProcess = newArtifactSigner();
   // Raw subscribe on the same queue group, answering WITHOUT the shipped handler. The reply is a
   // well-formed ControlReply carrying a well-formed DaemonStoreAnswer: it passes the parser, it
   // names this manager's own store, and it asserts the lease claim. Everything about it is valid
@@ -586,9 +592,13 @@ try {
   void (async () => {
     for await (const m of liarSub) {
       try {
+        const req = (m as unknown as { json(): { args: { challenge: string }; from: { id: string } } }).json();
         m.respond(JSON.stringify({
           ok: true,
-          data: { identity: { kind: "fs", root: rootC }, responder: liarId.id, holdsDeliveryLease: true },
+          data: signDeliveryStoreAnswer(
+            { identity: { kind: "fs", root: rootC }, responder: copiedResponder, holdsDeliveryLease: true },
+            SPACE_UNIFIED, req.from.id, req.args.challenge, copiedLease.incarnation!, forgedProcess,
+          ),
         }));
       } catch { /* raced */ }
     }
@@ -600,8 +610,8 @@ try {
     try { const r = await classifyC(); if (r.kind === "shared") liarShared++; else liarOther++; }
     catch (e) { liarRefused++; liarReasons.push((e as Error).message); }
   }
-  ok("(b2) a raw non-owner reply ASSERTING holdsDeliveryLease:true is refused at least once (the claim is bound to the lease row, not to the reply)", liarRefused > 0, { liarShared, liarRefused, liarOther, liarReasons });
-  ok("(b2) the refusal names the answerer and the ACTUAL lease holder, so the claim was checked rather than believed", liarRefused === 0 || liarReasons.some((m) => m.includes("which is not the holder of this space's delivery lease")), { liarRefused, liarReasons });
+  ok("(b2) a copied delivery credential echoing the live holder is refused at least once", liarRefused > 0, { liarShared, liarRefused, liarOther, liarReasons });
+  ok("(b2) the refusal says the forged process signature does not verify", liarRefused === 0 || liarReasons.some((m) => m.includes("signature does not verify against the certified process key")), { liarRefused, liarReasons });
   ok("(b2) ...and the claiming responder really did win the queue at least once, so this arm measured something", liarRefused + liarOther > 0 && liarRefused > 0, { liarShared, liarRefused, liarOther });
   await liar.stop().catch(() => {});
 

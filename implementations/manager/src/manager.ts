@@ -7,6 +7,11 @@ import { join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
+  DELIVERY_STORE_PROOF_KIND,
+  assertCertifiedProofLease,
+  loadDeliveryStoreSigner,
+  parseDeliveryStoreProof,
+  verifyDeliveryStoreProof,
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
@@ -1549,59 +1554,52 @@ export class Manager {
    *  The reply's own boolean is kept as a cross-check and must agree, so an honest non-holder is
    *  still refused by its own admission, but the binding that decides is the one measured here. */
   private async classifyDaemonSecretStore(): Promise<{ kind: "shared" } | { kind: "absent" } | { kind: "foreign"; daemon: SecretStoreIdentity }> {
+    let before;
+    try { before = await this.ep.readDeliveryLease(DELIVERY_SHARD); }
+    catch (e) { throw new Error(`could not read the delivery lease before the store challenge: ${(e as Error).message}`); }
+    const challenge = randomUUID();
     let reply: ControlReply;
     try {
-      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
+      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", { challenge }, 5_000);
     } catch (e) {
-      // The rail produced nothing to read. That is a reason to CHECK whether a daemon holds the
-      // shard, not an answer: the same outcome is reachable by a responder replying in the shape
-      // the client turns into a no-responder error. The lease row settles it, read here.
       if (railAnsweredNothing(e)) {
         const held = await this.ep.deliveryShardHeld(DELIVERY_SHARD);
         if (held === false) return { kind: "absent" };
-        // `true`: something holds the shard, so the empty rail outcome did not come from an empty
-        // rail. `undefined`: the row could not be read, which is an unknown. Neither may remint.
         throw new Error(
           held === true
-            ? "the delivery-admin rail produced a no-responder outcome while a delivery lease for this space is live, so the reloading process was not absent - the rail was answered by something that does not hold the lease; nothing reminted"
-            : "the delivery-admin rail produced a no-responder outcome and this manager could not read the delivery lease to determine whether a daemon holds the shard, so absence is undetermined - nothing reminted",
+            ? "the delivery-admin rail produced a no-responder outcome while a delivery lease for this space is live; nothing reminted"
+            : "the delivery-admin rail produced a no-responder outcome and this manager could not read the delivery lease; nothing reminted",
         );
       }
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${(e as Error).message}`);
     }
-    if (!reply.ok)
-      throw new Error(
-        reply.error ?? "delivery daemon refused to name the SecretStore it reloads from",
-      );
-    let answer: DaemonStoreAnswer;
-    try {
-      answer = parseDaemonStoreAnswer(reply.data);
-    } catch (e) {
-      throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
-    }
-    // The answerer's own claim first, so an honest non-holder is refused by its own admission and
-    // the operator-facing reason names that. This is the CHEAP half of the test and not the binding
-    // one: a responder that does not hold the lease can assert `true` here just as easily.
-    if (!answer.holdsDeliveryLease)
-      throw new Error(
-        "the delivery-admin rail was answered by a responder that does not hold this space's delivery lease, so its SecretStore is not the store the daemon reloads from - nothing reminted",
-      );
-    // THE BINDING TEST, measured by this manager rather than asserted by the answerer. The lease
-    // row's holder is read here under this manager's own credential; the answerer must BE that
-    // principal. A reply asserting the claim while some other process holds the shard fails here,
-    // which is the case the previous round's shape check could not see. An unreadable row is an
-    // unknown and refuses too: this test may never be satisfied by failing to run.
-    const holder = await this.ep.deliveryLeaseHolder(DELIVERY_SHARD);
-    if (holder === undefined)
-      throw new Error(
-        "this manager could not read the delivery lease row, so it cannot verify that the answering responder is the process that reloads the standing credentials - nothing reminted",
-      );
-    if (holder !== answer.responder)
-      throw new Error(
-        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of this space's delivery lease (${holder}), so its SecretStore is not the store the daemon reloads from - nothing reminted`,
-      );
-    const daemon = answer.identity;
+    if (!reply.ok) throw new Error(reply.error ?? "delivery daemon refused to prove the SecretStore it reloads from");
+    let proof;
+    try { proof = parseDeliveryStoreProof(reply.data); }
+    catch (e) { throw new Error(`delivery daemon returned an unreadable store proof: ${(e as Error).message}`); }
+    const daemon = proof.answer.identity;
+    // A foreign answer never authorizes a write. It only causes this manager to skip daemon reminting.
+    // Authentication is required on the shared path, the only classification that writes credentials.
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) return { kind: "foreign", daemon };
+
+    const composition = this.secretStoreIdentity.kind === "injected"
+      ? ({ injected: true } as const)
+      : ({ injected: false, root: this.workspaceRoot } as const);
+    const storeKey = spaceMaterialKey(DELIVERY_STORE_PROOF_KIND, this.space, composition);
+    const storeSigner = await loadDeliveryStoreSigner(this.secrets, storeKey);
+    if (!storeSigner)
+      throw new Error("this manager's reload store has no delivery proof seed; upgrade and restart the delivery daemon before daemon credentials are reminted");
+    assertCertifiedProofLease(before, this.space, storeSigner.publicKey);
+    const answer = verifyDeliveryStoreProof(reply.data, this.space, this.ep.ref().id, challenge, before);
+    let after;
+    try { after = await this.ep.readDeliveryLease(DELIVERY_SHARD); }
+    catch (e) { throw new Error(`could not read the delivery lease after the store challenge: ${(e as Error).message}`); }
+    assertCertifiedProofLease(after, this.space, storeSigner.publicKey);
+    if (after.holder !== before.holder || after.incarnation !== before.incarnation ||
+        after.proofKey !== before.proofKey || JSON.stringify(after.proofAttestation) !== JSON.stringify(before.proofAttestation))
+      throw new Error("delivery lease ownership or its certified process key changed during the store challenge; nothing reminted");
+    if (answer.responder !== after.holder)
+      throw new Error("delivery store proof responder no longer matches the lease holder; nothing reminted");
     return { kind: "shared" };
   }
 

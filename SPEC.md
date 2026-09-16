@@ -4165,11 +4165,17 @@ single-function profiles, each granting only the verbs its function needs and no
   remints no daemon credential, recording that renewal is owned elsewhere. A space has many managers,
   and only the one rooted where the daemon reads is the renewal owner. The same holds for a daemon that
   bound after manager start, which moves that manager to the foreign classification on its next pass.
-  Neither field of the reply is trusted as a statement about the reloading process: the rail is
-  queue-grouped, so any process permitted to serve it can answer, and both the answerer's identity and
-  its lease claim are values that answerer chose. The requester verifies the binding itself, by reading
-  the delivery lease row for shard 0 under its own credential and requiring `responder` to be the
-  recorded holder; `holdsDeliveryLease` is a cross-check that must agree, not the authority. Absence of
+  Neither field of the reply is trusted as a statement about the reloading process. The daemon's
+  reload store holds a dedicated per-space proof seed. At startup the daemon certifies an ephemeral
+  process key, holder and incarnation with that store key and puts the certificate in the shard lease.
+  A renewal manager challenges the process key and accepts the shared-store classification only after
+  verifying both signatures against the proof seed in its own reload store. It rereads the lease after
+  the reply; holder, incarnation, process key and certificate must remain unchanged. A copied delivery
+  credential can read or update the lease, but cannot certify a replacement key without the reload-store
+  seed. Missing proof and legacy leases refuse reminting. Old callers that send no challenge still get
+  the closed three-field answer; proof-aware managers never fall back to it. A foreign store answer
+  authorizes no write and only skips daemon reminting. Compromise of the reload store or daemon process
+  remains outside this proof. Absence of
   a delivery daemon is determined the same way, from the lease row rather than from the rail's outcome:
   a client synthesises its typed no-responder error from a reply carrying an empty payload and a 503
   status header, so a bound responder can produce that outcome, and absence therefore requires the

@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { newArtifactSigner, type ArtifactSigner } from "./identity.js";
+import { attestDeliveryProcess, signDeliveryStoreAnswer } from "./delivery-store-proof.js";
 import { createConnection } from "node:net";
 import {
   connect,
@@ -266,6 +268,8 @@ export interface EndpointOptions {
   ackWaitMs?: number;
   /** Retire this instance's durable consumers after it's been gone this long (ms). */
   inactiveThresholdMs?: number;
+  /** Delivery-only store signer that certifies this process key in the shard lease. */
+  deliveryStoreSigner?: ArtifactSigner;
 }
 
 /** A peer subscribed to a channel — broker truth (a chat-stream consumer) joined with
@@ -625,6 +629,8 @@ export class CotalEndpoint extends EventEmitter {
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
     this.space = opts.space;
+    this.deliveryStoreSigner = opts.deliveryStoreSigner;
+    this.deliveryProcessSigner = opts.deliveryStoreSigner ? newArtifactSigner() : undefined;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through.
@@ -3549,9 +3555,14 @@ export class CotalEndpoint extends EventEmitter {
    *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
    *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
   private readonly leaseIncarnation = randomUUID();
+  private readonly deliveryStoreSigner?: ArtifactSigner;
+  private readonly deliveryProcessSigner?: ArtifactSigner;
 
   private encodeLease(ready: boolean): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+    const process = this.deliveryStoreSigner && this.deliveryProcessSigner
+      ? { proofKey: this.deliveryProcessSigner.publicKey, proofAttestation: attestDeliveryProcess(this.space, this.card.id, this.leaseIncarnation, this.deliveryProcessSigner.publicKey, this.deliveryStoreSigner) }
+      : {};
+    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, ...process, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
   }
 
   /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
@@ -4463,7 +4474,12 @@ export class CotalEndpoint extends EventEmitter {
           holdsDeliveryLease = false;
         }
         // Round-trip through the closed parser so a hook cannot smuggle extra fields onto the rail.
-        return { ok: true, data: { identity: parseSecretStoreIdentity(identity), responder: this.card.id, holdsDeliveryLease } };
+        const answer = { identity: parseSecretStoreIdentity(identity), responder: this.card.id, holdsDeliveryLease };
+        if (req.args?.challenge !== undefined) {
+          if (!this.deliveryProcessSigner) return { ok: false, error: "reloadStoreIdentity: this daemon has no reload-store-certified process key" };
+          return { ok: true, data: signDeliveryStoreAnswer(answer, this.space, req.from.id, req.args.challenge, this.leaseIncarnation, this.deliveryProcessSigner) };
+        }
+        return { ok: true, data: answer };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

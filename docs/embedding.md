@@ -191,9 +191,12 @@ process renews for it. A pass whose store challenge fails skips the remint the s
 runs those duties. The daemon's answer names the responder and whether that process claims the
 space's delivery lease: the admin rail is queue-grouped, so any bound responder can answer it while
 only the lease holder reloads the standing credentials. Neither part of that answer is taken on
-trust, because both are values the answerer chose. The manager reads the delivery lease row itself
-and requires the answerer to be the holder recorded there, and it determines an absent daemon from
-that same row rather than from the rail's outcome, which a responder can shape. A lease row it
+trust, because both are values the answerer chose. The daemon certifies an ephemeral process key
+with a dedicated proof seed in its reload store. A manager accepts the shared-store classification
+only after verifying the store certificate and a fresh challenge signed by that process key, then
+checking the lease identity stayed stable. A copied delivery credential cannot certify a replacement
+key without the reload-store seed. Missing proof refuses daemon reminting. The manager determines an
+absent daemon from the lease row rather than from the rail's outcome, which a responder can shape. A lease row it
 cannot read is undetermined, and nothing is reminted on an undetermined pass. The identity is the store the daemon actually
 reloads: an injected coordinate, the workstation root only when `--creds` is
 `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the

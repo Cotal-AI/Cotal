@@ -9,6 +9,8 @@ import {
   dialerFor,
   idFromCreds,
   defaultProbeTimeoutMs,
+  DELIVERY_STORE_PROOF_KIND,
+  loadOrCreateDeliveryStoreSigner,
   isReachable,
   mintCreds,
   newIdentity,
@@ -343,6 +345,10 @@ async function runStartedDelivery(
     assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
   const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  const proofStoreKey = v.creds !== undefined
+    ? DELIVERY_STORE_PROOF_KIND
+    : segmentedKey(DELIVERY_STORE_PROOF_KIND, space);
+  const deliveryStoreSigner = await loadOrCreateDeliveryStoreSigner(credsSrc.store, proofStoreKey);
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
   // REQUIRE TLS when the operator said to. This daemon holds a STANDING credential and reconnects
@@ -402,6 +408,7 @@ async function runStartedDelivery(
     watchPresence: true, // read the roster for @mention resolution …
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
     card: { id: ownId, name: "delivery", role: "delivery", kind: "endpoint" },
+    deliveryStoreSigner,
   });
   // Both channels: raw connection errors ride `error`, while every condition the endpoint is
   // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
