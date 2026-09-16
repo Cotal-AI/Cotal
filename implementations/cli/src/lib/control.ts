@@ -331,10 +331,19 @@ export interface ScatterInstanceReply {
   reachable: boolean;
   data?: unknown;
   error?: string;
+  /** The refusal's STRUCTURED code (§13.3 catalog), beside the operator wording in `error`. A
+   *  caller that has to classify a refusal keys on this: the message is copy and changes, and a
+   *  renderer that matched its prose would go quiet the day the wording improved. */
+  code?: string;
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
 }
-export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string };
+/** The CONTRACT this scatter pinned, and the instance whose `describe` supplied it (§13.7). One
+ *  describe answers for the whole class, so in a space whose instances serve different contracts
+ *  the pin is whichever instance won that queue — and the instances that serve a different one
+ *  refuse. The caller needs both facts to say so without re-deriving them from a refusal's prose. */
+export interface ScatterPin { instanceId: string; input: string; output: string }
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[]; pinned: ScatterPin } | { ok: false; error: string };
 
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
@@ -617,13 +626,26 @@ async function askManagerScatterEp(
       const instances: ScatterInstanceReply[] = [];
       for (const [instanceId, ar] of result.replies) {
         if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error" });
+        else instances.push({
+          instanceId, reachable: true,
+          error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error",
+          ...(ar.reply.error?.code !== undefined ? { code: ar.reply.error.code } : {}),
+        });
       }
       // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
       // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.
       for (const instanceId of result.missing)
         instances.push({ instanceId, reachable: false, liveness: livenessOf(instanceId) });
-      return { ok: true, instances };
+      // The pin every slot above was addressed under, read off the SAME resolved surface
+      // `scatterCommand` stamped onto the request rather than re-derived. The command is present:
+      // `scatterCommand` refuses an absent one before any of this runs.
+      const resolved = service.commands.get(mapped.command)!;
+      const pinned: ScatterPin = {
+        instanceId: service.responder.instanceId,
+        input: resolved.contract.input.closureDigest,
+        output: resolved.contract.output.closureDigest,
+      };
+      return { ok: true, instances, pinned };
     });
   } catch (e) {
     const { error } = epRailFailure(e);

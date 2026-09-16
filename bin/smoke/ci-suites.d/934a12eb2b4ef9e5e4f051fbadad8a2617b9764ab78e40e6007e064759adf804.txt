@@ -1,0 +1,2 @@
+# `cotal ps` must report a partial census and exit non-zero, never present it as the whole space.
+smoke:ps-partial-census
