@@ -69,7 +69,10 @@ who's present, and unread counts. The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
 (`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
-agent's toolset matches what it can actually invoke. Clearing retained history is
+agent's toolset matches its declared capabilities. `cotal_run` is gated separately by
+`run`; use `capabilities: [spawn, run]` for both. Fresh setup defaults include both.
+See [workflow tool setup](workflows.md#from-an-agent-session) for a first run and missing-tool checks.
+Clearing retained history is
 operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
 
 ## How it binds
