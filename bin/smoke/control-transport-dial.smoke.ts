@@ -122,8 +122,22 @@ const runCli = (args: string[], timeout = 60_000) => {
     out: `${result.stdout ?? ""}${result.stderr ?? ""}`.replace(/\x1b\[[0-9;]*m/g, ""),
   };
 };
+/**
+ * Did the dial reach the ep rails? The evidence is the DESCRIBE DEADLINE this rig is built around
+ * (its own fixture note: "intentionally has no manager so it can use the endpoint-rails deadline as
+ * the discriminator") or the registry's own empty answer, and never the node transport's
+ * `wsconnect` refusal, which is the defect.
+ *
+ * NOT the reachability HEADLINE. That sentence is operator-facing prose and is scoped to the rail
+ * the caller rode (#1630): `models` rides `askManagerEp` under the workspace's ISSUED control
+ * caller and lands on `ep.v1`, while `ps` rides the scatter, which re-mints a caller with no
+ * generation and stays on the legacy rail. Two rails, two headlines, one identical dial. Keying on
+ * the headline made cells A and C red for a message change that touched no transport, and left B
+ * and D green for no reason this suite is about. The deadline line is common to both and is the
+ * stronger claim anyway: it proves a describe was actually published.
+ */
 const reachedRails = (result: { status: number | null; out: string }): boolean =>
-  result.status !== 0 && /no manager reachable on the ep rails|no manager service is registered|service "manager" has no live registered instances/.test(result.out) &&
+  result.status !== 0 && /no describe reply from manager within|no manager service is registered|service "manager" has no live registered instances/.test(result.out) &&
   !/wsconnect|websocket connections must use/i.test(result.out);
 
 let releaseBroker: (() => void) | undefined;

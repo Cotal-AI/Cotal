@@ -35,7 +35,7 @@ Task dispatch:
 | Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
-| Write or host a durable workflow | [Workflow runs](workflows.md) | `validate` / `dryRun` / `run` from `@cotal-ai/lang` |
+| Write or host a durable workflow | [Workflow runs](workflows.md) | `cotal_run` / `cotal run start --file <program>` |
 | Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | `cotal_docs(page: "spec")` |
 
 ## Start here

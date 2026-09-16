@@ -17,7 +17,7 @@ allowSubscribe: [general, team.>]      # read ACL (omit = same as subscribe)
 allowPublish: [general, team.backend]  # post ACL (omit = none, default-deny)
 model: opus             # optional model override
 variant: high           # optional connector-defined model variant
-capabilities: [spawn]   # control-plane capabilities (may start/despawn teammates)
+capabilities: [spawn, run] # may manage teammates and start workflow runs
 ---
 You are a builder on a shared mesh of peer agents…   ← the body is the persona
 ```
