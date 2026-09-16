@@ -295,7 +295,7 @@ Report the outcome of a workflow turn assigned to you. Use this only when your c
 
 Usually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{"status":"blocked","note":"<what prevents progress>"}`. To hand the assigned turn to another agent, call `{"status":"handoff","to":"<agent-name>","note":"<handoff context>"}`.
 
-When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest pending turn is selected. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
+When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
 
 - **Side-effect:** settles one run turn via the manager (done / blocked / handoff).
 - **Available:** always; only meaningful while a run turn is pending on you.
@@ -320,9 +320,9 @@ START: pass `verb: "start"` and the program text in `source`. Example: `{"verb":
 
 INSPECT: use `verb: "status"` with that `runId` for state and step journal, or `verb: "ps"` to list runs. Both are read-only. Report completion only after observing state `completed`; surface failures or unresolved steps.
 
-ANSWER: first inspect status, then pass `verb: "answer"`, `runId`, the exact open `stepKey`, and `value` matching the requested answer shape. `artifact` may name the evidence reviewed. Answer only with authority to make that decision; never invent an approval.
+ANSWER: first inspect status, then pass `verb: "answer"`, `runId`, the exact open `stepKey`, and, when requested, `value` matching the answer shape. An ask requires its requested record; a checkpoint can resolve without a value. `artifact` may name the evidence reviewed. Answer only with authority to make that decision; never invent an approval.
 
-RESUME: pass `verb: "resume"` and `runId` for a released or held run. The manager reads its recorded source. Do not start a duplicate run to continue it or resume one the manager is already driving.
+RESUME: pass `verb: "resume"` and `runId` to continue a run from its recorded source. A held run appears as `released` in status. Do not start a duplicate run to continue it or resume one the manager is already driving.
 
 Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead.
 
@@ -338,7 +338,7 @@ Runs continue independently of your session and can recover after a manager rest
 | `timeout` | string | no | start/resume: the default checkpoint timeout for the drive, as a duration (e.g. `1h`, `30m`). Default 1h. |
 | `runId` | string | no | Required for status, answer and resume: the run id (`run-<32 hex>`) returned by start or ps. |
 | `stepKey` | string | no | Required for answer: copy the exact open step key from status, e.g. `/checkpoint:approve#0`. |
-| `value` | unknown | no | Required for answer: the value requested by the open checkpoint or ask. Match its answer shape; null is allowed when that is the intended answer. |
+| `value` | unknown | no | answer only: supply the value requested by the open checkpoint or ask and match its answer shape. A checkpoint may resolve without a value; an ask must receive its requested record. Use null only when that is the intended answer. |
 | `artifact` | string | no | answer only: a reference to what you reviewed before answering, recorded beside the answer. |
 | `endpoint` | string | no | status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts. |
 
