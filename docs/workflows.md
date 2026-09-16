@@ -115,6 +115,44 @@ journal, without a live effect handler or durable store. Inspection stops before
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
 
+## From an agent session
+
+Fresh `cotal setup` defaults declare `capabilities: [spawn, run]`. On a static-auth mesh,
+that exposes `cotal_run` alongside the teammate tools. The manager must be running.
+Read `cotal_docs` pages `lang-card` and `workflows`, then try:
+
+```json
+{
+  "verb": "start",
+  "source": "await sleep(\"1s\", { name: \"first-run\" });",
+  "file": "first-run.cotal.js"
+}
+```
+
+Pass this object to `cotal_run`. `source` contains the program; `file` only labels diagnostics
+and reads nothing from disk. The response returns a run ID before execution finishes. Call
+`cotal_run` with `verb: "status"` and that `runId` to inspect the state and step journal.
+A completed timer records its sleep step as `ok`.
+
+### If `cotal_run` is missing
+
+1. Call `cotal_orientation` and check the connector version, capabilities and tool list.
+   Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+2. Have the operator add `run` to the persona's existing `capabilities` list, for example
+   `capabilities: [spawn, run]`. `spawn` alone does not expose `cotal_run`. Setup leaves existing
+   personas unchanged except for its [byte-exact legacy migration](getting-started.md).
+   Peer persona-definition tools cannot grant capabilities.
+3. Relaunch the agent through the manager from the updated persona so it receives newly issued
+   credentials and a fresh connector configuration. Editing the file or reconnecting with the
+   old credential does not grant new broker permissions. If the launch sets `COTAL_CAPABILITIES`,
+   update that override too; it takes precedence over the file.
+4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
+
+Tool visibility alone does not establish execution support. Hosted runs currently require
+static authentication with issued caller authority. Open meshes can expose the tool but refuse
+hosted runs; user-auth meshes also refuse them. A legacy credential without issued authority
+must be replaced through the current issuance path before it can start a hosted run.
+
 ## Operating a run
 
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh
