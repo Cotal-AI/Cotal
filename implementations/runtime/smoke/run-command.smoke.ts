@@ -109,7 +109,14 @@ writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = 
 let P = "";
 {
   reset();
-  await wf(["start"], { file: PURE });
+  // A publish ceiling formats a chat subject with the holder as actor; `none` skips that boundary.
+  let startError: unknown;
+  try { await wf(["start"], { file: PURE, "admit-publish": "workflow.check" }); } catch (error) { startError = error; }
+  c("local authenticated publish admission accepts its generated holder identity", startError === undefined, startError);
+  if (startError !== undefined) {
+    origLog(`run-command: ${ok} ok, ${fail} failed`);
+    throw startError;
+  }
   P = startedId() ?? "";
   c("start mints and announces the run id", P !== "", captured());
   c("start drives a pure program to completion", captured().includes(`run ${P}: completed`), captured());
@@ -286,7 +293,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 23;
+const DECLARED = 24;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
