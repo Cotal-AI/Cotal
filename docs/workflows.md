@@ -373,7 +373,14 @@ bringing one up is the catchable L4008, a spawn that ends without a handle gives
 and the tree is reusable the moment a holder's presence row is gone, so a discharged race loser
 or a crashed seat releases its tree with no bookkeeping. A spawn the endpoint refuses at accept
 is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity), and one whose
-seat never came up is L4002. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+seat never came up is L4002. A refusal that states the command did not run is answered
+before it gets that far. In a space served by more than one manager the resolve and the invoke
+are separate trips through the same anycast queue, so a run's call can reach an instance it did
+not resolve against, and that instance refuses ahead of any effect. The run drops its resolved
+handle, re-describes and re-issues, for a bounded number of attempts; after them the refusal
+surfaces as the effect's own failure and still states that nothing ran. A spawn that names a
+`placement` addresses one instance by name, so a refusal from it is that incarnation answering
+about itself and is never re-issued. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on. The
