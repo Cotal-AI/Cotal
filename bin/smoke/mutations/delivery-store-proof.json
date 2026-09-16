@@ -1,0 +1,49 @@
+{
+  "suite": [
+    "bin/smoke/manager-two-root-renewal.smoke.ts",
+    "packages/core/smoke/delivery-store-proof.smoke.ts"
+  ],
+  "guard": "a manager reminting daemon credentials accepts a store-identity answer only from the process the reload store certified, so a second holder of a copied delivery credential cannot echo the live lease holder and be believed",
+  "command": "pnpm --filter @cotal-ai/core build > /dev/null && pnpm smoke:delivery-store-proof",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/delivery-store-proof.json",
+  "why": [
+    "The rail is queue-grouped, so the reply is whatever some responder chose to send. The previous",
+    "round compared the reply's responder field against the lease holder, which a second responder",
+    "reads as easily as the manager does. These mutations aim at the two signatures that replace that",
+    "comparison: the challenge signature over the answer, and the reload-store certificate over the",
+    "process key. Removing either one restores a forgery the real-manager suite reproduces end to end."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the challenge signature is accepted without verifying it",
+      "file": "packages/core/src/delivery-store-proof.ts",
+      "find": "  try { return fromPublic(publicKey).verify(signatureInput(raw), Buffer.from(raw.sig, \"base64url\")); }",
+      "replace": "  try { return raw.sig !== undefined && publicKey !== undefined; }",
+      "note": "A copied delivery credential signs the answer with its own key. Without the verification the manager classifies the forger's store as its own and remints on a process that reloads nothing.",
+      "command": "pnpm --filter @cotal-ai/core build > /dev/null && pnpm --filter @cotal-ai/manager build > /dev/null && pnpm smoke:manager-two-root-renewal",
+      "completionMarker": "MANAGER-TWO-ROOT-RENEWAL SMOKE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build > /dev/null && pnpm --filter @cotal-ai/manager build > /dev/null",
+      "expectRed": "a copied delivery credential echoing the live holder is refused at least once"
+    },
+    {
+      "name": "M2 the lease process key is taken without its reload-store certificate",
+      "file": "packages/core/src/delivery-store-proof.ts",
+      "find": "      a.incarnation !== lease.incarnation || a.proofKey !== lease.proofKey || !verifies(a, storePublicKey))",
+      "replace": "      a.incarnation !== lease.incarnation || a.proofKey !== lease.proofKey)",
+      "note": "The delivery credential can write the lease, so an uncertified process key is a key the attacker chose. Without the certificate check the lease attests to itself.",
+      "completionMarker": "DELIVERY-STORE-PROOF SMOKE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build > /dev/null",
+      "expectRed": "attacker self-certifies with a foreign store key"
+    },
+    {
+      "name": "M3 the challenge is not bound to the request",
+      "file": "packages/core/src/delivery-store-proof.ts",
+      "find": "  if (p.space !== space || p.caller !== caller || p.challenge !== challenge || p.incarnation !== lease.incarnation)",
+      "replace": "  if (p.space !== space || p.caller !== caller || p.incarnation !== lease.incarnation)",
+      "note": "A replayed proof from an earlier pass would otherwise answer a fresh challenge.",
+      "completionMarker": "DELIVERY-STORE-PROOF SMOKE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build > /dev/null",
+      "expectRed": "changed challenge"
+    }
+  ]
+}
