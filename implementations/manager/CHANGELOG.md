@@ -1,5 +1,105 @@
 # @cotal-ai/manager
 
+## 0.50.0
+
+### Minor Changes
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- 4ab8b4b: Serve a space from more than one manager, with one renewal owner
+
+  A manager whose workspace root differed from the delivery daemon's was refused at construction, so
+  an auth-mode space could only ever have one manager. A participant machine could not run a manager
+  for a space it had joined, and a second manager on one machine from another checkout could not start
+  either.
+
+  The store-identity proof stays and still runs before every remint, but a divergent answer now
+  decides ownership rather than admission. That alone is not enough: the comparison is pure equality
+  with no holder and no tiebreak, so every manager sharing one store passes it, and two owners
+  reminting on independent timers have no ordering between them. One write then lands between the
+  other's re-sign and its fingerprint-only `reloadCreds`, which is the adoption refusal the proof
+  exists to prevent.
+
+  Ownership therefore requires both the identity match and a per-space renewal lease, one
+  CAS-acquired key in the manager bucket. The lease is kept alive against that bucket's TTL and
+  claimed before the first remint, because that remint re-signs through the store and on a slow store
+  outlasts the TTL by itself. A holder that dies has its lease expire so a survivor takes over with no
+  operator step, and a clean stop hands it back at once. A manager that owns neither condition starts,
+  serves its seats, skips the remint, and writes no renewal record because it re-signed nothing.
+
+### Patch Changes
+
+- 58f0e2d: Strip every COTAL\_ key from the environment the #1649 acceptance harnesses hand their children
+
+  Both acceptance harnesses spread the ambient environment into a child process. Whatever runs
+  them may be a managed agent session, so that spread can hand the child a live credential and a
+  live broker URL. `smoke:suite-ambient-env` reported both files and was red on main.
+
+  The e2e harness did strip, but from a hand-enumerated list of four keys, which only covers the
+  names someone thought of at the time. It now drops them by prefix, and still sets the two keys
+  it needs afterwards. The other harness had no strip at all and now drops them at module scope,
+  because a scrub inside the function that performs the spread is a promise about execution order
+  rather than a fact about what the child can inherit.
+
+- 83ab007: Refuse a reap that could not read its custody record, instead of reporting it as a reaped seat.
+
+  `absent` says the record was unreadable, which is a fact about addressability rather than liveness. A custodian that dies after spawning its child and before writing the record leaves a live seat and no record, and so does a stale reference. Both of the manager's rendering sites turned that into "already forgotten" and carried on, so a successor could free an alias while the seat was still running. The refusal now lives in `requireRuntimeReap`, so `absent` cannot reach a caller at all.
+
+- 254f5da: Submit seat input on the call that sends it. `input` wrote the text and its carriage return as one pty write, so a TUI harness read the return as the last character of the text rather than as the submit key: the text waited in the composer and the next call's return submitted the previous call's text. The return is now written on its own, and the text is delivered as a bracketed paste (`ESC[200~ … ESC[201~`) in slices under the pty's 4096-byte input buffer. The paste markers matter on their own: a TUI classifies a fast burst of input as a paste and consumes the newline that trails it, so a text long enough to need more than one write stayed one call behind even with the return written alone. Measured on a real seat, texts of 120 and 700 bytes were submitted on their own call while 2500 and 3100 bytes were not; with the paste framing, 120, 2600 and 5912 bytes each submit on the call that sends them. The markers are framing rather than content, so the reported byte count still covers only the text and its return.
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+- Updated dependencies [e72dd07]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+  - @cotal-ai/seat@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes
