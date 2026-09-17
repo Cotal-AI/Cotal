@@ -224,6 +224,12 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
+ * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
+ * tail of an oversized write stays queued and swallows the submit key that follows it (issue #1649).
+ * Sized in CHARS against a byte buffer on purpose — a multi-byte character can only make a slice
+ * shorter in characters than in bytes, never longer, so the margin cannot be eaten from below. */
+const INPUT_SLICE_CHARS = 2048;
 /** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
  * tick lands inside every renewal owner's `[renewAt, exp)` window.
  *
@@ -7854,15 +7860,44 @@ export class Manager {
     // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
-    const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
-    const intendedBytes = Buffer.byteLength(data, "utf8");
-    let bytes: number;
-    try {
-      bytes = await write(data);
-    } catch (error) {
-      throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+    //
+    // THE TEXT AND THE RETURN ARE SEPARATE WRITES, and that is the whole of issue #1649. Fused into
+    // one `${text}\r`, the pty hands a TUI harness a single read carrying both, and a harness that
+    // reads a line editor's keystrokes sees the return as the last character of the text rather than
+    // as the submit key: the text lands in the composer and nothing is submitted, so the NEXT call's
+    // return submits the PREVIOUS call's text and every delivery runs one call behind.
+    //
+    // The text is also written in SLICES under the pty's 4KiB input buffer, which is not belt and
+    // braces: a single write larger than that buffer is re-split by the kernel at ITS boundary, and
+    // the tail that could not fit is still queued when the return is written, so the return is
+    // delivered coalesced onto that tail and is again not a keystroke of its own. Measured on a real
+    // seat: a 5912-byte order was never submitted by either a fused OR a plain two-write delivery,
+    // and arrived only when the text was drained in slices first. Yielding between slices (never a
+    // sleep) lets the child read one before the next is queued, which is what keeps the final return
+    // alone - the shape a human keyboard produces, and the one `interrupt()`'s lone `\x03` relies on.
+    const text = String(args.text);
+    const submit = args.enter !== false;
+    const intendedBytes = Buffer.byteLength(text, "utf8") + (submit ? 1 : 0);
+    const parts: string[] = [];
+    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS) parts.push(text.slice(i, i + INPUT_SLICE_CHARS));
+    if (submit) parts.push("\r");
+    let bytes = 0;
+    for (const [i, part] of parts.entries()) {
+      // Yield BEFORE each write but the first, so the child drains the previous slice rather than
+      // the pty buffer merging them. `setImmediate` runs after I/O, which a microtask would not.
+      if (i > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      let accepted: number;
+      try {
+        accepted = await write(part);
+      } catch (error) {
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+      }
+      if (!Number.isSafeInteger(accepted)) {
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${intendedBytes} bytes`);
+      }
+      bytes += accepted;
     }
-    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)
+    if (bytes !== intendedBytes)
       throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);
     return { name: a.name, bytes };
   }

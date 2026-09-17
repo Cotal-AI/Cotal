@@ -27,6 +27,12 @@
  *      the owner-mode and the any-mode input subject, while its `inspect` still answers. `input`
  *      is operator-only on purpose; see the cell for what the one-word edit would cost.
  *   7. A seat that is not running refuses (see the cell for exactly what is forced and why).
+ *  10. THE SUBMIT KEY IS ITS OWN KEYSTROKE (issue #1649): the return is handed to the pty as its OWN
+ *      write rather than fused onto the tail of the text, and the text is written in slices under
+ *      the pty's 4096-byte input buffer so no write is re-split by the kernel onto the return.
+ *      `enter:false` still presses nothing. Graded at the runtime write seam through a recording
+ *      PASS-THROUGH (every byte still reaches the real child), because the sink is a concatenation
+ *      and cannot tell `submit-me` + `\r` from `submit-me\r`.
  *   8. THE CLI PATH, end to end: the real binary as a subprocess runs
  *      `cotal input --name <seat> --text "/compact"`, exits 0, prints the acknowledged byte count,
  *      and the child receives `/compact\r`. A dropped runtime write instead exits non-zero, names
@@ -48,6 +54,9 @@
  *      -> cell 3 "enter:false types the text with NO trailing carriage return" goes red.
  *   `input-ack`: discard the runtime acknowledgement and restore intended-buffer arithmetic
  *      -> cell 8 "a dropped PTY write exits NON-ZERO" goes red.
+ *   `input-submit`: fuse the return back onto the text (one `${text}\r` write) in `inputAuthorized`
+ *      -> cell 10 "THE RETURN ARRIVED AS ITS OWN READ" goes red, while every byte-exact cell above
+ *      stays green - which is exactly why #1649 shipped.
  *
  * Run: pnpm smoke:seat-input   (needs nats-server + node on PATH; boots its own broker; the CLI
  * cell drives bin/cotal.ts, which imports dist, so build first)
@@ -524,6 +533,77 @@ try {
     check("...while the same credential's `inspect` is served, so the refusals above are the missing row and not a dead caller",
       rOk.reply.ok === true, rOk.reply);
     await S.nc.drain().catch(() => S.nc.close());
+  }
+
+  console.log("\n10. THE SUBMIT KEY IS ITS OWN KEYSTROKE (issue #1649, mutation-proof cell `input-submit`)");
+  {
+    // WHAT BROKE, AND WHY EVERY CELL ABOVE STAYED GREEN THROUGH IT. `input` used to hand the runtime
+    // ONE `${text}\r`. The BYTES are identical either way, so the sink cannot see the difference: it
+    // is a concatenation and `submit-me` + `\r` and `submit-me\r` are the same file. What differs is
+    // the shape of the writes, and a TUI harness reads keystrokes: with the return fused onto the
+    // tail of the text it is the text's last character rather than the submit key, so the line sits
+    // in the composer and the NEXT call's return submits the PREVIOUS call's text. Every delivery
+    // runs one call behind while the op still reports the full byte count and the seat still starts
+    // a turn, so every observable signal says "delivered".
+    //
+    // Measured on a REAL jcode seat driven through a real pty before this fix: a 1986-byte text
+    // written fused was never submitted at all, and the same text written as text-then-return was
+    // answered on the call that sent it.
+    //
+    // GRADED AT THE RUNTIME SEAM, on a live managed seat, by recording what the handler hands the
+    // pty. That is the manager's half of the contract and the only half it owns: how promptly a
+    // given harness then redraws is the harness's, and a cell that waited on a child's read
+    // boundaries would be grading the child's scheduler and would flake in CI.
+    const shapeseat = await spawnLive(A.call, { name: "typist", agent: "input-echo", cwd: repoRoot });
+    const managed = M.agents.get(shapeseat.name);
+    if (!managed?.handle.write) throw new Error(`FIXTURE FAILURE: ${shapeseat.name} has no writable managed handle`);
+    const realWrite = managed.handle.write.bind(managed.handle);
+    // A recording PASS-THROUGH, not a stub: every byte still reaches the real pty and the real child,
+    // so the sink assertions below grade the same delivery this cell is reading the shape of.
+    const writes: string[] = [];
+    const record = async (data: string): Promise<number> => { writes.push(data); return realWrite(data); };
+
+    try {
+      managed.handle.write = record;
+      const r = await A.call("input", { text: "submit-me" }, { actor: shapeseat.id, lifecycleUid: shapeseat.lifecycleUid });
+      check("the op still reports the text + the appended \\r as ONE byte count (the receipt is unchanged)",
+        r.reply.ok === true && (r.reply.data as { bytes: number }).bytes === 10, r.reply);
+      const got = await sinkReaches(shapeseat.name, 10);
+      check("the child still received EXACTLY `submit-me\\r`: this fix changes the WRITES, never the bytes",
+        got.equals(Buffer.from("submit-me\r", "utf8")), { hex: got.toString("hex") });
+      check("THE RETURN WAS WRITTEN ALONE, not fused onto the text: the harness is handed a submit key",
+        writes.length === 2 && writes[0] === "submit-me" && writes[1] === "\r", { writes });
+
+      // THE SIZE ARM. A single write past the pty's 4096-byte input buffer is re-split by the KERNEL
+      // at its own boundary, leaving a tail still queued when the return goes out — so the return is
+      // delivered coalesced onto that tail and is again not a keystroke of its own, however the
+      // handler meant it. The text is therefore written in slices UNDER that buffer. Measured: a
+      // 5912-byte order delivered as one write reached the child as reads of 4095 and 1818 bytes,
+      // the second ending in the return.
+      writes.length = 0;
+      const big = "x".repeat(5912);
+      const beforeBig = sinkBytes(shapeseat.name).length;
+      const rBig = await A.call("input", { text: big }, { actor: shapeseat.id, lifecycleUid: shapeseat.lifecycleUid });
+      check("a 5912-byte order is accepted and acknowledged in full (5913 with the return)",
+        rBig.reply.ok === true && (rBig.reply.data as { bytes: number }).bytes === 5913, rBig.reply);
+      const gotBig = await sinkReaches(shapeseat.name, beforeBig + 5913);
+      check("...and every byte of it reached the child, in order, with the return last",
+        gotBig.subarray(beforeBig).equals(Buffer.from(`${big}\r`, "utf8")), { got: gotBig.length - beforeBig, want: 5913 });
+      check("...and NO single write exceeded the pty's 4096-byte input buffer, so no write is re-split by the kernel",
+        writes.length > 1 && writes.every((w) => Buffer.byteLength(w, "utf8") <= 4096), { sizes: writes.map((w) => Buffer.byteLength(w, "utf8")) });
+      check("...and ITS return was written alone too, so a large order submits on the call that sent it",
+        writes.at(-1) === "\r" && !writes.some((w) => w.length > 1 && w.endsWith("\r")),
+        { last: JSON.stringify(writes.at(-1)), fusedTails: writes.filter((w) => w.length > 1 && w.endsWith("\r")).map((w) => w.length) });
+
+      // The control that stops every assertion above from being satisfied by "always write a lone
+      // return": `enter:false` must still press nothing at all.
+      writes.length = 0;
+      await A.call("input", { text: "staged", enter: false }, { actor: shapeseat.id, lifecycleUid: shapeseat.lifecycleUid });
+      check("...while `enter:false` writes the text and NO return at all",
+        writes.length === 1 && writes[0] === "staged", { writes });
+    } finally {
+      managed.handle.write = realWrite;
+    }
   }
 
   await A.nc.drain().catch(() => A.nc.close());
