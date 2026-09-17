@@ -46,11 +46,26 @@
  */
 import ts from "typescript";
 
-/** Calls that run another program. Their result is an observation of whatever they ran. */
-const LAUNCHERS = new Set(["spawnSync", "spawn", "execFileSync", "execFile", "execSync", "exec", "fork"]);
-/** Calls that read the filesystem. Their result is an observation of whatever is on disk. */
-const READERS = new Set(["readFileSync", "readFile", "readdirSync", "readdir", "existsSync", "statSync",
-  "lstatSync", "realpathSync", "readlinkSync", "openSync", "createReadStream"]);
+/**
+ * Globals whose value cannot carry an observation of anything outside this source.
+ *
+ * Everything else ambient is treated as an observation, and the direction matters: `process` alone
+ * reaches the environment, the filesystem, and other processes, and a cell asserting
+ * `alive(pid)` through `process.kill` observes a program this suite started. Listing the few pure
+ * ones and treating the rest as observations is the fail-open direction, so an unfamiliar global
+ * never manufactures a refusal.
+ */
+const PURE_GLOBALS = new Set([
+  "JSON", "Object", "Math", "String", "Number", "Boolean", "Array", "RegExp", "Symbol",
+  "BigInt", "parseInt", "parseFloat", "isNaN", "isFinite", "escape", "unescape",
+  "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
+  "undefined", "NaN", "Infinity", "Error", "TypeError", "RangeError", "Promise",
+  // WRITE-ONLY, and listed for that reason rather than for being harmless. `console` emits; its
+  // return value is `undefined` and carries nothing back from anywhere, so a verdict cannot rest
+  // on it. It appears in the closure constantly because reporters print, and treating it as an
+  // observation would make every cell in every suite carry one.
+  "console",
+]);
 
 const functionLike = (n) => ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n)
   || ts.isArrowFunction(n) || ts.isMethodDeclaration(n) || ts.isConstructorDeclaration(n)
@@ -308,9 +323,6 @@ export const cellWitnesses = (sf, site) => {
       return;
     }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-      const name = calleeName(node.expression);
-      if (LAUNCHERS.has(name)) witnesses.push({ kind: "launch", node });
-      else if (READERS.has(name)) witnesses.push({ kind: "read", node });
       for (const arg of node.arguments ?? []) walk(arg);
       if (ts.isIdentifier(node.expression)) {
         const fn = functionValue(bindingFor(node.expression, node.expression.text));
@@ -321,9 +333,12 @@ export const cellWitnesses = (sf, site) => {
     }
     if (ts.isIdentifier(node)) {
       const binding = bindingFor(node, node.text);
-      // An ambient global observes no file here, and a type-only import is erased before the
-      // program runs, so neither can carry an edit to the mutated file into this verdict.
-      if (binding === undefined) return;
+      // An ambient global is an observation unless it is one of the few that provably cannot be.
+      // A type-only import is erased before the program runs, so it never carries anything.
+      if (binding === undefined) {
+        if (!PURE_GLOBALS.has(node.text)) witnesses.push({ kind: "global", node });
+        return;
+      }
       if (binding.kind === "type") return;
       if (binding.kind === "import") { witnesses.push({ kind: "import", spec: binding.spec, node }); return; }
       if (binding.kind === "unresolved") { witnesses.push({ kind: "opaque", node }); return; }
@@ -351,6 +366,9 @@ export const cellWitnesses = (sf, site) => {
       for (const write of writesInto(sf, node.text)) walk(write);
       return;
     }
+    // A property KEY is not a name lookup: `{ encoding: "utf8" }` reads no binding called
+    // `encoding`. Only the value is walked, or the whole entry would read as an ambient global.
+    if (ts.isPropertyAssignment(node)) { walk(node.initializer); return; }
     if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) { walk(node.expression); return; }
     if (ts.isElementAccessExpression(node)) { walk(node.expression); walk(node.argumentExpression); return; }
     if (ts.isQualifiedName(node)) { walk(node.left); return; }
