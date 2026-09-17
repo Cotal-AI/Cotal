@@ -1,17 +1,35 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, join } from "node:path";
+import { delimiter, join } from "node:path";
 import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
+import { cliPackageRoot, entryScript } from "../seed/paths.js";
 
-/** The CLI's own composition root, by filename: `bin/cotal.ts` in a source checkout, `dist/cotal.js`
- *  in a published install (`bin/package.json` declares `"cotal": "./dist/cotal.js"`), and a bare
- *  `cotal` for `npm i -g`, which publishes `<prefix>/bin/cotal` as a SYMLINK into the package and
- *  leaves `process.argv[1]` on the link rather than its target. That third shape is the one an
- *  installed binary actually runs under, so an extension-only rule would refuse every global install.
- *  A filename rather than an absolute path, because a checkout, the npx cache and a global prefix
- *  each place the same file somewhere this module cannot derive. */
-const CLI_ENTRY_FILE = /^cotal(?:\.(?:ts|js|mjs|cjs))?$/;
+/** Is this process running the CLI's own entry? Decided on the RESOLVED file, never on its name.
+ *
+ *  The entry is `process.argv[1]` through every symlink ({@link entryScript}), and it counts only
+ *  when the package that owns it ({@link cliPackageRoot}) is `cotal-ai` and the file is one of that
+ *  package's two entries: the `bin.cotal` its package.json declares (`dist/cotal.js`, which is what
+ *  an install and npx run), or `cotal.ts` beside that package.json (a checkout's `bin/cotal.ts`,
+ *  which `bin/tsconfig.json` compiles to that bin). `npm i -g` leaves `process.argv[1]` on
+ *  `<prefix>/bin/cotal`, a symlink into the package, and resolving it is what admits that shape.
+ *
+ *  A filename rule admitted any file NAMED `cotal.ts` or `cotal.js`, and one that reaches a detached
+ *  starter on load re-execs itself exactly as #1629 describes. Anything unresolvable is not the entry. */
+function runsCliEntry(): boolean {
+  try {
+    const entry = entryScript();
+    const root = cliPackageRoot();
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; bin?: { cotal?: unknown } | null };
+    const bin = pkg.bin?.cotal;
+    if (pkg.name !== "cotal-ai" || typeof bin !== "string") return false;
+    return [bin, "cotal.ts"].some((file) => {
+      try { return realpathSync(join(root, file)) === entry; } catch { return false; }
+    });
+  } catch {
+    return false;
+  }
+}
 
 /** This CLI's own invocation as argv: `[node, ...loaderFlags, entryScript]`. The loader flags carry
  *  tsx in dev (so a re-exec can run the `.ts` entry) and are empty in prod (entry = compiled JS).
@@ -33,9 +51,9 @@ const CLI_ENTRY_FILE = /^cotal(?:\.(?:ts|js|mjs|cjs))?$/;
  *  silently does not happen reports a healthy control plane over nothing. */
 export function selfArgv(): string[] {
   const entry = process.argv[1];
-  if (entry === undefined || !CLI_ENTRY_FILE.test(basename(entry)))
+  if (entry === undefined || !runsCliEntry())
     throw new Error(
-      `refusing to re-exec this process as \`cotal\`: it was started from ${entry === undefined ? "no entry file" : entry}, which is not the CLI's own entry (\`bin/cotal.ts\` in a checkout, \`dist/cotal.js\` in an install).\n` +
+      `refusing to re-exec this process as \`cotal\`: it was started from ${entry === undefined ? "no entry file" : entry}, which is not the CLI's own entry (\`bin/cotal.ts\` in a checkout, or the \`cotal-ai\` package's \`dist/cotal.js\`, directly or through a symlink).\n` +
         "A child spawned from that entry re-runs it with a cotal subcommand appended, which it does not read; if that file reaches this call on load, every child spawns the next one.\n" +
         "NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery or ensureControlPlane.",
     );
