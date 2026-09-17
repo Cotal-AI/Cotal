@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { isMainEntry } from "./main-entry.mjs";
+
 const API_VERSION = "2022-11-28";
 
 /** @param {unknown} value @param {string} name @returns {string} */
@@ -145,7 +147,7 @@ async function main() {
   throw new Error(message);
 }
 
-if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (isMainEntry(import.meta.url)) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
