@@ -3,7 +3,7 @@
  * never falls back between an fs root and an injected coordinate.
  */
 import {
-  divergentSecretStoreRefusal,
+  divergentSecretStoreNotice,
   formatSecretStoreIdentity,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
@@ -34,9 +34,9 @@ ok("fs never equals injected", !sameSecretStoreIdentity({ kind: "fs", root: "/a"
 
 const a = { kind: "fs" as const, root: "/mgr-root" };
 const b = { kind: "fs" as const, root: "/daemon-root" };
-const msg = divergentSecretStoreRefusal(a, b);
-ok("refusal names the manager root", msg.includes("/mgr-root"));
-ok("refusal names the daemon root", msg.includes("/daemon-root"));
+const msg = divergentSecretStoreNotice(a, b);
+ok("notice names the manager root", msg.includes("/mgr-root"));
+ok("notice names the daemon root", msg.includes("/daemon-root"));
 ok("fs label is the root itself", formatSecretStoreIdentity(a) === "/mgr-root");
 ok("injected label is prefixed", formatSecretStoreIdentity({ kind: "injected", coordinate: "kms:x" }) === "injected:kms:x");
 

@@ -79,7 +79,7 @@ function trimStorePath(p: string): string {
   return p.replace(/[/\\]+$/, "") || p;
 }
 
-/** Operator-facing label used in the construction-time refusal that names both stores. */
+/** Operator-facing label used in the divergence notice that names both stores. */
 export function formatSecretStoreIdentity(id: SecretStoreIdentity): string {
   return id.kind === "fs" ? id.root : `injected:${id.coordinate}`;
 }
@@ -111,15 +111,22 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 }
 
 /**
- * The construction-time refusal when the manager's remint store and the daemon's reload
- * source are not one authority. Both identities appear in the message; a refusal that
- * declines to start without naming them is the same defect wearing a different error.
+ * The notice a manager logs when its remint store and the daemon's reload source are not one
+ * authority. That manager is not the daemon-credential renewal owner: it serves the space and
+ * leaves those credentials to the manager whose store the daemon reloads from (#1634). Both
+ * identities appear, because a notice that declines ownership without naming them leaves the
+ * operator no way to find the owner.
+ *
+ * Matching this identity is NECESSARY but NOT SUFFICIENT for ownership. It is pure equality with
+ * no holder and no tiebreak, so every manager sharing one store passes it; the per-space renewal
+ * lease is what makes the owner single.
  */
-export function divergentSecretStoreRefusal(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
+export function divergentSecretStoreNotice(owner: SecretStoreIdentity, daemon: SecretStoreIdentity): string {
   return (
-    `daemon credential renewal cannot be constructed across two SecretStores: ` +
-    `the manager remints through ${formatSecretStoreIdentity(owner)} while the delivery daemon ` +
-    `reloads from ${formatSecretStoreIdentity(daemon)}. Pass both processes the same store ` +
-    `(one explicit SecretStore coordinate, or one shared filesystem root).`
+    `not the daemon-credential renewal owner for this space: ` +
+    `this manager remints through ${formatSecretStoreIdentity(owner)} while the delivery daemon ` +
+    `reloads from ${formatSecretStoreIdentity(daemon)}, so it leaves those credentials to the ` +
+    `manager on the daemon's own store. Give both processes the same store ` +
+    `(one explicit SecretStore coordinate, or one shared filesystem root) to renew from here.`
   );
 }
