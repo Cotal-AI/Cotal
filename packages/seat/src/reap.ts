@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { bootToken, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { RUN_MARKER_FLAG } from "./launcher.js";
 import { unsupportedTransport } from "./protocol.js";
 
 /** What a reap proved. `absent`: no custody record exists for that seat id, so there is no process
@@ -63,6 +64,51 @@ async function until(predicate: () => boolean, timeoutMs: number): Promise<boole
     await sleep(50);
   }
   return true;
+}
+
+/** One live custodian as a census sees it: its pid and the run that started it. */
+export interface CustodianSighting {
+  pid: number;
+  run: string;
+}
+
+/**
+ * Every live seat custodian on this host, with the run that started it (#1648).
+ *
+ * This reads `/proc/<pid>/cmdline` only, which is world-readable, so a census costs one readdir plus
+ * one small read per pid and never needs the uid of the process it is looking at. That is the whole
+ * reason the marker is on argv: the orphans carried their worktree only as their CWD, and
+ * `/proc/<pid>/cwd` is a readlink the owner alone may follow, so a census of somebody else's
+ * leftovers could not even see them.
+ *
+ * `run` filters to one run's custodians. Omitted, it reports every one on the host, which is what a
+ * reaper sweeping before a run wants. A custodian started before this change carries no marker and
+ * is not reported: it cannot be attributed, and claiming it as the caller's would be a guess.
+ */
+export function censusCustodians(run?: string): CustodianSighting[] {
+  if (process.platform !== "linux") throw unsupportedTransport();
+  const out: CustodianSighting[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    let cmdline: string;
+    try {
+      cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    } catch {
+      continue; // exited between the readdir and the read, or not ours to read
+    }
+    const argv = cmdline.split("\0").filter((s) => s.length > 0);
+    // Both halves are required. The entry path alone matches any process whose argv happens to name
+    // the file; the marker alone would match this package's own tests.
+    if (!argv.some((a) => a.endsWith("/dist/custodian.js"))) continue;
+    const at = argv.indexOf(RUN_MARKER_FLAG);
+    if (at < 0) continue;
+    const marker = argv[at + 1];
+    if (marker === undefined) continue;
+    if (run !== undefined && marker !== run) continue;
+    out.push({ pid, run: marker });
+  }
+  return out;
 }
 
 /**

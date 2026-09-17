@@ -22,6 +22,7 @@ export {
   type SmokeSandboxAnchor,
 } from "./sandbox-guard.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
+export { SEAT_MAX_SOCKET_PATH, SEAT_SOCKET_OVERHEAD, makeSeatRoot, rootFits } from "./seat-root.js";
 export {
   SENTINEL_PREFIX,
   countedAssert,

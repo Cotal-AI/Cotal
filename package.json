@@ -465,6 +465,7 @@
     "smoke:seat-installed-dist": "tsx bin/smoke/seat-installed-dist.smoke.ts",
     "smoke:seat-protocol": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/protocol.smoke.ts",
     "smoke:seat-lifecycle": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/lifecycle.smoke.ts",
+    "repro:1648": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/repro-1648.mts",
     "smoke:seat-isolation": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/isolation.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
     "smoke:scatter-liveness": "tsx packages/core/smoke/scatter-liveness.smoke.ts",
@@ -707,7 +708,8 @@
     "smoke:npm-publish-preflight": "tsx bin/smoke/npm-publish-preflight.smoke.ts",
     "smoke:publish-closure-gate": "tsx bin/smoke/publish-closure-gate.smoke.ts",
     "smoke:jcode-queue-fallback-loss": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-loss.smoke.ts",
-    "smoke:temp-containment": "pnpm --filter \"@cotal-ai/workspace...\" build && tsx bin/smoke/temp-containment.smoke.ts"
+    "smoke:temp-containment": "pnpm --filter \"@cotal-ai/workspace...\" build && tsx bin/smoke/temp-containment.smoke.ts",
+    "smoke:seat-orphan": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/orphan.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",
