@@ -5,23 +5,28 @@
  *
  * The defect this grades is silent and points the safe way round: a gate whose entry guard
  * compares `process.argv[1]` against `import.meta.url` as strings never runs its `main()` through
- * a link, prints nothing, and exits 0. Measured on main before this suite existed, with an
- * ordinary macOS checkout reached through `/tmp` (a symlink to `private/tmp`):
- * `check-attribution.mjs --selftest` graded 14 fixtures and exited 2 by its real path, and printed
- * nothing at exit 0 by the linked one. Nothing downstream can tell that apart from a clean run.
+ * a link, prints nothing, and exits 0. Measured on main before this suite existed, with a macOS
+ * checkout reached through `/tmp` (a symlink to `private/tmp`): `check-attribution.mjs` with no
+ * arguments refused with its usage line and exit 2 by its real path, and printed nothing at exit 0
+ * by the linked one. Its `--selftest` exits 0 on a pass, and through the link it also exited 0,
+ * having printed nothing. Nothing downstream can tell either apart from a clean run.
  *
  * Two kinds of cell, because the scripts split into two kinds.
  *
  *   PARITY, for the six that have an invocation which refuses before doing any work: run the
- *   script by its real path and through a symlink, and require the same exit code, stdout and
- *   stderr. This is the live grade, and it is what the registered mutants redden.
+ *   script by its real path and through a symlink. Both runs must reach that script's own refusal,
+ *   its exit code and a stderr line that only its `main()` prints, and the two must agree on exit
+ *   code, stdout and stderr. Agreement alone is not the grade: two runs that both skip `main()`
+ *   agree perfectly, at exit 0 with nothing on either stream. This is the live grade, and it is
+ *   what the registered mutants redden.
  *
  *   CENSUS, for the two that cannot be spawned safely. `post-publish-install-probe.mjs` and
  *   `preflight-npm-publish.mjs` start their work at entry with no argv that refuses first, so
  *   there is no probe for them that does not pack a tarball or read the registry. They are graded
  *   on the source instead: the entry-point question is asked in one place, and a hand-rolled
- *   comparison anywhere under `scripts/` is refused. The census carries a planted control in each
- *   direction, so a census that has stopped looking fails rather than passing quietly.
+ *   comparison written on one line of a top-level `scripts/*.mjs` file is refused. The census
+ *   carries a planted control in each direction, so a census that has stopped looking fails rather
+ *   than passing quietly. What it cannot see is listed in `scripts/mutations/entrypoint-guard.json`.
  *
  * Cells run to the end and each prints its own line: a mutation that reddens two of them must
  * still be readable as reddening the one it names.
@@ -38,14 +43,39 @@ const ROOT = dirname(SCRIPTS);
 /**
  * One invocation per script that refuses before it does anything. Each was measured by hand first:
  * an argv that reaches the network or the working tree would make this suite a side effect.
+ *
+ * `status` and `stderr` are the witness that `main()` ran: the exit code of that refusal and one
+ * whole line of the diagnostic it prints. Neither is enough alone. A skipped `main()` exits 0, but
+ * `live-job-conclusion.mjs` refuses with 1, which is also what Node exits with when the script
+ * cannot even load; only the line tells those apart.
  */
 const PROBES = [
-  { script: "check-attribution.mjs", argv: [] },
-  { script: "check-operator-literals.mjs", argv: ["--help"] },
-  { script: "doc-binding.mjs", argv: [] },
-  { script: "live-job-conclusion.mjs", argv: [] },
-  { script: "pr-head-gate.mjs", argv: [] },
-  { script: "verify-publish-closure.mjs", argv: [] },
+  {
+    script: "check-attribution.mjs",
+    argv: [],
+    status: 2,
+    stderr: "usage: check-attribution.mjs --range <base>..<head> [--event <event.json>] | --selftest",
+  },
+  {
+    script: "check-operator-literals.mjs",
+    argv: ["--help"],
+    status: 2,
+    stderr: "operator literal check: unknown argument: --help",
+  },
+  {
+    script: "doc-binding.mjs",
+    argv: [],
+    status: 2,
+    stderr: "usage: pnpm doc-binding <ref> | pnpm doc-binding --self-test",
+  },
+  { script: "live-job-conclusion.mjs", argv: [], status: 1, stderr: "--result is required" },
+  { script: "pr-head-gate.mjs", argv: [], status: 2, stderr: "usage: pnpm pr-head-gate <pull-request-number>" },
+  {
+    script: "verify-publish-closure.mjs",
+    argv: [],
+    status: 2,
+    stderr: "usage: verify-publish-closure.mjs <version> [--json]",
+  },
 ];
 
 /**
@@ -80,9 +110,20 @@ function run(path, argv) {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
+/**
+ * Did this run reach the refusal only the script's `main()` prints?
+ *
+ * @param {{ status: number | null, stderr: string }} r
+ * @param {{ status: number, stderr: string }} probe
+ */
+function reachedMain(r, probe) {
+  return r.status === probe.status && r.stderr.split("\n").includes(probe.stderr);
+}
+
 const workdir = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "entrypoint-guard-")));
 try {
-  for (const { script, argv } of PROBES) {
+  for (const probe of PROBES) {
+    const { script, argv } = probe;
     const real = join(SCRIPTS, script);
     const link = join(workdir, script);
     symlinkSync(real, link);
@@ -93,17 +134,23 @@ try {
 
     const direct = run(real, argv);
     const through = run(link, argv);
+    const ranByRealPath = reachedMain(direct, probe);
+    const ranThroughLink = reachedMain(through, probe);
     const same =
-      linked &&
       direct.status === through.status &&
       direct.stdout === through.stdout &&
       direct.stderr === through.stderr;
 
-    cell(`${script} answers the same through a symlink`, same, {
-      linked,
-      direct: { exit: direct.status, out: direct.stdout.trim().slice(0, 120), err: direct.stderr.trim().slice(0, 120) },
-      symlink: { exit: through.status, out: through.stdout.trim().slice(0, 120), err: through.stderr.trim().slice(0, 120) },
-    });
+    cell(`${script} runs main() by its real path and through a symlink, and answers the same`,
+      linked && ranByRealPath && ranThroughLink && same, {
+        linked,
+        ranByRealPath,
+        ranThroughLink,
+        same,
+        expected: { exit: probe.status, err: probe.stderr },
+        direct: { exit: direct.status, out: direct.stdout.trim().slice(0, 120), err: direct.stderr.trim().slice(0, 120) },
+        symlink: { exit: through.status, out: through.stdout.trim().slice(0, 120), err: through.stderr.trim().slice(0, 120) },
+      });
   }
 } finally {
   rmSync(workdir, { recursive: true, force: true });
@@ -135,7 +182,7 @@ const censusFindings = readdirSync(SCRIPTS)
   .flatMap((name) => handRolledGuards(name, readFileSync(join(SCRIPTS, name), "utf8")).map((line) => `${name}: ${line}`));
 
 cell(
-  "every entry-point guard under scripts/ goes through isMainEntry",
+  "every one-line entry-point guard in a top-level scripts/*.mjs goes through isMainEntry",
   censusFindings.length === 0,
   censusFindings,
 );
