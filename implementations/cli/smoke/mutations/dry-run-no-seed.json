@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "implementations/cli/smoke/dry-run-no-seed.smoke.ts"
+  ],
+  "guard": "a dry run plans and prints without writing the operator-global seed store, manifest or npm prefix, whether it goes on to render a plan or to reject the invocation",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/dry-run-no-seed.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/dry-run-no-seed.json",
+  "why": [
+    "The boot gate ran before command lookup, flag parsing and the command body, so `down --preserve-state --dry-run` rewrote the machine-wide seed store and only then printed the usage refusal (#1620). A suite asserting only the refusal text would stay green with the defect live, because the exit code and the error line are identical either way.",
+    "The mutation removes only the dry-run skip, leaving every other skip in place, so a green run after it would mean the suite observes the refusal rather than the writes. The suite drives the BUILT binary, so each cell rebuilds and the restore rebuilds back."
+  ],
+  "mutations": [
+    {
+      "name": "let a dry run fall through to the boot-gate seed reconcile",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (argv.includes(\"--dry-run\")) return true;\n",
+      "replace": "",
+      "expectRed": "no operator-global state written",
+      "cell": "`cotal down --preserve-state --dry-run`: no operator-global state written",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/dry-run-no-seed.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "Compile-clean: the surrounding --help and update skips stay live, so only the dry-run promise regresses. Restores the exact incident: the store is migrated, then the invocation is refused."
+    }
+  ]
+}

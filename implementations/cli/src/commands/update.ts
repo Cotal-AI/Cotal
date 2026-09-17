@@ -139,18 +139,24 @@ async function reconcileCurrent(
   target: Record<string, unknown>,
   finish: (reconciled: boolean) => number,
 ): Promise<number> {
+  // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
+  // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
+  // `update --self` against a mesh that predates this release's authority stores rewrote the store
+  // and only then failed its `running manager continuity check`, leaving the machine migrated by a
+  // run that refused to proceed (#1620). The continuity check is a pure read of the running manager
+  // and the selected target; nothing may be written until it has answered.
+  try {
+    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
+  } catch (e) {
+    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
+    return finish(false);
+  }
+
   rt.out(c.bold("Built-in connectors"));
   try {
     await rt.reconcile();
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
-    return finish(false);
-  }
-
-  try {
-    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
-  } catch (e) {
-    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
     return finish(false);
   }
 
