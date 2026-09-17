@@ -62,7 +62,9 @@ if (!existsSync(TSX)) noResult(`no tsx at ${TSX}; run pnpm install first`);
 // The live fleet must never be touched: a stray COTAL_SERVERS would point `cotal input` at the real
 // broker and type into somebody's production agent.
 const LIVE_HOST = "broker.cotal.ai";
-for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
+// An enumerated list only covers the keys someone thought of, so a COTAL_ key added later
+// reaches the child unnoticed. Drop them by prefix; the keys this file needs are set below.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 for (const [k, v] of Object.entries(process.env))
   if (typeof v === "string" && v.includes(LIVE_HOST)) noResult(`refusing to run: ${k} points at the live broker`);
 
