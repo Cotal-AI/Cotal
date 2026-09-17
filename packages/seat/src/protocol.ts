@@ -44,6 +44,38 @@ export const MAX_BUFFER_SIZE = MAX_FRAME_SIZE + 4;
 
 export type StopMode = "graceful" | "hard";
 
+/**
+ * Longest filesystem socket path this transport accepts.
+ *
+ * `sun_path` in `struct sockaddr_un` is 108 bytes on Linux INCLUDING its NUL terminator, so 107
+ * characters is the real ceiling. What makes this worth a named refusal rather than a comment is
+ * that nothing below reports the overflow: libuv copies the path into that fixed buffer and
+ * TRUNCATES it, then `listen` SUCCEEDS on the shortened name. Measured directly: a 109-byte path
+ * creates `seat.soc`, 110 creates `seat.so`, 111 creates `seat.s`. The custodian then chmods and
+ * unlinks the path it MEANT to bind, gets ENOENT, and dies; the launcher, which only sees a pid
+ * that went away, reports `custodian exited before ready` and names nothing.
+ *
+ * That is not hypothetical. Two independent reviews of this issue set TMPDIR inside their review
+ * worktree, whose deeper path pushed the seat socket to 116 bytes, and every gate run they
+ * attempted died this way before reaching a single assertion. Both concluded the fix was unproven;
+ * the fix was fine and the transport was lying about why it could not start.
+ */
+export const MAX_SOCKET_PATH = 107;
+
+/** Refuse a socket path the kernel cannot hold, naming the limit, the overage and the cure. Called
+ *  before any process is spawned, so an unusable custody root fails at the launch that asked for it
+ *  rather than inside a detached process that cannot tell anyone. */
+export function assertSocketPathFits(socket: string): string {
+  const bytes = Buffer.byteLength(socket, "utf8");
+  if (bytes > MAX_SOCKET_PATH)
+    throw new Error(
+      `seat socket path is ${bytes} bytes, over the ${MAX_SOCKET_PATH}-byte limit for a Unix socket: ${socket}. ` +
+        `The kernel would truncate it silently and the custodian would bind a different name than it cleans up. ` +
+        `Use a shorter custody root (a deep TMPDIR inside a worktree is the usual cause).`,
+    );
+  return socket;
+}
+
 export type ClientRequest =
   | { id: number; op: "hello"; token: string }
   | { id: number; op: "snapshot" }

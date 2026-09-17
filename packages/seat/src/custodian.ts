@@ -533,16 +533,38 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     listening.once("error", reject);
     listening.listen(launch.socket, () => {
-      chmodSync(launch.socket, 0o600);
-      writeRecord(launch.recordPath, record);
-      ready = true;
-      const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
-      if (launch.logPath) appendFileSync(launch.logPath, announced, { mode: 0o600 });
-      else process.stdout.write(announced);
-      armUnobservedHandoff();
-      armUnattended();
-      settleTerminal();
-      resolve();
+      // EVERY throw in here must reach `reject`. A callback is not on the promise's call stack, so an
+      // exception raised inside it becomes an UNCAUGHT exception: it bypasses the `.catch` at the
+      // bottom of this file that writes the log, and the process dies having explained nothing. The
+      // launcher then reports only `custodian exited before ready: pid N gone`, which is what made a
+      // silently-truncated socket path unattributable.
+      try {
+        // The bind can land on a DIFFERENT path than the one requested: libuv copies into a fixed
+        // 108-byte `sun_path` and truncates rather than failing. `launchSeat` refuses an overlong
+        // path up front, but a custodian can also be started directly, so verify what was actually
+        // created rather than trusting that listen succeeded on the name we asked for.
+        const bound = listening.address();
+        if (typeof bound === "string" && bound !== launch.socket)
+          throw new Error(`custodian bound ${bound} but was asked for ${launch.socket}; the path was truncated, so it would clean up a socket it never created`);
+        chmodSync(launch.socket, 0o600);
+        writeRecord(launch.recordPath, record);
+        ready = true;
+        const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
+        if (launch.logPath) appendFileSync(launch.logPath, announced, { mode: 0o600 });
+        else process.stdout.write(announced);
+        armUnobservedHandoff();
+        armUnattended();
+        settleTerminal();
+        resolve();
+      } catch (e) {
+        // The child outlives this process otherwise: nothing else holds its PTY.
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
+        reject(e as Error);
+      }
     });
   });
 }

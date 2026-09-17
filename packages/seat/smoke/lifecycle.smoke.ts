@@ -8,6 +8,7 @@ import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adoptSeatSync, launchSeat, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
   console.log(`SEAT LIFECYCLE COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -57,7 +58,7 @@ const state = (pid: number): string => {
   }
 };
 
-const root = mkdtempSync(join(tmpdir(), "cotal-seat-life-"));
+const root = makeSeatRoot("cotal-seat-life-");
 const handles: Array<{
   stop: (o?: { graceful?: boolean }) => void;
   close?: () => void;
@@ -319,7 +320,7 @@ try {
   }
 
   {
-    const leakRoot = mkdtempSync(join(tmpdir(), "sl-"));
+    const leakRoot = makeSeatRoot("sl-");
     try {
       const here = dirname(fileURLToPath(import.meta.url));
       const dist = join(here, "..", "dist");

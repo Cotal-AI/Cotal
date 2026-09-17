@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { FrameReader, MAX_FRAME_SIZE, encodeFrame } from "../src/protocol.js";
 import { peerCredentials } from "../src/peercred.js";
 import { launchSeat } from "../src/index.js";
+import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 let pass = 0;
 let fail = 0;
@@ -140,7 +141,7 @@ if (process.platform !== "linux") {
   console.log(`\nSEAT PROTOCOL ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
   process.exitCode = fail === 0 ? 0 : 1;
 } else {
-  const dir = mkdtempSync(join(tmpdir(), "cotal-seat-proto-"));
+  const dir = makeSeatRoot("cotal-seat-proto-");
   const sockPath = join(dir, "s.sock");
   const server = createServer((c) => {
     try {
@@ -191,7 +192,7 @@ if (process.platform !== "linux") {
       sock.once("close", () => resolve());
     });
 
-  const root = mkdtempSync(join(tmpdir(), "cotal-seat-frame-"));
+  const root = makeSeatRoot("cotal-seat-frame-");
   const seats: Array<{ rec: ReturnType<typeof launchSeat> }> = [];
   try {
     const attack = launchSeat({

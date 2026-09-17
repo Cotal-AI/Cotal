@@ -33,11 +33,12 @@
  * Run: `pnpm smoke:seat-orphan`
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as seat from "../src/index.js";
+import { makeSeatRoot, SEAT_MAX_SOCKET_PATH } from "@cotal-ai/smoke-kit";
 const { adoptSeatSync, launchSeat } = seat;
 
 /**
@@ -76,7 +77,7 @@ const check = (name: string, condition: boolean, extra?: unknown): void => {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
-const root = mkdtempSync(join(tmpdir(), "seat-orphan-"));
+const root = makeSeatRoot("seat-orphan-");
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const state = (pid: number): string => {
   try {
@@ -305,6 +306,58 @@ setInterval(() => {}, 1000);
     const runnerSource = readFileSync(join(repo, "bin/smoke/reap-seat-custodians.mjs"), "utf8");
     const runnerFlag = /export const RUN_MARKER_FLAG = "([^"]+)"/.exec(runnerSource)?.[1];
     check("the suite runner's copy of the run-marker flag matches this package's", runnerFlag === FLAG, { runnerFlag, RUN_MARKER_FLAG: FLAG });
+  }
+
+  {
+    // THE SOCKET-PATH CEILING. A seat socket is `<root>/<32 hex>/seat.sock`, and `sun_path` holds
+    // 108 bytes including its NUL. Over that, libuv TRUNCATES and `listen` still succeeds, so the
+    // custodian chmods a path it never created, dies, and the launcher reports only `custodian
+    // exited before ready: pid N gone`. Two independent reviews of this issue set TMPDIR inside
+    // their worktree, hit 116-byte sockets, and every gate run they attempted died before reaching
+    // one assertion. They read that as the fix being unproven. A transport that cannot start must
+    // say why.
+    const MAX = (seat as { MAX_SOCKET_PATH?: number }).MAX_SOCKET_PATH;
+    const fits = (seat as { assertSocketPathFits?: (s: string) => string }).assertSocketPathFits;
+    check("the transport names its socket-path ceiling", MAX === 107, { MAX_SOCKET_PATH: MAX });
+    check("smoke-kit agrees with the package about that ceiling, so a suite's root is sized by the same number", SEAT_MAX_SOCKET_PATH === MAX, {
+      smokeKit: SEAT_MAX_SOCKET_PATH,
+      seat: MAX,
+    });
+    if (typeof fits === "function" && typeof MAX === "number") {
+      check("a path at the ceiling is accepted", fits("/" + "a".repeat(MAX - 1)).length === MAX);
+      let refusedPath = "";
+      try {
+        fits("/" + "a".repeat(MAX));
+      } catch (e) {
+        refusedPath = (e as Error).message;
+      }
+      // The message has to carry the number and the cure, because the person reading it is looking
+      // at an unexplained death in a detached process.
+      check("one byte over is refused, naming the size, the limit and the cause",
+        /over the 107-byte limit/.test(refusedPath) && /\b108 bytes\b/.test(refusedPath) && /shorter custody root/.test(refusedPath),
+        { refusedPath });
+    } else {
+      check("the transport refuses an oversized socket path", false, { assertSocketPathFits: typeof fits });
+    }
+
+    // The end-to-end shape: a real launch under a root too deep to hold a socket must fail with that
+    // named refusal rather than the unattributable `exited before ready`.
+    const deepBase = join(root, "d".repeat(60));
+    mkdirSync(deepBase, { recursive: true });
+    let launchError = "";
+    try {
+      launchSeat({
+        root: deepBase,
+        name: "too-deep",
+        spec: { command: process.execPath, args: FOREVER, env: { PATH: process.env.PATH ?? "" } },
+        cwd: repo,
+      });
+    } catch (e) {
+      launchError = (e as Error).message;
+    }
+    check("a launch under an unusable custody root is refused by name, not as 'exited before ready'",
+      /over the 107-byte limit/.test(launchError) && !/exited before ready/.test(launchError),
+      { launchError });
   }
   }
 } finally {

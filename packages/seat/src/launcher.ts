@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, w
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
-import { unattendedMs, unsupportedTransport } from "./protocol.js";
+import { unattendedMs, assertSocketPathFits, unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
   command: string;
@@ -86,7 +86,7 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
   mkdirSync(opts.root, { recursive: true, mode: 0o700 });
   const id = assertSeatId(opts.id ?? seatId());
   const token = capabilityToken();
-  const socket = socketPath(opts.root, id);
+  const socket = assertSocketPathFits(socketPath(opts.root, id));
   const recPath = recordPath(opts.root, id);
   // A reserved id is spawned once. Reusing one would launch a second custodian over a live seat's
   // record, and the reference the manager already recorded would then address the wrong processes.

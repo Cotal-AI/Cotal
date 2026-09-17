@@ -715,6 +715,10 @@ importers:
       '@xterm/headless':
         specifier: ^5.5.0
         version: 5.5.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
   packages/smoke-kit: {}
 
