@@ -142,7 +142,8 @@ export type RunJournalRow =
       readonly kind: "step";
       readonly step: string;
       readonly state: "pending" | "settled";
-      /** `pending`, or the settled status with its error code when there is one. */
+      /** `pending`, or the checkpoint disposition the settled result names (`resolved` / `expired`);
+       *  otherwise the settled status with its error code when there is one. */
       readonly outcome: string;
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
