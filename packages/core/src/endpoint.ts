@@ -115,6 +115,7 @@ import {
   leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
+  MANAGER_RENEWAL_LEASE_KEY,
   managerLeaseKey,
   chatWildcard,
   assertValidChannel,
@@ -424,6 +425,10 @@ export class CotalEndpoint extends EventEmitter {
   private aclKv?: KV;
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
+  /** Our revision of the per-space daemon-credential renewal lease (#1634), or undefined when we do
+   *  not hold it. Cleared with the bound KV handle: a revision from a dead connection is not a lease
+   *  we can prove we still hold. */
+  private daemonRenewalLeaseRevision?: number;
   private membershipFeedKv?: KV;
   /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
    *  connection-scoped and are stopped/re-created around the epoch swap. */
@@ -786,8 +791,44 @@ export class CotalEndpoint extends EventEmitter {
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
+      // Two refusals, answering different questions, and both of them are about protecting what is
+      // ALREADY held. So both are scoped to there BEING something held, which is the same set as
+      // `!initial` but names the thing the rules actually depend on: on the first fetch there is no
+      // cache to lose, `start()` has to come up on whatever the source has, and the pre-dial guard
+      // in {@link bindConnection} is what speaks for a dead first token.
+      const expiryMs = bearerExpiryMs(bearer);
+      const held = this.currentBearer;
+      if (held !== undefined) {
+        // ALREADY DEAD, whatever else is true of it. Advancement is deliberately not part of this
+        // test: a candidate expiring at now-5s does advance a held one that died at now-60s, so an
+        // advance-only rule adopts it - overwriting the cache with material nothing can dial,
+        // skipping the recoverable warning because the fetch did not throw, and arming the next
+        // read off a non-positive delay. The creds path draws its line on expiry alone too, in
+        // {@link presentableCreds} (#1572).
+        if (expiryMs <= Date.now())
+          throw new Error("the bearer source returned a token that has already expired - nothing adopted");
+        // THE SAME BYTES BACK AGAIN from a source whose token cannot carry the next cycle: the
+        // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
+        // returns that same token - a 5s loop against the auth service for the rest of its life,
+        // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
+        // nothing new (#1561).
+        //
+        // The test is byte identity, not expiry, and not advancement. `exp` carries one second of
+        // resolution, so a key rotation re-signing the same claims under a new key - and a healthy
+        // short-TTL source read twice inside one wall-clock second - both hand back a token whose
+        // `exp` has not moved. That is genuinely re-issued material, which an advancement test
+        // refuses and this one adopts. It is the question the creds path asks with
+        // `credsFingerprint`: did the source re-issue ANYTHING (#1572).
+        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)
+          throw new Error("the bearer source re-served the token already held and it cannot carry another cycle (the auth service has not issued a fresh one) - nothing adopted");
+      }
       this.currentBearer = bearer;
-      this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
+      // A non-positive delay is NOT clamped to BEARER_RETRY_MS. A deployment whose whole token TTL
+      // sits inside the margin is legitimate - `expiry-renewal` mints 5s bearers against the 60s
+      // margin - and for it the 5s floor IS the renewal cadence. Backing that source off to 15s
+      // leaves a 5s token dead for two thirds of every cycle. What made #1561 a pointless loop was
+      // the source returning nothing new, which is refused above, not the cadence itself.
+      this.armBearerRefresh(expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     } catch (e) {
       if (initial) throw e;
       this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
@@ -1446,6 +1487,7 @@ export class CotalEndpoint extends EventEmitter {
     this.membershipFeedKv = undefined;
     this.deliveryKv = undefined;
     this.managerLeaseKv = undefined;
+    this.daemonRenewalLeaseRevision = undefined;
     // Handles that armDeliveryControl created on a previous connection: null them so a rebind
     // does not carry a dead protocol's subs forward. Best-effort unsubscribe first (the sub is
     // dead with its connection either way; unsubscribing an already-dead sub is a noop).
@@ -1582,6 +1624,7 @@ export class CotalEndpoint extends EventEmitter {
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
+      this.daemonRenewalLeaseRevision = undefined;
       // This is an application-requested epoch teardown, not a transient nats.js blip. The old
       // status iterator is now stale by construction and its close is epoch-dropped, so this line is
       // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
@@ -3682,6 +3725,52 @@ export class CotalEndpoint extends EventEmitter {
     }
     return this.managerLeaseKv;
   }
+  /** Take or keep the per-SPACE daemon-credential renewal lease (#1634), returning whether THIS
+   *  instance now holds it. One atomic CAS `create` per pass: it succeeds for whoever arrives first
+   *  and throws for everyone else, so exactly one manager remints even when several share the
+   *  daemon's store. The holder re-`update`s its own key by revision, which both keeps it and proves
+   *  it never lost it. Losing the CAS is an ordinary outcome (a peer holds it) and returns false; it
+   *  never fails a start. A crashed holder's key TTL-expires with the bucket, so the next pass hands
+   *  the lease to a survivor with no operator step. */
+  async holdDaemonRenewalLease(instanceId: string): Promise<boolean> {
+    const kv = await this.managerLeaseRegistry();
+    const held = this.daemonRenewalLeaseRevision;
+    if (held !== undefined) {
+      try {
+        this.daemonRenewalLeaseRevision = await kv.update(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId), held);
+        return true;
+      } catch {
+        // The revision moved (our key TTL-expired and a peer took it). Re-contend below rather than
+        // keep reminting on a lease we no longer hold.
+        this.daemonRenewalLeaseRevision = undefined;
+      }
+    }
+    try {
+      this.daemonRenewalLeaseRevision = await kv.create(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId));
+      return true;
+    } catch {
+      return false; // another manager holds it: exactly one owner is the point
+    }
+  }
+
+  /** Release the renewal lease on a clean stop so a peer takes over at once rather than at the TTL.
+   *  CAS-guarded, so a lease we already lost is never deleted out from under its new holder. */
+  async releaseDaemonRenewalLease(): Promise<void> {
+    const held = this.daemonRenewalLeaseRevision;
+    this.daemonRenewalLeaseRevision = undefined;
+    if (held === undefined) return;
+    try {
+      await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
+    } catch {
+      // Best-effort, like releaseManagerLease: a moved revision means it is not ours, and a broker
+      // failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+    }
+  }
+
+  private encodeDaemonRenewalLease(instanceId: string): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ instanceId, since: Date.now() }));
+  }
+
   private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
     return new TextEncoder().encode(JSON.stringify(info));
   }
@@ -5495,9 +5584,9 @@ export class CotalEndpoint extends EventEmitter {
    *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
    *
    *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
-   *  empty bucket under it means the bucket was wiped since its last heartbeat (the netcup
+   *  empty bucket under it means the bucket was wiped since its last heartbeat (the stream
    *  recreation), and the same wipe took every peer's record: their absence says the bucket is
-   *  new, not that they left. rev-1421-gpt reproduced the previous behaviour at default timing:
+   *  new, not that they left. a reviewer reproduced the previous behaviour at default timing:
    *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
    *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
    *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
@@ -5655,7 +5744,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
       this.emitPresenceViewIfChanged();
       // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
-      // the transport is up and the watch's own consumer is what died. Measured on netcup
+      // the transport is up and the watch's own consumer is what died. Measured on a live deployment
       // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
       // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
       // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client

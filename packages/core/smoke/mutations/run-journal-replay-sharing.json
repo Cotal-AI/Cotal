@@ -1,0 +1,35 @@
+{
+  "suite": [
+    "packages/core/smoke/run-journal.smoke.ts"
+  ],
+  "guard": "The replay durable is one replay's at a time: reads under one takeover id do not overlap, a durable an interrupted read left behind is removed before the next read, and one that survives a replay's own delete is still refused.",
+  "command": "pnpm smoke:run-journal",
+  "completionMarker": "run-journal.smoke:",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/run-journal-replay-sharing.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "replays under one takeover id run concurrently again, sharing one durable",
+      "file": "packages/core/src/run-journal.ts",
+      "find": "  const mine = ahead === undefined ? body() : ahead.then(body);",
+      "replace": "  void ahead;\n  const mine = body();",
+      "expectRed": "eight of them on one id read the whole run too, none of them a silent empty prefix",
+      "cell": "eight of them on one id read the whole run too, none of them a silent empty prefix"
+    },
+    {
+      "name": "a durable an interrupted replay left behind is inherited instead of remade",
+      "file": "packages/core/src/run-journal.ts",
+      "find": "    if (!replayConsumerIsFresh(created)) {",
+      "replace": "    if (!replayConsumerIsFresh(created) && false) {",
+      "expectRed": "and the next replay on that same takeover id reads the whole run rather than reporting a rival",
+      "cell": "and the next replay on that same takeover id reads the whole run rather than reporting a rival"
+    },
+    {
+      "name": "the freshness guard stops refusing, so a tail is read as a run",
+      "file": "packages/core/src/run-journal.ts",
+      "find": "  if (!replayConsumerIsFresh(info)) {",
+      "replace": "  if (!replayConsumerIsFresh(info) && false) {",
+      "expectRed": "a durable that outlives the replay's own delete is still refused by name",
+      "cell": "a durable that outlives the replay's own delete is still refused by name"
+    }
+  ]
+}

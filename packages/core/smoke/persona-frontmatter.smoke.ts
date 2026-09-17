@@ -60,7 +60,7 @@ const prompt = [
 const mergedPath = join(dir, "merged.md");
 const def = composeWirePersona({
   name: "panel-glm",
-  owner: "mgr-i1351",
+  owner: "manager-example",
   prompt,
 });
 saveAgentFile(mergedPath, def);
@@ -77,14 +77,14 @@ ok("loaded agent survives", loaded.agent === "jcode", loaded.agent);
 ok("loaded model survives", loaded.model === "grok-from-prompt", loaded.model);
 ok("the persona body does not start with a fence", loaded.persona === "You review PRs.", loaded.persona);
 ok("prompt capabilities never land", loaded.capabilities === undefined, loaded.capabilities);
-ok("prompt owner never lands; the caller is owner", loaded.owner === "mgr-i1351", loaded.owner);
+ok("prompt owner never lands; the caller is owner", loaded.owner === "manager-example", loaded.owner);
 ok("the tool name wins over the prompt's name:", loaded.name === "panel-glm", loaded.name);
 ok("an authored read set drops the wire-default marker", loaded.meta?.scope_source === undefined, loaded.meta);
 
 const overridePath = join(dir, "override.md");
 saveAgentFile(overridePath, composeWirePersona({
   name: "panel-glm",
-  owner: "mgr-i1351",
+  owner: "manager-example",
   prompt,
   model: "grok-from-arg",
 }));
@@ -93,7 +93,7 @@ ok("an explicit tool model wins over the prompt's model:", loadAgentFile(overrid
 const prosePath = join(dir, "prose.md");
 saveAgentFile(prosePath, composeWirePersona({
   name: "plain",
-  owner: "mgr-i1351",
+  owner: "manager-example",
   prompt: "You are a plain worker.",
 }));
 const prose = loadAgentFile(prosePath);
@@ -106,7 +106,7 @@ const throwsNamed = (label: string, bad: string) => {
   let named = false;
   let wrote = false;
   try {
-    const d = composeWirePersona({ name: "bad", owner: "mgr-i1351", prompt: bad });
+    const d = composeWirePersona({ name: "bad", owner: "manager-example", prompt: bad });
     saveAgentFile(path, d);
     wrote = existsSync(path);
   } catch (e) {

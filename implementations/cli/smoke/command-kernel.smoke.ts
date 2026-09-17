@@ -277,11 +277,34 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const legacy = updateRuntime({ reportRunningManager: async () => "legacy" });
   const code = await executeUpdate(false, legacy.rt);
-  assert.ok(legacy.events.includes("reconcile"), "disk reconciliation completes before the running-manager report");
   assert.ok(legacy.events.includes("report-running-manager"), "the running manager is classified before refusal");
+  assert.ok(!legacy.events.includes("reconcile"), "a legacy custody verdict refuses BEFORE the seed store is rewritten");
   assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
   assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
   assert.equal(code, 1);
+}
+
+// --- #1620: update observes the running manager BEFORE it rewrites the global seed store ----------
+// `rt.reconcile()` is `runSeed({force: true})` — it rewrites the operator-global seed store,
+// manifest and npm prefix. Running it before the continuity check meant an `update --self` against
+// an older mesh migrated the machine and only THEN failed the check, leaving it migrated by a run
+// that refused to proceed. Observation is a pure read and must come first.
+{
+  const failedCheck = updateRuntime({
+    reportRunningManager: async () => { throw new Error("stream not found"); },
+  });
+  assert.equal(await executeUpdate(false, failedCheck.rt), 1);
+  assert.ok(
+    !failedCheck.events.includes("reconcile"),
+    "a failed running-manager observation must leave the global seed store untouched",
+  );
+
+  const ordered = updateRuntime({});
+  assert.equal(await executeUpdate(false, ordered.rt), 0);
+  const observed = ordered.events.indexOf("report-running-manager");
+  const wrote = ordered.events.indexOf("reconcile");
+  assert.ok(observed !== -1 && wrote !== -1, "both the observation and the seed write happen on a clean update");
+  assert.ok(observed < wrote, "the running-manager observation precedes the seed store rewrite");
 }
 
 // --- malformed npm fails after local reconcile; extension failures continue and aggregate --------

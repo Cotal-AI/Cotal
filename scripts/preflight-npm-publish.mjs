@@ -36,8 +36,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { closureFromConfig, versionUrl } from "./verify-publish-closure.mjs";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
@@ -286,6 +287,28 @@ async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImp
   }
 }
 
+/**
+ * The three census bucket predicates, as the verdict ladder below applies them. They live here
+ * as named exports rather than inline in the ladder so a test can depend on the SHIPPED
+ * membership rule instead of transcribing it. A test that re-types these three expressions
+ * grades its own copy: widen `isAbsentRegistry` here and a transcribed test stays green, which
+ * is exactly the unkillable shape this export exists to remove.
+ */
+export const isUnknownRegistry = (registry) => registry.startsWith("unknown:");
+export const isPresentRegistry = (registry) => registry === "present";
+export const isAbsentRegistry = (registry) => registry === "absent";
+
+/**
+ * The bucket predicates in ladder order, paired with the names the ladder and the census use.
+ * Exported as one array so a caller enumerating the buckets cannot silently miss one that a
+ * later commit adds: a new bucket is a new element here, not a new line in somebody's copy.
+ */
+export const CENSUS_BUCKETS = [
+  { name: "unknown", matches: isUnknownRegistry },
+  { name: "present", matches: isPresentRegistry },
+  { name: "absent", matches: isAbsentRegistry },
+];
+
 export function printPublishCensus(rows, log = console.log) {
   log("npm publish preflight census");
   log("package\tversion\tregistry\toidc\tdirect");
@@ -347,9 +370,9 @@ export async function preflightNpmPublish({
     });
   }
 
-  const unknown = rows.filter((row) => row.registry.startsWith("unknown:"));
-  const present = rows.filter((row) => row.registry === "present");
-  const absent = rows.filter((row) => row.registry === "absent");
+  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));
+  const present = rows.filter((row) => isPresentRegistry(row.registry));
+  const absent = rows.filter((row) => isAbsentRegistry(row.registry));
   const registryVerdict = unknown.length > 0
     ? "inconclusive"
     : absent.length === rows.length
@@ -447,7 +470,7 @@ export async function preflightFromRepository({
   return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainEntry(import.meta.url)) {
   preflightFromRepository().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

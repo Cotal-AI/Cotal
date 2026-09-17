@@ -495,7 +495,7 @@ tags: []
 subscribe: []
 allowSubscribe: [">"]
 allowPublish: [">"]
-capabilities: [spawn]
+capabilities: [spawn, run]
 ---
 
 You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and

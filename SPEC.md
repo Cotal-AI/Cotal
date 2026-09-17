@@ -4158,8 +4158,12 @@ single-function profiles, each granting only the verbs its function needs and no
   root, so passing that store explicitly names the real operator layout without an ambient coordinate. Uninjected `--creds`
   that names one real workstation while process cwd resolves another is refused at start, because
   membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
-  case. A manager whose remint store diverges is refused before that remint, including a daemon that
-  bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
+  case. A manager whose remint store diverges is not that daemon's renewal owner: it starts and
+  serves the space and skips the remint rather than being refused, including a daemon that bound
+  after manager start. Matching that store identity is necessary but NOT sufficient to own the
+  renewal, since the comparison carries no holder and no tiebreak and every manager sharing one
+  store satisfies it; the owner is the manager that also holds the space's renewal lease, so a
+  daemon's credentials have exactly one renewal owner at a time. And `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement
   minted to the `supervisor` profile **and to the trusted auth path** (§9/§10), which is the

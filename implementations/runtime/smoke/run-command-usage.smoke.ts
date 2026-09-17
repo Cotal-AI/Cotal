@@ -9,7 +9,9 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
+import { EpEnvelopeError, EP_UNANSWERED } from "@cotal-ai/core";
 import { runWorkflow } from "../src/index.js";
+import { unansweredManagerRefusal } from "../src/run-command.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -75,6 +77,26 @@ for (const verb of VERBS) c(`the usage line names \`${verb}\``, usage.includes(v
   c("hosted `answer --by` is refused: the manager records the caller", got4 instanceof Exited && got4.code === 1 && ERR.some((l) => l.includes("--by is not taken on the hosted path")), ERR);
   c("and the usage line advertises `--file` and `--by` only beside `--local`",
     usage.includes("resume <runId> [--local --file <program>]") && usage.includes("[--local --by <who>]") && !usage.includes("--by <who> [--value"), usage);
+}
+
+// #1630: what a hosted verb prints when the manager describe drew no answer. The rail the describe
+// rode decides it (SPEC 13.15: `ep` and `ep.v1` are disjoint at the broker and an endpoint serves
+// both), because the old single sentence asserted "no manager is running" and offered `--local`
+// against a manager that was up the whole time, and `--local` names the caller as the run's own
+// answerer. Off the wire: the renderer takes the error, so no broker is needed.
+{
+  const mark = (rail?: string) => [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", ...(rail !== undefined ? { rail } : {}) }];
+  const legacy = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep rail", mark("ep")));
+  c("legacy rail: the question and the --local remedy stand (one rail, and nothing answered on it)",
+    legacy.startsWith("no manager answered on the endpoint rails (") && legacy.includes("is a manager running for this mesh?") && legacy.includes("--local"), legacy);
+  const v1 = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail", mark("ep.v1")));
+  c("versioned rail: the refusal names ep.v1 and states what the silence does not establish",
+    v1.startsWith("no manager answered on the ep.v1 rail (") && v1.includes("disjoint at the broker (SPEC 13.15)")
+    && v1.includes("does not tell no manager running apart from one older than ep.v1"), v1);
+  c("versioned rail: neither the false question nor the --local remedy that follows from it is printed",
+    !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
+  const unmarked = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms", mark()));
+  c("an unanswered failure whose producer recorded no rail keeps the legacy wording", unmarked.includes("is a manager running for this mesh?"), unmarked);
 }
 
 restore();

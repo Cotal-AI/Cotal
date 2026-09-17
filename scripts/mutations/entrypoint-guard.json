@@ -1,0 +1,88 @@
+{
+  "grades": "tool",
+  "suite": [
+    "scripts/entrypoint-guard.selftest.mjs"
+  ],
+  "guard": "a script under scripts/ invoked through a symlink runs its main() and answers exactly as it does by its real path, rather than exiting 0 having done nothing",
+  "command": "node scripts/entrypoint-guard.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/entrypoint-guard.json",
+  "why": [
+    "THE DIRECTION IS WHAT MAKES THIS WORTH PROVING. A broken entry guard does not throw, does not",
+    "print, and does not exit non-zero: it exits 0 having scanned nothing, which every caller reads",
+    "as a pass. Two of the eight scripts are CI gates, so the failure mode is a gate reporting clean",
+    "on a range it never opened.",
+    "",
+    "The first three mutations put back the exact guard each file carried, one file at a time,",
+    "rather than one mutation over a shared line. The three spellings failed differently and a",
+    "reader who only ever saw the template-literal form would conclude the URL escaping was the",
+    "whole defect: `pathToFileURL` and `resolve` encode correctly and still compare an alias against",
+    "a canonical path, so they break on a symlink alone.",
+    "",
+    "Mutation four is the one that matters most and it is deliberately not a guard: it hollows the",
+    "realpath comparison inside `isMainEntry` while leaving the `entry === self` fast path intact.",
+    "That is what a plausible simplification of this helper looks like, and it is invisible to any",
+    "cell that only ever invokes a script by its real path, since the fast path answers those",
+    "correctly. It reddens the symlink half of every parity cell; it names one so the verdict points",
+    "at a line rather than at a cascade.",
+    "",
+    "Mutation five grades the CENSUS rather than the scripts. The census is the only cell covering",
+    "`post-publish-install-probe.mjs` and `preflight-npm-publish.mjs`, which start their work at",
+    "entry with no argv that refuses first, so no probe for them exists that does not pack a tarball",
+    "or read the registry. A census reports `clean` on a healthy tree, which is exactly what a census",
+    "that has stopped looking also reports, so the planted control is the cell that has to be proven",
+    "live. Blinding the reader leaves the census itself GREEN and reddens the control, which is the",
+    "shape being asserted.",
+    "",
+    "NOT ASSERTED, and recorded rather than implied: `upgrade-section-gate.mjs` keeps its own inline",
+    "copy of the same realpath comparison and is exempted from the census by name. It already has a",
+    "cell and a registered mutant of its own (`scripts/mutations/upgrade-section-gate.json`, `a",
+    "symlink invocation is mistaken for an import and silently skips the CLI`), and re-pointing",
+    "somebody else's proof at this helper would buy nothing here.",
+    "",
+    "NO `completionMarker` and no `progressPattern`. The suite runs every cell and prints one line",
+    "each, so a mutation that reddens several is still readable as reddening the one it names, and",
+    "the summary line is printed on a red run too."
+  ],
+  "mutations": [
+    {
+      "name": "check-attribution.mjs goes back to comparing argv[1] as a concatenated URL string",
+      "file": "scripts/check-attribution.mjs",
+      "find": "if (isMainEntry(import.meta.url)) {",
+      "replace": "if (import.meta.url === `file://${process.argv[1]}`) {",
+      "cell": "check-attribution.mjs answers the same through a symlink",
+      "expectRed": "check-attribution.mjs answers the same through a symlink"
+    },
+    {
+      "name": "check-operator-literals.mjs goes back to comparing argv[1] as a concatenated URL string",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "if (isMainEntry(import.meta.url)) {",
+      "replace": "if (import.meta.url === `file://${process.argv[1]}`) {",
+      "cell": "check-operator-literals.mjs answers the same through a symlink",
+      "expectRed": "check-operator-literals.mjs answers the same through a symlink"
+    },
+    {
+      "name": "live-job-conclusion.mjs goes back to comparing argv[1] through new URL()",
+      "file": "scripts/live-job-conclusion.mjs",
+      "find": "if (isMainEntry(import.meta.url)) {",
+      "replace": "if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {",
+      "cell": "live-job-conclusion.mjs answers the same through a symlink",
+      "expectRed": "live-job-conclusion.mjs answers the same through a symlink"
+    },
+    {
+      "name": "isMainEntry keeps the fast path and stops resolving the two paths",
+      "file": "scripts/main-entry.mjs",
+      "find": "    return realpathSync(entry) === realpathSync(self);",
+      "replace": "    return false;",
+      "cell": "verify-publish-closure.mjs answers the same through a symlink",
+      "expectRed": "verify-publish-closure.mjs answers the same through a symlink"
+    },
+    {
+      "name": "the census reader is blinded, so it finds nothing in any source",
+      "file": "scripts/entrypoint-guard.selftest.mjs",
+      "find": "  if (CENSUS_EXEMPT.has(name)) return [];",
+      "replace": "  return [];",
+      "cell": "the census control refuses a planted hand-rolled guard and accepts a planted isMainEntry",
+      "expectRed": "the census control refuses a planted hand-rolled guard and accepts a planted isMainEntry"
+    }
+  ]
+}

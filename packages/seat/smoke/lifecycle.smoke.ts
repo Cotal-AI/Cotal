@@ -4,9 +4,11 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adoptSeatSync, launchSeat, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
   console.log(`SEAT LIFECYCLE COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -56,7 +58,7 @@ const state = (pid: number): string => {
   }
 };
 
-const root = mkdtempSync(join(tmpdir(), "cotal-seat-life-"));
+const root = makeSeatRoot("cotal-seat-life-");
 const handles: Array<{
   stop: (o?: { graceful?: boolean }) => void;
   close?: () => void;
@@ -318,7 +320,7 @@ try {
   }
 
   {
-    const leakRoot = mkdtempSync(join(tmpdir(), "sl-"));
+    const leakRoot = makeSeatRoot("sl-");
     try {
       const here = dirname(fileURLToPath(import.meta.url));
       const dist = join(here, "..", "dist");
@@ -502,6 +504,38 @@ await h.waitForExit();
     let refusedUnbound = "";
     try { await reapSeat(root, rec.id); } catch (e) { refusedUnbound = (e as Error).message; }
     check("a record with no boot identity refuses to signal", /carries no boot identity/.test(refusedUnbound) && state(rec.childPid) !== "gone", { refusedUnbound, child: state(rec.childPid) });
+  }
+
+  {
+    // An UNAUTHENTICATED socket must not pin a custodian whose child has exited. Such a peer holds
+    // no session, no output subscription and no wait, so a settle owes it nothing; counting it kept
+    // one ~65 MB custodian resident per stray dial for the life of the host, and suite runs
+    // accumulated them until the box was under memory pressure (#1648). The adopter below
+    // authenticates and leaves first, so this is the real post-handoff settle path, not the
+    // unobserved-launch one.
+    const rec = launchSeat({
+      root,
+      name: "unauthed-peer",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "setTimeout(()=>process.exit(0), 500)"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    const adopter = adoptSeatSync(rec);
+    await adopter.attach().backlog();
+    adopter.close();
+    const mute = connect(rec.socket);
+    mute.on("error", () => {});
+    await new Promise<void>((resolve) => mute.once("connect", () => resolve()));
+    check(
+      "an unauthenticated peer does not keep a custodian whose child exited alive",
+      await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 20_000),
+      { custodian: state(rec.custodianPid), child: state(rec.childPid) },
+    );
+    mute.destroy();
+    try { process.kill(rec.custodianPid, "SIGKILL"); } catch { /* already gone */ }
   }
 
   {

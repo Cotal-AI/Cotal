@@ -229,8 +229,14 @@ records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secre
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
 hosted renewal. The store declares the same identity on both processes, or both set
 `COTAL_SECRET_STORE` to the same coordinate. The manager
-refuses to remint when the daemon names a different store, including a daemon that binds after
-start. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+remints no daemon credential when the daemon names a different store, including a daemon that binds
+after start; it keeps running and serving its own agents, so one space can carry a manager on more
+than one workspace root. Pointing several managers at one coordinate is safe: the store identity
+alone cannot pick an owner (it carries no holder and no tiebreak, so every manager sharing the store
+matches), so the manager that also holds the space's renewal lease is the one that remints and the
+rest skip it. Without that lease two owners would remint on independent timers with no ordering
+between them, and one write would land between the other's re-sign and its fingerprint-only
+`reloadCreds`. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.

@@ -8,7 +8,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -41,18 +41,31 @@ type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; 
 /** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
  *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
- *  libuv preserves it), and both ways of folding it into a boolean fail silently. */
+ *  libuv preserves it), and both ways of folding it into a boolean fail silently.
+ *
+ *  `foreign` is the same fifth state {@link managerLiveness} already carries, for the same reason and
+ *  under the same rule (#1528): a live pid is believed only once the process behind it has been READ
+ *  and names the delivery daemon. A record outliving its daemon is eventually re-pointed at an
+ *  unrelated process by pid reuse, and from `kill(pid, 0)` alone that reads as a healthy daemon
+ *  forever. ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF: a read that failed, a platform with no argv
+ *  source, and a process that died during the read all leave the record trusted, which is exactly
+ *  how every caller behaved before this existed. */
 export function deliveryLiveness(
   probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
-): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
+  readCommand: CommandReader = readProcessCommand,
+): "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign" {
   const p = PID_PATH(space);
   if (!existsSync(p)) return "absent";
   const raw = readFileSync(p, "utf8").trim();
   if (raw === "") return "absent";
   const pid = parsePid(raw);
   if (pid === undefined) return "unattributable"; // see managerLiveness: never fold this into absent
-  return probe(pid);
+  const liveness = probe(pid);
+  if (liveness !== "alive") return liveness;
+  const cmd = readCommand(pid);
+  if (cmd.kind !== "command") return "alive"; // gone/unreadable: nothing was established about it
+  return commandIsCotalDelivery(cmd.command) ? "alive" : "foreign";
 }
 
 /** True only if the daemon is PROVABLY running. Callers that ACT on the answer take
@@ -125,8 +138,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
   // See startManagerDetached: reclaim a provably dead pre-upgrade record before claiming the
   // canonical slot, and refuse rather than start a second daemon beside a live one.
   reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
-  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), "a");
+  // Before the log is opened, for the reason startManagerDetached states: a `selfArgv` refusal
+  // (#1629) must not leave a delivery log and a leaked descriptor behind.
   const [node, ...self] = selfArgv();
+  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), "a");
   const args = [
     ...self,
     "deliver",
@@ -264,6 +279,7 @@ export async function stopDelivery(
   probe: LivenessProbe = probeLiveness,
   signal?: SignalFn,
   space: string = folderSpace(),
+  readCommand: CommandReader = readProcessCommand,
 ): Promise<void> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH(space);
@@ -308,6 +324,19 @@ export async function stopDelivery(
   if (before === "dead") {
     await removeRecords();
     return;
+  }
+  // A LIVE pid that is provably NOT a delivery daemon is never signalled, the same rule
+  // `stopManager` applies (#1528). The record outlived its daemon and the number was reused, so
+  // SIGTERM here would kill an unrelated process. The record is removed because it is PROVABLY
+  // stale, and what was found is printed: an operator told only "already stopped" would not learn
+  // that their pidfile was pointing at a stranger.
+  if (before === "alive") {
+    const cmd = readCommand(pid);
+    if (cmd.kind === "command" && !commandIsCotalDelivery(cmd.command)) {
+      console.error(`! recorded delivery daemon pid ${pid} is alive but is running \`${cmd.command}\`, which is not a delivery daemon - not signalling it; removing the stale record instead.`);
+      await removeRecords();
+      return;
+    }
   }
   if (before === "unknown")
     throw new Error(

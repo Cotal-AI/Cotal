@@ -162,6 +162,7 @@ function managerWith(
     on: () => {},
     off: () => {},
     releaseManagerLease: async () => {},
+    releaseDaemonRenewalLease: async () => {},
     stop: async () => {},
   };
   (manager as unknown as { attach: unknown }).attach = { stop: async () => {} };
@@ -851,6 +852,7 @@ let openInventory: ManagerResumeAgent;
     on: (event: string, fn: () => void) => { if (event === "presence") presenceListeners.add(fn); },
     off: (_event: string, fn: () => void) => { presenceListeners.delete(fn); },
     releaseManagerLease: async () => {},
+    releaseDaemonRenewalLease: async () => {},
     stop: async () => {},
   };
   let deprovisions = 0;
@@ -883,6 +885,7 @@ let openInventory: ManagerResumeAgent;
     on: (event: string, fn: () => void) => { if (event === "presence") presenceListeners.add(fn); },
     off: (_event: string, fn: () => void) => { presenceListeners.delete(fn); },
     releaseManagerLease: async () => {},
+    releaseDaemonRenewalLease: async () => {},
     stop: async () => {},
   };
   const uncertain = await manager.resumePreserved(inventoryOf(openInventory));

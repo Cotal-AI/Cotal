@@ -50,6 +50,7 @@ import {
   recordSlotCredential,
   staticLifecycleTransport,
 } from "../src/static-lifecycle.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (condition: () => Promise<boolean> | boolean, ms: number): Promise<boolean> => {
@@ -86,7 +87,7 @@ const space = `reconcile-redrive-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
-const root = mkdtempSync(join(tmpdir(), "cotal-reconcile-redrive-ws-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}reconcile-redrive-ws-`));
 const brokerStore = mkdtempSync(join(tmpdir(), "cotal-reconcile-redrive-js-"));
 const conf = join(root, "server.conf");
 const managerInstanceId = mintLifecycleUid();
@@ -95,6 +96,7 @@ saveSpaceAuth(authDir(root), auth);
 saveManagerInstanceIdentity(root, space, { instanceId: managerInstanceId, serveIdentity: newIdentity() });
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: brokerStore, host: "127.0.0.1" }));
 const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+teardownOnSignal(broker, conf);
 
 let manager: Manager | undefined;
 let shutdownManager: Manager | undefined;

@@ -33,6 +33,7 @@
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",
     "zod": "^4.4.3"

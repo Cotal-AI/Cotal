@@ -1,0 +1,81 @@
+{
+  "grades": "tool",
+  "suite": [
+    "scripts/mutation-cell-witness.selftest.mjs"
+  ],
+  "guard": "a mutation's named cell must be able to observe the file the mutation edits, so an entry cannot edit an end-to-end guard while naming a cell no edit to that file could ever redden",
+  "command": "node scripts/mutation-cell-witness.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-cell-witness.json",
+  "why": [
+    "`expectRed` is machine-checked to redden and `cell` is not checked against behaviour at all, so an entry can edit an end-to-end guard, name a parser-only cell, and grade a clean KILLED off the collateral red. WRONG-RED cannot fire on it: that verdict exists for the named assertion NOT reddening, never for it reddening for an unrelated reason. PR #1521 shipped two such entries.",
+    "The mutations fall into two halves. The first three remove the refusal, the relation it rests on, and the analysis that makes the relation decidable; each must redden the cell that names the refusal. The last four widen the analysis so a self-fed cell reads as observing something, and they matter more than the first three: a check that accepts everything is indistinguishable in every log from one that is working, which is the defect this whole file is about.",
+    "NOT ASSERTED, and recorded rather than implied: that the named cell observes the RIGHT thing. Two end-to-end cells driving the same binary through different paths both carry a launch witness, so naming either one passes. That is the larger half of the class and it stays open, because deciding it needs the semantics of the guard rather than the reachability of the suite. No mutation here claims otherwise.",
+    "NO top-level `completionMarker`. This suite reports every cell and then exits non-zero, so its summary line prints on a red run too - but its EXPECTED_CELLS line does not, and pointing a marker at a line a red run may not reach turns a genuine kill INCONCLUSIVE."
+  ],
+  "mutations": [
+    {
+      "name": "the cell-target check is never called, so a self-fed cell is accepted again",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      assertCellObserves(suites, mutation);",
+      "replace": "      void assertCellObserves;",
+      "expectRed": "a mutation whose named cell observes nothing outside the suite text is refused",
+      "cell": "a mutation whose named cell observes nothing outside the suite text is refused"
+    },
+    {
+      "name": "the check grades the cell alone and refuses whatever the mutated file is",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const graded = gradeCellTarget(mutation.file, sources);",
+      "replace": "  const graded = gradeCellTarget(\"\", sources);",
+      "expectRed": "a suite mutating its OWN source is exempt: running it is how it observes the mutation",
+      "cell": "a suite mutating its OWN source is exempt: running it is how it observes the mutation"
+    },
+    {
+      "name": "a cell the analysis cannot locate is refused as though it had been judged",
+      "file": "scripts/mutation-cell-witness.mjs",
+      "find": "  return located ? { verdict: \"self-fed\" } : { verdict: \"unlocated\" };",
+      "replace": "  return { verdict: \"self-fed\" };",
+      "expectRed": "a cell the analysis cannot locate in the suite is accepted, not refused",
+      "cell": "a cell the analysis cannot locate in the suite is accepted, not refused"
+    },
+    {
+      "name": "the reporter's bookkeeping counts, so every cell in every suite carries a witness",
+      "file": "scripts/mutation-cell-witness.mjs",
+      "find": "    const scanBody = (node) => {\n      if (ts.isExpression(node) && consumes(node)) { walk(node); return; }\n      ts.forEachChild(node, scanBody);\n    };\n    scanBody(fn.body);",
+      "replace": "    walk(fn.body);",
+      "expectRed": "a self-fed cell is still refused when its reporter writes a transcript of its own",
+      "cell": "a self-fed cell is still refused when its reporter writes a transcript of its own"
+    },
+    {
+      "name": "an unreadable reporter yields no observation, so a cell it reports is refused on its arguments",
+      "file": "scripts/mutation-cell-witness.mjs",
+      "find": "  if (fn === undefined) { witnesses.push({ kind: \"unresolved-reporter\", node: site }); return witnesses; }",
+      "replace": "  if (fn === undefined) return witnesses;",
+      "expectRed": "a cell reported from a module this cannot read is accepted, however its arguments look",
+      "cell": "a cell reported from a module this cannot read is accepted, however its arguments look"
+    },
+    {
+      "name": "every ambient global counts as an observation, so nothing is ever self-fed",
+      "file": "scripts/mutation-cell-witness.mjs",
+      "find": "        if (!PURE_GLOBALS.has(node.text)) witnesses.push({ kind: \"global\", node });",
+      "replace": "        witnesses.push({ kind: \"global\", node });",
+      "expectRed": "a mutation whose named cell observes nothing outside the suite text is refused",
+      "cell": "a mutation whose named cell observes nothing outside the suite text is refused"
+    },
+    {
+      "name": "an observing global is dropped, so a cell that only reaches the world through one is refused",
+      "file": "scripts/mutation-cell-witness.mjs",
+      "find": "      if (binding === undefined) {\n        if (!PURE_GLOBALS.has(node.text)) witnesses.push({ kind: \"global\", node });\n        return;\n      }",
+      "replace": "      if (binding === undefined) return;",
+      "expectRed": "and so is one reaching it through an ambient GLOBAL and no import at all",
+      "cell": "and so is one reaching it through an ambient GLOBAL and no import at all"
+    },
+    {
+      "name": "an import stops being an observation, so a cell reaching another module is refused",
+      "file": "scripts/mutation-cell-witness.mjs",
+      "find": "      if (binding.kind === \"import\") { witnesses.push({ kind: \"import\", spec: binding.spec, node }); return; }",
+      "replace": "      if (binding.kind === \"import\") return;",
+      "expectRed": "the SAME mutation naming a cell that reaches the world through an IMPORT is accepted",
+      "cell": "the SAME mutation naming a cell that reaches the world through an IMPORT is accepted"
+    }
+  ]
+}

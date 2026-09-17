@@ -7,7 +7,14 @@
  *
  * A. Workflow shape — parses `.github/workflows/changesets.yml` and asserts that the Release step
  *    depends on a prior closure-gate step, anchored on step ids. A positive-control fixture with
- *    the gate removed must fail the same assertion, so the check is shown to discriminate.
+ *    the gate removed must fail the same assertion, so the check is shown to discriminate. The
+ *    rc-branch cells grade each branch body by the status bash gives it, not by its text (#1518).
+ *
+ * A2. The step end to end, runs the closure-gate step's own script under `bash -e` with `node`
+ *    stubbed to each exit code the verifier documents, and asserts the status the step leaves, the
+ *    `closure_ok` it publishes, and that the two quiet-skip arms end the step themselves. Grading
+ *    arms in isolation cannot see a `trap` above the chain or a line below the `fi`, and either one
+ *    turns a no-publish push red with every arm still reading as correct (#1518).
  *
  * B. Fake-registry gate — starts a local HTTP server returning controlled responses and runs the
  *    closure verifier against it. Four states: all present passes; one missing reds; one 200 with
@@ -16,7 +23,7 @@
  * Run: pnpm smoke:publish-closure-gate
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/publish-closure-gate.json
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -287,6 +294,134 @@ check(
   { noneBody, gateRun },
 );
 
+// ---------------------------------------------------------------- A2. The whole step, per rc
+//
+// Everything above grades a branch body in isolation, which is the property #1518 asked for and is
+// not the whole property. A body that does not fail is only a quiet skip if the SCRIPT stops
+// failing too, and while the arm fell out of the `fi` it did not decide that: every later line got
+// a vote. Two shapes turned the quiet skip into a red job with all four arms still reading as
+// correct -- `trap "exit 1" EXIT` installed in the prologue above the chain, and a tidy-up
+// `exit $rc` added below the `fi`. Neither is inside an arm, so no amount of care in reading arms
+// can see either one, and the per-body cells stayed green through both.
+//
+// The arms now end the step themselves, which is what makes the second shape inert: rc 2 and rc 3
+// never reach a line below the chain. The first shape is not disarmed that way, because an EXIT
+// trap fires on the arm's own `exit`, so it still has to be caught by measurement.
+//
+// So the step's own run script is executed, once per exit code the verifier documents, with `node`
+// stubbed to return that code. The assertions are the three things the job actually depends on:
+// the status the step leaves, whether `closure_ok` was published, and whether the quiet arms end
+// the script themselves rather than delegating their outcome to whatever follows them.
+
+/** `node`, `git` and `jq` as the gate's prologue calls them, so the run script reaches its branch
+ *  chain without a network, a repo object or the real verifier. `node` is the one under control:
+ *  it exits with `$STUB_RC`, which is how each rc below is induced. Bash scripts with a shebang,
+ *  so nothing here resolves through a package.json and TMPDIR cannot change their meaning. */
+const STUB_BIN = mkdtempSync(join(tmpdir(), "closure-gate-stub-"));
+writeFileSync(join(STUB_BIN, "node"), '#!/usr/bin/env bash\nexit "${STUB_RC:-0}"\n', { mode: 0o755 });
+writeFileSync(join(STUB_BIN, "git"), '#!/usr/bin/env bash\necho \'{"version":"9.9.9"}\'\n', { mode: 0o755 });
+writeFileSync(join(STUB_BIN, "jq"), '#!/usr/bin/env bash\necho 9.9.9\n', { mode: 0o755 });
+
+interface StepRun {
+  /** The status the step leaves behind, which is what reds or passes the job. */
+  status: number;
+  /** What the step wrote to `$GITHUB_OUTPUT`; `closure_ok=true` is what gates the Release step. */
+  output: string;
+  /** Whether control reached the line after the script. False means the arm terminated the step
+   *  itself, so nothing added below the chain can change its verdict. */
+  fellThrough: boolean;
+}
+
+/** Run the gate's run script with the verifier stubbed to exit `rc`.
+ *
+ *  A sentinel is appended after the script: its absence is the evidence that the arm exited rather
+ *  than falling out of the `fi`. Invoked as `bash -e {0}`, which is how GitHub Actions invokes a
+ *  `run:` block, so the script meets the same shell option the real step runs under. */
+function runGateStep(run: string, rc: number): StepRun {
+  const dir = mkdtempSync(join(tmpdir(), `closure-gate-rc${rc}-`));
+  const outPath = join(dir, "github_output");
+  const sentinel = join(dir, "sentinel");
+  writeFileSync(outPath, "");
+  const result = spawnSync("bash", ["-e", "-c", `${run}\n: > ${JSON.stringify(sentinel)}\n`], {
+    // Built, not inherited, for the same reason as shellStatus: no live COTAL_ credentials, and no
+    // ambient `rc`, `BASH_ENV` or `GITHUB_OUTPUT` steering the script under test. The stub
+    // directory comes FIRST so the gate's `node` is the controlled one.
+    env: {
+      PATH: `${STUB_BIN}:${process.env["PATH"] ?? ""}`,
+      STUB_RC: String(rc),
+      GITHUB_SHA: "0000000000000000000000000000000000000000",
+      GITHUB_OUTPUT: outPath,
+    },
+    stdio: "ignore",
+    timeout: BODY_TIMEOUT_MS,
+  });
+  if (result.error) {
+    throw new Error(`could not run the gate step at rc ${rc}: ${result.error.message}`);
+  }
+  return {
+    status: result.status ?? (result.signal ? 128 : 1),
+    output: readFileSync(outPath, "utf8"),
+    fellThrough: existsSync(sentinel),
+  };
+}
+
+/** The verifier's documented exit codes and what the job must do with each.
+ *
+ *  `settlesInTheArm` is the property this section adds: for the two quiet skips it is the
+ *  difference between "this arm does not fail" and "this arm's verdict is final". The failing arms
+ *  do not carry it because their own `exit 1` already makes it true, so asserting it there would
+ *  restate the status column. */
+const STEP_ROWS: ReadonlyArray<{
+  rc: number; name: string; failsJob: boolean; publishesClosureOk: boolean; settlesInTheArm?: true;
+}> = [
+  { rc: 0, name: "PUBLISHED", failsJob: false, publishesClosureOk: true },
+  { rc: 1, name: "PARTIAL", failsJob: true, publishesClosureOk: false },
+  { rc: 2, name: "UNSETTLED", failsJob: false, publishesClosureOk: false, settlesInTheArm: true },
+  { rc: 3, name: "NONE", failsJob: false, publishesClosureOk: false, settlesInTheArm: true },
+  { rc: 7, name: "unexpected", failsJob: true, publishesClosureOk: false },
+];
+
+const stepRuns = new Map(STEP_ROWS.map((row) => [row.rc, runGateStep(gateRun, row.rc)]));
+
+// Control: the harness reaches the branch chain at all. If the stubbed prologue died early, every
+// row below would report status 1 and the two "fails the job" rows would pass for the wrong reason,
+// which is a void green dressed as a detection.
+check(
+  "the stubbed step reaches the branch chain: rc 0 publishes closure_ok=true",
+  stepRuns.get(0)!.output.includes("closure_ok=true"),
+  stepRuns.get(0),
+);
+
+const statusDisagreements = STEP_ROWS
+  .filter((row) => (stepRuns.get(row.rc)!.status !== 0) !== row.failsJob)
+  .map((row) => ({ ...row, observed: stepRuns.get(row.rc) }));
+check(
+  "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+  statusDisagreements.length === 0,
+  statusDisagreements,
+);
+
+const outputDisagreements = STEP_ROWS
+  .filter((row) => stepRuns.get(row.rc)!.output.includes("closure_ok=true") !== row.publishesClosureOk)
+  .map((row) => ({ ...row, observed: stepRuns.get(row.rc) }));
+check(
+  "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+  outputDisagreements.length === 0,
+  outputDisagreements,
+);
+
+// The cell the two regressions above are caught by: a quiet arm must END the step. While the arm
+// merely declined to fail, its verdict was still open to anything below the `fi` or any trap set
+// above it, and the job's outcome on a no-publish push was not a property of the branch at all.
+const unsettledRuns = STEP_ROWS.filter((row) => row.settlesInTheArm)
+  .filter((row) => stepRuns.get(row.rc)!.fellThrough)
+  .map((row) => ({ rc: row.rc, name: row.name }));
+check(
+  "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+  unsettledRuns.length === 0,
+  { stillFallingThrough: unsettledRuns },
+);
+
 // The closure-gate step must come BEFORE the release step
 const closureGateIndex = steps.indexOf(closureGateStep);
 const releaseIndex = steps.indexOf(releaseStep);
@@ -457,7 +592,7 @@ const fastClock = () => { let t = 0; return { now: () => (t += 1000), sleep: asy
   );
 }
 
-const EXPECTED = 20;
+const EXPECTED = 24;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`PUBLISH CLOSURE GATE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

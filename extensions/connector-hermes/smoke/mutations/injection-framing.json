@@ -1,0 +1,73 @@
+{
+  "suite": [
+    "extensions/connector-hermes/smoke/injection-framing.smoke.ts"
+  ],
+  "guard": "the Hermes sidecar's auto-injected turn cannot be framed by a peer: the body, the sender name and role, and the kind rendered beside them all pass through one neutralization, and the pre-fix concatenation is re-measured as a refuse control on every run",
+  "command": "pnpm smoke:hermes-injection-framing",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/injection-framing.json",
+  "why": [
+    "The Python sidecar built the injected turn by concatenation, `\"[<kind> from {fromName}] \" + text`,",
+    "both fields raw, so it carried the same two forgeries the TypeScript formatter did. A body with a",
+    "newline wrote a second attribution line, reading as a delivered message from a peer that never",
+    "sent one; a sender naming itself with a closing bracket ended the real attribution and opened a",
+    "forged one. The text is auto-injected into a turn rather than returned when the model asks.",
+    "",
+    "The mutations are the ways the repair can be undone, one per part of it: the body indent (M1),",
+    "the attribution class (M2), and the breadth of what counts as a line break (M3). M1 and M2 are",
+    "the half-fixes, each of which leaves the frame forgeable while reading as repaired.",
+    "",
+    "M4 IS DEFENCE IN DEPTH AND IS LABELLED AS SUCH. `kind` is rendered outside the body, so the",
+    "positional rule covers it, but every path that reaches this bridge derives it from the subject",
+    "the message arrived on rather than from the payload, so no peer sets it today. It was found by",
+    "mutating the field and watching the mutation SURVIVE: the neutralization was there and nothing",
+    "graded it. The honest options were to delete the line or to pin it; it is pinned, because the",
+    "rule is stated absolutely and a renderer whose guarantee holds only while an upstream path keeps",
+    "deriving one field correctly is a renderer whose guarantee is somebody else's. The cell names it",
+    "as defence in depth so a reader is not told a live hole was closed.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite runs the REAL adapter in a Python",
+    "subprocess reading `plugin/` by path, so the bytes mutated are the bytes graded: no dist in the",
+    "path and no build in the command. Only the upstream `gateway` package is stubbed, because it is",
+    "not installed in CI; the adapter, its framing module, and the attribution it builds are the",
+    "connector's own real code."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the half-fix: attribution neutralized, the body left to write its own lines",
+      "file": "extensions/connector-hermes/plugin/cotal/framing.py",
+      "find": "    return _LINE_BREAK.sub(\"\\n  \", \"\" if text is None else str(text))",
+      "replace": "    return \"\" if text is None else str(text)",
+      "cell": "a message body cannot add an injected line (body_newline)",
+      "expectRed": "a message body cannot add an injected line (body_newline)",
+      "note": "The indent is the only thing separating what the connector said from what a peer said it said, so an attribution that is safe on its own still leaves the frame forgeable. This is the shape of a fix that reads as complete and closes half the class."
+    },
+    {
+      "name": "M2 a peer may reach the brackets it is rendered inside",
+      "file": "extensions/connector-hermes/plugin/cotal/framing.py",
+      "find": "    return _UNSAFE_IN_ATTRIBUTION.sub(\" \", \"\" if value is None else str(value))",
+      "replace": "    return \"\" if value is None else str(value)",
+      "cell": "a peer cannot open a second attribution (name_bracket)",
+      "expectRed": "a peer cannot open a second attribution (name_bracket)",
+      "note": "The name half of the defect. The attribution is one bracket pair, the one the adapter wrote, so a peer that reached either bracket shows up as a second of one of them."
+    },
+    {
+      "name": "M3 the break class narrows to what one language's splitlines knows",
+      "file": "extensions/connector-hermes/plugin/cotal/framing.py",
+      "find": "_LINE_BREAK = re.compile(\"\\r\\n?|[\\n\\v\\f\\u0085\\u2028\\u2029]\")",
+      "replace": "_LINE_BREAK = re.compile(\"\\r\\n?|\\n\")",
+      "cell": "a message body cannot add an injected line (body_u2028)",
+      "expectRed": "a message body cannot add an injected line (body_u2028)",
+      "note": "U+2028, U+2029 and U+0085 survive JSON transport intact into the bytes a model is handed. A rule enforced only against the separators one splitter honours is a rule whose truth depends on which reader is looking, and this rule is stated absolutely. Kept to the same class as the TypeScript side on purpose: a peer that can forge the frame on either side of the socket has the whole class back."
+    },
+    {
+      "name": "M4 the kind rendered beside the sender is passed through raw (defence in depth)",
+      "file": "extensions/connector-hermes/plugin/cotal/framing.py",
+      "find": "    kind = attribution_safe(msg.get(\"kind\"))",
+      "replace": "    kind = str(msg.get(\"kind\"))",
+      "cell": "a message kind cannot open a second attribution, defence in depth (kind_bracket)",
+      "expectRed": "a message kind cannot open a second attribution, defence in depth (kind_bracket)",
+      "note": "NOT A LIVE HOLE, and the cell says so. `kind` is subject-derived on every path that reaches this bridge, so no peer sets it today. This mutation exists because an earlier run of it SURVIVED: the neutralization was present and ungraded, which is untested code rather than a caught defect. Pinned rather than deleted, because the positional rule is stated absolutely."
+    }
+  ]
+}

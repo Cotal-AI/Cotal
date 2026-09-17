@@ -20,6 +20,7 @@ import { dirname, extname, relative, resolve } from "node:path";
 import ts from "typescript";
 import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
+import { gradeCellTarget } from "./mutation-cell-witness.mjs";
 
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
 const FLAG_GRADABLE_ONLY = "--gradable-only";
@@ -55,8 +56,12 @@ const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
 const LAUNCHERS = ["spawnSync", "spawn", "execFileSync", "execFile"];
+/** `pty.spawn` starts a real child exactly as `child_process.spawn` does, so it is a launcher too. */
+const LAUNCHER_MODULES = ["child_process", "@lydell/node-pty"];
 const COPIERS = ["cpSync", "copyFileSync"];
 const JOINERS = ["join", "resolve", "dirname", "fileURLToPath"];
+/** `fileURLToPath` is a joiner for this tool's purpose but it is exported by `url`, not `path`. */
+const JOINER_MODULES = ["path", "url"];
 /** A loader CLI that occupies the first positional and executes the NEXT one (tsx's own cli.mjs). */
 const RUNNER_CLI = /(?:^|\/)(?:tsx|ts-node|tsimp)(?:\/dist)?\/(?:cli|esm)\.(?:m?js|cjs)$/i;
 
@@ -66,14 +71,38 @@ const calleeText = (expr) => {
   return "";
 };
 
+/**
+ * Does the callee AT THIS CALL SITE resolve to one of `originals`, imported from `fromSpec`?
+ *
+ * Provenance is the whole point. Seeding a set with the canonical spellings admitted any name that
+ * merely looks right, so `function readFileSync(){ return "" }` or a local `spawnSync` returning
+ * `{ status: 0 }` was graded as the real call and the suite earned coverage of a file it never
+ * opens. But an import is a fact about the MODULE, not about the callee the program reaches, so a
+ * name recorded once and matched everywhere is only half the question. Two shapes slip through it:
+ * a parameter named `readFileSync` shadows the import for the whole body it is declared in, and
+ * `import * as fs` binds `fs.readFileSync` rather than a bare `readFileSync`, so crediting the bare
+ * spelling lets an unrelated namespace import vouch for a local decoy. This therefore returns a
+ * PREDICATE over the callee expression, and the name counts only when the binding the call site
+ * actually resolves to is the imported one: a named import reached through no shadowing
+ * declaration, or a member of a namespace this file imported from the expected module.
+ * An alias is still honest coverage, so `readFileSync as readData` binds `readData`, and so is
+ * `import * as pty` followed by `pty.spawn`. `fromSpec` may be several modules, for a callee the
+ * repo genuinely reaches through more than one.
+ */
 const namedAliases = (source, fromSpec, originals) => {
-  const names = new Set(originals);
+  const specs = (Array.isArray(fromSpec) ? fromSpec : [fromSpec]).flatMap((spec) => [spec, `node:${spec}`]);
+  const names = new Set();
+  const namespaces = new Set();
   const visit = (node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      const from = node.moduleSpecifier.text;
-      if (from !== fromSpec && from !== `node:${fromSpec}`) return;
+      if (!specs.includes(node.moduleSpecifier.text)) return;
       const named = node.importClause?.namedBindings;
-      if (!named || !ts.isNamedImports(named)) return;
+      if (!named) return;
+      if (ts.isNamespaceImport(named)) {
+        namespaces.add(named.name.text);
+        return;
+      }
+      if (!ts.isNamedImports(named)) return;
       for (const el of named.elements) {
         const orig = (el.propertyName ?? el.name).text;
         if (originals.includes(orig)) names.add(el.name.text);
@@ -82,12 +111,95 @@ const namedAliases = (source, fromSpec, originals) => {
     ts.forEachChild(node, visit);
   };
   visit(ast("alias.ts", source));
-  return names;
+  // Every name a binding introduces. `const { readFileSync } = fake` and `function run({ readFileSync })`
+  // bind exactly as `const readFileSync = …` does, so reading only `ts.isIdentifier(name)` misses a
+  // shadow and credits the import for a callee the program never reaches. Nested patterns, renames,
+  // defaults, array elements and rest all bind, and a property KEY does not: in `{ readFileSync: r }`
+  // the name introduced is `r`.
+  const boundNames = (name, out = []) => {
+    if (name === undefined) return out;
+    if (ts.isIdentifier(name)) { out.push(name.text); return out; }
+    if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+      for (const el of name.elements) {
+        if (ts.isOmittedExpression(el)) continue;
+        boundNames(el.name, out);
+      }
+    }
+    return out;
+  };
+  const functionLike = (node) => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node);
+  const isScope = (node) => ts.isSourceFile(node) || ts.isModuleBlock(node) || functionLike(node)
+    || ts.isBlock(node) || ts.isForStatement(node) || ts.isForOfStatement(node)
+    || ts.isForInStatement(node) || ts.isCatchClause(node) || ts.isCaseBlock(node);
+  /**
+   * Does THIS scope itself bind `name`?
+   *
+   * Only its own declarations count, so the walk stops at every nested scope boundary. Scanning a
+   * whole subtree instead reads a `const` out of a sibling block that has already closed, which
+   * refuses an honest call that reaches the real import: the mirror image of the false accept, and
+   * the one that costs coverage silently. `var` is the exception the language itself makes, since it
+   * hoists out of blocks up to the enclosing function, so a nested block is still searched for one.
+   *
+   * A NAMED FUNCTION EXPRESSION binds its own name inside its own body, which no enclosing scope
+   * declares: in `const run = function readFileSync() { readFileSync(...) }` the call reaches the
+   * function itself. A CLASS declaration binds its name exactly as a `function` declaration does,
+   * and a call to it runs a constructor rather than the import. Both are ordinary bindings, and
+   * missing either credits the import for a callee the program never reaches.
+   */
+  const scopeBinds = (scope, name) => {
+    if (scope.parameters?.some((param) => boundNames(param.name).includes(name))) return true;
+    if (ts.isCatchClause(scope) && boundNames(scope.variableDeclaration?.name).includes(name)) return true;
+    // A function expression's own name is in scope throughout its body, and a class expression's
+    // name behaves the same way.
+    if ((ts.isFunctionExpression(scope) || ts.isClassExpression(scope)) && scope.name?.text === name) return true;
+    const isVar = (declaration) =>
+      (declaration.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) === 0;
+    let found = false;
+    const walk = (node, varsOnly) => {
+      if (found) return;
+      if (ts.isVariableDeclaration(node) && boundNames(node.name).includes(name)
+        && (!varsOnly || isVar(node))) { found = true; return; }
+      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))
+        && node.name?.text === name) { found = true; return; }
+      // A nested function carries its own `var`s too, so nothing inside it binds here.
+      if (functionLike(node)) return;
+      // A `catch (e)` binding belongs to its own clause and does not hoist the way `var` does, so
+      // descending past one must not carry its parameter out. Its declaration node has no
+      // let/const flag, which would otherwise read as a `var` and let a sibling catch shadow a
+      // call that never sits inside it.
+      if (ts.isCatchClause(node)) {
+        if (node.block !== undefined) walk(node.block, true);
+        return;
+      }
+      const inner = varsOnly || isScope(node);
+      ts.forEachChild(node, (child) => walk(child, inner));
+    };
+    ts.forEachChild(scope, (child) => walk(child, false));
+    return found;
+  };
+  // Is the callee's name rebound by some scope that lexically ENCLOSES this use? Walking outward
+  // from the use is what makes the question lexical: only a scope the use actually sits inside can
+  // shadow it, which is the language's own rule.
+  const shadowed = (use, name) => {
+    for (let cur = use.parent; cur !== undefined; cur = cur.parent) {
+      if (isScope(cur) && scopeBinds(cur, name)) return true;
+    }
+    return false;
+  };
+  return (expr) => {
+    if (ts.isPropertyAccessExpression(expr) || ts.isPropertyAccessChain(expr)) {
+      return ts.isIdentifier(expr.expression) && namespaces.has(expr.expression.text)
+        && originals.includes(expr.name.text) && !shadowed(expr.expression, expr.expression.text);
+    }
+    if (!ts.isIdentifier(expr)) return false;
+    return names.has(expr.text) && !shadowed(expr, expr.text);
+  };
 };
 
 const pathEval = (suite, source, env = new Map()) => {
   const sf = ast(suite, source);
-  const joiners = namedAliases(source, "path", JOINERS);
+  const joiners = namedAliases(source, JOINER_MODULES, JOINERS);
   // A scalar binding is resolved at the USE SITE, by walking outward to the nearest enclosing
   // scope that declares the name. A flat name->value map is not a binding: a same-named `ENTRY`
   // in an unrelated function would stand in for the one the launcher actually passes, which
@@ -253,7 +365,7 @@ const pathEval = (suite, source, env = new Map()) => {
         parts.push(evalPath(arg) ?? (rootish(arg) ? process.cwd() : undefined));
       }
       if (name === "dirname" && parts.length === 1 && parts[0] !== undefined) return dirname(parts[0]);
-      if ((name === "join" || name === "resolve") && joiners.has(name) && parts.every((part) => part !== undefined)) {
+      if ((name === "join" || name === "resolve") && joiners(node.expression) && parts.every((part) => part !== undefined)) {
         return resolve(...parts);
       }
       if (name === "fileURLToPath" && parts.length === 1 && parts[0] !== undefined) return parts[0];
@@ -748,9 +860,10 @@ const listingIsRead = (call, readers, evalPath) => {
     let read = false;
     const scan = (n) => {
       if (read) return;
-      if (ts.isCallExpression(n) && readers.has(calleeText(n.expression))) {
+      if (ts.isCallExpression(n) && readers(n.expression)) {
         const arg = n.arguments[0];
         if (mentions(arg) && !narrowedToOneEntry(n)) read = true;
+        else if (mentions(arg) && evalPath) evalPath.narrowed = true;
       }
       ts.forEachChild(n, scan);
     };
@@ -881,14 +994,14 @@ const isSourceModule = (file) => SOURCE_MODULE.has(extname(file));
  * own directory, and is treated that way.
  */
 const READDIRS = ["readdirSync", "readdir", "globSync", "glob"];
-const readsFile = (suite, source, file, env = new Map()) => {
+const readsFile = (suite, source, file, env = new Map(), audit) => {
   const { sf, evalPath } = pathEval(suite, source, env);
   const readers = namedAliases(source, "fs", READERS);
   let hit = false;
   const listers = namedAliases(source, "fs", READDIRS);
   const want = resolve(file);
   const visit = (node) => {
-    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression)) && evaluated(node, sf)) {
+    if (ts.isCallExpression(node) && readers(node.expression) && evaluated(node, sf)) {
       const target = node.arguments[0];
       // A read of a file the suite NAMES is a proxy for that file's behaviour, and for a source
       // module the text is not the behaviour: this is the `mesh-seam` shape, where the suite counts
@@ -898,7 +1011,7 @@ const readsFile = (suite, source, file, env = new Map()) => {
       if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)
         && !isSourceModule(file)) hit = true;
     }
-    if (ts.isCallExpression(node) && listers.has(calleeText(node.expression)) && evaluated(node, sf)) {
+    if (ts.isCallExpression(node) && listers(node.expression) && evaluated(node, sf)) {
       const dir = evalPath(node.arguments[0]);
       const options = node.arguments[1];
       const recursive = options !== undefined && ts.isObjectLiteralExpression(options)
@@ -909,6 +1022,8 @@ const readsFile = (suite, source, file, env = new Map()) => {
         const base = resolve(dir);
         const under = want === base || want.startsWith(base.endsWith("/") ? base : base + "/");
         if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers, evalPath)) hit = true;
+        if (under && evalPath.narrowed && audit) audit.narrowed = true;
+        if (!under && audit) audit.outside = true;
       }
     }
     ts.forEachChild(node, visit);
@@ -920,7 +1035,7 @@ const readsFile = (suite, source, file, env = new Map()) => {
 /** Every repo path this suite hands to a launcher in the slot that actually gets executed. */
 const launchedPaths = (suite, source) => {
   const { sf, evalPath } = pathEval(suite, source);
-  const launchers = namedAliases(source, "child_process", LAUNCHERS);
+  const launchers = namedAliases(source, LAUNCHER_MODULES, LAUNCHERS);
   // Resolve an argv identifier the way the language does: to the declaration that is actually in
   // scope at the use site. A flat name->value map is not a binding, it is a name collision waiting
   // to happen: a same-named `args` in an unrelated function would stand in for the launcher's own,
@@ -950,7 +1065,7 @@ const launchedPaths = (suite, source) => {
   };
   const found = [];
   const visit = (node) => {
-    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression)) && evaluated(node, sf)) {
+    if (ts.isCallExpression(node) && launchers(node.expression) && evaluated(node, sf)) {
       const args = node.arguments.filter((arg) => !ts.isSpreadElement(arg));
       const command = args[0];
       const argv = args[1] && !ts.isObjectLiteralExpression(args[1]) ? args[1] : undefined;
@@ -985,7 +1100,7 @@ const copiesRoot = (suite, source, root) => {
   const copiers = namedAliases(source, "fs", COPIERS);
   let hit = false;
   const visit = (node) => {
-    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression)) && evaluated(node, sf)) {
+    if (ts.isCallExpression(node) && copiers(node.expression) && evaluated(node, sf)) {
       const from = node.arguments[0];
       if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)
         && exprCovers(evalPath, from, root)) hit = true;
@@ -1437,11 +1552,16 @@ const substitutePath = (expr, bound, evalPath) => {
 
 const packedRoots = (suite, source) => {
   const { sf, evalPath } = pathEval(suite, source);
+  // The pack has to be performed by a REAL launcher, for the #1612 reason: a local function
+  // spelled `execFileSync` packs nothing, so a tarball witness resting on the spelling credits a
+  // suite for reading an artifact that was never produced.
+  const launchers = namedAliases(source, LAUNCHER_MODULES, LAUNCHERS);
   const roots = [];
   const visit = (node) => {
     if (ts.isCallExpression(node)) {
       const callee = calleeText(node.expression);
-      if (callee === "execFileSync" || callee === "execFile" || callee === "spawnSync") {
+      if ((callee === "execFileSync" || callee === "execFile" || callee === "spawnSync")
+        && launchers(node.expression)) {
         const program = evalPath(node.arguments[0]);
         const argv = node.arguments[1];
         if (program !== undefined && /(?:^|\/)npm$/.test(String(program).replaceAll("\\", "/"))
@@ -1486,11 +1606,12 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
   // source tree, so the mutated file is covered when the entrypoint's relative imports reach it.
   // A value-import of a package's dist reaches the mutated source only through a build the command
   // actually runs; both halves are required, because the import alone loads a stale artifact.
+  const audit = {};
   for (const suite of suites) {
     const source = readFileSync(suite, "utf8");
     if (resolve(mutation.file) === resolve(suite)) return;
     if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;
-    if (readsFile(suite, source, mutation.file, commandEnv(command))) return;
+    if (readsFile(suite, source, mutation.file, commandEnv(command), audit)) return;
     if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;
     const assembled = (cfg.assembles ?? []).find((root) => mutation.file === root || mutation.file.startsWith(root + "/"));
     if (assembled !== undefined && copiesRoot(suite, source, assembled)) return;
@@ -1503,12 +1624,54 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
       && packedRoots(suite, source).some((root) => coversPath(resolve(mutation.file), resolve(root)))) return;
     if (executedWitness(suite, source, command, mutation, cfg.executes ?? [])) return;
   }
+  if (audit.narrowed) {
+    throw new Error(
+      `mutation "${mutation.name}" targets ${mutation.file}, which is reached only by a recursive sweep narrowed to a single literal path`,
+    );
+  }
+  if (audit.outside) {
+    throw new Error(
+      `mutation "${mutation.name}" targets ${mutation.file}, which is outside the swept tree`,
+    );
+  }
   throw new Error(
     `mutation "${mutation.name}" targets ${mutation.file}, which none of [${suites.join(", ")}] imports by source path, ` +
     `reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name ` +
     `import resolves that package to dist. Use a suite in ${packageRoot(mutation.file)} that reaches into ../src, ` +
     `declare the copied source tree in "assembles", declare the spawned repo entrypoint in "executes" with the ` +
     `target package built by the command, or record the mutation as unkillable with its reason.`,
+  );
+};
+
+/**
+ * Refuse a mutation whose named `cell` cannot be the assertion proving the guard it edits.
+ *
+ * `expectRed` is checked to redden; nothing checked that the reddening assertion is the one that
+ * PROVES the mutated guard, so an entry could edit an end-to-end guard, name a parser-only cell,
+ * and grade KILLED off the collateral red. `mutation-proof` cannot see this: WRONG-RED fires when
+ * the named assertion does NOT redden, never when it reddens for an unrelated reason.
+ *
+ * The decidable half is the necessary condition. A cell whose verdict rests on nothing outside the
+ * suite's own text cannot be proving anything about a file in another module, because no edit to
+ * that file can change what it prints. That is what is refused, and the message says exactly that
+ * rather than claiming the aim is wrong.
+ *
+ * NOT "the named cell must be the ONLY one that reds". Collateral reddening is normal and correct,
+ * and a gate demanding exclusivity would pressure an author to weaken the neighbouring cells until
+ * they stop noticing. Measured on #1521: the two MIS-targeted mutants each reddened exactly one
+ * cell, while the correctly targeted one reddened five.
+ */
+const assertCellObserves = (suites, mutation) => {
+  if (typeof mutation.cell !== "string" || mutation.cell === "") return;
+  const sources = suites.map((path) => ({ path, sf: ast(path, readFileSync(path, "utf8")), cell: mutation.cell }));
+  const graded = gradeCellTarget(mutation.file, sources);
+  if (graded.verdict !== "self-fed") return;
+  throw new Error(
+    `mutation "${mutation.name}" edits ${mutation.file}, but its named cell ${JSON.stringify(mutation.cell)} `
+    + "reaches no launch, file read, or module import: every value its verdict rests on is written in the suite "
+    + "source itself, so no edit to that file can change what this cell prints and it cannot be the assertion "
+    + "that proves the mutated guard. Name the cell that exercises the guard end to end, or move the mutation to "
+    + "the code this cell does read.",
   );
 };
 
@@ -1561,7 +1724,10 @@ const validate = (path, cfg) => {
     for (const key of REQUIRED_MAY_BE_EMPTY) {
       if (typeof mutation[key] !== "string") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
-    if (!gradesTool) assertGradable(path, cfg, suites, mutation);
+    if (!gradesTool) {
+      assertGradable(path, cfg, suites, mutation);
+      assertCellObserves(suites, mutation);
+    }
   }
   return { gradesTool, suites };
 };

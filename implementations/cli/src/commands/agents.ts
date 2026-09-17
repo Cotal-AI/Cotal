@@ -2,7 +2,7 @@ import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOp
 import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -150,10 +150,13 @@ function fmtUptime(ms: number): string {
  * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
  * instrument and the admin instrument is then minted pinned to the answer.
  */
-type SeatLocation =
+export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
-  | { kind: "absent"; checked: number; unreachable: string[] };
+  | { kind: "absent"; checked: number }
+  /** #1638 item 3: the search could not settle. At least one registered instance did not answer
+   *  FOR ITSELF, so the seat may be sitting on it; absence is not what was established. */
+  | { kind: "unknown"; answered: number; silent: string[]; refused: { instanceId: string; error: string }[] };
 
 async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promise<SeatLocation> {
   // USER mode cannot do this: a ledger-scoped bearer does not hold the freeze rows, so a scatter
@@ -163,12 +166,31 @@ async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promis
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
-  const reachable = scatter.instances.filter((i) => i.reachable);
-  const unreachable = scatter.instances.filter((i) => !i.reachable).map((i) => i.instanceId);
-  if (reachable.length <= 1 && !unreachable.length) return { kind: "unpinned" };
-  const host = reachable.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
+  return locateSeatIn(scatter.instances, name);
+}
+
+/**
+ * WHAT THE SCATTER ESTABLISHED about one seat name — the whole decision, as a function of the rows
+ * alone, so it is gradable without a broker.
+ *
+ * ANSWERED FOR ITSELF means an instance returned its own roster. A slot that never answered and one
+ * that answered with a REFUSAL are the same fact for this search: neither stated which seats it
+ * hosts, so neither licenses a conclusion about a seat that might be sitting on it (#1638 item 3).
+ * The refusal half is the reachable-but-errored row `scatterManager` reports, which the older
+ * filter counted as a manager that had looked and found nothing.
+ *
+ * Absence is a claim about the WHOLE space, so it is concluded only when the whole space answered.
+ */
+export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: string): SeatLocation {
+  const reachable = instances.filter((i) => i.reachable);
+  const silent = instances.filter((i) => !i.reachable).map((i) => i.instanceId);
+  if (reachable.length <= 1 && !silent.length) return { kind: "unpinned" };
+  const answered = reachable.filter((i) => i.error === undefined);
+  const refused = reachable.filter((i) => i.error !== undefined).map((i) => ({ instanceId: i.instanceId, error: i.error as string }));
+  const host = answered.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
   if (host) return { kind: "pin", instanceId: host.instanceId };
-  return { kind: "absent", checked: reachable.length, unreachable };
+  if (silent.length || refused.length) return { kind: "unknown", answered: answered.length, silent, refused };
+  return { kind: "absent", checked: answered.length };
 }
 
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
@@ -179,16 +201,42 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  // The honest error #383 asked for: name the search, not just the absence. A registration that
-  // gave no answer within the deadline is NOT told to "retry": a manager whose host died never
-  // deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
-  // against it loops forever. Say what is known (registered, silent), what it may mean (a live
-  // slow host OR a dead registration), and the two real actions.
-  const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it. To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).`
-    : "";
-  console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
+  console.error(c.red(`✗ ${seatMissRefusal(String(v.name), verb, loc)}`));
   process.exit(1);
+}
+
+/**
+ * What a `stop`/`attach`/`input` that did not find its seat TELLS the operator — and the difference
+ * between the two things it can mean (#1638 item 3).
+ *
+ * ABSENT is a claim about the whole space and is only made when the whole space answered for
+ * itself. A registration that gave no answer within the deadline is NOT told to "retry": a manager
+ * whose host died never deregisters, so its row stays in the registry indefinitely and answers
+ * nothing, and a retry against it loops forever. Say what is known (registered, silent), what it
+ * may mean (a live slow host OR a dead registration), and the two real actions.
+ *
+ * UNKNOWN is the other case and it used to print as the first one. The seat may be sitting on the
+ * instance that did not answer, so "no managed agent <name>" was a definite negative drawn from an
+ * incomplete search — and it names the instance COUNT, which is the shape a reader believes.
+ * Measured on a live mesh: a seat that `ps` listed as running the whole time was reported absent,
+ * and the same command with `--on` succeeded first time. A retry loop that reads the old sentence
+ * as "already gone" stops looking for a seat that is still running.
+ */
+export function seatMissRefusal(
+  name: string,
+  verb: string,
+  loc: Extract<SeatLocation, { kind: "absent" | "unknown" }>,
+): string {
+  const address = `To address one directly: \`${verb} --on <instance>\` (the whole id, as printed).`;
+  if (loc.kind === "absent")
+    return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.`;
+  const silent = loc.silent.length
+    ? ` ${loc.silent.length} registered manager instance(s) gave no answer within the deadline (${loc.silent.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.`
+    : "";
+  const refused = loc.refused.length
+    ? ` ${loc.refused.length} refused the read rather than answering (${loc.refused.map((r) => `${r.instanceId}: ${r.error}`).join("; ")}).`
+    : "";
+  return `could not establish where "${name}" is: ${loc.answered} manager instance(s) answered and none hosts it, but ${loc.silent.length + loc.refused.length} did not answer for themselves, so this is NOT a report that it is gone — it may be running on one of those.${silent}${refused} ${address}`;
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   parseEpSubject,
   respondedButUnbound,
   unansweredRequest,
+  unansweredRail,
   registryReadFailed,
   renderLifecycleBlocked,
   submitAndFollowGoal,
@@ -228,7 +229,9 @@ export function onInstanceOrExit(on: string | undefined, verb: string): string |
  *    reachability verdict "no manager reachable" is stated here and only here, and only unpinned:
  *    an unanswered PINNED call names the instance instead, since three managers may be answering
  *    while the one the operator typed is not there, and "no manager reachable" sends them to the
- *    broker for a typo. Measured on a live three-manager mesh during review.
+ *    broker for a typo. Measured on a live three-manager mesh during review. The verdict is also
+ *    scoped to the RAIL ({@link unansweredRail}): on the versioned rail it names that rail and says what the
+ *    silence does not establish, because SPEC 13.15 keeps the two rails disjoint at the broker.
  *  - a REGISTRY READ on this side failed ({@link registryReadFailed}: the scatter's freeze or its
  *    reconcile). The managers were not the failure and may all be up; a verdict on them here sent
  *    the operator to the managers for a broker read.
@@ -243,11 +246,27 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
+    // The verdict is SCOPED TO THE RAIL the request rode (SPEC 13.15). The legacy and versioned rails are
+    // disjoint subject spaces at the broker and an endpoint is required to serve both, so a manager
+    // built before the versioned rail subscribes `ep` alone and an issued caller can never see it.
+    // "No manager reachable" is then a claim about the mesh drawn from silence on one half of it,
+    // and #1630 measured it against a manager that was up, idle on the roster and starting runs the
+    // whole time. On the legacy rail there is no other half, so the verdict stands as it was.
+    const rail = unansweredRail(e);
+    const versioned = rail !== undefined && rail !== "ep" ? rail : undefined;
+    // TWO CAUSES, BOTH NAMED. Silence on a versioned rail is consistent with no manager at all AND
+    // with one older than the rail, and this side cannot tell them apart: the registry records no
+    // package version. An earlier wording named only the skew, which sent an operator whose manager
+    // was simply down to go and check a version.
+    const skew = versioned === undefined ? "" :
+      ` The ${versioned} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${versioned}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, its version.`;
     return {
       ok: false, unanswered: true,
       error: instanceId !== undefined
-        ? `manager instance ${instanceId} did not answer (${detail})`
-        : `no manager reachable on the ep rails (${detail})`,
+        ? `manager instance ${instanceId} did not answer${versioned === undefined ? "" : ` on the ${versioned} rail`} (${detail})${skew}`
+        : versioned === undefined
+          ? `no manager reachable on the ep rails (${detail})`
+          : `no manager answered on the ${versioned} rail (${detail})${skew}`,
     };
   }
   if (registryReadFailed(e))

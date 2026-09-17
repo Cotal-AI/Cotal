@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adoptSeatSync, launchSeat } from "../src/index.js";
+import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
   console.log(`SEAT ISOLATION COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -37,7 +38,7 @@ const state = (pid: number): string => {
   }
 };
 
-const root = mkdtempSync(join(tmpdir(), "cotal-seat-iso-"));
+const root = makeSeatRoot("cotal-seat-iso-");
 const program = "process.stdin.on('data',(d)=>process.stdout.write('echo:'+d)); setInterval(()=>{},1000)";
 
 const a = launchSeat({

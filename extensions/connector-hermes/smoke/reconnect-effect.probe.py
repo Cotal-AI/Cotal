@@ -253,6 +253,11 @@ def main() -> None:
                 print(name, ok)
             for name, ok in _adapter_lifecycle_rows():
                 print(name, ok)
+        except (KeyboardInterrupt, SystemExit):
+            # An interrupt is an ABORT of the measurement, not a property failing. Swallowing it
+            # here left the probe running and exiting 0, so the suite graded a cut-off run as a
+            # completed one (issue #1591).
+            raise
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the properties it guards
             print(f"HANDLE_ROWS_CRASHED {type(exc).__name__}: {exc}")
             for name in ("HANDLE_CLEARED_FAST_UNWIND", "HANDLE_CLEARED_SLOW_UNWIND",
@@ -283,6 +288,8 @@ def main() -> None:
             responsive, elapsed = _loop_stays_responsive()
             print("LOOP_STAYS_RESPONSIVE", responsive)
             print(f"LOOP_BLOCKED_SECONDS {elapsed:.2f}")
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except BaseException as exc:  # noqa: BLE001 - a crash here fails the property, not the probe
             print(f"LOOP_CHECK_CRASHED {type(exc).__name__}: {exc}")
             print("LOOP_STAYS_RESPONSIVE False")
@@ -1475,6 +1482,8 @@ def _adapter_lifecycle_rows() -> list[tuple[str, bool]]:
 def _guarded(check) -> bool:
     try:
         return check()
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except BaseException as exc:  # noqa: BLE001 - an unusable reopen fails the property it guards
         print(f"RACE_CHECK_CRASHED {check.__name__} {type(exc).__name__}: {exc}")
         return False
@@ -1496,6 +1505,8 @@ def _run_scenario(scenario) -> tuple[bool, bool, bool, bool]:
     """
     try:
         return asyncio.run(scenario())
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except BaseException as exc:  # noqa: BLE001 - deliberately broad: any crash IS a non-delivery
         print(f"SCENARIO_CRASHED {type(exc).__name__}: {exc}")
         return False, False, False, False

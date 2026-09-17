@@ -21,15 +21,15 @@
  */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createSpaceAuth, deliveryBucket, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, saveSpaceAuth } from "@cotal-ai/workspace";
+import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -39,7 +39,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SPACE = "boot-honesty";
-const root = mkdtempSync(join(tmpdir(), "cotal-boot-honesty-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}boot-honesty-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-boot-honesty-home-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -99,7 +99,11 @@ try {
   // — it connects the way the real daemon does.
   const holderCreds = join(root, "holder.creds");
   writeFileSync(holderCreds, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
-  holder = spawn(process.execPath, [join(import.meta.dirname, "delivery-responder-holder.mjs"), server, SPACE, "claim", holderCreds], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  // The trailing `deliver` token is this fixture's argv the way the manager stand-in below carries
+  // `supervise`: the delivery record's reader attributes on the daemon's own subcommand (#1528), so
+  // a stand-in for a live daemon has to look like one or it reads as a stranger. The holder script
+  // takes four positionals and ignores the rest.
+  holder = spawn(process.execPath, [join(import.meta.dirname, "delivery-responder-holder.mjs"), server, SPACE, "claim", holderCreds, "deliver"], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   // The holder is a child of this process too, and it outlives a killed wrapper for the same reason.
   // No store dir is passed: the holder owns no tree of its own, and `root` is already owned above.
   releaseHolder = teardownOnSignal(holder);
@@ -144,30 +148,82 @@ try {
   // honest. A mutant that restored that discard SURVIVED a cell that only checked `ensureDelivery`,
   // which is exactly the "fixed one surface, left the other" shape this whole issue is about.
   //
-  // The manager is NOT started here and is not what is under test: `ensureManager` may well fail in a
-  // bare fixture root, and what matters is that the delivery answer SURVIVES the composition. So the
-  // call is allowed to throw, and the assertion is on the value when it returns.
-  const { ensureControlPlane } = await import("../src/lib/delivery-proc.js");
-  const planeLines: string[] = [];
-  const origErr2 = console.error;
-  console.error = (...a: unknown[]) => { planeLines.push(a.join(" ")); };
-  let plane: { running: boolean; responderBound?: boolean } | undefined;
-  let planeThrew: string | undefined;
+  // THE MANAGER HALF IS SATISFIED BY A LIVE RECORD, NEVER BY A SPAWN (#1629). This composition used
+  // to reach `startManagerDetached`, whose argv comes from `selfArgv()` = `[node, ...execArgv,
+  // process.argv[1]]`. Under tsx `process.argv[1]` is THIS FILE, so the detached "manager" was this
+  // suite, which ran to this line and spawned the next generation: 970 of them in 4.7 hours on a
+  // persistent host, each with its own nats-server and holder, before the chain was killed by pid.
+  // The suite's `finally` and `teardownOnSignal` cannot reach that child, which is unref'd by design.
+  //
+  // So the fixture presents a manager that is ALREADY RUNNING, which is a real `cotal up` path (a
+  // second `up` on a live root) and the one that reaches the propagation with no re-exec at all. The
+  // stand-in is a sleeper whose argv carries `supervise`, because that is the whole of what
+  // `commandIsCotalSupervisor` attributes a record with.
+  const supervisor = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise"], { cwd: root, stdio: "ignore" });
+  const releaseSupervisor = teardownOnSignal(supervisor);
+  const { managerLiveness, managerLogPath } = await import("../src/lib/manager-proc.js");
+  const managerPid = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE });
+  const managerAware = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, { root, space: SPACE });
+  const managerLog = managerLogPath(SPACE, root);
   try {
-    plane = await ensureControlPlane({ space: SPACE, server });
-  } catch (e) {
-    planeThrew = (e as Error).message;
+    // Both records a real start writes: the pid, and the delivery-aware marker beside it. Without
+    // the marker the composition's own cutover preflight reads this as a pre-daemon hosting manager
+    // and stops it, and the run reaches the spawn after all.
+    writeFileSync(managerPid, String(supervisor.pid));
+    writeFileSync(managerAware, String(supervisor.pid));
+    // The stand-in is graded before it is relied on: a fixture that failed to look alive would send
+    // the propagation cell below through the spawn path this issue exists to close.
+    check("FIXTURE: the recorded manager reads ALIVE, so the composition needs no spawn",
+      managerLiveness(undefined, undefined, SPACE) === "alive",
+      { pid: supervisor.pid, state: managerLiveness(undefined, undefined, SPACE) });
+
+    const { ensureControlPlane } = await import("../src/lib/delivery-proc.js");
+    const planeLines: string[] = [];
+    const origErr2 = console.error;
+    console.error = (...a: unknown[]) => { planeLines.push(a.join(" ")); };
+    let plane: { running: boolean; responderBound?: boolean } | undefined;
+    let planeThrew: string | undefined;
+    try {
+      plane = await ensureControlPlane({ space: SPACE, server });
+    } catch (e) {
+      planeThrew = (e as Error).message;
+    } finally {
+      console.error = origErr2;
+    }
+    if (plane) {
+      check("CELL: ensureControlPlane PROPAGATES responderBound=false to its caller (`cotal up`)",
+        plane.responderBound === false, plane);
+    } else {
+      check("ensureControlPlane threw before it could answer (manager half, not the delivery answer)",
+        false, planeThrew);
+    }
+    // THE AFTERMATH CELL, and it is the one that reds if the guard ever comes off. The detached
+    // starter opens `manager.<key>.log` BEFORE it spawns, so the log's existence is the cheapest
+    // deterministic evidence that a child was launched into this fixture root. Counting processes
+    // afterwards would race the spawn; this cannot.
+    check("CELL: the composition launched NOTHING into the fixture root (no detached manager log)",
+      !existsSync(managerLog), managerLog);
+
+    // AND THE GUARD ITSELF, reached through the function `cotal up` calls rather than through
+    // `selfArgv` directly: with no live record, `ensureManager` goes to the spawn, and the spawn
+    // refuses because this file is not the `cotal` entry. A fixture that removes the record and
+    // still gets a child is exactly the reported defect.
+    rmSync(managerPid, { force: true });
+    rmSync(managerAware, { force: true });
+    const { ensureManager } = await import("../src/lib/manager-proc.js");
+    let spawnRefusal: string | undefined;
+    try { ensureManager({ space: SPACE, server }); } catch (e) { spawnRefusal = (e as Error).message; }
+    check("CELL: with no manager recorded, the spawn REFUSES rather than re-execing this suite",
+      spawnRefusal !== undefined, spawnRefusal);
+    check("CELL: and the refusal names this suite as the entry it will not re-exec",
+      spawnRefusal?.includes("delivery-boot-honesty.smoke.ts") === true, spawnRefusal);
+    // The refusal is computed BEFORE the log is opened, so a refused start leaves the root exactly
+    // as it found it. A guard that ran after the side effects would still fork nothing and still
+    // litter every fixture root with a manager log and a leaked fd.
+    check("CELL: the refused spawn left no manager log behind either", !existsSync(managerLog), managerLog);
   } finally {
-    console.error = origErr2;
-  }
-  if (plane) {
-    check("CELL: ensureControlPlane PROPAGATES responderBound=false to its caller (`cotal up`)",
-      plane.responderBound === false, plane);
-  } else {
-    // A throw is a legitimate outcome for the manager half in this fixture, but it must not be the
-    // reason this cell passes — say so out loud rather than counting a skip as a check.
-    check("ensureControlPlane threw before it could answer (manager half, not the delivery answer)",
-      false, planeThrew);
+    await killAndAwaitExit(supervisor);
+    releaseSupervisor();
   }
 
   // ---------- THE STALE-READY PATH (#837 inside #1576) ----------
