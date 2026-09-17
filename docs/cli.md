@@ -767,10 +767,15 @@ lookup itself is degraded. It is also the **only** route on a **user-auth mesh**
 bearer does not hold the registry-read rows the lookup needs, so there the verbs stay on the class
 queue unless you pin them yourself.
 
-If no reachable instance has the seat, the error reports how many managers answered and names
-those that did not. It does not collapse that state into a bare `no agent <name>`. That distinction matters
-because a single manager cannot tell "hosted elsewhere" from "does not exist": it answers
-`not-found` for both.
+A seat is reported as **not found** only when every reachable instance answered for itself. An
+instance that stayed silent past the deadline, or that refused the read rather than answering, said
+nothing about which seats it hosts, so the seat may be running on it. That case reports that the
+location could not be established, names the instances that did not answer, and states outright
+that it is not a report that the seat is gone. Read it as unknown and retry with
+`--on <instance>`; a retry loop that treats it as "already gone" stops looking for a seat that is
+still running. A single manager cannot tell "hosted elsewhere" from "does not exist": it answers
+`not-found` for both, which is why the search asks all of them and why an incomplete search
+concludes nothing.
 - **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
   read against the manager's in-memory roster, owner-filtered). It does **not** report other
   manager instances. It cannot tell you that one is down: an unreachable manager is absent
