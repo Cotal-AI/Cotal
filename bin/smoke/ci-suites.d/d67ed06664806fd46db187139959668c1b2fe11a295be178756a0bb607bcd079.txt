@@ -1,2 +1,0 @@
-# The connection status a caller acts on must reflect whether delivery is draining, not just whether the transport is up.
-smoke:connection-status

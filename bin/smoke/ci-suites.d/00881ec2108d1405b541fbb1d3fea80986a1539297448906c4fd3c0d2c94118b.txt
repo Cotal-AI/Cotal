@@ -1,0 +1,3 @@
+# #1554: an `absent` reap outcome must refuse instead of rendering as a disposal, so an alias is
+# never freed over a seat nobody proved gone. Broker-free and process-free.
+smoke:reap-absent-refusal

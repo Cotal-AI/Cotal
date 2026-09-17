@@ -1,0 +1,3 @@
+# #1528: a delivery daemon started outside the CLI launcher writes and removes its own liveness
+# record, so the fail-closed `down` guard cannot read a live daemon as clear. Needs nats-server.
+smoke:delivery-pidfile-ownership
