@@ -26,6 +26,21 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 let cells = 0;
+const failures: string[] = [];
+/**
+ * COLLECT, DO NOT THROW, so the run always reaches its completion marker.
+ *
+ * A suite that dies on its first failed cell is indistinguishable from one that crashed for an
+ * unrelated reason, and the mutation harness correctly refuses to count an unfinished run as a kill:
+ * measured here, four mutations that each reddened the right cell were every one reported as "red
+ * and named, but the run never printed COTAL_SMOKE_SENTINEL". A revert gate reads the same shape
+ * the same way, and reports a truncated cell count for what was a clean catch.
+ *
+ * A precondition still stops the run, through {@link hard} below. The difference is whether
+ * continuing means anything: a cell that graded the wrong answer is one result among many, while a
+ * probe that never ran leaves every later cell reading an absent value, which prints one cause as a
+ * screenful of failures.
+ */
 const assert = new Proxy(nodeAssert, {
   get(target, prop, receiver) {
     const value = Reflect.get(target, prop, receiver);
@@ -49,13 +64,26 @@ const assert = new Proxy(nodeAssert, {
         const out = (value as (...a: unknown[]) => unknown).apply(target, args);
         console.log(`  ✓ ${name}`);
         return out;
-      } catch (error) {
+      } catch {
         console.log(`  ✗ ${name}`);
-        throw error;
+        failures.push(name);
+        return undefined;
       }
     };
   },
 }) as typeof nodeAssert;
+
+/** A precondition whose failure makes every later cell meaningless. Counted and named like any
+ *  other cell, then thrown, because continuing would print one cause as twenty failures. */
+function hard(condition: unknown, name: string): asserts condition {
+  cells += 1;
+  if (condition) {
+    console.log(`  ✓ ${name}`);
+    return;
+  }
+  console.log(`  ✗ ${name}`);
+  throw new Error(name);
+}
 
 /** The count is a FLOOR. A derived tally proves the suite RAN its assertions, not that it still
  *  CONTAINS them: delete one and the tally quietly reads lower and the shard still passes. Raise it
@@ -75,17 +103,21 @@ const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { 
 // No Python means this surface is unverified, and a suite that quietly passes when it cannot check
 // anything is the failure mode the neighbouring suites exist to close. Fail loud. The cell is phrased
 // as the claim that holds, not the fault, since every cell name is printed on the passing path too.
-assert.ok(python, "python is on PATH, so the injected-frame rendering can be verified at all");
+// A precondition, so it stops the run: with no interpreter there is no probe and no later cell means
+// anything.
+hard(python, "python is on PATH, so the injected-frame rendering can be verified at all");
 
 function run(mode: "subject" | "raw-concat"): Record<string, string> {
   const res = spawnSync(python!, [probe, pkgDir + "plugin", mode], { encoding: "utf8", timeout: 60_000 });
   // The probe's own output is reported through the failure path rather than the cell name, so a
   // cell stays one short line and the transcript still carries the whole thing when it matters.
+  // Both are preconditions: a probe that did not run, or ran and said nothing, leaves every cell
+  // below reading an absent value, and twenty failures with one cause is not twenty findings.
   if (res.status !== 0) console.error(`the ${mode} probe exited ${res.status}:\n${res.stdout}\n${res.stderr}`);
-  assert.equal(res.status, 0, `the ${mode} probe ran`);
+  hard(res.status === 0, `the ${mode} probe ran`);
   const line = res.stdout.split("\n").find((l) => l.startsWith("RESULT "));
   if (!line) console.error(`the ${mode} probe printed no RESULT line:\n${res.stdout}`);
-  assert.ok(line, `the ${mode} probe reported a result, so its silence is not an answer`);
+  hard(line, `the ${mode} probe reported a result, so its silence is not an answer`);
   return JSON.parse(line!.slice("RESULT ".length)) as Record<string, string>;
 }
 
@@ -171,7 +203,13 @@ if (cells !== EXPECTED_CELLS) {
     `SUITE INCOMPLETE: expected ${EXPECTED_CELLS} assertions, ran ${cells}. ` +
       `A lower count means an assertion was deleted or skipped, which a derived tally alone would report as a smaller green.`,
   );
-  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=1`);
+  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells - failures.length} failed=${failures.length + 1}`);
   process.exit(1);
 }
-console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
+// The marker is printed on the failing path too, so a red run is a finished run the harness can
+// grade, rather than a truncated one it must refuse.
+console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells - failures.length} failed=${failures.length}`);
+if (failures.length) {
+  console.error(`hermes injected frame: ${failures.length} cell(s) failed\n  - ${failures.join("\n  - ")}`);
+  process.exit(1);
+}
