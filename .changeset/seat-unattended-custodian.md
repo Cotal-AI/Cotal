@@ -19,3 +19,13 @@ Every custodian now carries `--cotal-run <marker>` on its argv and `COTAL_RUN` i
 and `censusCustodians(run?)` reads that marker back out of `/proc/<pid>/cmdline`. The smoke shard
 runner names each run and kills the custodians carrying that marker after every suite, failing the
 shard for a suite that passed but leaked one, and leaving other runs' custodians alone.
+
+The transport also refuses a socket path the kernel would truncate. `sun_path` holds 108 bytes
+including its NUL; past that libuv copies into the fixed buffer, truncates, and `listen` succeeds on
+the shortened name, so the custodian cleaned up a socket it never created and died without writing
+its log. `launchSeat` now refuses an oversized path by name, the custodian verifies the path it
+bound and logs any startup failure instead of dying uncaught, and `@cotal-ai/smoke-kit` gains
+`makeSeatRoot` so a suite's custody root stays short whatever `TMPDIR` says.
+
+`runMarker` recovers `COTAL_RUN` from the nearest ancestor that still carries it, so a suite that
+scrubs `COTAL_` from a child environment does not make its custodians unattributable.
