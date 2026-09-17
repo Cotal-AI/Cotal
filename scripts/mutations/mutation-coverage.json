@@ -342,16 +342,16 @@
     {
       "name": "a read is a witness even where control never reaches it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression)) && evaluated(node, sf)) {",
-      "replace": "    if (ts.isCallExpression(node) && readers.has(calleeText(node.expression))) {",
+      "find": "    if (ts.isCallExpression(node) && readers(node.expression) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && readers(node.expression)) {",
       "expectRed": "a read inside a function nobody calls never happens",
       "cell": "a read inside a function nobody calls never happens"
     },
     {
       "name": "a launcher is a witness even where control never reaches it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression)) && evaluated(node, sf)) {",
-      "replace": "    if (ts.isCallExpression(node) && launchers.has(calleeText(node.expression))) {",
+      "find": "    if (ts.isCallExpression(node) && launchers(node.expression) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && launchers(node.expression)) {",
       "expectRed": "a launch inside a function nobody calls never runs",
       "cell": "a launch inside a function nobody calls never runs"
     },
@@ -374,8 +374,8 @@
     {
       "name": "a copy is a witness even where control never reaches it",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression)) && evaluated(node, sf)) {",
-      "replace": "    if (ts.isCallExpression(node) && copiers.has(calleeText(node.expression))) {",
+      "find": "    if (ts.isCallExpression(node) && copiers(node.expression) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && copiers(node.expression)) {",
       "expectRed": "a copy inside a function nobody calls never happens",
       "cell": "a copy inside a function nobody calls never happens"
     },
@@ -618,6 +618,86 @@
       "replace": "      return true;\n    };\n    const exits = (stmt) => {",
       "expectRed": "a guard the classifier cannot evaluate leaves the sweep counting",
       "cell": "a guard the classifier cannot evaluate leaves the sweep counting"
+    },
+    {
+      "name": "a name is admitted with no import provenance, so a local shadow reads as the real callee",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const names = new Set();",
+      "replace": "  const names = new Set(originals);",
+      "expectRed": "a reader imported from a module that is not fs is not a reader",
+      "cell": "a reader imported from a module that is not fs is not a reader"
+    },
+    {
+      "name": "a namespace import is credited as bare canonical names rather than as a namespace",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        namespaces.add(named.name.text);",
+      "replace": "        for (const orig of originals) names.add(orig);",
+      "expectRed": "a reader called through an imported namespace still witnesses the file it reads",
+      "cell": "a reader called through an imported namespace still witnesses the file it reads"
+    },
+    {
+      "name": "the callee binding is not resolved at the call site, so a shadowing parameter still reads as the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    return names.has(expr.text) && !shadowed(expr, expr.text);",
+      "replace": "    return names.has(expr.text);",
+      "expectRed": "a parameter shadowing an imported reader is not that reader",
+      "cell": "a parameter shadowing an imported reader is not that reader"
+    },
+    {
+      "name": "a binding pattern binds nothing, so a destructured shadow reads as the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {",
+      "replace": "    if (false) {",
+      "expectRed": "a destructured parameter shadowing an imported reader is not that reader",
+      "cell": "a destructured parameter shadowing an imported reader is not that reader"
+    },
+    {
+      "name": "the scope walk descends past nested scopes, so a closed sibling block shadows the call after it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const inner = varsOnly || isScope(node);",
+      "replace": "      const inner = varsOnly;",
+      "expectRed": "a local in a closed sibling block does not shadow the module-scope call",
+      "cell": "a local in a closed sibling block does not shadow the module-scope call"
+    },
+    {
+      "name": "a catch binding hoists like a var, so a sibling clause shadows the call after it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isCatchClause(node)) {",
+      "replace": "      if (false) {",
+      "expectRed": "a catch binding in a sibling clause does not shadow the module-scope call",
+      "cell": "a catch binding in a sibling clause does not shadow the module-scope call"
+    },
+    {
+      "name": "the packed-tarball witness accepts a launcher by spelling, with no import provenance",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        && launchers(node.expression)) {",
+      "replace": "        && true) {",
+      "expectRed": "a local function spelled like a launcher does not pack anything",
+      "cell": "a local function spelled like a launcher does not pack anything"
+    },
+    {
+      "name": "a named function expression does not bind its own name, so it cannot shadow the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if ((ts.isFunctionExpression(scope) || ts.isClassExpression(scope)) && scope.name?.text === name) return true;",
+      "replace": "    if (false) return true;",
+      "expectRed": "a named function expression shadows the imported reader inside its own body",
+      "cell": "a named function expression shadows the imported reader inside its own body"
+    },
+    {
+      "name": "a class declaration is not a binding, so it cannot shadow the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))",
+      "replace": "      if (!varsOnly && (ts.isFunctionDeclaration(node))",
+      "expectRed": "a class declaration named like the reader shadows it",
+      "cell": "a class declaration named like the reader shadows it"
+    },
+    {
+      "name": "a function expression's self-name binds everywhere, not only inside its own body",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))\n        && node.name?.text === name) { found = true; return; }",
+      "replace": "      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)\n        || ts.isFunctionExpression(node) || ts.isClassExpression(node))\n        && node.name?.text === name) { found = true; return; }",
+      "expectRed": "a function expression's own name binds only inside its body",
+      "cell": "a function expression's own name binds only inside its body"
     }
   ]
 }
