@@ -683,6 +683,7 @@
     "smoke:hermes-boot-requirement": "pnpm --filter @cotal-ai/connector-hermes... build && tsx extensions/connector-hermes/smoke/boot-requirement.smoke.ts",
     "smoke:hermes-empty-id": "tsx extensions/connector-hermes/smoke/empty-id-bridge.smoke.ts",
     "smoke:hermes-lifecycle-idle": "tsx extensions/connector-hermes/smoke/lifecycle-idle.smoke.ts",
+    "smoke:hermes-injection-framing": "tsx extensions/connector-hermes/smoke/injection-framing.smoke.ts",
     "smoke:codex-tool-closed": "tsx extensions/connector-codex/smoke/tool-input-closed.smoke.ts",
     "smoke:cli-on-instance": "tsx implementations/manager/smoke/cli-on-instance-live.smoke.ts",
     "smoke:seat-input": "tsx implementations/manager/smoke/seat-input-live.smoke.ts",

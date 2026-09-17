@@ -223,6 +223,14 @@ untrusted-ambient injection surface (only subject-authenticated dm/anycast auto-
 It resets to **open** on `SessionStart`, so a restarted agent never stays silently deaf.
 Your attention is mirrored into presence so peers can see it.
 
+Whatever does reach a turn is framed so a peer cannot write the frame. A line that begins at column
+zero is written by the connector; one message is one line plus indented continuations, with the
+sender inside a single bracket pair. A message body, a sender name and role, and a service or
+channel label are all peer-controlled, so each passes through the same neutralization the
+`cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
+rendered attribution. This matters more for an injected block than for a reply, because the agent
+did not ask for it and so never had the chance to distrust it.
+
 ## Presence mapping
 
 The connector wires a small subset of Claude Code hooks to presence states; presence is
