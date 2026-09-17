@@ -148,8 +148,8 @@
     {
       "name": "one unreadable marker refuses the whole listing",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "    } catch (e) {\n      // Absence of EVIDENCE, and the STATE column itself says so.",
-      "replace": "    } catch (e) {\n      if (e) throw e;\n      // Absence of EVIDENCE, and the STATE column itself says so.",
+      "find": "      state = \"unchecked\";\n      unchecked.push(",
+      "replace": "      if (e) throw e;\n      state = \"unchecked\";\n      unchecked.push(",
       "cell": "...still lists every other run, so one unreadable marker hides nothing",
       "expectRed": "...still lists every other run, so one unreadable marker hides nothing",
       "note": "This is what `readRunAdmission` would do to a listing, and why the table reads the marker through its own helper: every other run disappears behind one row."
