@@ -12,7 +12,8 @@
     "The release workflow used to check one package of twenty-two and cut a Release on that alone. A sibling that failed to publish was invisible. The closure gate now checks every package and the Release step depends on it.",
     "A 200 without a body identifying the package at the requested version is no longer treated as presence. Each mutation below breaks one property the smoke is supposed to hold.",
     "The rc-2 and rc-3 cells used to substring-match the branch comparison, which sees that the branch exists and nothing about what it does: an exit 1 added to either quiet-skip path left the suite green while every no-publish push to main would have failed (#1518). The cells now parse each branch body, and these mutations are what shows they can see into it.",
-    "Three rounds closed evasions by position, quoting and verb, and a fourth produced eleven quiet arms that carry no failure word at all yet exit 1 (`test 1 -eq 2`, `command false`, `((0))`, `trap \"exit 1\" EXIT`). The property is the arm's last status, which is a fact about execution, so the cells now run the body under the workflow's own `bash -e` with `rc` bound instead of matching its text."
+    "Three rounds closed evasions by position, quoting and verb, and a fourth produced eleven quiet arms that carry no failure word at all yet exit 1 (`test 1 -eq 2`, `command false`, `((0))`, `trap \"exit 1\" EXIT`). The property is the arm's last status, which is a fact about execution, so the cells now run the body under the workflow's own `bash -e` with `rc` bound instead of matching its text.",
+    "Grading arms in isolation is still not the whole property: an arm that declines to fail only produces a quiet skip if the SCRIPT stops failing too. While the quiet arms fell out of the `fi`, that verdict was decided by every line after them, so a `trap \"exit 1\" EXIT` in the prologue or a tidy-up `exit $rc` below the chain turned every no-publish push red with all four arms still reading as correct, and the per-body cells stayed green. The quiet arms now `exit 0` themselves, and the step's own run script is executed once per documented exit code with `node` stubbed to return it."
   ],
   "mutations": [
     {
@@ -148,6 +149,59 @@
       "expectRed": "every battery body still leaves the shell where it was recorded",
       "cell": "every battery body still leaves the shell where it was recorded",
       "note": "The regression this round closed, held open: any text-reading predicate put back in place of the measurement reds the battery on the quiet rows. Pinned against the smoke itself because the battery is the only place those rows exist."
+    },
+    {
+      "name": "the UNSETTLED arm stops ending the step and falls out of the chain again",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 0\n",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n",
+      "expectRed": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+      "cell": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+      "note": "The shape no per-body assertion can see, which is why it needs its own cell: the arm still does not fail, so every rc-body cell stays green, and the job's verdict on a no-publish push goes back to being decided by whatever follows the `fi`."
+    },
+    {
+      "name": "the NONE arm stops ending the step and falls out of the chain again",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 0\n",
+      "replace": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n",
+      "expectRed": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+      "cell": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain"
+    },
+    {
+      "name": "a trap above the branch chain turns every quiet skip into a job failure",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          rc=$?\n          set -e\n",
+      "replace": "          rc=$?\n          set -e\n          trap \"exit 1\" EXIT\n",
+      "expectRed": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "cell": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "note": "Inside no arm at all, so reading the rc-2 and rc-3 bodies reports them clean while the step reds on both. Caught only by running the script."
+    },
+    {
+      "name": "a tidy-up exit below the chain turns every quiet skip into a job failure",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            exit 1\n          fi\n",
+      "replace": "            exit 1\n          fi\n          exit $rc\n",
+      "expectRed": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "cell": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "note": "The other out-of-arm direction, and the one that looks most like an ordinary edit. It is inert while the quiet arms exit first, which is the point: the arms self-terminating is what makes a line below the chain unable to change their verdict."
+    },
+    {
+      "name": "the rc-0 arm stops publishing closure_ok, so no Release is ever cut",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"closure_ok=true\" >> \"$GITHUB_OUTPUT\"\n",
+      "replace": "            echo \"closure_verified=true\" >> \"$GITHUB_OUTPUT\"\n",
+      "expectRed": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "cell": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "note": "The opposite direction from the rest of this file. The others guard against cutting a Release that should not be cut; this guards the key the Release step reads, whose loss silently stops all of them. The step still exits 0, so no status cell moves."
+    },
+    {
+      "name": "the PARTIAL arm publishes closure_ok before failing",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"closure_ok=true\" >> \"$GITHUB_OUTPUT\"\n            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
+      "expectRed": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "cell": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "note": "The arm still fails the job, so every status-based cell stays green, but the output it leaves behind is the one the Release step gates on. Only the output column can see this."
     }
   ]
 }
