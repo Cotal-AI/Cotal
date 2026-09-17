@@ -43,6 +43,13 @@ const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")),
 );
 const cleanup: string[] = [];
+// Registered BEFORE the first cell, because the sandbox guard THROWS rather than returning a failed
+// cell: a trailing `for (…) rmSync(…)` is skipped exactly when a run goes wrong, which in CI is every
+// run where this suite is doing its job. `process.on("exit")` fires on a normal finish and on an
+// uncaught throw alike, and rmSync is synchronous, so it is safe in an exit handler.
+process.on("exit", () => {
+  for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
+});
 function cotal(args: string[]): { status: number; stdout: string; stderr: string } {
   // A fresh sandbox per invocation: the assertion below is "this config dir is still empty", which
   // only means anything if nothing else could have written it. The sandbox also pins COTAL_HOME, so
@@ -110,5 +117,4 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   );
 }
 
-for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
 finish(); // emits the cell-count sentinel and sets a non-zero exit code on any failed cell
