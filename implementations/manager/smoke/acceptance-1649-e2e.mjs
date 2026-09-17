@@ -67,7 +67,11 @@ for (const [k, v] of Object.entries(process.env))
   if (typeof v === "string" && v.includes(LIVE_HOST)) noResult(`refusing to run: ${k} points at the live broker`);
 
 const RUN = randomUUID().slice(0, 8);
-const ROOT = join(repoRoot, ".tmp", `acc1649-${RUN}`);
+// The reaper claims a leaked broker by matching the smoke token in its argv, so the config path
+// this harness hands nats-server has to carry that token. Without it the broker it starts is
+// invisible to the reaper and to the teardown helper, which is the exact defect #1008 names.
+const { SMOKE_BROKER_TOKEN, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
+const ROOT = join(repoRoot, ".tmp", `${SMOKE_BROKER_TOKEN}acc1649-${RUN}`);
 const HOME = join(ROOT, "cotal-home");
 const WS = join(ROOT, "ws");
 mkdirSync(join(WS, ".cotal", "agents"), { recursive: true });
@@ -95,6 +99,7 @@ const SEAT = "typist";
 writeFileSync(join(WS, ".cotal", "agents", `${SEAT}.md`), `---\nname: ${SEAT}\nrole: worker\n---\nYou are a test seat. Answer in one word.\n`);
 writeFileSync(join(ROOT, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(ROOT, "js") }));
 const srv = spawn("nats-server", ["-c", join(ROOT, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(srv); // so an interrupted run does not leave the broker holding its port
 
 // The seat needs a provider key to run a turn at all; without one there is no turn to observe.
 const KEY_FILE = join(process.env.HOME ?? "", ".jcode", "provider-cliproxy.env");
