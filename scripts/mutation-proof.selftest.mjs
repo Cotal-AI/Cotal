@@ -12,8 +12,8 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync } from "node:fs";
+import { execSync, spawnSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,7 @@ writeFileSync(
 );
 mkdirSync(join(root, "smoke"), { recursive: true });
 writeFileSync(join(root, "smoke", "suite.mjs"), readFileSync(join(root, "suite.mjs"), "utf8"));
+writeFileSync(join(root, ".gitignore"), ".cotal/\n");
 execSync("git init -q && git add -A && git -c user.email=a@b -c user.name=c commit -qm fixture", { cwd: root });
 
 const runTool = (args) =>
@@ -806,6 +807,62 @@ r = runTool([
 ]);
 check("an ERROR raised before the run says there was no run, not that the run was silent",
   stripAnsi(r.stdout).includes("(no run:") && !stripAnsi(r.stdout).includes("produced NO output"), r.stdout.slice(-400));
+
+// 8. Refuse to start when a proof is already live against the tree.
+// The lock has to be written BY A RUNNING PROOF. Planting one by hand tests only the reader half,
+// and the writer half was broken under it: the setup called `dirname` without importing it, the
+// ReferenceError was swallowed, no lock was ever written, and two real proofs still ran together.
+// So this starts a genuine first proof against a slow suite and asks the second one to refuse.
+writeFileSync(join(root, "slow-suite.mjs"), [
+  "import { admit } from './src/impl.js';",
+  "const t = Date.now(); while (Date.now() - t < 6000) {}",
+  "console.log('  ✓ the guard refuses an oversized value');",
+  "if (admit(50) !== false) { console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+  "",
+].join("\n"));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm slow-suite", { cwd: root });
+
+const liveArgs = [
+  "--command", `${process.execPath} slow-suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+];
+const first = spawn(process.execPath, [TOOL, ...liveArgs], { cwd: root, stdio: "ignore" });
+const firstExit = new Promise((res) => first.on("exit", res));
+const lockPath = join(root, ".cotal", "mutation-proof.lock");
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+let lockSeen = false;
+for (let i = 0; i < 50 && !lockSeen; i++) {
+  lockSeen = existsSync(lockPath);
+  if (!lockSeen) sleepSync(100);
+}
+check("a LIVE proof writes the lock that the refusal reads", lockSeen, lockPath);
+check("...and the lock names the running proof's pid",
+  lockSeen && JSON.parse(readFileSync(lockPath, "utf8")).pid === first.pid,
+  lockSeen ? readFileSync(lockPath, "utf8") : "no lock");
+r = runTool(liveArgs);
+check("refuses to start when a proof is already live against the tree",
+  r.status !== 0 && stripAnsi(r.stdout).includes("already live against the tree"), r.stdout.slice(-300));
+check("...and the refusal names the live pid, so the human can find it",
+  stripAnsi(r.stdout).includes(`PID ${first.pid}`), r.stdout.slice(-300));
+const firstStatus = await firstExit;
+check("...and the first proof still finished normally and released the lock",
+  firstStatus === 0 && !existsSync(lockPath), `${firstStatus} lock=${existsSync(lockPath)}`);
+
+// 9. Reclaim stale lock when the recorded PID is dead.
+mkdirSync(join(root, ".cotal"), { recursive: true });
+writeFileSync(join(root, ".cotal", "mutation-proof.lock"), JSON.stringify({ pid: 999999, ts: Date.now() }));
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("reclaims stale proof lock when recorded PID is dead and runs successfully",
+  r.status === 0 && stripAnsi(r.stdout).includes("KILLED"), r.stdout.slice(-300));
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);
