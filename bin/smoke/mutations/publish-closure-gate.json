@@ -177,15 +177,6 @@
       "note": "Inside no arm at all, so reading the rc-2 and rc-3 bodies reports them clean while the step reds on both. Caught only by running the script."
     },
     {
-      "name": "a tidy-up exit below the chain turns every quiet skip into a job failure",
-      "file": ".github/workflows/changesets.yml",
-      "find": "            exit 1\n          fi\n",
-      "replace": "            exit 1\n          fi\n          exit $rc\n",
-      "expectRed": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
-      "cell": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
-      "note": "The other out-of-arm direction, and the one that looks most like an ordinary edit. It is inert while the quiet arms exit first, which is the point: the arms self-terminating is what makes a line below the chain unable to change their verdict."
-    },
-    {
       "name": "the rc-0 arm stops publishing closure_ok, so no Release is ever cut",
       "file": ".github/workflows/changesets.yml",
       "find": "            echo \"closure_ok=true\" >> \"$GITHUB_OUTPUT\"\n",

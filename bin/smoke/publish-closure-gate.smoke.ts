@@ -298,11 +298,15 @@ check(
 //
 // Everything above grades a branch body in isolation, which is the property #1518 asked for and is
 // not the whole property. A body that does not fail is only a quiet skip if the SCRIPT stops
-// failing too, and as committed the arm did not decide that: it fell out of the `fi` and let every
-// later line vote. Two regressions that turn the quiet skip into a red job therefore left the
-// per-body cells green -- `trap "exit 1" EXIT` installed in the prologue above the chain, and a
-// tidy-up `exit $rc` added after the `fi`. Neither is inside an arm, so no amount of care in
-// reading arms can see either one.
+// failing too, and while the arm fell out of the `fi` it did not decide that: every later line got
+// a vote. Two shapes turned the quiet skip into a red job with all four arms still reading as
+// correct -- `trap "exit 1" EXIT` installed in the prologue above the chain, and a tidy-up
+// `exit $rc` added below the `fi`. Neither is inside an arm, so no amount of care in reading arms
+// can see either one, and the per-body cells stayed green through both.
+//
+// The arms now end the step themselves, which is what makes the second shape inert: rc 2 and rc 3
+// never reach a line below the chain. The first shape is not disarmed that way, because an EXIT
+// trap fires on the arm's own `exit`, so it still has to be caught by measurement.
 //
 // So the step's own run script is executed, once per exit code the verifier documents, with `node`
 // stubbed to return that code. The assertions are the three things the job actually depends on:
