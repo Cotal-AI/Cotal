@@ -9,6 +9,13 @@
  *   0 = defect absent
  *   1 = inconclusive (the scenario never armed; no claim either way)
  *
+ * A pass is gated on the unauthenticated peer still being connected when the child exits, i.e.
+ * when the settle window OPENS. Without that, a peer that dropped early lets the custodian settle
+ * for the ordinary reason (no peers at all) and the run reports "an unauthenticated peer does not
+ * hold it" having never tested one: absence of evidence and evidence of absence share an exit code
+ * otherwise. The peer is NOT required to outlive the window, because a settling custodian tears
+ * down its listener and closes this socket itself, which is the very behaviour under test.
+ *
  * The suite's own status cannot carry this signal: every seat smoke stayed green throughout the
  * life of the bug, which is why it went unnoticed until the host ran out of memory.
  *
@@ -70,11 +77,17 @@ try {
   // The peer under test: connected, never authenticated. It holds no session, no output
   // subscription and no wait, so a settle owes it nothing.
   const mute = connect(rec.socket);
+  let muteClosed = false;
   mute.on("error", () => {});
+  mute.on("close", () => { muteClosed = true; });
   await new Promise<void>((r) => mute.once("connect", () => r()));
 
   if (!(await until(() => gone(rec.childPid), 15_000))) {
     console.log("INCONCLUSIVE: the child never exited, so the settle path was never reached");
+  } else if (muteClosed) {
+    // The peer this test is ABOUT was gone before the window even opened, so whatever the
+    // custodian does next says nothing about it either way.
+    console.log("INCONCLUSIVE: the unauthenticated peer dropped before the child exited, so nothing was holding the custodian");
   } else {
     const settled = await until(() => gone(rec.custodianPid), 30_000);
     console.log(`custodian settled within 30s of its child exiting: ${settled}`);
