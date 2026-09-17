@@ -14,6 +14,7 @@
  * can disagree with this one.
  */
 export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "./broker-teardown.js";
+export { EXEMPT_MARKER, enumerateSpawnSites, inScope, isAdopted, type SpawnSite } from "./spawn-sites.js";
 export {
   assertSmokeSandboxDown,
   assertSmokeSandboxTargetDown,

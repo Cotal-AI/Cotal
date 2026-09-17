@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -30,7 +31,7 @@ async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | 
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-host-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-host-`));
 // Control sockets are AF_UNIX. Keep them under a short root so long case names cannot put the path
 // over sun_path (104/107) and replace the startup outcome under test with a control-listen error.
 const sockRoot = mkdtempSync(join("/tmp", "cjh-"));
@@ -44,6 +45,7 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 const hosts: ChildProcess[] = [];
 
 function spawnHost(opts: SpawnOptions): ChildProcess {
@@ -1186,6 +1188,7 @@ try {
     );
   check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });
   outageNats = spawn("nats-server", ["-js", "-p", String(outagePort), "-sd", join(root, "outage-js")], { stdio: "ignore" });
+  teardownOnSignal(outageNats);
   for (let i = 0; i < 100 && !(await isReachable(outageServers)); i++) await sleep(50);
   await seedChannelRegistry({ servers: outageServers, space: "jcodeoutage", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   outageOperator = new CotalEndpoint({ space: "jcodeoutage", servers: outageServers, card: { name: "outageoperator", kind: "agent", id: "outageoperator" }, channels: ["team"] });

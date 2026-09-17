@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // #781: a provider stream can make Jcode close the Harness API connection while a seat is in an
 // inbox-driven turn. That failed turn must not take the mesh seat down with it. This uses the real
@@ -40,7 +41,7 @@ const startupOnly = process.argv.includes("--startup-only");
 const steadyOnly = process.argv.includes("--steady-only");
 assert.ok(!(startupOnly && steadyOnly), "choose at most one recovery group");
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-provider-disconnect-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-provider-disconnect-`));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -69,6 +70,7 @@ const ambiguousSessionState = join(root, "ambiguous-session.json");
 const ambiguousRequestClosed = join(root, "ambiguous-request-closed");
 const ambiguousCloseRelease = join(root, "ambiguous-close-release");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 let child: ChildProcess | undefined;
 let safetyChild: ChildProcess | undefined;
 let kickoffChild: ChildProcess | undefined;

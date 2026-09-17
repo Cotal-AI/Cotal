@@ -30,6 +30,7 @@ import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // The command resolves its mesh through the registry under COTAL_HOME. Pin that to scratch and drop
 // every ambient COTAL_* so the operator's own meshes never enter the suite.
@@ -41,10 +42,11 @@ process.env.COTAL_HOME = home;
 // admission store only exists on an auth mesh (SPEC 14.8), so an open broker hosts no run at all.
 const SPACE = "wfjcmd";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfjcmd-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfjcmd-`));
 const auth = await createSpaceAuth(SPACE);
 writeFileSync(join(sd, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(sd, "js") }));
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(broker);
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;

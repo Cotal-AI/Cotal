@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, wr
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Self-reexec: the smoke drives the real registered auth-service and agent-bearer commands.
 const SUBCOMMAND = process.argv[2] ?? "";
@@ -52,7 +53,7 @@ const run = (command: string, args: string[], cwd?: string) => {
 };
 
 const home = mkdtempSync(join(tmpdir(), "cotal-rab-home-"));
-const serverRoot = mkdtempSync(join(tmpdir(), "cotal-rab-server-"));
+const serverRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rab-server-`));
 const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rab-client-"));
 mkdirSync(join(serverRoot, ".cotal"), { recursive: true });
 mkdirSync(join(clientRoot, ".cotal"), { recursive: true });
@@ -166,6 +167,7 @@ try {
     transport: { kind: "plaintext" }, port: brokerPort, storeDir: jsDir, extraAccounts: prepared.extraAccounts,
   }));
   broker = spawn("nats-server", ["-c", join(serverRoot, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   for (let i = 0; i < 50 && !(await isReachable(SERVER)); i++) await wait(100);
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   grantActor(serverDir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], lifecycleUid });

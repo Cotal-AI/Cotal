@@ -62,7 +62,7 @@ const releaseHome = teardownPathOnSignal(home);
 process.env.COTAL_HOME = home;
 const xdg = join(home, "xdg");
 mkdirSync(xdg);
-const root = mkdtempSync(join(tmpdir(), `cotal-control-dial-root-${fixtureId}-`));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}control-dial-root-${fixtureId}-`));
 const releaseRoot = teardownPathOnSignal(root);
 // The JetStream store gets its own tokened dir rather than living under `root`, because the reaper
 // claims a lost broker by that prefix: a store buried in an untokened tree is not merely unreaped,

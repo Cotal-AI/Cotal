@@ -34,6 +34,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Seat-env hygiene BEFORE any cotal import: whatever runs this suite may itself be a managed
 // session whose COTAL_* names a live mesh; nothing may leak into the rig or its children.
@@ -108,7 +109,8 @@ registry.register(joinCon);
 let mgr: InstanceType<typeof Manager> | undefined;
 let rc = 1;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-langspawn-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}langspawn-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   let up = false;
   for (let i = 0; i < 60 && !up; i++) { up = (await probeConnect(SERVER, { timeoutMs: 400 })).ok; if (!up) await wait(120); }

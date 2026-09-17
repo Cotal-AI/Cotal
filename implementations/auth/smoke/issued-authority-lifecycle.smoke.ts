@@ -47,6 +47,7 @@ const revokerPerms = { publish: { allow: REVOKER_ROWS(space) }, subscribe: { all
 writeFileSync(join(dir, "server.conf"), `listen: 127.0.0.1:${port}\njetstream { store_dir: ${JSON.stringify(dir)} }\nauthorization { users: [{user: "issuer", password: "synthetic-proof"}, {user: "revoker", password: "synthetic-revoker", permissions: ${JSON.stringify(revokerPerms)}}] }\n`);
 const spawnBroker = () => {
   const child = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(child);
   return { child, exited: new Promise<void>((resolve) => { child.once("exit", () => resolve()); child.once("error", () => resolve()); }) };
 };
 let { child: broker, exited } = spawnBroker();

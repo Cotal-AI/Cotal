@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const repo = join(import.meta.dirname, "..", "..", "..");
 const cli = join(repo, "bin", "dist", "cotal.js");
@@ -30,7 +31,7 @@ const originalCotal = new Map(
 const ambient: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(ambient)) if (key.startsWith("COTAL_")) delete ambient[key];
 
-const base = mkdtempSync(join(tmpdir(), "cotal-seed-upgrade-resume-"));
+const base = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}seed-upgrade-resume-`));
 const home = join(base, "home");
 const xdg = join(base, "xdg");
 const cotalHome = join(base, "cotal-home");
@@ -128,6 +129,7 @@ try {
   const server = `nats://127.0.0.1:${port}`;
   const space = "seed-upgrade-resume";
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", brokerStore], { stdio: "ignore" });
+  teardownOnSignal(broker);
   let serving = false;
   for (let tries = 0; tries < 80 && !serving; tries++) {
     serving = (await probeConnect(server, { timeoutMs: 400 })).ok;

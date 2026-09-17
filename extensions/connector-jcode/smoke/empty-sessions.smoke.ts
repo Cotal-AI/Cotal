@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -33,7 +34,7 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-empty-sessions-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-empty-sessions-`));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -42,6 +43,7 @@ const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 let child: ChildProcess | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {

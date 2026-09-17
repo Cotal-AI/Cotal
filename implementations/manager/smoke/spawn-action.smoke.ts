@@ -36,6 +36,7 @@ import { recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -141,7 +142,8 @@ const acc = (r: Awaited<ReturnType<typeof epCall>>) => (r.reply.data ?? {}) as R
 let mgr: InstanceType<typeof Manager> | undefined;
 
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-spawnact-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}spawnact-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });

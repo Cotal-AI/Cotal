@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (!/^(1|true|yes|on)$/i.test(process.env.COTAL_E2E_CODEX ?? "")) {
   console.log("SKIP codex TUI live E2E — set COTAL_E2E_CODEX=1 (needs an authenticated `codex` CLI) to run it");
@@ -59,8 +60,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const HOST_ENTRY = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
 const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-codextui-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}codextui-`));
 const nats = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 
 const operator = new CotalEndpoint({
   space,

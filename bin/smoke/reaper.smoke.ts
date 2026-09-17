@@ -502,6 +502,11 @@ const startBroker = async (prefix: string): Promise<ChildProcess> => {
   dirs.push(dir);
   const port = await freePort();
   writeFileSync(join(dir, "server.conf"), `port: ${port}\njetstream { store_dir: "${join(dir, "js")}" }\n`);
+  // SMOKE_BROKER_UNADOPTED_OK — the prefix is a PARAMETER here because this suite must be able to
+  // start an UNTOKENED broker on purpose: cell (2) below is the negative control proving the reaper
+  // leaves a broker it never minted alone. The migration gate would otherwise report this as the
+  // very defect it exists to detect, and the honest fix is an explicit exemption rather than
+  // relaxing the gate for everyone. Ownership is still taken, so nothing leaks either way.
   const child = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   kids.push(child);
   releases.push(teardownOnSignal(child, dir));

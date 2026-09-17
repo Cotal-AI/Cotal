@@ -75,6 +75,7 @@ import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMi
 import { runMediatorGrants, PLACEMENT_COMMANDS } from "@cotal-ai/core";
 import { PRIMITIVES } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshspawn";
 const EP = "manager";
@@ -107,7 +108,7 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-meshspawn-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}meshspawn-`));
 const managerRoot = join(sd, "manager-root");
 const preparedRoot = join(sd, "prepared-writer");
 const makeRepo = (dir: string, marker: string): string => {
@@ -123,6 +124,7 @@ const makeRepo = (dir: string, marker: string): string => {
 const managerHead = makeRepo(managerRoot, "manager");
 const preparedHead = makeRepo(preparedRoot, "prepared");
 const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });

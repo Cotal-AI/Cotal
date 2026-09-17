@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -188,13 +189,15 @@ function projectRoot(label: string): string {
 const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort)], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
 // A second broker that actually ENFORCES something, so the guided flow's auth branches (the
 // "this folder holds no credentials" recovery) are reachable at all. Password auth is enough:
 // probeEnforcement only asks whether a bare connect is refused.
 const authPort = await freePort();
 const AUTH_LIVE = `nats://127.0.0.1:${authPort}`;
-const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p"], { stdio: "ignore" });
+const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(authBroker);
 broker.on("error", () => {
   console.error("needs nats-server on PATH");
   process.exit(1);
