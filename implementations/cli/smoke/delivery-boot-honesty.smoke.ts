@@ -343,6 +343,13 @@ try {
     selfArgvRefusal?.includes("delivery-boot-honesty.smoke.ts") === true, selfArgvRefusal);
   // The POSITIVE half, so the guard cannot be satisfied by refusing everything — that would break
   // every real `cotal up`, which is the same outage one direction over.
+  //
+  // THE TWO REFUSAL CELLS ABOVE AND THIS ONE ARE ONE ASSERTION IN THREE PARTS. DO NOT SEPARATE THEM.
+  // Measured, not assumed: replacing the guard's predicate so it refuses EVERY entry (including the
+  // real CLI) leaves both refusal cells GREEN — a refusal is satisfied by a guard that refuses
+  // indiscriminately, which would break every `cotal up` on the machine. Only this cell reds on it.
+  // Deleting the feature outright DOES red the refusal cells, so they are not pure absence-detectors;
+  // the narrow hole is a degenerate guard, and this cell is the whole of what closes it.
   const savedArgv1 = process.argv[1];
   process.argv[1] = CLI_ENTRY;
   let realEntryArgv: string[] | undefined;
