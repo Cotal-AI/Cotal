@@ -16,6 +16,7 @@ import {
   formatInjection,
   fmtFrom,
   fmtChannel,
+  fmtKind,
   channelMeta,
   type MeshAgent,
   type InboxItem,
@@ -464,7 +465,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
     const content = pullHint
       ? `📨 ${pullHint}`
       : item
-      ? `📨 New ${item.kind}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
+      ? `📨 New ${fmtKind(item.kind)}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
       : `📨 ${n} Cotal message${n === 1 ? "" : "s"} waiting — delivering your inbox now.`;
     void notify({ content, meta: item ? channelMeta(item) : { kind: "batch" } }).then(
       () => {

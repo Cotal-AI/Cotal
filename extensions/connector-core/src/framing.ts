@@ -102,3 +102,22 @@ export function fmtChannel(channel: string | undefined): string {
   const safe = attributionSafe(channel ?? "").trim();
   return safe.length ? safe : "?";
 }
+
+/**
+ * A message's kind, as a frame may name it.
+ *
+ * NOT A LIVE HOLE, and this says so rather than implying one. Every path that reaches a connector
+ * derives `kind` from the subject the message arrived on, never from the payload, so no peer sets
+ * it today. It is neutralized because the rule these renderers hold is positional and stated
+ * absolutely: what is rendered outside the body cannot write the frame. A renderer whose guarantee
+ * holds only while an upstream path keeps deriving one field correctly is a renderer whose
+ * guarantee is somebody else's.
+ *
+ * It exists as a named function mostly so the two implementations agree. The Python sidecar
+ * neutralizes this field, and a TypeScript frame that did not would leave the same class open on
+ * one side of the socket and closed on the other, which is the harder state to reason about later.
+ */
+export function fmtKind(kind: string | undefined): string {
+  const safe = attributionSafe(kind ?? "").trim();
+  return safe.length ? safe : "message";
+}

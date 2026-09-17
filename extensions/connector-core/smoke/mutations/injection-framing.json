@@ -47,7 +47,14 @@
     "M8 is the renderer. M9, M10 and M11 are the three call sites, and they exist because killing M8",
     "would prove only that the renderer is graded: the helper already existed for the inbox reply while",
     "all three connectors went on interpolating the label themselves, which is the defect. A cell that",
-    "grades a shared helper says nothing about who calls it, so the call sites are mutated one by one."
+    "grades a shared helper says nothing about who calls it, so the call sites are mutated one by one.",
+    "",
+    "M12 and M13 close the general form of this defect's history. M12 is the standing scan: every line",
+    "carrying the injected marker, in every connector that writes one, must not drop a peer field",
+    "straight into it. The previous mutations each name a field and a call site that was KNOWN wrong,",
+    "and that is how the third surface survived two rounds of repair, so the rule is now asserted",
+    "generally rather than over a list somebody must remember to extend. M13 is the kind field, which",
+    "is defence in depth for the same reason it is on the Python side, and is labelled as such."
   ],
   "mutations": [
     {
@@ -142,6 +149,24 @@
       "cell": "the claude-code wake hint does not interpolate a channel label raw",
       "expectRed": "the claude-code wake hint does not interpolate a channel label raw",
       "note": "The shipped pre-fix spelling, third of three. This connector words the hint differently from the other two, which is why the rule lives in the renderer and not in a shared sentence."
+    },
+    {
+      "name": "M12 an injected frame drops a peer field straight in again",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      ? `📨 New ${fmtKind(item.kind)}${item.mentionsMe ? \" — you were mentioned\" : \"\"} from ${fmtFrom(item)} — delivering your Cotal inbox now.`",
+      "replace": "      ? `📨 New ${item.kind}${item.mentionsMe ? \" — you were mentioned\" : \"\"} from ${fmtFrom(item)} — delivering your Cotal inbox now.`",
+      "cell": "no injected frame interpolates a peer-controlled field raw",
+      "expectRed": "no injected frame interpolates a peer-controlled field raw",
+      "note": "The shipped spelling of this nudge. The cell is stated over every line carrying the injected marker rather than over this one, so the same mutation at any other injected frame reddens it too. That generality is the point: naming fields one at a time is what let a third surface survive two rounds of repair."
+    },
+    {
+      "name": "M13 the kind rendered into a frame is passed through raw (defence in depth)",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  const safe = attributionSafe(kind ?? \"\").trim();",
+      "replace": "  const safe = (kind ?? \"\").trim();",
+      "cell": "a kind cannot add a line to a frame, defence in depth",
+      "expectRed": "a kind cannot add a line to a frame, defence in depth",
+      "note": "NOT A LIVE HOLE: kind is subject-derived on every path reaching a connector, so no peer sets it today. Pinned because the Python sidecar neutralizes the same field, and a class closed on one side of the socket and open on the other is the harder state to reason about later."
     }
   ]
 }
