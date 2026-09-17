@@ -1,0 +1,4 @@
+# A hosted drive's own journal reads on the real planes: a parallel of three asks answered within
+# one second while status reads the drive's takeover id and while another reader takes a round,
+# the step read's replay bound, and the no-record diagnostic after a lost round.
+smoke:runtime-run-host-replay
