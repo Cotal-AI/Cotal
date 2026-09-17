@@ -180,7 +180,10 @@
     "bin/smoke/ci-suites.d/6d6fafdc69cc7c43d2ce0fece48fc6431df4529dcda0bfaceb4395da9564173c.txt",
     "package.json",
     "pnpm-lock.yaml",
-    ".changeset/seat-unattended-custodian.md"
+    ".changeset/seat-unattended-custodian.md",
+    "implementations/manager/smoke/orphan-seat-reap.smoke.ts",
+    "implementations/manager/smoke/orphan-seat-rollback.smoke.ts",
+    "implementations/manager/smoke/orphan-seat-spawn-window.smoke.ts"
   ],
   "productionChange": "A custodian with no authenticated controller now stops its child and exits after UNATTENDED_MS, armed whenever the controller set empties and disarmed the moment one authenticates. Every custodian carries --cotal-run <marker> on argv and COTAL_RUN in its environment, recovered from an ancestor when a suite has scrubbed COTAL_; censusCustodians reads it back from /proc/<pid>/cmdline. launchSeat refuses a socket path the kernel would truncate, and the custodian verifies the path it bound and logs any startup failure instead of dying uncaught.",
   "testAdded": "packages/seat/smoke/orphan.smoke.ts — 33 cells, gated into smoke:ci via bin/smoke/ci-suites.d/. Covers the three required outcomes on real processes, the re-adopt case that must NOT trip the bound, the socket-path ceiling measured against the kernel, and the COTAL_ scrub recovery.",
@@ -378,5 +381,6 @@
       "fix": "MAX_SOCKET_PATH and SEAT_MAX_SOCKET_PATH are 108. The suite no longer asserts the ceiling against a remembered number: it binds a socket at the limit and one past it, so the constant is checked against the kernel running the suite, and the past-the-limit cell requires the reason to be truncation so it cannot pass for the wrong reason.",
       "mutationProof": "Setting the constant back to 107 reds two named cells (the truncation cell and the smoke-kit agreement cell); exit 1."
     }
-  ]
+  ],
+  "filesChangedNote": "Verified mechanically against git diff --name-only <base>..HEAD by .tmp/audit-report.mjs, which also re-runs every command this report gives an exit code for and compares. The three manager suites were missing until that audit caught them."
 }
