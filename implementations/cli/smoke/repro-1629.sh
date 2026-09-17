@@ -15,13 +15,23 @@ set -u
 # Repo root, so the suite path below is stable no matter where this is invoked from.
 cd "$(dirname "$0")/../../.."
 export PATH="$PWD/node_modules/.bin:$PATH"
+# THE SUITE PATH IN THIS CHECKOUT, absolute. The watcher matches on THIS, not on the bare filename.
+#
+# A bare-filename match is wrong twice over on a shared host, and both halves were measured with a
+# stand-in process outside this worktree. It would COUNT another checkout's run as this one's defect
+# (a false DEFECT PRESENT, from contention rather than from the bug), and it would SIGKILL that other
+# lane's process. The second is the serious one: a repro harness must never be able to reach outside
+# the tree it is reporting on.
+SUITE="$PWD/implementations/cli/smoke/delivery-boot-honesty.smoke.ts"
 LOG="$(mktemp -t cotal-1629-reexec-XXXXXX)"
 SUITE_OUT="$(mktemp -t cotal-1629-suite-XXXXXX)"
 trap 'rm -f "$LOG" "$SUITE_OUT"' EXIT
 
 watch_reexec() {
   while :; do
-    ps -eo pid=,args= | grep -F 'delivery-boot-honesty.smoke.ts supervise' | grep -v grep |
+    # Absolute path AND the subcommand: the re-exec appends `supervise` to argv, and the path scopes
+    # the match to this checkout. `grep -v grep` drops the scanner's own line.
+    ps -eo pid=,args= | grep -F "$SUITE supervise" | grep -v grep |
       while read -r pid args; do
         echo "RE-EXEC OF THE SMOKE AS MANAGER: pid=$pid args=$args" >>"$LOG"
         kill -9 "$pid" 2>/dev/null
@@ -35,8 +45,8 @@ WATCHER=$!
 # Captured AND streamed: the verdict below has to read the suite's own output to tell "the defect is
 # absent" from "the run never got there", and a human watching still wants to see it live.
 set -o pipefail
-tsx implementations/cli/smoke/delivery-boot-honesty.smoke.ts 2>&1 | tee "$SUITE_OUT"
-SUITE=$?
+tsx "$SUITE" 2>&1 | tee "$SUITE_OUT"
+SUITE_STATUS=$?
 set +o pipefail
 
 sleep 3
@@ -47,7 +57,7 @@ wait $WATCHER 2>/dev/null
 # break the integer test below. Count lines that matched instead, which has neither problem.
 COUNT=$(grep -c 'RE-EXEC OF THE SMOKE AS MANAGER' "$LOG" 2>/dev/null || true)
 [ -n "$COUNT" ] || COUNT=0
-echo "smoke exit status: $SUITE"
+echo "smoke exit status: $SUITE_STATUS"
 echo "--- re-exec generations observed ---"
 cat "$LOG" 2>/dev/null
 echo "--- count: $COUNT ---"
