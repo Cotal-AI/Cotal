@@ -88,6 +88,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { removeSelfTestDir } from "./selftest-containment.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCANNER = join(HERE, "check-operator-literals.mjs");
@@ -911,8 +912,8 @@ const makeWorkdir = () => {
       rejected.push(`${base}: ${error.message}`);
       continue;
     }
-    if (guardSafe(candidate)) return candidate;
-    rmSync(candidate, { recursive: true, force: true });
+    if (guardSafe(candidate)) return { dir: candidate, base, created: candidate };
+    removeSelfTestDir(candidate, base, candidate);
     rejected.push(`${candidate}: needs URL escaping, so the scanner's self-execute guard cannot fire there`);
   }
   throw new Error(
@@ -920,7 +921,8 @@ const makeWorkdir = () => {
   );
 };
 
-const workdir = makeWorkdir();
+const workspace = makeWorkdir();
+const workdir = workspace.dir;
 
 /**
  * GRADE THE TWO FUNCTIONS THAT CHOOSE WHERE EVERY TAMPER RUNS.
@@ -1849,7 +1851,9 @@ try {
     );
   }
 } finally {
-  rmSync(workdir, { recursive: true, force: true });
+  // The cleanup may only remove the directory mkdtemp handed `makeWorkdir`, and only beneath the
+  // base it was created in. A mutant that makes that helper return a parent must not delete it.
+  removeSelfTestDir(workdir, workspace.base, workspace.created);
 }
 
 const total = passed + failures.length;

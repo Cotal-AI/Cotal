@@ -17,14 +17,17 @@ import { execSync, spawnSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { containmentRefusal, removeSelfTestDir } from "./selftest-containment.mjs";
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-proof.mjs");
-const root = mkdtempSync(join(tmpdir(), "mutation-selftest-"));
+const base = tmpdir();
+// The cleanups below may only remove this exact path, and only beneath this base (#1625).
+const root = mkdtempSync(join(base, "mutation-selftest-"));
 let pass = 0;
 const check = (name, cond, extra) => {
   if (!cond) {
     console.error(`\n  ✗ ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
-    rmSync(root, { recursive: true, force: true });
+    removeSelfTestDir(root, base, root);
     process.exit(1);
   }
   pass++;
@@ -942,5 +945,20 @@ check("...and the exit status still reports the signal, not a tidy 0",
     execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "");
 }
 
-rmSync(root, { recursive: true, force: true });
+// ---- the cleanup's own containment (#1625) -----------------------------------------------------
+// A mutant that makes a directory helper return the PARENT of the directory it created hands
+// `tmpdir()` to this suite's recursive cleanup, which then deletes other processes' files —
+// including the live control sockets of every connector on the host. The guard must refuse a
+// target one level up from its own root, and must still allow the root itself.
+check("the cleanup guard refuses a target one level above its own mkdtemp root",
+  containmentRefusal(dirname(root), base, dirname(root)) !== undefined, dirname(root));
+check("...and it names that the target is not beneath its base, not some unrelated reason",
+  /not strictly beneath/.test(containmentRefusal(base, base, base) ?? ""), containmentRefusal(base, base, base));
+check("the cleanup guard refuses a target that is not the path mkdtemp returned",
+  /not the path mkdtemp returned/.test(containmentRefusal(join(root, "sub"), base, root) ?? ""),
+  containmentRefusal(join(root, "sub"), base, root));
+check("...and it still permits the suite's own mkdtemp root",
+  containmentRefusal(root, base, root) === undefined, containmentRefusal(root, base, root));
+
+removeSelfTestDir(root, base, root);
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);

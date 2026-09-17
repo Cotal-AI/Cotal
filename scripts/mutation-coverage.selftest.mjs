@@ -6,9 +6,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeSelfTestDir } from "./selftest-containment.mjs";
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
-const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
+const base = tmpdir();
+// The cleanups below may only remove this exact path, and only beneath this base (#1625).
+const root = mkdtempSync(join(base, "mutation-coverage-selftest-"));
 let pass = 0;
 let failed = 0;
 // Normally the first failing cell stops the run, which keeps a failure legible. Grading the
@@ -20,7 +23,7 @@ const check = (name, condition, extra) => {
     failed++;
     console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
     if (CONTINUE) return;
-    rmSync(root, { recursive: true, force: true });
+    removeSelfTestDir(root, base, root);
     process.exit(1);
   }
   pass++;
@@ -1440,7 +1443,7 @@ try {
     report(result),
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestDir(root, base, root);
 }
 // `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
 // report-all mode, where the run continues, and the exit status follows it rather than the literal.
