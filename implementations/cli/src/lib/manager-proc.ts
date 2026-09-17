@@ -198,6 +198,10 @@ export function startManagerDetached(
   // on a live or unattributable one rather than orphaning the daemon behind it.
   reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));
   reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
+  // BEFORE THE LOG IS OPENED. `selfArgv` refuses when this process was not started from the `cotal`
+  // entry (#1629), and a refusal must leave the root exactly as it found it: computing the argv after
+  // `openSync` would create a manager log and leak its descriptor on every refused start.
+  const [node, ...self] = selfArgv();
   const logPath = managerLogPath(space);
   // 0600: the manager prints its console URL here, and that URL carries the console token — a
   // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
@@ -209,7 +213,6 @@ export function startManagerDetached(
   // represent the mode (or a Windows volume, where `.cotal`'s ACL is the real control) is not a
   // reason to refuse to start the manager.
   try { chmodSync(logPath, 0o600); } catch { /* mode is defence in depth, not the boundary */ }
-  const [node, ...self] = selfArgv();
   const args = [
     ...self,
     "supervise",
