@@ -28,7 +28,16 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth, deliveryBucket, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { canonicalLocalProcessPath, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, saveSpaceAuth } from "@cotal-ai/workspace";
+import {
+  canonicalLocalProcessPath,
+  DELIVERY_LOGFILE,
+  DELIVERY_PIDFILE,
+  localProcessPathCandidates,
+  MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_PIDFILE,
+  reclaimDeadPreUpgradeRecord,
+  saveSpaceAuth,
+} from "@cotal-ai/workspace";
 import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
@@ -221,6 +230,44 @@ try {
     // as it found it. A guard that ran after the side effects would still fork nothing and still
     // litter every fixture root with a manager log and a leaked fd.
     check("CELL: the refused spawn left no manager log behind either", !existsSync(managerLog), managerLog);
+
+    // THE PRE-UPGRADE RECLAIM IS A SIDE EFFECT TOO. Both starters delete a dead pre-upgrade record
+    // before they claim the canonical name, and they used to do it before the guard, so a refused
+    // start emptied a root holding the pre-upgrade spellings. Every spelling is seeded here naming a
+    // provably dead pid, which is what the reclaim deletes; the control below proves it.
+    const { startManagerDetached } = await import("../src/lib/manager-proc.js");
+    const { startDeliveryDetached } = await import("../src/lib/delivery-proc.js");
+    const records = { root, space: SPACE };
+    const templates = [MANAGER_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, DELIVERY_PIDFILE];
+    const preUpgrade = (template: string): string[] => localProcessPathCandidates(template, records).slice(1);
+    const seeded = templates.flatMap(preUpgrade);
+    const exited = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    await new Promise<void>((r) => exited.once("exit", () => r()));
+    for (const p of seeded) writeFileSync(p, String(exited.pid));
+    const deliveryLog = canonicalLocalProcessPath(DELIVERY_LOGFILE, records);
+    check("FIXTURE: every pre-upgrade spelling is on disk and no delivery log is, before the refused starts",
+      seeded.length >= templates.length && seeded.every((p) => existsSync(p)) && !existsSync(deliveryLog),
+      { seeded, deliveryLog });
+    const refusal = (start: () => number): string => {
+      try { start(); return "the start returned"; } catch (e) { return (e as Error).message; }
+    };
+    const REFUSED = /^refusing to re-exec this process as `cotal`/;
+    const managerRefusal = refusal(() => startManagerDetached({ space: SPACE, server }));
+    check("CELL: a manager start from this suite is refused by the re-exec guard", REFUSED.test(managerRefusal), managerRefusal);
+    check("CELL: the refused manager start left the dead pre-upgrade manager pidfile in place",
+      preUpgrade(MANAGER_PIDFILE).every((p) => existsSync(p)), preUpgrade(MANAGER_PIDFILE));
+    check("CELL: and the dead pre-upgrade delivery-aware marker",
+      preUpgrade(MANAGER_DELIVERY_AWARE_MARKER).every((p) => existsSync(p)), preUpgrade(MANAGER_DELIVERY_AWARE_MARKER));
+    const deliveryRefusal = refusal(() => startDeliveryDetached({ space: SPACE, server }));
+    check("CELL: a delivery start from this suite is refused by the same guard", REFUSED.test(deliveryRefusal), deliveryRefusal);
+    check("CELL: the refused delivery start left the dead pre-upgrade delivery pidfile in place",
+      preUpgrade(DELIVERY_PIDFILE).every((p) => existsSync(p)), preUpgrade(DELIVERY_PIDFILE));
+    check("CELL: the refused delivery start left no delivery log behind", !existsSync(deliveryLog), deliveryLog);
+    // CONTROL: the reclaim a start runs does delete every seeded record, so their survival above is
+    // the guard's doing. It also clears them before the cells below read this root.
+    for (const t of templates) reclaimDeadPreUpgradeRecord(t, records);
+    check("CONTROL: the starters' own reclaim deletes every seeded pre-upgrade record",
+      seeded.every((p) => !existsSync(p)), seeded.filter((p) => existsSync(p)));
   } finally {
     await killAndAwaitExit(supervisor);
     releaseSupervisor();

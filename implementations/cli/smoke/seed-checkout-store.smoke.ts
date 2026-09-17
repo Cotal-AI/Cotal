@@ -2,7 +2,8 @@
  * A source-checkout CLI must not mutate the operator-global seed store (#1215).
  *
  * Drives `stageSeedPayload` / `gcSeedStore` in-process against an isolated
- * `XDG_CONFIG_HOME`. Never runs `pnpm cotal`. The store path is derived from
+ * `XDG_CONFIG_HOME`, and a whole reconcile whose `ext add` re-exec is refused
+ * (#1629). Never runs `pnpm cotal`. The store path is derived from
  * `XDG_CONFIG_HOME` only; `COTAL_HOME` is not a relocator and this suite asserts
  * that rather than assuming it.
  *
@@ -12,7 +13,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { writeStamp } from "../src/seed/authority.js";
-import { seedStoreDir, seedWriterKind } from "../src/seed/paths.js";
+import { clearChildMarker, clearCursor, writeCursor, writePendingChildMarker } from "../src/seed/lock.js";
+import { reconcileChildPath, reconcileCursorPath, SEED_BUILTINS, seedStoreDir, seedWriterKind } from "../src/seed/paths.js";
+import { reconcileSeededConnectors } from "../src/seed/reconcile.js";
 import { gcSeedStore, stageSeedPayload } from "../src/seed/store.js";
 
 function writeJson(path: string, value: unknown): void {
@@ -271,6 +274,42 @@ try {
       stamp.writtenBy === process.argv[1] && stamp.generation === generation,
       stamp,
     );
+  }
+
+  // #1629: a reconcile whose `ext add` re-exec is refused leaves the seed state as it found it. This
+  // suite is not the cotal entry, so `selfArgv` refuses. `seedOne` asked only after it had journaled
+  // its crash cursor, staged the payload and written a pending child marker, and nothing cleared
+  // them, so the next boot refused as an interrupted seed. The opt-in only gets this reconcile past
+  // the checkout writer check and on to the re-exec.
+  {
+    process.argv[1] = realArgv1;
+    sandboxXdg();
+    process.env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+    const REFUSAL = /^refusing to re-exec this process as `cotal`/;
+    const reconcileOnce = async (): Promise<string> => {
+      try {
+        await reconcileSeededConnectors();
+        return "reconcileSeededConnectors returned";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    };
+    const first = await reconcileOnce();
+    check("re-exec refused: a reconcile from an entry that is not cotal stops at the guard", REFUSAL.test(first), first);
+    check("re-exec refused: no crash cursor is left for the next boot", !existsSync(reconcileCursorPath()), reconcileCursorPath());
+    check("re-exec refused: no pending seed-child marker is left either", !existsSync(reconcileChildPath()), reconcileChildPath());
+    check("re-exec refused: no payload was staged", !existsSync(seedStoreDir()), seedStoreDir());
+    const retry = await reconcileOnce();
+    check("re-exec refused: the next reconcile meets the same refusal, not an interrupted seed", REFUSAL.test(retry), retry);
+    // CONTROL: the absences above are read where the journal writes, in this sandbox.
+    writeCursor({ nonce: "control", package: SEED_BUILTINS[0]!, phase: "add" });
+    writePendingChildMarker("control");
+    check(
+      "re-exec refused CONTROL: a cursor and a marker written in this sandbox are seen at those paths",
+      existsSync(reconcileCursorPath()) && existsSync(reconcileChildPath()),
+    );
+    clearCursor();
+    clearChildMarker();
   }
 } finally {
   restoreEnv();

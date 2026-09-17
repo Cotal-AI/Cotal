@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/install.smoke.ts"
   ],
-  "guard": "the re-exec argv builder refuses an entry that is not the cotal composition root, and still accepts the three shapes a real install runs under",
+  "guard": "the re-exec argv builder accepts only an entry that resolves to the cotal-ai package's own entry, refuses a foreign file that merely carries the name, and still accepts the three shapes a real install runs under",
   "command": "pnpm smoke:install",
   "completionMarker": "install smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/reexec-entry-guard.json",
@@ -12,25 +12,87 @@
     "in 4.7 hours, each holding a nats-server and a delivery holder. The child is unref'd by design,",
     "so no teardown owner can adopt it and the refusal has to be where the argv is built.",
     "",
-    "Both directions are mutated, because narrowness is the half that bites. `npm i -g cotal-ai`",
-    "publishes `<prefix>/bin/cotal` as a SYMLINK and Node leaves argv[1] on the link, which has no",
-    "extension: a guard that demanded one would refuse every global install's manager start while",
-    "still passing the headline cell. That was measured here before the regex was widened."
+    "Both directions are mutated. FALSE ACCEPT: the first cut of this guard compared only the file",
+    "NAME, so any `cotal.ts` or `cotal.js` anywhere was accepted and could re-exec itself the same way;",
+    "the name rule, its bare-`cotal` half, the package-name check and the exact-file comparison each",
+    "have a mutant here.",
+    "FALSE REFUSE: `npm i -g cotal-ai` publishes `<prefix>/bin/cotal` as a SYMLINK and Node leaves",
+    "argv[1] on the link, so a guard that stopped resolving it would refuse every global install's",
+    "manager start while still passing the headline cell. Dropping either accepted entry file",
+    "(the declared bin, or the checkout's `bin/cotal.ts`) is mutated for the same reason."
   ],
   "mutations": [
     {
       "name": "the guard is removed and any entry builds a re-exec argv again",
       "file": "implementations/cli/src/lib/self-exec.ts",
-      "find": "export function selfArgv(): string[] {\n  const entry = process.argv[1];\n  if (entry === undefined || !CLI_ENTRY_FILE.test(basename(entry)))\n    throw new Error(\n      `refusing to re-exec this process as \\`cotal\\`: it was started from ${entry === undefined ? \"no entry file\" : entry}, which is not the CLI's own entry (\\`bin/cotal.ts\\` in a checkout, \\`dist/cotal.js\\` in an install).\\n` +\n        \"A child spawned from that entry re-runs it with a cotal subcommand appended, which it does not read; if that file reaches this call on load, every child spawns the next one.\\n\" +\n        \"NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery or ensureControlPlane.\",\n    );\n  return [process.execPath, ...process.execArgv, entry];\n}",
-      "replace": "export function selfArgv(): string[] {\n  return [process.execPath, ...process.execArgv, process.argv[1]];\n}",
+      "find": "  if (entry === undefined || !runsCliEntry())\n",
+      "replace": "  if (entry === undefined)\n",
+      "cell": "a `.smoke.ts` entry is REFUSED, not re-execed as a daemon",
       "expectRed": "a `.smoke.ts` entry is REFUSED, not re-execed as a daemon"
     },
     {
-      "name": "the entry must carry an extension, so a global install's bin symlink is refused",
+      "name": "the entry is accepted by its file name again, so a foreign `cotal.ts` passes",
       "file": "implementations/cli/src/lib/self-exec.ts",
-      "find": "const CLI_ENTRY_FILE = /^cotal(?:\\.(?:ts|js|mjs|cjs))?$/;",
-      "replace": "const CLI_ENTRY_FILE = /^cotal\\.(?:ts|js|mjs|cjs)$/;",
+      "find": "function runsCliEntry(): boolean {\n  try {\n",
+      "replace": "function runsCliEntry(): boolean {\n  if (/(?:^|[\\\\/])cotal(?:\\.(?:ts|js|mjs|cjs))?$/.test(process.argv[1] ?? \"\")) return true;\n  try {\n",
+      "cell": "a foreign file named `cotal.ts` is REFUSED, not re-execed as a daemon",
+      "expectRed": "a foreign file named `cotal.ts` is REFUSED, not re-execed as a daemon"
+    },
+    {
+      "name": "a bare `cotal` is trusted by its name again, as the global-install shape once was",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "function runsCliEntry(): boolean {\n  try {\n",
+      "replace": "function runsCliEntry(): boolean {\n  if (/(?:^|[\\\\/])cotal$/.test(process.argv[1] ?? \"\")) return true;\n  try {\n",
+      "cell": "a foreign file named bare `cotal` is refused too",
+      "expectRed": "a foreign file named bare `cotal` is refused too"
+    },
+    {
+      "name": "the package name is not checked, so any manifest declaring a cotal bin passes",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "    if (pkg.name !== \"cotal-ai\" || typeof bin !== \"string\") return false;\n",
+      "replace": "    if (typeof bin !== \"string\") return false;\n",
+      "cell": "a `cotal.ts` beside a manifest that is not cotal-ai's is refused",
+      "expectRed": "a `cotal.ts` beside a manifest that is not cotal-ai's is refused"
+    },
+    {
+      "name": "any file inside the cotal-ai package passes, not only its entries",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "realpathSync(join(root, file)) === entry;",
+      "replace": "realpathSync(join(root, file)) === entry || entry.startsWith(root);",
+      "cell": "a `cotal.js` inside the cotal-ai package that is not its declared bin is refused",
+      "expectRed": "a `cotal.js` inside the cotal-ai package that is not its declared bin is refused"
+    },
+    {
+      "name": "the entry is not resolved, so a global install's bin symlink is refused",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "    const entry = entryScript();\n",
+      "replace": "    const entry = process.argv[1] ?? \"\";\n",
+      "cell": "a bare `cotal` bin symlink (the global-install shape) builds a re-exec argv",
       "expectRed": "a bare `cotal` bin symlink (the global-install shape) builds a re-exec argv"
+    },
+    {
+      "name": "the checkout entry is dropped, so `pnpm cotal` can no longer start a daemon",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "[bin, \"cotal.ts\"].some(",
+      "replace": "[bin].some(",
+      "cell": "the repo's own `bin/cotal.ts` builds a re-exec argv ending in that entry",
+      "expectRed": "the repo's own `bin/cotal.ts` builds a re-exec argv ending in that entry"
+    },
+    {
+      "name": "the declared bin is dropped, so an installed `dist/cotal.js` is refused",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "    const bin = pkg.bin?.cotal;\n",
+      "replace": "    const bin = typeof pkg.bin?.cotal === \"string\" ? \"cotal.ts\" : undefined;\n",
+      "cell": "the package's declared bin `dist/cotal.js` builds one too",
+      "expectRed": "the package's declared bin `dist/cotal.js` builds one too"
+    },
+    {
+      "name": "the remedy line stops naming the auth-service starter",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "ensureControlPlane or ensureAuthService.",
+      "replace": "or ensureControlPlane.",
+      "cell": "and names every daemon starter behind the guard, the auth service included",
+      "expectRed": "and names every daemon starter behind the guard, the auth service included"
     }
   ]
 }

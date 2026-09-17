@@ -135,12 +135,12 @@ export async function stopOldHostingManagerIfPresent(
  *  never sees the signer. */
 export function startDeliveryDetached(o: Opts = {}): number {
   const space = o.space ?? folderSpace();
-  // See startManagerDetached: reclaim a provably dead pre-upgrade record before claiming the
-  // canonical slot, and refuse rather than start a second daemon beside a live one.
-  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
-  // Before the log is opened, for the reason startManagerDetached states: a `selfArgv` refusal
-  // (#1629) must not leave a delivery log and a leaked descriptor behind.
+  // First, for the reason startManagerDetached states: a `selfArgv` refusal (#1629) must not reclaim a
+  // pre-upgrade record, or leave a delivery log and a leaked descriptor behind. Then, as there,
+  // reclaim a provably dead pre-upgrade record before claiming the canonical slot, and refuse rather
+  // than start a second daemon beside a live one.
   const [node, ...self] = selfArgv();
+  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
   const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), "a");
   const args = [
     ...self,
