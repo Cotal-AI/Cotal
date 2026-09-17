@@ -8,7 +8,7 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf, stackOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
@@ -337,10 +337,17 @@ export async function performEffect(
     const raised = (e as { code?: unknown } | null | undefined)?.code;
     const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
     const recorded = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-    const error: EntryError =
-      recorded !== undefined
+    // THE STACK IS THE ONLY FIELD THAT NAMES THE HOST CODE. A handler fault happens outside both the
+    // program and the language, so `message` alone ("timeout") is the symptom with no origin, and
+    // the durable entry is usually the only look anyone gets at it. Read defensively, by the same
+    // rule as `messageOf` one line up: a primitive throw carries no stack and none is recorded.
+    const stack = stackOf(e);
+    const error: EntryError = {
+      ...(recorded !== undefined
         ? recorded.error
-        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
+        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+      ...(stack !== undefined ? { stack } : {}),
+    };
     await host.journal.settle(key, { status: "failed", error }, endedAt);
     frame.clock.advance(endedAt);
     // THE CALLER AND THE RECORD SAY THE SAME THING. Rethrowing the handler's own error unchanged is
@@ -497,8 +504,12 @@ async function performWaitUntil(
       const raised = (e as { code?: unknown } | null | undefined)?.code;
       const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
       const rec = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-      const error: EntryError =
-        rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
+      // The same rule as the effect site above: the probe is other people's code too.
+      const stack = stackOf(e);
+      const error: EntryError = {
+        ...(rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+        ...(stack !== undefined ? { stack } : {}),
+      };
       await host.journal.settle(key, { status: "failed", error }, endedAt);
       frame.clock.advance(endedAt);
       throw rec?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);

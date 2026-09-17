@@ -814,7 +814,8 @@ The journal is an append-only log of entries. An entry is JSON:
   state,               // "pending" | "settled"
   status?,             // "ok" | "failed" | "cancelled" | "refused"
   result?,             // status ok: the recorded value
-  error?,              // status failed or refused: { code, kind, message, detail? }
+  error?,              // status failed or refused: { code, kind, message, stack?, detail? }
+                       //   stack: where the throw came from, when the thrown value carried one
   external?,           // what the handler bound (recovery)
   observations?,       // a waitUntil: [{ at, value }], what it has seen so far (§6.5)
                        //   NOT results: a resumed run RE-OBSERVES rather than replaying these
@@ -1105,6 +1106,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4023 | `waitUntil` deadline elapsed |
 | L4024 | `waitUntil` probe or predicate answered the wrong shape |
 | L4025 | Host did not schedule the run |
+| L4026 | Pause plane did not answer before the client deadline |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -1135,7 +1137,7 @@ time, L5xxx durability, L6xxx simulation.
 
 `L4000` is not a catalog code: it is the generic code an unclassified failure carries (`kind`
 `handler-fault`, `scope-fault`, or `host`), and it is what a program sees for a failure the catalog
-does not name. L3022, L4001 to L4006, L4008 and L4025 are the effect handler's failure vocabulary: a host
+does not name. L3022, L4001 to L4006, L4008, L4025 and L4026 are the effect handler's failure vocabulary: a host
 reports them, the interpreter journals and delivers them, and none is raised by the language itself.
 L1006, L1014, L5005, L5007 and L6002 are reserved: no path in this revision raises them.
 L6001 and L6002 belong to the reference implementation's simulator (`SimHandler`, `dryRun`), which
@@ -1161,3 +1163,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-09-01 | The `ask` schema shorthand is the handler-side reply contract (§6.5): a handler enforcing it refuses a schema it cannot read (L4022) and reports exhausted `attempts` as L4006; the reference simulator enforces it. A journal MAY carry a result bound, refusing an oversized `ok` result ahead of the settling append (L5006, §12), which leaves the reserved list. A host release or refused append inside a scope cancels no sibling and settles nothing (§7.6): the run unwinds with the journal exactly where it was, so a stopped run resumes past the scope instead of replaying a cancellation it never chose. A refused append among a race's settled arms unwinds the run ahead of the winner scan: a race may not settle over an entry the journal refused to record, whichever arm won. |
 | 2026-09-01 | A capability refusal is durable and retryable: a handler's refusal settles the entry `refused` under the handler's code (§10.1), the run unwinds with the uncatchable L5025 and is held (§9.2); a resume on a capable host finds the **refused** verdict (§10.7) and performs the step live (§11.1). A held arm among a race's settled arms unwinds ahead of the winner scan for the same reason a refused append does: a race that completed over it would settle the scope a resume short-circuits, burying the heal it owes (§7.3, §9.2). Two concurrent `turn`s on one handle are serialized at the dispatch (§6.5). A fork's child records its lineage: the run record's `forkedFrom` names the parent and the cut step (§11.3, SPEC.md §14.3). |
 | 2026-09-12 | A host that cannot schedule the run's own process reports that, and not a failed effect (L4025): a pause-plane deadline that elapsed while the process was demonstrably off the CPU is evidence about the host, so the operation is re-entered on the durable pause it already holds and a `sleep` whose deadline passed during the starvation completes LATE, which is what a lower-bound wait promises. The distinction is measured rather than assumed, by event-loop lag across the window AND a shortfall in the ticks that window should have contained, because a wall clock alone cannot separate "the timer did not fire" from "this process never ran". A caller that still cannot be served after a bounded number of consecutive starved attempts fails with L4025 naming the measurement, never hangs; a deadline on a loop that was running, and every failure that is not a client deadline, is unchanged and still `L4000`. |
+| 2026-09-17 | A pause plane that answers LATE is not a failed effect either (L4026): while a step is parked the host issues roughly one plane read per second, each with its own client deadline, so a single slow reply used to end the step and the run under `L4000` with most of its deadline unspent — and the exposure grew with how long the step waited. A deadline-shaped failure on a loop that WAS running is now read as one late reply rather than as a broken plane: the pause is durable and still answerable, so the read is re-issued with bounded exponential backoff and the step settles on the answer it was waiting for. Bounded separately from L4025 and never reset, so neither condition nor any interleaving of them retries forever; after that bound the step fails with L4026 naming the measurement. Every failure that is not a client deadline is unchanged and still `L4000`. |
