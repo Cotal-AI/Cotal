@@ -1,0 +1,247 @@
+{
+  "issue": 1648,
+  "workspace": "the lane worktree (fix-1648)",
+  "branch": "detached HEAD in /home/david/lanes-20260916/fix-1648",
+  "headSha": "630db1032",
+  "baseSha": "43a4281a401c67a45422798ee5d90bb30eb3d85a",
+  "reviewedSha": "5803256fadf7008a8e615eb50592c797ce107bc0",
+  "reviewedShaNote": "Both blocking reviews record headSha 5803256fa. That commit is the PARENT of the first fix commit (git merge-base --is-ancestor 5803256fa HEAD exits 0; git diff --name-status 5803256fa..HEAD lists the production files). At 5803256fa the lane carried only the unauthenticated-peer settle, so all three of the issue's outcomes were genuinely absent and every FAIL grade in both reviews was correct FOR THAT TREE. This report records what the tree does now, and treats each finding as a real defect rather than a timing artifact.",
+  "reproduced": true,
+  "reproducedWhat": "All three required outcomes, each measured on real custodian processes, plus the two defects the reviews exposed in the evidence path itself: an oversized Unix socket path that killed the transport unattributably, and a repro whose own INCONCLUSIVE guard was tripped by the fix working.",
+  "requirementsEstablished": [
+    {
+      "requirement": "1. A custodian whose broker or manager is gone exits on its own within a bounded time",
+      "method": "Launch a seat with a long-lived child, adopt it from a SEPARATE manager process, SIGKILL that manager without unwinding (the crashed-manager shape), then poll the custodian and report the seconds.",
+      "command": "COTAL_RUN=o1-base PROBE_BOUND_MS=45000 npx tsx .tmp/probe-orphan.mts   (production at 43a4281a4)",
+      "beforeOutput": "{\"result\":\"ORPHAN\",\"seconds_to_exit\":null,\"bound_seconds\":45,\"custodian_state\":\"S\",\"child_state\":\"S\"}",
+      "beforeExitCode": 2,
+      "afterCommand": "COTAL_SEAT_UNATTENDED_MS=8000 COTAL_RUN=o1-head PROBE_BOUND_MS=60000 npx tsx .tmp/probe-orphan.mts   (production at HEAD)",
+      "afterOutput": "{\"result\":\"EXITED\",\"seconds_to_exit\":7.92,\"bound_seconds\":60,\"custodian_state\":\"gone\",\"child_state\":\"gone\"}",
+      "afterExitCode": 0,
+      "number": "7.92 seconds against an 8000 ms bound; unbounded (still resident at 45 s) before the fix",
+      "ranUnder": "TMPDIR=/home/david/lanes-20260916/review-wt-1648-x/.review-tmp, the reviewers' own temp location",
+      "shipped": "UNATTENDED_MS = 10 minutes, overridable per launch by COTAL_SEAT_UNATTENDED_MS. The window restarts at each controller disconnect, so a manager that detaches and re-adopts keeps its seats (cell O2 holds a seat across 1.4x the bound through a re-adopt). The child is stopped with the custodian rather than orphaned, because the custodian owns the only reader of its PTY."
+    },
+    {
+      "requirement": "2. The suite runner waits for or kills the custodians it started before returning",
+      "method": "Run the REAL shard runner (bin/smoke/shard.mjs) over a suite list holding one suite that launches seats, emits a valid sentinel, and returns without reaping. Count survivors the way the ISSUE counts them: read /proc/<pid>/cwd, because the worktree path never appears in argv.",
+      "command": "PROBE_LEAK=3 node .tmp/probe-runner.mjs",
+      "output": "{\"runner_exit\":1,\"custodians_the_suite_launched\":3,\"orphans_before\":0,\"orphans_after\":0,\"orphan_pids\":[],\"runner_reported_leak\":true,\"runner_failed_the_shard_for_it\":true,\"runner_named_run\":true}",
+      "exitCode": 0,
+      "number": "3 custodians launched, 0 orphans after, counted by /proc/<pid>/cwd",
+      "shipped": "bin/smoke/reap-seat-custodians.mjs. The shard names each run, sweeps after EVERY suite, kills only custodians carrying that run's marker, and fails the shard for a suite that passed but leaked one. It reports how many custodians it saw but could not attribute (79 on this host) rather than letting '0 reaped' imply a clean box, and it never touches another run's custodians, which would SIGKILL a live seat in a parallel lane."
+    },
+    {
+      "requirement": "3. A census is cheap: argv or an environment variable names the run",
+      "method": "Launch seats under a known run marker, then read it back from /proc/<pid>/cmdline and /proc/<pid>/environ, and time the census.",
+      "command": "COTAL_RUN=o3-final PROBE_SEATS=4 npx tsx .tmp/probe-census.mts",
+      "output": "{\"run\":\"o3-final\",\"launched\":4,\"census_found\":4,\"census_matches_launched\":true,\"attributed_by_argv\":4,\"attributed_by_environ\":4,\"argv_census_ms\":7.2,\"cwd_walk_ms\":5.5,\"cwd_walk_found\":21,\"sample_marker\":\"o3-final\"}",
+      "exitCode": 0,
+      "number": "4 of 4 attributed by argv AND by environ; census 7.2 ms",
+      "shipped": "Every custodian carries `--cotal-run <marker>` on argv and COTAL_RUN in its environment. censusCustodians(run?) reads the argv half, which is world-readable, so a reaper never needs the owner's uid or a /proc/*/cwd walk. A custodian carrying no marker is never claimed: it cannot be attributed, and claiming it would be a guess."
+    }
+  ],
+  "testCommand": "pnpm smoke:seat-orphan",
+  "fixedExitCode": 0,
+  "revertedExitCode": 1,
+  "outputWithFixPresent": "SEAT ORPHAN PASSED (32 cells)",
+  "outputWithFixReverted": "SEAT ORPHAN FAILED (0 passed, 3 failed) — SMOKE CELLS: 3",
+  "revertProvesTest": true,
+  "revertProvesTestHow": {
+    "method": "Production-only revert: git checkout 43a4281a4 -- packages/seat/src/. Every test, the runner and the docs are retained. The suite takes the production surface through a NAMESPACE import and asserts each symbol by a named cell, so a reverted tree INSTANTIATES and fails on assertions instead of dying at module load.",
+    "moduleResolutionErrors": 0,
+    "namedAssertionReached": true,
+    "redAssertions": [
+      "the custodian exposes an unattended bound, so a custodian with no controller can exit on its own {\"UNATTENDED_MS\":\"undefined\",\"unattendedMs\":\"undefined\"}",
+      "the launcher exposes a run marker, so a census can name the run that started a custodian {\"RUN_MARKER_FLAG\":\"undefined\",\"runMarker\":\"undefined\",\"runMarkerOf\":\"undefined\"}",
+      "the package exposes a census, so orphans are found without walking /proc/*/cwd {\"censusCustodians\":\"undefined\"}"
+    ],
+    "namedImportRejectedAsEvidence": "An earlier draft used a NAMED import. Against base that dies with `SyntaxError: does not provide an export named 'RUN_MARKER_FLAG'` before any assertion runs: non-zero, but VOID under the gate rule and indistinguishable from a typo in the import list. Recorded as rejected, never presented as a kill.",
+    "targetedMutationAlsoRun": {
+      "mutation": "armUnattended made a no-op with a runtime-opaque guard, so every export still resolves and only the timer is disabled",
+      "exitCode": 1,
+      "moduleResolutionErrors": 0,
+      "redAssertions": [
+        "O1 a custodian whose manager is gone exits on its own within the bound (24.02s of 6s) {\"custodian\":\"S\"}",
+        "O1 its child goes with it, rather than being left behind with no reader {\"child\":\"S\"}",
+        "O1 the custody record is gone, so nothing points at processes that no longer exist",
+        "O2 the bound then applies from the last disconnect, not from launch {\"custodian\":\"S\"}"
+      ],
+      "why": "Killing the exports proves the cells read the surface. This proves the TIMED cells depend on the timer itself, not merely on a constant being exported."
+    },
+    "restoreVerified": "git checkout HEAD -- packages/seat/src/; git status --porcelain empty; suite back to 32 cells, exit 0."
+  },
+  "acceptanceCommandGate": {
+    "note": "Both reviewers used `pnpm repro:1648` as the acceptance path and recorded BOTH sides VOID. That command now reaches a real verdict on both sides, run from the reviewers' own TMPDIR.",
+    "command": "TMPDIR=/home/david/lanes-20260916/review-wt-1648-x/.review-tmp pnpm repro:1648",
+    "revertedExitCode": 2,
+    "revertedOutput": "custodian settled within 30s of its child exiting: false / control: once the unauthenticated socket drops, it settles: true / DEFECT PRESENT (#1648)",
+    "restoredExitCode": 0,
+    "restoredOutput": "custodian settled within 30s of its child exiting: true / control: once the unauthenticated socket drops, it settles: true / OK: an unauthenticated peer does not keep a custodian alive",
+    "moduleResolutionErrors": 0
+  },
+  "reviewFindingsAnswered": [
+    {
+      "finding": "Both production-revert gate sides were VOID: the run exited non-zero without reaching a named assertion.",
+      "reviewers": [
+        "rev-1648-x"
+      ],
+      "status": "WAS RIGHT, ROOT CAUSE FOUND AND FIXED",
+      "diagnosis": "Not a missing assertion and not the import shape the brief guessed at. reviewer x's own note named the mechanism: 'The initial TMPDIR inside the worktree produced an overlong Unix socket path and prevented the scenario from starting.' A seat socket is <root>/<32 hex>/seat.sock, and sun_path holds 108 bytes including its NUL. Past that libuv does NOT fail: it copies into the fixed buffer, TRUNCATES, and listen SUCCEEDS on the shortened name. The custodian then chmods the path it meant to bind, throws ENOENT inside the listen callback where the enclosing promise cannot catch it, dies as an uncaught exception without writing its log, and the launcher reports only 'custodian exited before ready: pid N gone'.",
+      "reproCommand": "node .tmp/probe-pathlen.mjs /home/david/lanes-20260916/review-wt-1648-x/.review-tmp",
+      "reproOutputBefore": "root length=73  implied socket path length=116 — FAILED: custodian exited before ready: pid 3482479 gone   (no custodian.log written)",
+      "truncationMeasured": "109 bytes -> creates seat.soc; 110 -> seat.so; 111 -> seat.s; 117 -> EADDRINUSE",
+      "reproOutputAfter": "FAILED: seat socket path is 116 bytes, over the 107-byte limit for a Unix socket: <path>. The kernel would truncate it silently and the custodian would bind a different name than it cleans up. Use a shorter custody root (a deep TMPDIR inside a worktree is the usual cause).",
+      "fix": "launchSeat refuses an oversized path up front (assertSocketPathFits). The custodian verifies it bound the path it asked for, and routes every listen-callback failure to reject so the log is written instead of dying uncaught. smoke-kit gains makeSeatRoot, which keeps a suite's custody root short enough and says on stderr when it falls back to /tmp. Every seat suite and repro:1648 now use it.",
+      "proof": "The reviewers' TMPDIR yields a 121-byte socket (rootFits=false). pnpm smoke:seat-orphan and pnpm repro:1648 both run green from it now: exit 0."
+    },
+    {
+      "finding": "The restored repro printed INCONCLUSIVE ('the unauthenticated peer dropped before the child exited'), so it reached no named assertion even with the fix present.",
+      "reviewers": [
+        "rev-1648-x"
+      ],
+      "status": "WAS RIGHT, AND IT WAS THE TEST'S OWN BUG",
+      "diagnosis": "The repro gates its verdict on the unauthenticated peer still holding the custodian when the settle window opens. That gate is correct in intent, but it was read as 'did this socket close'. A settling custodian tears down its listener and closes that socket itself, so once the defect is FIXED the close is caused by the very behaviour under test. The script therefore reported INCONCLUSIVE on a tree where the custodian settled correctly, and both reviews recorded that as the fix being unproven.",
+      "fix": "The discriminator is now the CHILD'S state at the moment the socket closed, captured in the close handler rather than sampled by a poll. Child still running means the peer left on its own and the scenario never armed; child already gone means the settle closed it.",
+      "proof": "Reverted side exit 2 (DEFECT PRESENT), restored side exit 0 (OK), both from the reviewers' TMPDIR."
+    },
+    {
+      "finding": "Requirement 1 FAIL / INCONCLUSIVE: no manager monitoring, no bounded liveness timeout; the custodian only settles once the child has exited.",
+      "reviewers": [
+        "rev-1648-g",
+        "rev-1648-x"
+      ],
+      "status": "WAS RIGHT AT 5803256fa, NOW ESTABLISHED",
+      "commandThatDemonstrates": "COTAL_RUN=o1-base PROBE_BOUND_MS=45000 npx tsx .tmp/probe-orphan.mts with production at 43a4281a4 -> ORPHAN, exit 2; at HEAD -> EXITED after 7.92 s, exit 0.",
+      "note": "reviewer g's reading of the base code was exact: settleTerminal returns early while `alive` is true, so a live child plus a dead manager was an unbounded wait. That is the defect the unattended timer closes."
+    },
+    {
+      "finding": "Requirement 2 FAIL: no suite runner was modified to track, await or reap spawned custodians; shard.mjs reaps smoke brokers only.",
+      "reviewers": [
+        "rev-1648-g",
+        "rev-1648-x"
+      ],
+      "status": "WAS RIGHT AT 5803256fa, NOW ESTABLISHED",
+      "commandThatDemonstrates": "PROBE_LEAK=3 node .tmp/probe-runner.mjs -> 3 launched, 0 orphans after (by /proc/<pid>/cwd), runner_reported_leak true, runner_failed_the_shard_for_it true; exit 0.",
+      "reviewerXCaveatAnswered": "reviewer x noted that zero post-run orphans proves nothing when the tests clean up after themselves. Correct, and that is why the probe's suite deliberately does NOT clean up: it launches seats, prints a valid sentinel, exits 0, and the runner is the only thing that could have reaped them."
+    },
+    {
+      "finding": "Requirement 3 FAIL: the launcher spawns with only PATH in its environment and no identifying argv.",
+      "reviewers": [
+        "rev-1648-g",
+        "rev-1648-x"
+      ],
+      "status": "WAS RIGHT AT 5803256fa, NOW ESTABLISHED",
+      "commandThatDemonstrates": "COTAL_RUN=o3-final PROBE_SEATS=4 npx tsx .tmp/probe-census.mts -> 4 of 4 attributed by argv and by environ, census 7.2 ms; exit 0.",
+      "reviewerXCaveatAnswered": "reviewer x excluded its own live sample because the matching shell contained the custodian path in its script text, so the sample matched the enclosing shell. censusCustodians avoids that class of error by requiring BOTH an argv entry ending in /dist/custodian.js AND the --cotal-run flag; a cell asserts a census for a different run claims none of this run's custodians."
+    },
+    {
+      "finding": "implementations/manager/smoke/seat-input-live.smoke.ts continues to leak orphaned custodians (PPID 1) on exit.",
+      "reviewers": [
+        "rev-1648-g"
+      ],
+      "status": "RIGHT, AND IT EXPOSED A SECOND REAL GAP",
+      "staticEvidence": "mgr.stop() is the last statement of the try block, OUTSIDE the finally; the finally kills only the broker and removes the temp dir. A manager stop releases (detaches) its seats rather than reaping them, so a failure before that line leaves live custodians. I did not RUN this suite: its file is *-live and it needs a live broker, and the brief forbids a :live suite.",
+      "gapFound": "Those suites build a child environment by copying their own and deleting every COTAL_ key, which is the right rule for connection material and takes COTAL_RUN with it. The marker degraded to the launching pid, so the runner's census could not attribute exactly the custodians most likely to leak.",
+      "reproCommand": "npx tsx .tmp/probe-scrub.mts   (spawns a child through the real COTAL_ scrub)",
+      "reproOutputBefore": "{\"child_saw_COTAL_RUN\":null,\"claimed_by_run_census\":false,\"carries_any_marker\":true}  exit 2",
+      "reproOutputAfter": "{\"child_saw_COTAL_RUN\":null,\"claimed_by_run_census\":true,\"carries_any_marker\":true}  exit 0",
+      "fix": "runMarker climbs the process ancestry and reads COTAL_RUN from the nearest ancestor that still carries it, bounded to 16 hops, stopping at pid 1. The scrub is unchanged and no suite has to remember an exception. Because the custodian's own exit is now bounded, such a leak is also self-limiting even when no reaper runs.",
+      "testingNote": "/proc/<pid>/environ is fixed at EXEC and is never updated by a later assignment to process.env, so a test that sets process.env at runtime proves nothing. The cells use a parent actually exec'd with COTAL_RUN, and an armed cell asserts the scrub really removed it first."
+    }
+  ],
+  "filesChanged": [
+    "packages/seat/src/protocol.ts",
+    "packages/seat/src/custodian.ts",
+    "packages/seat/src/launcher.ts",
+    "packages/seat/src/reap.ts",
+    "packages/seat/src/index.ts",
+    "packages/seat/smoke/orphan.smoke.ts",
+    "packages/seat/smoke/repro-1648.mts",
+    "packages/seat/smoke/lifecycle.smoke.ts",
+    "packages/seat/smoke/protocol.smoke.ts",
+    "packages/seat/smoke/isolation.smoke.ts",
+    "packages/seat/package.json",
+    "packages/seat/README.md",
+    "packages/smoke-kit/src/seat-root.ts",
+    "packages/smoke-kit/src/index.ts",
+    "bin/smoke/reap-seat-custodians.mjs",
+    "bin/smoke/shard.mjs",
+    "bin/smoke/ci-suites.d/6d6fafdc69cc7c43d2ce0fece48fc6431df4529dcda0bfaceb4395da9564173c.txt",
+    "package.json",
+    "pnpm-lock.yaml",
+    ".changeset/seat-unattended-custodian.md"
+  ],
+  "productionChange": "A custodian with no authenticated controller now stops its child and exits after UNATTENDED_MS, armed whenever the controller set empties and disarmed the moment one authenticates. Every custodian carries --cotal-run <marker> on argv and COTAL_RUN in its environment, recovered from an ancestor when a suite has scrubbed COTAL_; censusCustodians reads it back from /proc/<pid>/cmdline. launchSeat refuses a socket path the kernel would truncate, and the custodian verifies the path it bound and logs any startup failure instead of dying uncaught.",
+  "testAdded": "packages/seat/smoke/orphan.smoke.ts — 32 cells, gated into smoke:ci via bin/smoke/ci-suites.d/. Covers the three required outcomes on real processes, the re-adopt case that must NOT trip the bound, the socket-path ceiling, and the COTAL_ scrub recovery.",
+  "commits": [
+    "1542b0ddc fix(seat): bound the life of an unattended custodian and make a census cheap",
+    "73f8cba60 fix(seat,smoke-kit): refuse a socket path the kernel would truncate",
+    "95143cefe fix(seat): recover the run marker when a suite scrubs COTAL_ from a child env",
+    "630db1032 fix(seat): let the repro tell a settle-closed peer from one that left",
+    "cd044b2a8 docs(seat): record the socket-path and run-marker findings in the changeset"
+  ],
+  "verificationAtHead": [
+    {
+      "command": "pnpm smoke:seat-orphan",
+      "exitCode": 0,
+      "detail": "32 cells"
+    },
+    {
+      "command": "pnpm smoke:seat-lifecycle",
+      "exitCode": 0,
+      "detail": "42 passed, 0 failed"
+    },
+    {
+      "command": "pnpm smoke:seat-protocol",
+      "exitCode": 0,
+      "detail": "16 passed, 0 failed"
+    },
+    {
+      "command": "pnpm smoke:seat-isolation",
+      "exitCode": 0,
+      "detail": "5 passed, 0 failed"
+    },
+    {
+      "command": "pnpm repro:1648",
+      "exitCode": 0,
+      "detail": "OK: an unauthenticated peer does not keep a custodian alive"
+    },
+    {
+      "command": "pnpm smoke:core-boundary",
+      "exitCode": 0,
+      "detail": "446 shipped files scanned, 0 import @cotal-ai/smoke-kit"
+    },
+    {
+      "command": "pnpm smoke:gate-inventory",
+      "exitCode": 0
+    },
+    {
+      "command": "pnpm typecheck",
+      "exitCode": 0
+    },
+    {
+      "command": "pnpm check:docs-voice",
+      "exitCode": 0,
+      "detail": "41 pages passed"
+    }
+  ],
+  "knownPreExistingFailure": {
+    "command": "pnpm smoke:orphan-seat-reap",
+    "exitCode": 1,
+    "detail": "first spawn refused: custodian exited before ready",
+    "isMine": false,
+    "evidence": "Fails identically at 5803256fa with my changes stashed. Recorded rather than claimed as passing; worth a separate look, since the hardening in this lane now makes such a failure name its own cause."
+  },
+  "containment": {
+    "fullRuns": 3,
+    "fullRunCap": 3,
+    "censusAfterEveryRun": true,
+    "custodiansLeftInWorktree": 0,
+    "killedOnlyCwdInsideOwnWorktree": true,
+    "minimumObservedMemAvailableGb": 5,
+    "liveSuitesRun": "none",
+    "notes": "No suite whose name ends in :live was run. seat-input-live was inspected statically only. Nothing was pushed, no ref was moved, no review file was edited."
+  },
+  "headShaNote": "630db1032 is the last commit carrying production or test content, and every exit code in this report was measured against it. The commits after it add only the changeset text and this report, so they cannot move a result. A report cannot name the commit that contains it: writing that sha in would change it."
+}
