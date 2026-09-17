@@ -58,11 +58,31 @@ import {
   loopLagObserver,
   servedDespiteStarvation,
   STARVED_ATTEMPTS,
-  POLL_ATTEMPTS,
   type LoopLagObserver,
   type LoopLagWindow,
 } from "../src/host-starvation.js";
+import * as starvation from "../src/host-starvation.js";
 import { pickFreePort } from "./_free-port.js";
+
+/**
+ * `POLL_ATTEMPTS` READ OFF THE NAMESPACE, NOT IMPORTED BY NAME, and this is the difference between
+ * a suite that can fail and a suite that cannot run.
+ *
+ * The bound on late replies is a constant this repair ADDED. A named import of it links at module
+ * instantiation, so against a tree without the repair the whole file is a SyntaxError before its
+ * first line executes: the run exits non-zero having reached ZERO assertions, which looks like a
+ * detection and is a broken import. Measured on that tree: `SyntaxError: The requested module
+ * '../src/host-starvation.js' does not provide an export named 'POLL_ATTEMPTS'`, 0 cells run.
+ *
+ * A namespace import always links, so every cell below executes on both trees and the reds come
+ * from the assertions rather than from the loader. The fallback is a SANITY CEILING only: no cell
+ * asserts the bound by its value alone, they assert the behaviour (it retried, it ended, under
+ * which code), which is what separates the two implementations.
+ */
+const POLL_ATTEMPTS: number =
+  typeof (starvation as { POLL_ATTEMPTS?: unknown }).POLL_ATTEMPTS === "number"
+    ? (starvation as unknown as { POLL_ATTEMPTS: number }).POLL_ATTEMPTS
+    : STARVED_ATTEMPTS;
 
 const SPACE = "meshstarve";
 const EP = "manager";
@@ -439,7 +459,11 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     "the unanswerable plane",
   );
   c("it ends rather than re-reading forever", out !== undefined && out !== "ok");
-  c("after a bounded number of reads", attempts === POLL_ATTEMPTS, attempts);
+  // THE BEHAVIOUR, not the constant: it RE-READ at all, and it stopped. A tree that treats a late
+  // reply as a fault raises on the first attempt, which fails here on `attempts > 1` without
+  // needing the bound's name to exist; the ceiling is the other half, that it ended.
+  c("after a bounded number of reads, having re-read at all rather than raising on the first",
+    attempts > 1 && attempts <= POLL_ATTEMPTS, `${attempts} attempts, ceiling ${POLL_ATTEMPTS}`);
   c("under L4026, which names the PLANE rather than the effect or the host",
     out instanceof EffectError && out.code === "L4026" && out.kind === "pause-unanswered",
     out instanceof EffectError ? `${out.code}/${out.kind}` : String(out));

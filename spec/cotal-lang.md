@@ -814,7 +814,8 @@ The journal is an append-only log of entries. An entry is JSON:
   state,               // "pending" | "settled"
   status?,             // "ok" | "failed" | "cancelled" | "refused"
   result?,             // status ok: the recorded value
-  error?,              // status failed or refused: { code, kind, message, detail? }
+  error?,              // status failed or refused: { code, kind, message, stack?, detail? }
+                       //   stack: where the throw came from, when the thrown value carried one
   external?,           // what the handler bound (recovery)
   observations?,       // a waitUntil: [{ at, value }], what it has seen so far (§6.5)
                        //   NOT results: a resumed run RE-OBSERVES rather than replaying these

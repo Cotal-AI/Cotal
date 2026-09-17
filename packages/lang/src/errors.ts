@@ -402,6 +402,20 @@ export function messageOf(v: unknown): string {
   return typeof m === "string" ? m : String(v);
 }
 
+/**
+ * The stack off anything a foreign body throws, or `undefined` when there is none to keep.
+ *
+ * Read with the same defensiveness as {@link messageOf} and for the same reason: a handler is other
+ * people's code, it may throw a primitive or an object whose `stack` is a getter returning a
+ * number, and a recorder that trusted the field would replace the handler's failure with its own.
+ * Absent, empty, or not a string is NOT recorded: the field says "here is where this came from",
+ * and `"undefined"` stringified into it would be a place that does not exist.
+ */
+export function stackOf(v: unknown): string | undefined {
+  const s = (v as { stack?: unknown } | null | undefined)?.stack;
+  return typeof s === "string" && s !== "" ? s : undefined;
+}
+
 /** A recorded step's inputs changed, so its recorded result may no longer be the truth. */
 export class RunDivergence extends Error {
   constructor(

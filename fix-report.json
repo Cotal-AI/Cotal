@@ -1,0 +1,127 @@
+{
+  "issue": 1619,
+  "lane": "fix-1619",
+  "worktree": "/home/david/lanes-20260916/fix-1619",
+  "head_at_start": "79507ab06",
+  "base": "43a4281a4",
+  "node": "v22.23.2",
+  "note": "Every exit code below is the real value printed by the command, captured with echo $? into a log file in .tmp and read back. No expected values are recorded.",
+
+  "finding_1_handler_fault_stack": {
+    "verdict": "addressed",
+    "was": "EntryError had no stack field, and both handler-fault recording paths in perform.ts built the entry error from code, kind and message only, so the stack of whatever the handler threw was discarded.",
+    "located": {
+      "packages/lang/src/journal.ts:24-29": "interface EntryError { code, kind, message, detail? } - no stack",
+      "packages/lang/src/perform.ts:340-343": "effect site: const error: EntryError = recorded !== undefined ? recorded.error : { code: carried ?? \"L4000\", kind: \"handler-fault\", message: messageOf(e) }",
+      "packages/lang/src/perform.ts:500-501": "waitUntil probe site: the same expression, which a fix at the effect site alone would have left open"
+    },
+    "change": {
+      "packages/lang/src/journal.ts": "EntryError gains an optional readonly stack?: string, documented as written only when the thrown value carried one.",
+      "packages/lang/src/errors.ts": "new exported stackOf(v: unknown): string | undefined, the guard: reads .stack off a possibly-null value and keeps it only when it is a non-empty string.",
+      "packages/lang/src/perform.ts": "both handler-fault sites spread the recorded error and add stack only when stackOf returned one. The EffectError branch (recordableError) and the plain-throw branch both get it.",
+      "spec/cotal-lang.md": "the journal entry shape now names error.stack, since the spec documents that record."
+    },
+    "guards": [
+      "absent stack (a primitive throw) records no stack rather than the string \"undefined\"",
+      "a non-string stack (e.g. the number 42) records no stack",
+      "an empty-string stack is treated as absent"
+    ],
+    "proof": {
+      "test": "packages/lang/smoke/journal.smoke.ts, the cell '// ---- and a handler fault carries WHERE it was thrown from'",
+      "how": "drives the real interpreter with a handler whose turn throws, then reads error.stack back OFF THE RECORDED JOURNAL ENTRY, not off the raised error. Asserting on the raised error would pass with the field dropped.",
+      "assertions": [
+        "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
+        "...and it is the stack, not the message repeated into the field",
+        "the recorded stack survives a serialized round trip, which is the form a later reader gets",
+        "a primitive throw records NO stack rather than inventing one, and still records the fault",
+        "a thrown value whose `stack` is not a string records no stack, and the rest of the fault is unharmed"
+      ],
+      "command": "pnpm smoke:lang-journal",
+      "exit_code_fixed_tree": 0,
+      "result_fixed_tree": "108 checks passed (was 103 before this cell)"
+    },
+    "revert_gate": {
+      "what_was_reverted": "packages/lang/src/perform.ts restored to 43a4281a4, test kept",
+      "command": "pnpm smoke:lang-journal",
+      "exit_code": 1,
+      "module_resolution_errors": 0,
+      "named_assertion_reached": true,
+      "named_red": "Error: FAIL: a handler fault records the STACK of the error that was thrown, read back off the recorded entry - {\"recorded\":\"undefined\",\"kind\":\"handler-fault\"}",
+      "cells_reached_before_the_red": 103,
+      "verdict": "LIVE - the red is the named assertion, not a loader failure, and 103 cells ran first"
+    }
+  },
+
+  "finding_2_void_revert_gate": {
+    "verdict": "addressed",
+    "was": "implementations/runtime/smoke/host-starvation.smoke.ts imported POLL_ATTEMPTS by name from ../src/host-starvation.js. That export is one the fix ADDED, so against base the file failed at module instantiation: exit 1 with zero assertions executed. The non-zero exit was a broken import, not a detection, which is why the gate was VOID.",
+    "change": {
+      "import": "the named import of POLL_ATTEMPTS was dropped; the module is also pulled in as a namespace (import * as starvation) and POLL_ATTEMPTS is read off it defensively, falling back to STARVED_ATTEMPTS when the export is absent. A namespace import always links, so the file instantiates on both trees.",
+      "assertion": "cell 1e's 'after a bounded number of reads' no longer asserts equality with the constant. It now asserts the BEHAVIOUR: attempts > 1 (it re-read at all, which a tree that treats a late reply as a fault fails, since that raises on the first attempt) and attempts <= POLL_ATTEMPTS (it ended). The ceiling is a sanity bound; the discriminating claim is the re-read.",
+      "cell_1f": "left reading the fallback-backed ceiling, where the bound was already documented in-file as a sanity bound rather than the discriminating claim."
+    },
+    "revert_gate_after_the_fix": {
+      "what_was_reverted": "implementations/runtime/src/host-starvation.ts restored byte-identical to 43a4281a4 (verified with diff against git show), and the L4026 row removed from the packages/lang/src/errors.ts catalog. Every test kept.",
+      "command": "pnpm smoke:runtime-host-starvation",
+      "exit_code": 1,
+      "module_resolution_errors": 0,
+      "named_assertion_reached": true,
+      "named_assertion_reds": 9,
+      "summary_line": "host-starvation.smoke: 49 passed, 9 failed",
+      "named_reds": [
+        "the sleep COMPLETES: one late reply is a property of that request, not of the pause behind it",
+        "and it did NOT fail as L4000 carrying the client's bare `timeout`, which is the misattribution #1619 is about",
+        "the pause really did settle on the plane: the sleep read a fact, it did not skip the wait",
+        "and the late reply was absorbed by name: the notice says the host WAS scheduling, so the blame is the plane's",
+        "a client deadline on a loop that was RUNNING is one late reply, not a broken plane",
+        "after a bounded number of reads, having re-read at all rather than raising on the first (1 attempts, ceiling 6)",
+        "under L4026, which names the PLANE rather than the effect or the host",
+        "failing under whichever condition filled its count first, by name",
+        "a deadline on a loop that was RUNNING is not starvation: the host has nothing to answer for"
+      ],
+      "verdict": "PASSING GATE - non-zero exit, zero module errors, and named assertions reached. 49 cells still passed, so the suite ran to completion and the reds are the detection."
+    },
+    "gate_before_the_fix_for_contrast": {
+      "described_by_review": "exit 1 during module instantiation, SyntaxError on the POLL_ATTEMPTS import, zero named assertions",
+      "accepted": true,
+      "note": "Not re-measured as a separate run; the import was the only thing standing between the file and instantiation, and after removing it the same revert produced 49 passes and 9 named reds, which the broken tree could not have produced."
+    }
+  },
+
+  "finding_3_timeout_retry": {
+    "verdict": "confirmed working, untouched",
+    "note": "implementations/runtime/src/host-starvation.ts was temporarily copied aside for the revert gate and restored byte-identical to HEAD (verified with diff). No production change to the retry itself in this pass."
+  },
+
+  "runs": [
+    { "command": "node -v", "output": "v22.23.2" },
+    { "command": "git rev-parse --short HEAD", "output": "79507ab06" },
+    { "command": "git status --porcelain", "output": "(clean at start)" },
+    { "command": "pnpm smoke:runtime-host-starvation (head, before any change)", "exit_code": 0, "result": "58 passed, 0 failed" },
+    { "command": "pnpm smoke:lang-journal (with the new stack cell, fixed tree)", "exit_code": 0, "result": "108 checks passed" },
+    { "command": "pnpm smoke:lang-journal (perform.ts reverted to base)", "exit_code": 1, "module_resolution_errors": 0, "named_assertion_reached": true },
+    { "command": "pnpm typecheck", "exit_code": 0 },
+    { "command": "pnpm smoke:runtime-host-starvation (production reverted to base, tests kept)", "exit_code": 1, "module_resolution_errors": 0, "named_assertion_reached": true, "result": "49 passed, 9 failed" },
+    { "command": "pnpm smoke:runtime-host-starvation (production restored)", "exit_code": 0, "result": "58 passed, 0 failed" },
+    { "command": "pnpm smoke:lang-interpret", "exit_code": 0 },
+    { "command": "pnpm smoke:lang-sim", "exit_code": 0 },
+    { "command": "pnpm smoke:lang-fuzz-journal", "exit_code": 0 },
+    { "command": "pnpm smoke:lang-surface", "exit_code": 0, "result": "35 distinct codes at 87 sites" },
+    { "command": "pnpm smoke:lang-semantics", "exit_code": 0 },
+    { "command": "pnpm smoke:lang-engine", "exit_code": 0, "result": "419 checks passed" },
+    { "command": "pnpm smoke:lang-differential", "exit_code": 0, "result": "213 passed, 0 failed" },
+    { "command": "pnpm smoke:lang-conformance", "exit_code": 0, "result": "6 checks passed" },
+    { "command": "pnpm smoke:runtime-mesh-checkpoint", "exit_code": 0, "result": "42 passed, 0 failed" },
+    { "command": "pnpm check:docs-voice", "exit_code": 0, "result": "41 pages passed" }
+  ],
+
+  "files_changed": [
+    "packages/lang/src/journal.ts",
+    "packages/lang/src/errors.ts",
+    "packages/lang/src/perform.ts",
+    "packages/lang/smoke/journal.smoke.ts",
+    "implementations/runtime/smoke/host-starvation.smoke.ts",
+    "spec/cotal-lang.md",
+    ".changeset/parked-step-late-plane-reply.md"
+  ]
+}
