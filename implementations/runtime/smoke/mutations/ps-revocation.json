@@ -74,7 +74,7 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
-      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then prints the row as `unchecked`, which reddens the same cell for a different reason. The anchor spans two lines because the host read beside it is byte-identical on its first line; a single-line target matched both and was refused as ambiguous."
+      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then prints the row as `unchecked`, which reddens the same cell for a different reason. It does so for EVERY row, so it is not the only red: measured by hand at 2243f4f0 it reddens eight cells. The first is block 2's `with its state`, and block 9's before-revoke control is among them. The named cell is the claim it breaks, not the first line it breaks. The anchor spans two lines because the host read beside it is byte-identical on its first line; a single-line target matched both and was refused as ambiguous."
     },
     {
       "name": "the revoker and the reason stop being printed under the table",
