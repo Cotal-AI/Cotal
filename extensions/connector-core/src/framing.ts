@@ -74,7 +74,7 @@ export function fmtBody(text: string): string {
  * validated what.
  */
 export function fmtItem(i: InboxItem): string {
-  const h = i.historical ? "(history) " : ""; // backfilled on join — pre-dates you, not live
+  const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
   const body = `${h}${fmtBody(i.text)}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
