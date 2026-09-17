@@ -34,6 +34,13 @@
  *   node scripts/mutation-proof.mjs --config mutations.json
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
+ *   node scripts/mutation-proof.mjs --recover     put back what a killed proof left, and exit
+ *
+ * A killed proof cannot restore anything, so each mutation first writes a breadcrumb outside the
+ * tree: the file, its pre-mutation hash and where the backup is. Every run reads those before it
+ * looks at the tree and puts a recorded mutation back, bytes and timestamp; `--recover` does only
+ * that. A mutation it cannot put back is refused by name rather than measured. This is the one
+ * path that survives SIGKILL, which is what the reproof harness sends a proof past its budget.
  *
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
