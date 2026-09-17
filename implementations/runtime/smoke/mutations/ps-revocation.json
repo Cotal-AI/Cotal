@@ -16,7 +16,8 @@
     "",
     "THE CONTROL IS MEASURED RATHER THAN MUTATED, and this is deliberate. The cell before the",
     "revoke asserts the same run prints `running`, on the same table, through the same code path.",
-    "At the merge base 08cff353 that control PASSED while the cell after the revoke FAILED, which",
+    "At 08cff353, the base this PR was first measured on, that control PASSED while the cell after",
+    "the revoke FAILED, which",
     "is the only evidence that separates `this table reads the marker` from `this table happens to",
     "print the word revoked`. A mutant that forced every row to `revoked` would redden an earlier",
     "block's `with its state` cell first, so it would name the wrong line; the base measurement",
@@ -42,7 +43,7 @@
     "where every marker was read, and the unconditional-exit mutant is the positive control that shows",
     "that control can see a listing that always exits 1. The core mutant that swallows a failed read",
     "grades the `readRunRevocation` contract that `no marker` and `could not look` are different",
-    "answers; it is measured through the table, since no suite reads that export on its own.",
+    "answers; it is measured here through the table, and on its own in the core twin below.",
     "",
     "THE EMPTY-FIELD REFUSAL IS AT THE WRITER ONLY. The argument parser passes `--by \"\"` through as an",
     "empty string, so the CLI could write a marker that rendered as `revoked by  ()`. The reader stays",
@@ -69,7 +70,7 @@
       "replace": "        void 0;",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
-      "note": "This is the shipped state before the fix, and it is what the merge base 08cff353 printed: the row reads `running`, the local holder id, journal 0, with the marker sitting unread beside it."
+      "note": "This is the shipped state before the fix, and it is what 08cff353, the base this PR was first measured on, printed: the row reads `running`, the local holder id, journal 0, with the marker sitting unread beside it."
     },
     {
       "name": "the reader looks at the admission key instead of the revocation marker",
