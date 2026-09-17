@@ -17,8 +17,8 @@
     "cell, which is the census's only real output for a missing scrub.",
     "",
     "N2 is ORDER, not presence. A scrub below the read is still a scrub to any check that only asks",
-    "whether the line exists, and the live refusal still fires. The cell naming 'before its first",
-    "ambient read' is the one that has to go red.",
+    "whether the line exists, and the live refusal still fires. Collapsing the ordering test into a",
+    "presence test must redden the fixture that puts a scrub after the read.",
     "",
     "N3 is the census shrinking silently. Every per-file cell is generated from the census, so",
     "walking one package deletes cells rather than failing them, and a suite with fewer cells still",
@@ -45,13 +45,13 @@
       "note": "The exact file issue #833 names. Without the scrub, running it from inside a connected session dies in its own import on the one-identity-plane refusal."
     },
     {
-      "name": "N2 the scrub moves BELOW the read, so it is present and inert",
-      "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
-      "find": "for (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];\n\nprocess.env.COTAL_SPACE ||= \"toolclosed\";",
-      "replace": "\nprocess.env.COTAL_SPACE ||= \"toolclosed\";\nfor (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];",
-      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts scrubs before its first ambient read",
-      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts scrubs before its first ambient read",
-      "note": "Presence-not-position. The scrub is still in the file and still at module scope, so a check that asked only whether the line exists stays green while the suite's own identity is already resolved from the ambient environment."
+      "name": "N2 ordering collapses into presence, so a scrub below the read reads as compliant",
+      "file": "bin/smoke/suite-ambient-env-self.smoke.ts",
+      "find": "    ordered: scrub !== undefined && scrub < reads[0],",
+      "replace": "    ordered: scrub !== undefined,",
+      "expectRed": "fixture: a scrub AFTER the read is rejected on order, not accepted on presence",
+      "cell": "fixture: a scrub AFTER the read is rejected on order, not accepted on presence",
+      "note": "Presence is not position. A scrub below the read is still a scrub to any check that only asks whether the line exists, while the suite's identity is already resolved from the ambient environment by the time it runs. This is aimed at a fixture rather than at a real file because every real member is compliant, so without the negative control the ordering requirement would be unprovable."
     },
     {
       "name": "N3 the census is scoped to the package that reported the defect",
