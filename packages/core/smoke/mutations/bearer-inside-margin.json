@@ -65,7 +65,7 @@
       "replace": "      if (held !== undefined || true) {",
       "expectRed": "the initial fetch is adopted even when it is already expired",
       "cell": "the initial fetch is adopted even when it is already expired",
-      "note": "Both refusals protect a cached token, so with no cache there is nothing to protect and start() has to come up on whatever the source has. bindConnection's pre-dial guard is what speaks for a dead first token, and it names the remedy; refusing here instead leaves the endpoint with no bearer at all and the authenticator presenting undefined."
+      "note": "Both refusals protect a cached token, so with no cache there is nothing to protect and start() has to come up on whatever the source has. bindConnection's pre-dial guard is what speaks for a dead first token, and it names the remedy; refusing here instead makes start() throw this refusal before that guard runs, with no bearer held. Nothing dials, because the initial fetch rethrows."
     },
     {
       "name": "the margin edge goes exclusive, so a re-served token with zero margin left is adopted",

@@ -17,8 +17,10 @@ token inside its own 60-second margin computes a non-positive delay, which the a
 into five seconds. The next read returned the same near-dead token and computed non-positive again,
 so the endpoint hit the auth service every five seconds for the rest of that token's life. The
 15-second retry backoff never applied, because the fetch had not failed: it succeeded and returned
-nothing new. Such a fetch is now treated as a failed renewal, with one recoverable warning and the
-normal backoff, and the cached token is left in place.
+nothing new. Such a fetch is now treated as a failed renewal: the cached token is left in place, a
+recoverable warning is emitted, and the next read waits for the 15-second retry backoff. A source
+that keeps answering this way produces a warning on every retry, and once the held token expires the
+expiry refusal takes over at the same cadence.
 
 No longer refused: a token that was genuinely re-issued but carries the same `exp`. Expiry claims
 have one second of resolution, so a key rotation that re-signs the same claims under a new key, and
