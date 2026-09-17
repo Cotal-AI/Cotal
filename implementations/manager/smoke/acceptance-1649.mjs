@@ -10,8 +10,12 @@
 // Runnable as published, from the worktree root:
 //   node implementations/manager/smoke/acceptance-1649.mjs
 // Exit 0 = the seat submitted every text on the call that sent it. Exit 1 = one call behind (#1649).
-// Requires a `jcode` binary on PATH; exits 2 (not 1) when the environment cannot host the run, so a
-// missing prerequisite can never be mistaken for the defect.
+// Exit 2 = could not be measured here (no `jcode`, no pty binding, or the TUI was never observed),
+// so a missing prerequisite or a loaded host can never be mistaken for the defect.
+//
+// RUN THIS ON A QUIET HOST. It drives a real TUI under a real pty and is load-sensitive: measured
+// 4/4 aligned at 1-minute load ~7, but 2 failures in 3 at load ~42, always by losing submissions
+// entirely rather than by submitting the wrong ones. Those losses are reported as exit 2, not 1.
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -107,6 +111,18 @@ console.log(`want submitted     : [${want}]`);
 console.log(`SPLIT   (with fix) : [${split}]  aligned=${eq(split, want)}`);
 console.log(`FUSED   (pre-fix)  : [${fused}]  aligned=${eq(fused, want)}`);
 
+// A run where the fixed shape submitted NOTHING, or fewer texts than the fused shape managed, means
+// the TUI never got far enough to be observed - not that the fix failed. This harness imports no
+// repo code (it reimplements both write shapes), so it CANNOT be sensitive to the fix; a run that
+// cannot see the child is a no-result. Measured: 4/4 aligned at 1-minute load ~7, but 2 failures in
+// 3 at load ~42, always by losing submissions entirely. Exit 2 (environment) rather than 1 (defect)
+// so a loaded host can never be misread as a regression.
+if (split.length === 0 || split.length < fused.length) {
+  console.error("\nNO RESULT: the fixed write shape recorded fewer submissions than the pre-fix one,");
+  console.error("which means the TUI was not observed, not that the fix regressed. Re-run when the");
+  console.error("host is quiet (1-minute load under ~15).");
+  process.exit(2);
+}
 if (!eq(split, want)) {
   console.error("\nFAIL: with the fix's write shape the seat did NOT submit every text on the call that sent it.");
   process.exit(1);
