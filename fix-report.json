@@ -2,7 +2,7 @@
   "issue": 1648,
   "workspace": "the lane worktree (fix-1648)",
   "branch": "detached HEAD in /home/david/lanes-20260916/fix-1648",
-  "headSha": "294f7ee2f",
+  "headSha": "b41f3ec3c",
   "baseSha": "43a4281a401c67a45422798ee5d90bb30eb3d85a",
   "reviewedSha": "5803256fadf7008a8e615eb50592c797ce107bc0",
   "reviewedShaNote": "Both blocking reviews record headSha 5803256fa. That commit is the PARENT of the first fix commit (git merge-base --is-ancestor 5803256fa HEAD exits 0; git diff --name-status 5803256fa..HEAD lists the production files). At 5803256fa the lane carried only the unauthenticated-peer settle, so all three of the issue's outcomes were genuinely absent and every FAIL grade in both reviews was correct FOR THAT TREE. This report records what the tree does now, and treats each finding as a real defect rather than a timing artifact.",
@@ -44,7 +44,7 @@
   "testCommand": "pnpm smoke:seat-orphan",
   "fixedExitCode": 0,
   "revertedExitCode": 1,
-  "outputWithFixPresent": "SEAT ORPHAN PASSED (32 cells)",
+  "outputWithFixPresent": "SEAT ORPHAN PASSED (33 cells)",
   "outputWithFixReverted": "SEAT ORPHAN FAILED (0 passed, 3 failed) — SMOKE CELLS: 3",
   "revertProvesTest": true,
   "revertProvesTestHow": {
@@ -90,8 +90,8 @@
       "diagnosis": "Not a missing assertion and not the import shape the brief guessed at. reviewer x's own note named the mechanism: 'The initial TMPDIR inside the worktree produced an overlong Unix socket path and prevented the scenario from starting.' A seat socket is <root>/<32 hex>/seat.sock, and sun_path holds 108 bytes including its NUL. Past that libuv does NOT fail: it copies into the fixed buffer, TRUNCATES, and listen SUCCEEDS on the shortened name. The custodian then chmods the path it meant to bind, throws ENOENT inside the listen callback where the enclosing promise cannot catch it, dies as an uncaught exception without writing its log, and the launcher reports only 'custodian exited before ready: pid N gone'.",
       "reproCommand": "node .tmp/probe-pathlen.mjs /home/david/lanes-20260916/review-wt-1648-x/.review-tmp",
       "reproOutputBefore": "root length=73  implied socket path length=116 — FAILED: custodian exited before ready: pid 3482479 gone   (no custodian.log written)",
-      "truncationMeasured": "109 bytes -> creates seat.soc; 110 -> seat.so; 111 -> seat.s; 117 -> EADDRINUSE",
-      "reproOutputAfter": "FAILED: seat socket path is 116 bytes, over the 107-byte limit for a Unix socket: <path>. The kernel would truncate it silently and the custodian would bind a different name than it cleans up. Use a shorter custody root (a deep TMPDIR inside a worktree is the usual cause).",
+      "truncationMeasured": "Measured by binding real sockets, padding the FILENAME so no separator is counted, and asserting the built length before binding: 105-108 bytes bind and the exact path appears; 109 and 110 truncate. So the ceiling is 108 and truncation begins at 109.",
+      "reproOutputAfter": "FAILED: seat socket path is 121 bytes, over the 108-byte limit for a Unix socket: <path>. The kernel would truncate it silently and the custodian would bind a different name than it cleans up. Use a shorter custody root (a deep TMPDIR inside a worktree is the usual cause).",
       "fix": "launchSeat refuses an oversized path up front (assertSocketPathFits). The custodian verifies it bound the path it asked for, and routes every listen-callback failure to reject so the log is written instead of dying uncaught. smoke-kit gains makeSeatRoot, which keeps a suite's custody root short enough and says on stderr when it falls back to /tmp. Every seat suite and repro:1648 now use it.",
       "proof": "The reviewers' TMPDIR yields a 121-byte socket (rootFits=false). pnpm smoke:seat-orphan and pnpm repro:1648 both run green from it now: exit 0."
     },
@@ -183,14 +183,15 @@
     ".changeset/seat-unattended-custodian.md"
   ],
   "productionChange": "A custodian with no authenticated controller now stops its child and exits after UNATTENDED_MS, armed whenever the controller set empties and disarmed the moment one authenticates. Every custodian carries --cotal-run <marker> on argv and COTAL_RUN in its environment, recovered from an ancestor when a suite has scrubbed COTAL_; censusCustodians reads it back from /proc/<pid>/cmdline. launchSeat refuses a socket path the kernel would truncate, and the custodian verifies the path it bound and logs any startup failure instead of dying uncaught.",
-  "testAdded": "packages/seat/smoke/orphan.smoke.ts — 32 cells, gated into smoke:ci via bin/smoke/ci-suites.d/. Covers the three required outcomes on real processes, the re-adopt case that must NOT trip the bound, the socket-path ceiling, and the COTAL_ scrub recovery.",
+  "testAdded": "packages/seat/smoke/orphan.smoke.ts — 33 cells, gated into smoke:ci via bin/smoke/ci-suites.d/. Covers the three required outcomes on real processes, the re-adopt case that must NOT trip the bound, the socket-path ceiling measured against the kernel, and the COTAL_ scrub recovery.",
   "commits": [
     "1542b0ddc fix(seat): bound the life of an unattended custodian and make a census cheap",
     "73f8cba60 fix(seat,smoke-kit): refuse a socket path the kernel would truncate",
     "95143cefe fix(seat): recover the run marker when a suite scrubs COTAL_ from a child env",
     "630db1032 fix(seat): let the repro tell a settle-closed peer from one that left",
     "cd044b2a8 docs(seat): record the socket-path and run-marker findings in the changeset",
-    "294f7ee2f fix(manager,seat): give the orphan-seat suites a custody root a socket fits"
+    "294f7ee2f fix(manager,seat): give the orphan-seat suites a custody root a socket fits",
+    "b41f3ec3c fix(seat,smoke-kit): correct the socket-path ceiling and measure it"
   ],
   "verificationAtHead": [
     {
@@ -247,33 +248,10 @@
     "liveSuitesRun": "none",
     "notes": "No suite whose name ends in :live was run. seat-input-live was inspected statically only. Nothing was pushed, no ref was moved, no review file was edited."
   },
-  "headShaNote": "294f7ee2f is the last commit carrying production or test content, and the full loop above was run against it. A report cannot name the commit that contains it: writing that sha in would change it.",
-  "correctedClaim": {
-    "claimPreviouslyMade": "smoke:orphan-seat-reap fails identically at 5803256fa with my changes stashed, so it is pre-existing and not mine.",
-    "status": "HALF RIGHT, AND THE HALF I GOT WRONG MATTERED",
-    "whatWasRight": "It does predate this lane: at 43a4281a4 with the manager smokes reverted it fails the same way (exit 1).",
-    "whatWasWrong": "I called it unrelated. It is the SAME socket-path truncation this lane fixes. I had the evidence to check that and did not, because I had already labelled it pre-existing.",
-    "howItWasSettled": "Computed the path first: <tmpdir>/cotal-smoke-broker-<pid>-XXXXXX/seats/<32 hex>/seat.sock = 123 bytes against the 107-byte limit, 16 over. Then confirmed live: the suite's own error now reads 'seat socket path is 123 bytes, over the 107-byte limit'. At base the identical failure read only 'custodian exited before ready: pid N gone', which is why it looked unrelated.",
-    "fix": "smoke:orphan-seat-reap, -rollback and -spawn-window each take their own short root from makeSeatRoot and remove it in the same teardown, since it no longer sits inside the broker dir that teardown deletes.",
-    "nowPassing": [
-      {
-        "command": "pnpm smoke:orphan-seat-reap",
-        "exitCode": 0,
-        "detail": "6 passed, 0 failed"
-      },
-      {
-        "command": "pnpm smoke:orphan-seat-rollback",
-        "exitCode": 0
-      },
-      {
-        "command": "pnpm smoke:orphan-seat-spawn-window",
-        "exitCode": 0
-      }
-    ]
-  },
+  "headShaNote": "b41f3ec3c is the last commit carrying production or test content, and the full loop above was run against it. A report cannot name the commit that contains it: writing that sha in would change it.",
   "fullLoopOverWholeResult": {
-    "note": "Earlier rounds verified each change as it landed. This is the complete loop re-run over the finished tree, which is the only run that can speak for the whole result.",
-    "headSha": "294f7ee2f",
+    "note": "Re-run in full after every subsequent change, including the socket-path ceiling correction, so it speaks for the finished tree rather than for an intermediate one.",
+    "headSha": "b41f3ec3c",
     "seatSuites": [
       {
         "command": "pnpm smoke:seat-orphan",
@@ -357,9 +335,48 @@
       {
         "command": "pnpm changeset status",
         "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:seat-orphan (production reverted to 43a4281a4)",
+        "exitCode": 1,
+        "detail": "3 named cells red, 0 module-resolution errors"
       }
     ],
     "custodiansLeftInWorktree": 0,
     "everyExitCodeObserved": true
-  }
+  },
+  "correctedClaims": [
+    {
+      "claimPreviouslyMade": "smoke:orphan-seat-reap fails identically at 5803256fa with my changes stashed, so it is pre-existing and not mine.",
+      "status": "HALF RIGHT, AND THE HALF I GOT WRONG MATTERED",
+      "whatWasRight": "It does predate this lane: at 43a4281a4 with the manager smokes reverted it fails the same way (exit 1).",
+      "whatWasWrong": "I called it unrelated. It is the SAME socket-path truncation this lane fixes. I had the evidence to check that and did not, because I had already labelled it pre-existing.",
+      "howItWasSettled": "Computed the path first: <tmpdir>/cotal-smoke-broker-<pid>-XXXXXX/seats/<32 hex>/seat.sock = 123 bytes against the 107-byte limit, 16 over. Then confirmed live: the suite's own error now reads 'seat socket path is 123 bytes, over the 107-byte limit'. At base the identical failure read only 'custodian exited before ready: pid N gone', which is why it looked unrelated.",
+      "fix": "smoke:orphan-seat-reap, -rollback and -spawn-window each take their own short root from makeSeatRoot and remove it in the same teardown, since it no longer sits inside the broker dir that teardown deletes.",
+      "nowPassing": [
+        {
+          "command": "pnpm smoke:orphan-seat-reap",
+          "exitCode": 0,
+          "detail": "6 passed, 0 failed"
+        },
+        {
+          "command": "pnpm smoke:orphan-seat-rollback",
+          "exitCode": 0
+        },
+        {
+          "command": "pnpm smoke:orphan-seat-spawn-window",
+          "exitCode": 0
+        }
+      ]
+    },
+    {
+      "claimPreviouslyMade": "sun_path is 108 bytes including its NUL, so 107 characters is the real ceiling; MAX_SOCKET_PATH = 107.",
+      "status": "WRONG, AND IT WAS MY OWN REASONING RATHER THAN A MEASUREMENT",
+      "whatWasWrong": "A 108-byte path binds and the exact file appears on disk. The constant refused a length that works, and the code comment stated a measurement that had never been taken at that boundary: I had measured 109/110/111 truncating and inferred 107 from arithmetic.",
+      "compoundingError": "The first two attempts to settle it disagreed with each other, because both built the probe path with path.join separator arithmetic and were off by one, so a mis-built path was read as a kernel verdict.",
+      "howItWasSettled": "Pad the FILENAME, which needs no separator, and assert the built length BEFORE binding. Result: 105, 106, 107 and 108 bind with the exact path present; 109 and 110 truncate.",
+      "fix": "MAX_SOCKET_PATH and SEAT_MAX_SOCKET_PATH are 108. The suite no longer asserts the ceiling against a remembered number: it binds a socket at the limit and one past it, so the constant is checked against the kernel running the suite, and the past-the-limit cell requires the reason to be truncation so it cannot pass for the wrong reason.",
+      "mutationProof": "Setting the constant back to 107 reds two named cells (the truncation cell and the smoke-kit agreement cell); exit 1."
+    }
+  ]
 }
