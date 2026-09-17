@@ -1188,7 +1188,10 @@ try {
   ok(
     "resolver names the predicate HEAD replaces (not a fixed historical floor, and never a silent fallback to one)",
     headBase !== null && SHA.test(headBase),
-    headBase,
+    // A null here is history depth, not the guard. Named rather than skipped: a pair that quietly
+    // does not run is the invisibility this file exists to remove, and `git fetch --deepen`
+    // against the checkout's own origin is what CI needs for it to run at all.
+    { headBase, shallow: isShallow(), hint: headBase === null ? "no role-carrying ancestor of agui.ts is reachable; deepen the checkout" : "" },
   );
   if (headBase) {
     ok(
