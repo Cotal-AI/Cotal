@@ -399,7 +399,8 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   /** Why each revoked row reads `revoked`, printed under the table: the marker carries `by` and the
    *  reason, and the table has no column for either. */
   const revocations = new Map<string, RunRevocation>();
-  /** Rows whose revocation could not be read at all. */
+  /** Rows whose revocation could not be read at all, each with the reason and its record's state,
+   *  printed to stderr after the table. */
   const unchecked: string[] = [];
   for (const e of await walkKvEntries(planes.kv, "run.*.*.spec")) {
     const parts = e.key.split(".");
@@ -432,11 +433,14 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
         state = "revoked";
       }
     } catch (e) {
-      // Absence of EVIDENCE, and it is reported as such. A store this call could not reach says
-      // nothing about whether the run was revoked, so the row keeps the state the record carries
-      // and the reader is told the check did not happen, rather than being handed a live-looking
-      // row with no way to know it was never checked.
-      unchecked.push(`${endpoint}/${runId}: ${(e as Error).message}`);
+      // Absence of EVIDENCE, and the STATE column itself says so. A marker this call could not read
+      // (a store it could not reach, a marker version or shape it does not know) says nothing about
+      // whether the run was revoked. The record's own word is what a revoked run printed before
+      // this table read the marker, so the column says `unchecked` and the record's word goes to
+      // stderr with the reason, where `awk '{print $3}'` and `grep running` over stdout never see it.
+      // The row itself still prints: one unreadable marker does not hide the rest of the listing.
+      state = "unchecked";
+      unchecked.push(`${dedupe}: revocation marker could not be read (${(e as Error).message}); its record reads ${st?.state ?? "(no status)"}`);
     }
     rows.push([
       runId,
@@ -447,18 +451,8 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
       lineage === undefined ? "-" : `${lineage.run}@${lineage.step}`,
     ]);
   }
-  const footnotes = () => {
-    // WHO revoked it and WHY, under the table rather than in it. The marker carries both and the
-    // columns carry neither, and a state of `revoked` with no attribution anywhere sends the
-    // operator to a second command to learn what they are looking at.
-    for (const [key, r] of revocations)
-      console.log(`${key}: revoked by ${r.by} (${r.reason}); the status record is left as its driver last wrote it`);
-    for (const u of unchecked)
-      console.log(`${u}: revocation not checked, so this row's state is the run record's own`);
-  };
   if (rows.length === 0) {
     console.log(`no workflow runs recorded in space ${planes.space}`);
-    footnotes();
     return;
   }
   const header = ["RUN", "ENDPOINT", "STATE", "HOLDER", "JOURNAL", "FORKED-FROM"];
@@ -466,7 +460,16 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   const line = (r: string[]) => r.map((cell, i) => cell.padEnd(widths[i] as number)).join("  ");
   console.log(line(header));
   for (const r of rows) console.log(line(r));
-  footnotes();
+  // WHO revoked it and WHY, under the table rather than in it. The marker carries both and the
+  // columns carry neither, and a state of `revoked` with no attribution anywhere sends the
+  // operator to a second command to learn what they are looking at.
+  for (const [key, r] of revocations)
+    console.log(`${key}: revoked by ${r.by} (${r.reason}); the status record is left as its driver last wrote it`);
+  // A listing with an unchecked row is incomplete, and the exit status says so after every row
+  // has been printed, as `ls` and `find` do when one entry cannot be read: the rows on stdout, the
+  // failed reads on stderr, and a non-zero status a caller can test without parsing the column.
+  for (const u of unchecked) console.error(u);
+  if (unchecked.length > 0) process.exitCode = 1;
 }
 
 async function journal(planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {

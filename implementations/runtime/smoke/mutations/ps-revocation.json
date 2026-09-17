@@ -2,7 +2,7 @@
   "suite": [
     "implementations/runtime/smoke/run-command.smoke.ts"
   ],
-  "guard": "`run ps --local` reads the revocation marker beside each run record and prints `revoked` whatever the record says, names the revoker and the reason under the table, and `revoke` says what the table will now show; the record itself is never rewritten",
+  "guard": "`run ps --local` reads the revocation marker beside each run record and prints `revoked` whatever the record says, names the revoker and the reason under the table, and `revoke` says what the table will now show; the record itself is never rewritten. A marker the listing cannot read prints `unchecked` in the STATE column, its reason and the record's own state go to stderr, every other row still prints, and the command exits 1",
   "command": "pnpm smoke:runtime-run-command",
   "completionMarker": "run-command:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/ps-revocation.json",
@@ -30,10 +30,19 @@
     "MUTATIONS ONE AND TWO NAME THE SAME CELL, and the reason is worth writing down because the",
     "issue predicted otherwise. #1621 expected that reading the admission key instead of the marker",
     "key would make a live admission read as a revocation. It does not: `revocationSnapshot` is a",
-    "closed-field validator, so an admission record fails it, the read THROWS, and `ps` reports the",
-    "row as unchecked and keeps the record's own state. Same cell, different mechanism, and the two",
-    "are repaired differently: one is a table that stopped looking, the other is a table looking in",
-    "the wrong place and saying so.",
+    "closed-field validator, so an admission record fails it, the read THROWS, and `ps` prints the",
+    "row as `unchecked`. Same cell, different mechanism, and the two are repaired differently: one is",
+    "a table that stopped looking, the other is a table looking in the wrong place and saying so.",
+    "",
+    "THE UNCHECKED PATH HAS ITS OWN BLOCK, because it was graded by nothing when it printed the",
+    "record's own word. Block 10 writes a version-2 marker RAW (the exported writer validates, so an",
+    "unreadable marker has to be created past it) on a run held at a checkpoint, so its record really",
+    "reads `running`. One mutation per claim: the column, stdout staying free of the record's word,",
+    "the stderr line, the other rows, and the exit status. The exit status has a CONTROL in block 9,",
+    "where every marker was read, and the unconditional-exit mutant is the positive control that shows",
+    "that control can see a listing that always exits 1. The core mutant that swallows a failed read",
+    "grades the `readRunRevocation` contract that `no marker` and `could not look` are different",
+    "answers; it is measured through the table, since no suite reads that export on its own.",
     "",
     "NOT ASSERTED, and recorded rather than implied: the manager-hosted `run ps` has the same",
     "defect at `implementations/runtime/src/run-host.ts` `list()`, which builds `RunListRow` from",
@@ -49,7 +58,7 @@
       "replace": "        void 0;",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
-      "note": "This is the shipped state before the fix, and it is exactly what the merge base prints: the row reads `running`, `cli-run-<id>`, journal 0, with the marker sitting unread beside it."
+      "note": "This is the shipped state before the fix, and it is what the merge base 08cff353 printed: the row reads `running`, the local holder id, journal 0, with the marker sitting unread beside it."
     },
     {
       "name": "the reader looks at the admission key instead of the revocation marker",
@@ -60,13 +69,13 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
-      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then reports the row as unchecked and prints the record's own state, which reddens the same cell for a different reason. The anchor spans two lines because the host read beside it is byte-identical on its first line; a single-line target matched both and was refused as ambiguous."
+      "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then prints the row as `unchecked`, which reddens the same cell for a different reason. The anchor spans two lines because the host read beside it is byte-identical on its first line; a single-line target matched both and was refused as ambiguous."
     },
     {
       "name": "the revoker and the reason stop being printed under the table",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "    for (const [key, r] of revocations)",
-      "replace": "    for (const [key, r] of new Map<string, RunRevocation>())",
+      "find": "  for (const [key, r] of revocations)",
+      "replace": "  for (const [key, r] of new Map<string, RunRevocation>())",
       "cell": "...with the revoker and the reason under the table, since the columns carry neither",
       "expectRed": "...with the revoker and the reason under the table, since the columns carry neither",
       "note": "A state of `revoked` with no attribution anywhere sends the operator to a second command to learn who revoked it and why; the marker carries both and the columns carry neither."
@@ -79,6 +88,71 @@
       "cell": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
       "expectRed": "...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
       "note": "The acknowledgement and the table disagreed for as long as one of them never read the marker. Saying it at the moment of the revoke is what makes a future divergence visible to the person who caused it."
+    },
+    {
+      "name": "an unreadable marker leaves the record's own state in the STATE column",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "      state = \"unchecked\";",
+      "replace": "      void 0;",
+      "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
+      "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
+      "note": "The shape the panel measured at 1d3b9099: the row keeps `running` for a run whose marker nobody read, so `awk '{print $3}'` reads the word #1621 was filed about."
+    },
+    {
+      "name": "the failed read goes to stdout, where grep counts the record's running",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  for (const u of unchecked) console.error(u);",
+      "replace": "  for (const u of unchecked) console.log(u);",
+      "cell": "...and no stdout line names that run beside running, so `grep running` does not count it as live",
+      "expectRed": "...and no stdout line names that run beside running, so `grep running` does not count it as live",
+      "note": "The line carries the record's own word on purpose, for the operator. On stdout it puts that run's id beside `running` again, so `grep running` counts it as live even though the column says `unchecked`."
+    },
+    {
+      "name": "the failed read is not reported at all",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  for (const u of unchecked) console.error(u);",
+      "replace": "  void unchecked;",
+      "cell": "...gives the failed read and the record's own state on stderr",
+      "expectRed": "...gives the failed read and the record's own state on stderr",
+      "note": "A bare `unchecked` with no reason sends the operator elsewhere to learn whether the store is down or the marker is newer than this build."
+    },
+    {
+      "name": "a listing with an unchecked row exits 0",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  if (unchecked.length > 0) process.exitCode = 1;",
+      "replace": "  void unchecked;",
+      "cell": "...and exits 1, because the listing is incomplete",
+      "expectRed": "...and exits 1, because the listing is incomplete",
+      "note": "The panel measured exit 0 through the real binary. A caller that tests the status is then told the listing is complete."
+    },
+    {
+      "name": "POSITIVE CONTROL for the exit-status control: every listing exits 1",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  if (unchecked.length > 0) process.exitCode = 1;",
+      "replace": "  process.exitCode = 1;",
+      "cell": "a listing whose every marker was read leaves the exit code alone",
+      "expectRed": "a listing whose every marker was read leaves the exit code alone",
+      "note": "Block 9's control asserts a complete listing leaves the exit code alone. This mutant shows the control can see the wrong answer, so its pass in the green run is a measurement."
+    },
+    {
+      "name": "one unreadable marker refuses the whole listing",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    } catch (e) {\n      // Absence of EVIDENCE, and the STATE column itself says so.",
+      "replace": "    } catch (e) {\n      if (e) throw e;\n      // Absence of EVIDENCE, and the STATE column itself says so.",
+      "cell": "...still lists every other run, so one unreadable marker hides nothing",
+      "expectRed": "...still lists every other run, so one unreadable marker hides nothing",
+      "note": "This is what `readRunAdmission` would do to a listing, and why the table reads the marker through its own helper: every other run disappears behind one row."
+    },
+    {
+      "name": "the marker reader answers no marker when it could not look",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));\n  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);\n}",
+      "replace": "  try {\n    const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));\n    return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);\n  } catch { return undefined; }\n}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-command",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
+      "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
+      "note": "The export's docblock says a failed read still throws. Swallowed, the table has nothing to print but the record's own word, and a revoked run reads as live the moment its marker cannot be read."
     }
   ]
 }

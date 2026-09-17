@@ -9,10 +9,11 @@ under the table. A revocation is a create-only marker in the admission store and
 the record, which is written only by a driver, so a driver that died mid-run left `running` behind
 with nothing left to write anything else: `resume` refused on the marker while the table listed the
 same run as live indefinitely, and an operator counting capacity from it counted that row. A run
-whose marker could not be read keeps the state its record carries and is named under the table as
-unchecked, since a failed read is absence of evidence rather than evidence of absence. The change is
-display only: a revoke writes no terminal state, because no host drove the run to one. `revoke` now
-says what the table will show, and `readRunRevocation` reads the marker alone so a listing does not
-refuse over a run with no admission record.
+whose marker could not be read prints `unchecked` in the `STATE` column, since a failed read is
+absence of evidence rather than evidence of absence. The reason and the record's own state go to
+stderr, every other row still prints, and the command exits 1. The change is display only: a revoke
+writes no terminal state, because no host drove the run to one. `revoke` now says what the table
+will show, and `readRunRevocation` reads the marker alone so a listing does not refuse over a run
+with no admission record.
 
 Refs #1621
