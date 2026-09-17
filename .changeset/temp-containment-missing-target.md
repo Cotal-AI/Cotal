@@ -1,8 +1,0 @@
----
----
-
-A smoke cleanup's containment guard now resolves a delete target that does not exist yet by walking its original spelling, resolving each existing component physically, rather than by normalizing the path and then walking up to its deepest existing ancestor. Three cases were wrong. A missing target under a symlinked parent was certified as contained while physically resolving outside the root. A parent that was an existing but DANGLING symlink reported the same ENOENT as a missing directory, so the walk stepped past it, canonicalized an ancestor above it and appended the tail lexically, which let the same spelling flip from accepted to refused purely because someone else created the referent afterwards. And a `..` was applied to the spelling before any symlink had been read, so one that followed a symlink walked back into the root it had physically already left. A component that exists but cannot be resolved is now refused with a named diagnosis, a `..` is applied to the physical prefix, and non-ENOENT errnos still propagate rather than downgrading to a lexical answer.
-
-The guard certifies containment at check time: Node has no descriptor-relative `rmSync`, so a component swapped between the check and the delete is out of scope and now documented as such, and only the path the guard returns may be deleted.
-
-The temp-containment smoke's own positive control no longer dies when the temp root is too long for the platform's `sun_path` budget. It was the one unguarded call in the file, so an over-long `TMPDIR` produced a raw stack with no summary line and a leaked fixture instead of a result. It now skips by name with the byte figures, records an escaping throw as a named failing cell, and tears its fixture down in a `finally`.

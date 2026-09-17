@@ -1,5 +1,62 @@
 # @cotal-ai/lang
 
+## 0.50.0
+
+### Minor Changes
+
+- 87dda9f: The caller half of a durable spawn's physical working directory, pinned to one manager instance
+
+  A durable spawn can name a physical working directory with `cwd`, and doing so requires an explicit
+  `placement` target naming one manager instance as `{ endpoint, instanceId }`. A directory is
+  host-local, so a `cwd` with no target would ride the class anycast queue and land wherever the
+  anycast fell; that combination refuses rather than guessing, with no fallback. The target is
+  hashed into the step identity beside the directory, so a replay retargeted at a different instance
+  diverges as a migration instead of replaying a resolution taken against the old host. Logical
+  `worktree` keeps its meaning and its exclusivity, and a spawn that names neither option hashes
+  exactly the object it hashed before, byte for byte, so recorded runs replay unchanged.
+
+  **Explicit `cwd` placement does not resolve yet on a shipped manager, and refuses by name until it
+  does.** What ships here is the caller half: the language forwards and hashes the options, the
+  runtime asks its pinned target to state the directory's canonical form before it submits anything,
+  and the core grant builder mints the instance-pinned rails that ask would need. The question is
+  asked with a `resolve-cwd` command, and **no manager in this release serves `resolve-cwd`** — the
+  only servers of it are the smoke suites that grade this code. So on a real manager every explicit
+  `cwd` placement ends in a named refusal saying that this manager serves no `resolve-cwd` command
+  and can therefore state no canonical form. That is the intended direction and it is not a crash:
+  nothing is submitted, allocated or launched, and the caller is told why. A non-`ok` reply and a
+  reply whose path is not absolute are refused the same way. Until a manager serves the command,
+  treat `cwd` with `placement` as unavailable rather than as a directory that silently differs from
+  the one you named.
+
+  The grant surface and the serving surface are deliberately asymmetric, and it is worth stating
+  plainly: `runMediatorGrants` does mint the three placement capabilities (`describe`, `resolve-cwd`,
+  `spawn`) for the one named instance when a program names a target, bounded to that instance with
+  no anycast rail and no wildcard, but the manager's hosted-run credential minting never passes a
+  program's placement into it, so an authenticated hosted run receives none of those rows today. The
+  rails are built and graded; nothing production yet asks for them or answers them.
+
+  A malformed `placement` is now refused by name at the call. `placement: null` used to raise a raw
+  `TypeError` from inside the interpreter's identity projection, with no code, no effect kind and no
+  journal entry, because the option reader guarded the option bag being null rather than the value it
+  held. A primitive, an empty record and a half-filled record were quieter and worse: they were
+  forwarded, projected two undefined fields into the step identity, and the run carried on under an
+  identity describing a placement the program never named. All of these are now `L3048`, raised
+  before the step key is minted, so nothing is journalled and the repair is an edit to the program.
+
+### Patch Changes
+
+- c59d96d: Stop a parked step from dying on one slow pause-plane reply. A workflow `ask` that waited long enough settled `failed` with `{code: "L4000", kind: "handler-fault", message: "timeout"}` while most of its deadline was still unspent, the seat was alive, and nothing in the program threw. Measured on the reporting run: the two asks under 4.5 minutes settled `ok` and the two over 7.5 minutes failed with that exact record, with 11 minutes of deadline left.
+
+  The cause is how long a parked step reads for. While a pause is parked the run host polls the plane for the life of the step, once for the settle fact and once for the broker's fire, each read riding a NATS API request with its own 5s client-side deadline. A reply that arrives after that deadline raises the client's bare `TimeoutError: timeout`, and the interpreter records any non-`EffectError` throw as `L4000 handler-fault` verbatim. So the step issued roughly one unretried request per second for its whole duration and one late reply ended it, which is why the exposure grew with how long the step waited rather than with anything about the program.
+
+  A late reply is a fact about that one request and not about the pause behind it. The pause is a durable record on the plane, its timer is armed, and it is still answerable, so the read is now re-issued rather than raised, and the step settles on the answer it was waiting for. Re-reading is safe for the same reason the starvation repair's re-entry is: the plane's operations are idempotent by construction, and reading a one-use settle fact again observes the same world.
+
+  It is the second half of a distinction the host already drew for #1508 and it reuses that machinery rather than adding its own. A client deadline has two causes that produce the identical error, and the host can tell them apart by measuring whether its own event loop ran: off the CPU is the host's own starvation (`L4025`), and on it is a plane that answered late. The case that moves is only the second, which the classifier previously answered "fault" and handed to the program as its own failure.
+
+  Neither retry is unbounded and neither is merged into the other. A run that cannot be served must fail rather than hang, so the two conditions carry separate counts that are never reset, which bounds the call however they interleave; a host that stays starved still fails under `L4025`, and a plane that never answers now fails under the new `L4026` naming the measurement rather than the effect. The two are kept apart because the remedies differ: one says give this host capacity, the other says the broker is behind. Every failure that is not a client deadline is still raised on the first attempt, unretried and unwrapped, and still recorded as `L4000`.
+
+  A recorded handler fault also carries the stack of the value that was thrown, in a new optional `error.stack` on the journal entry. A handler fault is the one failure class whose cause is in neither the program nor the language, so `message` alone ("timeout") is the symptom with no origin, and the durable entry is usually the only look anyone gets at it. The field is written only when the thrown value carried a non-empty string `stack`: a handler may throw a primitive, and a recorder that trusted the field would replace the handler's failure with its own.
+
 ## 0.49.0
 
 ### Minor Changes
