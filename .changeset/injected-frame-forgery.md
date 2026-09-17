@@ -1,6 +1,9 @@
 ---
 "@cotal-ai/connector-core": minor
 "@cotal-ai/connector-hermes": minor
+"@cotal-ai/connector-codex": minor
+"@cotal-ai/connector-opencode": minor
+"@cotal-ai/connector-claude-code": minor
 ---
 
 A peer can no longer forge the framing of an auto-injected message
@@ -28,3 +31,11 @@ closing one still let a name render a bracket pair a reader takes as the innermo
 injected block's per-item separator is the bracketed attribution the inbox reply uses, replacing the
 bullet, so the text of an injected block changed and the wake-path suites that assert on it were
 updated with it.
+
+A third injected surface holds the same rule now. A wake hint carries no message body and reads as
+one short sentence, so it does not look like a frame, but it is written into the agent's context
+without being asked for and it names a peer-controlled channel label, which three connectors
+interpolated raw. A label carrying a newline put a second line at column zero reading as another
+delivered message. That label renders through the shared module too, and the absent-channel fallback
+moved there with it, since three connectors each spelled it themselves and an absent field is what a
+per-call-site spelling is most likely to get wrong.
