@@ -62,6 +62,7 @@ import {
   type LoopLagWindow,
 } from "../src/host-starvation.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshstarve";
 const EP = "manager";
@@ -129,8 +130,9 @@ const starveAcross = async (rounds: number, spinMs = 6_000): Promise<void> => {
 };
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-meshstarve-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}meshstarve-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });

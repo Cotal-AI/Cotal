@@ -28,6 +28,7 @@
     "doc-binding": "node scripts/doc-binding.mjs",
     "smoke:doc-binding": "node scripts/doc-binding.mjs --self-test",
     "smoke:sandbox-guard": "tsx packages/smoke-kit/smoke/sandbox-guard.smoke.ts",
+    "smoke:broker-migration": "tsx packages/smoke-kit/smoke/broker-migration.smoke.ts",
     "mutation-proof:selftest": "node scripts/mutation-proof.selftest.mjs",
     "smoke:mutation-proof": "node scripts/mutation-proof.selftest.mjs",
     "mutation-coverage:selftest": "node scripts/mutation-coverage.selftest.mjs",

@@ -159,6 +159,7 @@ try {
   const OPEN_SERVERS = `nats://127.0.0.1:${OPEN_PORT}`;
   const openSd = join(dir, "open-js");
   const openSrv = spawn("nats-server", ["-js", "-sd", openSd, "-p", String(OPEN_PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+  teardownOnSignal(openSrv, openSd);
   kids.push(openSrv);
   let openUp = false;
   for (let i = 0; i < 60 && !openUp; i++) { openUp = await isReachable(OPEN_SERVERS); if (!openUp) await wait(200); }

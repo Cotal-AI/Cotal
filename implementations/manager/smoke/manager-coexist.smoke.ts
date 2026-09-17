@@ -19,6 +19,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { probeConnect } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -45,7 +46,8 @@ const kids: ChildProcess[] = [];
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-coexist-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}coexist-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
   for (const r of [root1, root2]) recordMesh({ space: SPACE, server: SERVER, root: r, mode: "open", ts: new Date().toISOString() });

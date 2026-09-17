@@ -70,6 +70,7 @@ import { createRunWaitHost } from "../src/run-wait-host.js";
 import { createRunPauseHost } from "../src/run-pause-host.js";
 import { createRunRecordHost, runRecordView } from "../src/run-record-host.js";
 import { createRunEffectHost } from "../src/run-effect-host.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const S = "rdauth";
 const EP = "manager";
@@ -109,10 +110,11 @@ const until = async (fn: () => Promise<boolean>, ms: number): Promise<boolean> =
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
-const dir = mkdtempSync(join(tmpdir(), "cotal-rdauth-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rdauth-`));
 const auth = await createSpaceAuth(S);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(broker);
 const conns: NatsConnection[] = [];
 const done = () => {
   for (const nc of conns) { try { nc.close(); } catch { /* closing */ } }

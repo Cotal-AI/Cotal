@@ -58,7 +58,7 @@ import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
 import { FileSubjectFrontier } from "../src/subject-frontier.js";
 import { eventWalLocation } from "../src/agui-wal-path.js";
-import { teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0,
   fail = 0;
@@ -70,7 +70,7 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const root = mkdtempSync(join(tmpdir(), "agui-multi-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}agui-multi-`));
 const procs: ChildProcess[] = [];
 const releases: (() => void)[] = [];
 

@@ -30,7 +30,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix } from "../src/lib/delivery-responder.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -38,7 +38,7 @@ const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
 const HOLDER = join(import.meta.dirname, "delivery-responder-holder.mjs");
 const SPACE = "responder-visibility";
-const root = mkdtempSync(join(tmpdir(), "cotal-responder-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}responder-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-responder-home-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 

@@ -29,7 +29,7 @@ import { createSpaceAuth, deliveryBucket, mintCreds, newIdentity, serverConfig, 
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { canonicalLocalProcessPath, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -39,7 +39,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SPACE = "boot-honesty";
-const root = mkdtempSync(join(tmpdir(), "cotal-boot-honesty-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}boot-honesty-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-boot-honesty-home-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];

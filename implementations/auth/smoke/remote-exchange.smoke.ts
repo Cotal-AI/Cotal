@@ -45,6 +45,7 @@
  * Run: pnpm smoke:remote-exchange:live   (pnpm build first — the daemon child runs built dist;
  * needs nats-server + node on PATH)
  */
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // This file re-execs ITSELF to run the auth-service daemon, so the daemon under test is the real
@@ -90,7 +91,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const home = mkdtempSync(join(tmpdir(), "cotal-rx-home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-rx-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rx-root-`));
 
 // This smoke may itself run inside a managed mesh session. The auth-service child must receive
 // only this fixture's sandboxed Cotal configuration, never the runner's live broker/credential
@@ -208,6 +209,7 @@ try {
     serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }),
   );
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);

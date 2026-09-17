@@ -120,7 +120,7 @@ const SPACE = "reap964";
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
 const REPO = join(import.meta.dirname, "..", "..");
 
-const base = mkdtempSync(join(scratch, "rig-"));
+const base = mkdtempSync(join(scratch, `${SMOKE_BROKER_TOKEN}rig-`));
 const root = join(base, "root");
 const pidDir = join(base, "pids");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });

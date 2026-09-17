@@ -29,6 +29,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-events-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-fg-events-root-"));
@@ -69,10 +70,11 @@ const persona = join(root, ".cotal", "agents", "probe.md");
 writeFileSync(persona, "---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\n---\nbody\n");
 
 const port = await pickFreePort();
-const store = mkdtempSync(join(tmpdir(), "cotal-fg-events-js-"));
+const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}fg-events-js-`));
 // JetStream on: the spawn path pre-creates this agent's durable footprint before it builds the
 // launch, so a stream-less broker refuses long before the connector is reached.
 const broker = spawnProcess("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+teardownOnSignal(broker, store);
 const server = `nats://127.0.0.1:${port}`;
 // The mesh this spawn targets, recorded the way `cotal up` records one: an OPEN mesh, so neither
 // authenticated branch runs and the launch reaches the connector with nothing minted.

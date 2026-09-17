@@ -25,11 +25,13 @@ import { ENGINE_LANGUAGE_VERSION, Journal, JournalAppendRejected, PIN_DEFAULTS, 
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { runOnHostedEngine } from "../src/engine-host.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "wfjdrive";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfjdrive-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfjdrive-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;

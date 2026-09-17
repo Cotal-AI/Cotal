@@ -23,6 +23,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { probeConnect } from "@cotal-ai/core";
 import { loadManagerInstanceIdentity, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -67,7 +68,8 @@ const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const kids: ChildProcess[] = [];
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-i1263-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}i1263-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
 

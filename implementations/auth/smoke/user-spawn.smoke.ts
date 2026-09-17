@@ -27,6 +27,7 @@
  * pkill nats-server). Needs nats-server on PATH. Run: pnpm smoke:user-spawn:live  (pnpm build first —
  * the pty-launched agent child imports @cotal-ai/core from dist).
  */
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]` — which, in this in-process smoke,
@@ -91,7 +92,7 @@ const { join } = await import("node:path");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-uspawn-home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-uspawn-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}uspawn-root-`));
 const cliHome = join(home, "cli-home");
 const cliConfig = join(home, "cli-config");
 mkdirSync(cliHome, { recursive: true });
@@ -427,6 +428,7 @@ try {
   const jsDir = mkdtempSync(join(tmpdir(), "cotal-uspawn-js-"));
   writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);
