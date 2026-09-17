@@ -18,7 +18,7 @@ const ok = (condition: unknown, message: string): void => {
   checks++;
 };
 
-// Regression: this exact Cotal inbox line killed a real Pi seat on david-n7401ze.
+// Regression: this exact Cotal inbox line killed a real Pi seat on a live host.
 // JS sees 120 characters; the two check marks occupy two terminal cells each, so
 // Pi sees 122 columns. The old `.length` wrapper emitted it unchanged at width 120.
 {

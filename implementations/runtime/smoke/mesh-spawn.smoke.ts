@@ -1272,7 +1272,7 @@ log("winner", out.index);
 // Pure over the grant builder and the normalizer: no broker reach is needed to prove the SHAPE of
 // what would be minted, and shape is exactly what the design bounds.
 {
-  const GSPACE = "netcup";
+  const GSPACE = "grant-space";
   const GTAKE = newTakeoverId();
   const legacy = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: GTAKE, instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1 }, "01234567890123456789012");
   const pinned = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: GTAKE, instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1, placement: { instanceId: "zyxwvutsrqponmlkjihgfedcba" } }, "01234567890123456789012");

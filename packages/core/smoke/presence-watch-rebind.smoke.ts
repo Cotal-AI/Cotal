@@ -1,7 +1,7 @@
 /**
  * A PRESENCE WATCH WHOSE CONSUMER DIED UNDER A LIVE CONNECTION MUST REBIND, NOT STAY STALE.
  *
- * WHAT WAS MEASURED. netcup, 2026-09-09 21:17Z: the presence stream was deleted and recreated.
+ * WHAT WAS MEASURED. A live deployment, 2026-09-09 21:17Z: the presence stream was deleted and recreated.
  * Its sequence restarted at 1. Every observer already watching held a nats.js ORDERED push
  * consumer that re-created itself from its old cursor (`by_start_sequence`, opt_start_seq
  * 12685862 against a stream whose last sequence was 35337). The broker kept sending idle
@@ -226,7 +226,7 @@ try {
   ok("5.6 exactly one more rebind was reported for the recreation",
     warnings.filter((w) => /rebound/.test(w)).length === warningsBefore + 1, warnings);
 
-  // --- THE RACE (rev-1421-gpt BLOCK on c67c0bb9): a bind still awaiting the broker when stop()
+  // --- THE RACE (reviewer BLOCK on c67c0bb9): a bind still awaiting the broker when stop()
   // or reconnect() lands must NOT install its watch afterwards. The probe holds the RETURN of the
   // real kv.watch(): the consumer and its iterator exist, the endpoint has not yet seen them.
   type Held = { release?: () => void; bound: number };
@@ -315,7 +315,7 @@ try {
     await ep.stop();
   }
 
-  // --- EMPTY BUCKET (rev-1421-grok BLOCK on c67c0bb9): a rebind onto zero keys delivers no entry,
+  // --- EMPTY BUCKET (second-reviewer BLOCK on c67c0bb9): a rebind onto zero keys delivers no entry,
   // so nothing refreshes lastPresenceWatchAt by delivery. The bind-time pending count is the one
   // fact that says "nobody is present": it must turn the view current, retire the frozen roster,
   // and NOT relapse to stale one window later (a rebind per TTL for as long as the mesh is empty).
@@ -376,7 +376,7 @@ try {
     await ep.stop();
   }
 
-  // --- REGISTERING OBSERVER ON AN EMPTY BUCKET (rev-1421-gpt BLOCK on 2d8be7e3): the incident
+  // --- REGISTERING OBSERVER ON AN EMPTY BUCKET (reviewer BLOCK on 2d8be7e3): the incident
   // shape under a manager-shaped observer. The stream is deleted and recreated BETWEEN its
   // heartbeats, so the rebind lands on zero keys. The observer's own key is one of the missing
   // ones. It must not read the wipe as "everyone left, me included, and I am sure": it re-publishes
