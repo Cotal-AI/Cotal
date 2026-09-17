@@ -48,8 +48,51 @@ function custodianEntry(): string {
  */
 export const RUN_MARKER_FLAG = "--cotal-run";
 
+/** This process's parent, from `/proc/<pid>/stat` field 4. Undefined when the pid is gone. */
+function parentOf(pid: number): number | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const ppid = Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[1]);
+    return Number.isInteger(ppid) && ppid > 1 ? ppid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `COTAL_RUN` as the nearest ancestor set it, when this process no longer has it.
+ *
+ * A suite that builds a child environment scrubs every `COTAL_` key, which is the correct rule for
+ * connection material and takes `COTAL_RUN` with it. The run is then invisible to the launcher, the
+ * marker degrades to this process's pid, and the runner's census cannot attribute the custodian to
+ * the run that started it. Measured: a child spawned through that scrub reported
+ * `child_saw_COTAL_RUN: null` and `claimed_by_run_census: false`.
+ *
+ * The environment of an ancestor still has it, because the scrub copies rather than edits the
+ * parent. `/proc/<pid>/environ` is readable by its owner, and every process in this chain belongs to
+ * the same uid, so a short walk recovers the run without weakening the scrub or asking every suite
+ * to remember an exception. Bounded to 16 hops so a pathological chain cannot spin, and it stops at
+ * pid 1, which owns no run.
+ */
+function inheritedRun(startPid: number): string | undefined {
+  let pid = parentOf(startPid);
+  for (let hop = 0; hop < 16 && pid !== undefined; hop++) {
+    try {
+      const entry = readFileSync(`/proc/${pid}/environ`, "utf8")
+        .split("\0")
+        .find((s) => s.startsWith("COTAL_RUN="));
+      const value = entry?.slice("COTAL_RUN=".length).trim();
+      if (value) return value;
+    } catch {
+      // Not ours to read, or it exited mid-walk. Keep climbing: a readable ancestor may be further up.
+    }
+    pid = parentOf(pid);
+  }
+  return undefined;
+}
+
 export function runMarker(env: NodeJS.ProcessEnv = process.env, pid: number = process.pid): string {
-  const named = env.COTAL_RUN?.trim();
+  const named = env.COTAL_RUN?.trim() ?? (env === process.env ? inheritedRun(pid) : undefined);
   // Newlines and spaces would split one marker into two argv-looking tokens in a census.
   return named ? named.replace(/\s+/g, "_") : `pid-${pid}`;
 }

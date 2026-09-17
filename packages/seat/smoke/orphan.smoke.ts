@@ -32,7 +32,7 @@
  *
  * Run: `pnpm smoke:seat-orphan`
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -358,6 +358,60 @@ setInterval(() => {}, 1000);
     check("a launch under an unusable custody root is refused by name, not as 'exited before ready'",
       /over the 107-byte limit/.test(launchError) && !/exited before ready/.test(launchError),
       { launchError });
+  }
+
+  {
+    // THE SCRUB. Suites build a child environment by copying their own and deleting every `COTAL_`
+    // key, which is the right rule for connection material and takes `COTAL_RUN` with it. Without a
+    // recovery the marker degrades to the launching pid and the runner's census cannot attribute
+    // that custodian to the run that started it, which is the census requirement failing silently on
+    // exactly the suites that leak most.
+    //
+    // The chain here is the real one: a parent EXEC'd with COTAL_RUN (so `/proc/<pid>/environ`
+    // carries it), spawning a child with COTAL_* scrubbed. Setting `process.env` at runtime would
+    // prove nothing, because `/proc/<pid>/environ` is fixed at exec and never updated afterwards.
+    const chainRun = `scrub-chain-${process.pid}`;
+    const grandchild = join(root, "scrub-grandchild.mjs");
+    writeFileSync(
+      grandchild,
+      `const { runMarker } = await import(${JSON.stringify(join(repo, "packages/seat/dist/index.js"))});
+console.log(JSON.stringify({ ownEnv: process.env.COTAL_RUN ?? null, marker: runMarker() }));
+`,
+    );
+    const scrubber = join(root, "scrub-parent.mjs");
+    writeFileSync(
+      scrubber,
+      `import { spawnSync } from "node:child_process";
+const scrubbed = { ...process.env };
+for (const k of Object.keys(scrubbed)) if (k.startsWith("COTAL_")) delete scrubbed[k];
+const r = spawnSync(process.execPath, [${JSON.stringify(grandchild)}], { env: scrubbed, encoding: "utf8" });
+process.stdout.write(r.stdout || r.stderr);
+`,
+    );
+    const chain = spawnSync(process.execPath, [scrubber], {
+      env: { ...process.env, COTAL_RUN: chainRun },
+      encoding: "utf8",
+    });
+    const chainOut = (chain.stdout || chain.stderr).trim();
+    let scrubbedMarker: string | undefined;
+    let sawOwnEnv: string | null = null;
+    try {
+      const parsed = JSON.parse(chainOut.split("\n").filter((l) => l.startsWith("{")).pop() ?? "{}");
+      scrubbedMarker = parsed.marker;
+      sawOwnEnv = parsed.ownEnv;
+    } catch {
+      /* reported by the cells below */
+    }
+    // Armed only if the scrub really removed it; otherwise the recovery below is untested.
+    check("scrub armed: the child's own environment carries no COTAL_RUN", sawOwnEnv === null, { sawOwnEnv, chainOut });
+    check("a run marker survives a suite that scrubs COTAL_* from its child environment", scrubbedMarker === chainRun, {
+      expected: chainRun,
+      got: scrubbedMarker,
+    });
+    // The walk must not invent a run for a process that never had one upstream.
+    check("a process with no COTAL_RUN anywhere in its ancestry still falls back to its pid", /^pid-\d+$/.test(MARKER({}, 777)), {
+      marker: MARKER({}, 777),
+    });
   }
   }
 } finally {
