@@ -52,6 +52,7 @@ import {
   feedbackLine,
   formatInjection,
   fmtFrom,
+  fmtChannel,
   startControlServer,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
@@ -1009,7 +1010,7 @@ export async function runCodexHost(): Promise<void> {
     // event is one-shot and contributes nothing to pendingWake(), so mid-turn it must be
     // LATCHED: steer it into the live turn if possible, and keep the latch until some turn
     // actually carried it (completeTurn consumes the latch at the boundary).
-    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`;
+    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;
     pendingPullHint = hint; // latched until a turn ACCEPTS it (steer accept / startTurn success)
     if (driver.busy || awaitingTurnEnd) {
       // Ride the SAME settlement rail as batch steers, so a turn boundary racing this steer

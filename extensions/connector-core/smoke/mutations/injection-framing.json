@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/injection-framing.smoke.ts"
   ],
-  "guard": "the block that carries peer messages into a turn names the order of operations - do the work with your own tools, verify it, then reply - and warns against reporting an action that was not performed, while still naming the reply verbs and preserving the historical marker; and the separator that divides one injected item from the next is unavailable to a peer - every peer-controlled field rendered into the frame goes through the one neutralization the cotal_inbox reply uses",
+  "guard": "the block that carries peer messages into a turn names the order of operations - do the work with your own tools, verify it, then reply - and warns against reporting an action that was not performed, while still naming the reply verbs and preserving the historical marker; and the separator that divides one injected item from the next is unavailable to a peer - every peer-controlled field rendered into the frame goes through the one neutralization the cotal_inbox reply uses; and a wake hint is held to the same rule, with its channel label rendered through the shared renderer in every connector that sends one",
   "command": "pnpm smoke:injection-framing",
   "completionMarker": "injection framing:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/injection-framing.json",
@@ -35,7 +35,19 @@
     "ways that reuse can be undone: rendering the item raw again (M4), keeping the rendering but",
     "dropping the body indent (M5), keeping the indent but narrowing the break class back to the ones",
     "JavaScript splits on (M6), and keeping both but letting a name reach a bracket (M7). M5 and M6 are",
-    "the half-fixes that read as repaired and are not."
+    "the half-fixes that read as repaired and are not.",
+    "",
+    "M8 through M11 are a THIRD injected surface, found by reading the acceptance wording against the",
+    "tree rather than against the issue's two named surfaces. A wake hint carries no message body and",
+    "reads as one short sentence, so it does not look like a frame, but it is written into the agent's",
+    "context without being asked for and it holds a peer-controlled field: the channel label. Three",
+    "connectors interpolated it raw. Measured: a label with a newline put a second line at column zero",
+    "reading as another delivered message.",
+    "",
+    "M8 is the renderer. M9, M10 and M11 are the three call sites, and they exist because killing M8",
+    "would prove only that the renderer is graded: the helper already existed for the inbox reply while",
+    "all three connectors went on interpolating the label themselves, which is the defect. A cell that",
+    "grades a shared helper says nothing about who calls it, so the call sites are mutated one by one."
   ],
   "mutations": [
     {
@@ -94,6 +106,42 @@
       "cell": "a sender name cannot close the attribution it is rendered inside",
       "expectRed": "a sender name cannot close the attribution it is rendered inside",
       "note": "The name half of the same defect, and the reason the neutralization lives in one shared helper: this single mutation reddens both the injected block and the cotal_inbox reply, because both render attribution through it."
+    },
+    {
+      "name": "M8 the wake hint's channel label is rendered as it arrived",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  const safe = attributionSafe(channel ?? \"\").trim();",
+      "replace": "  const safe = (channel ?? \"\").trim();",
+      "cell": "a channel label cannot add a line to a wake hint by a newline",
+      "expectRed": "a channel label cannot add a line to a wake hint by a newline",
+      "note": "The renderer itself. A wake hint is an injected frame, so the label it names is subject to the same positional rule as a message line."
+    },
+    {
+      "name": "M9 the codex wake hint interpolates its label again",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;",
+      "replace": "    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — read it with cotal_inbox.`;",
+      "cell": "the codex wake hint does not interpolate a channel label raw",
+      "expectRed": "the codex wake hint does not interpolate a channel label raw",
+      "note": "The shipped pre-fix spelling. A renderer nobody calls is not a repair, so each call site is graded on its own rather than inferred from the helper being correct."
+    },
+    {
+      "name": "M10 the opencode wake hint interpolates its label again",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`);",
+      "replace": "    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — read it with cotal_inbox.`);",
+      "cell": "the opencode wake hint does not interpolate a channel label raw",
+      "expectRed": "the opencode wake hint does not interpolate a channel label raw",
+      "note": "The shipped pre-fix spelling, second of three."
+    },
+    {
+      "name": "M11 the claude-code wake hint interpolates its label again",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    const hint = `You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — pull it with cotal_inbox.`;",
+      "replace": "    const hint = `You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — pull it with cotal_inbox.`;",
+      "cell": "the claude-code wake hint does not interpolate a channel label raw",
+      "expectRed": "the claude-code wake hint does not interpolate a channel label raw",
+      "note": "The shipped pre-fix spelling, third of three. This connector words the hint differently from the other two, which is why the rule lives in the renderer and not in a shared sentence."
     }
   ]
 }
