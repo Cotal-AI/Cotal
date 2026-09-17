@@ -2,7 +2,7 @@
   "issue": 1648,
   "workspace": "the lane worktree (fix-1648)",
   "branch": "detached HEAD in /home/david/lanes-20260916/fix-1648",
-  "headSha": "630db1032",
+  "headSha": "294f7ee2f",
   "baseSha": "43a4281a401c67a45422798ee5d90bb30eb3d85a",
   "reviewedSha": "5803256fadf7008a8e615eb50592c797ce107bc0",
   "reviewedShaNote": "Both blocking reviews record headSha 5803256fa. That commit is the PARENT of the first fix commit (git merge-base --is-ancestor 5803256fa HEAD exits 0; git diff --name-status 5803256fa..HEAD lists the production files). At 5803256fa the lane carried only the unauthenticated-peer settle, so all three of the issue's outcomes were genuinely absent and every FAIL grade in both reviews was correct FOR THAT TREE. This report records what the tree does now, and treats each finding as a real defect rather than a timing artifact.",
@@ -148,6 +148,16 @@
       "reproOutputAfter": "{\"child_saw_COTAL_RUN\":null,\"claimed_by_run_census\":true,\"carries_any_marker\":true}  exit 0",
       "fix": "runMarker climbs the process ancestry and reads COTAL_RUN from the nearest ancestor that still carries it, bounded to 16 hops, stopping at pid 1. The scrub is unchanged and no suite has to remember an exception. Because the custodian's own exit is now bounded, such a leak is also self-limiting even when no reaper runs.",
       "testingNote": "/proc/<pid>/environ is fixed at EXEC and is never updated by a later assignment to process.env, so a test that sets process.env at runtime proves nothing. The cells use a parent actually exec'd with COTAL_RUN, and an armed cell asserts the scrub really removed it first."
+    },
+    {
+      "finding": "Self-found, not from a review: the orphan.smoke.ts scrub-chain cell spread the ambient environment into a child.",
+      "reviewers": [
+        "smoke:suite-ambient-env (the repo's own gate)"
+      ],
+      "status": "CAUGHT BY THE GATE, FIXED",
+      "detail": "The gate refuses `{ ...process.env }` into a child because whatever runs a suite may itself be a managed agent session carrying a live creds path and control token. My new cell did exactly that and the gate failed the suite for it (exit 1, naming orphan.smoke.ts line 392).",
+      "fix": "The cell passes PATH and COTAL_RUN only. That is also a stronger fixture: the marker cannot arrive by some other inherited route.",
+      "proof": "pnpm smoke:suite-ambient-env exit 0; pnpm smoke:seat-orphan still 32 cells exit 0 with the scrub cells armed."
     }
   ],
   "filesChanged": [
@@ -179,7 +189,8 @@
     "73f8cba60 fix(seat,smoke-kit): refuse a socket path the kernel would truncate",
     "95143cefe fix(seat): recover the run marker when a suite scrubs COTAL_ from a child env",
     "630db1032 fix(seat): let the repro tell a settle-closed peer from one that left",
-    "cd044b2a8 docs(seat): record the socket-path and run-marker findings in the changeset"
+    "cd044b2a8 docs(seat): record the socket-path and run-marker findings in the changeset",
+    "294f7ee2f fix(manager,seat): give the orphan-seat suites a custody root a socket fits"
   ],
   "verificationAtHead": [
     {
@@ -226,13 +237,6 @@
       "detail": "41 pages passed"
     }
   ],
-  "knownPreExistingFailure": {
-    "command": "pnpm smoke:orphan-seat-reap",
-    "exitCode": 1,
-    "detail": "first spawn refused: custodian exited before ready",
-    "isMine": false,
-    "evidence": "Fails identically at 5803256fa with my changes stashed. Recorded rather than claimed as passing; worth a separate look, since the hardening in this lane now makes such a failure name its own cause."
-  },
   "containment": {
     "fullRuns": 3,
     "fullRunCap": 3,
@@ -243,5 +247,119 @@
     "liveSuitesRun": "none",
     "notes": "No suite whose name ends in :live was run. seat-input-live was inspected statically only. Nothing was pushed, no ref was moved, no review file was edited."
   },
-  "headShaNote": "630db1032 is the last commit carrying production or test content, and every exit code in this report was measured against it. The commits after it add only the changeset text and this report, so they cannot move a result. A report cannot name the commit that contains it: writing that sha in would change it."
+  "headShaNote": "294f7ee2f is the last commit carrying production or test content, and the full loop above was run against it. A report cannot name the commit that contains it: writing that sha in would change it.",
+  "correctedClaim": {
+    "claimPreviouslyMade": "smoke:orphan-seat-reap fails identically at 5803256fa with my changes stashed, so it is pre-existing and not mine.",
+    "status": "HALF RIGHT, AND THE HALF I GOT WRONG MATTERED",
+    "whatWasRight": "It does predate this lane: at 43a4281a4 with the manager smokes reverted it fails the same way (exit 1).",
+    "whatWasWrong": "I called it unrelated. It is the SAME socket-path truncation this lane fixes. I had the evidence to check that and did not, because I had already labelled it pre-existing.",
+    "howItWasSettled": "Computed the path first: <tmpdir>/cotal-smoke-broker-<pid>-XXXXXX/seats/<32 hex>/seat.sock = 123 bytes against the 107-byte limit, 16 over. Then confirmed live: the suite's own error now reads 'seat socket path is 123 bytes, over the 107-byte limit'. At base the identical failure read only 'custodian exited before ready: pid N gone', which is why it looked unrelated.",
+    "fix": "smoke:orphan-seat-reap, -rollback and -spawn-window each take their own short root from makeSeatRoot and remove it in the same teardown, since it no longer sits inside the broker dir that teardown deletes.",
+    "nowPassing": [
+      {
+        "command": "pnpm smoke:orphan-seat-reap",
+        "exitCode": 0,
+        "detail": "6 passed, 0 failed"
+      },
+      {
+        "command": "pnpm smoke:orphan-seat-rollback",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:orphan-seat-spawn-window",
+        "exitCode": 0
+      }
+    ]
+  },
+  "fullLoopOverWholeResult": {
+    "note": "Earlier rounds verified each change as it landed. This is the complete loop re-run over the finished tree, which is the only run that can speak for the whole result.",
+    "headSha": "294f7ee2f",
+    "seatSuites": [
+      {
+        "command": "pnpm smoke:seat-orphan",
+        "exitCode": 0,
+        "detail": "32 cells"
+      },
+      {
+        "command": "pnpm smoke:seat-lifecycle",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:seat-protocol",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:seat-isolation",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:seat-platform",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:custodial-pty",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:seat-exit-cause",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:orphan-seat-reap",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:orphan-seat-rollback",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:orphan-seat-spawn-window",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:orphan-seat-succession",
+        "exitCode": 0
+      }
+    ],
+    "repoGates": [
+      {
+        "command": "pnpm smoke:core-boundary",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:gate-inventory",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:suite-ambient-env",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:suite-own-process-material",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm smoke:sandbox-guard",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm repro:1648",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm typecheck",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm check:docs-voice",
+        "exitCode": 0
+      },
+      {
+        "command": "pnpm changeset status",
+        "exitCode": 0
+      }
+    ],
+    "custodiansLeftInWorktree": 0,
+    "everyExitCodeObserved": true
+  }
 }
