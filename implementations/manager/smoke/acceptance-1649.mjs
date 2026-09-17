@@ -23,6 +23,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+// Whatever runs this file may be a managed agent session, so the inherited environment can carry
+// a live credential and a live broker URL, and `run` spreads that environment into the pty child
+// below. Drop the COTAL_ keys here, at module scope: a scrub inside the function would be a
+// promise that it runs before every spread rather than a fact about what the child can inherit.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 const JCODE = spawnSync("command", ["-v", "jcode"], { shell: true, encoding: "utf8" }).stdout.trim();
 if (!JCODE) {
   console.error("SKIP: no `jcode` on PATH; this harness needs a real TUI to drive.");
