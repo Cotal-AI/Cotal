@@ -65,7 +65,7 @@ process.env.COTAL_HOME = home;
 const xdg = join(home, "xdg");
 mkdirSync(xdg);
 process.env.XDG_CONFIG_HOME = xdg;
-const root = mkdtempSync(join(tmpdir(), `cotal-supervise-dial-root-${fixtureId}-`));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}supervise-dial-root-${fixtureId}-`));
 const releaseRoot = teardownPathOnSignal(root);
 // The JetStream store gets its own tokened dir rather than living under `root`, because the reaper
 // claims a lost broker by that prefix.

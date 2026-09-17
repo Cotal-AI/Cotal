@@ -47,11 +47,13 @@ import {
   type RunJournalRecord,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "wfjrun";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfj-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfj-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;

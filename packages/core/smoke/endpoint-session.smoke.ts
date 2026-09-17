@@ -462,7 +462,7 @@ console.log("D. no standing EPS grant in any grant builder");
 console.log("C. rails: duplex windowed frames over a live broker");
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, sd);
 try {
   let up = false;

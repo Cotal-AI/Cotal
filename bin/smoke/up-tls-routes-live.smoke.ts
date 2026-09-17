@@ -56,7 +56,7 @@ import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace
 import net from "node:net";
 import tls from "node:tls";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 const CLI = join(import.meta.dirname, "..", "cotal.ts");
@@ -70,7 +70,7 @@ function need(bin: string): void {
     throw new Error(`up-tls-routes smoke requires \`${bin}\` on PATH; refusing to skip a security gate`);
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-uptls-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}uptls-`));
 const pki = join(root, "pki");
 mkdirSync(pki, { recursive: true });
 
@@ -553,7 +553,13 @@ async function main(): Promise<void> {
       }
       assert.equal(await serverInfo(port), undefined,
         "fixture: the TLS broker did not stop, so the substitution never happened");
-      const nats = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port)], { detached: true, stdio: "ignore" });
+      // A tokened store dir even though this substitute broker runs without JetStream: `-sd` alone
+      // is accepted and writes nothing, and argv is the only evidence the reaper can match. This
+      // one is DETACHED and unref'd, so it outlives the suite's process group by design, which is
+      // exactly the shape that leaves an orphan holding a port when the suite is killed.
+      const natsStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}tls-substitute-`));
+      const nats = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-sd", natsStore], { detached: true, stdio: "ignore" });
+      teardownOnSignal(nats, natsStore);
       nats.unref();
       for (let i = 0; i < 40; i++) {
         const info = await serverInfo(port, 500);
@@ -1007,6 +1013,7 @@ async function main(): Promise<void> {
     const plain = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", join(cwd, "plain-js")], {
       stdio: "ignore", detached: true,
     });
+    teardownOnSignal(plain);
     plain.unref?.();
     await new Promise((r) => setTimeout(r, 400));
     try {

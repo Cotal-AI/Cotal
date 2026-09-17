@@ -28,13 +28,13 @@ import { tmpdir } from "node:os";
 import { join as pjoin, resolve } from "node:path";
 import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = pjoin(WT, "bin", "cotal.ts");
 const TSX = pjoin(WT, "node_modules", ".bin", "tsx");
 const SPACE = "join-guidance";
-const root = mkdtempSync(pjoin(tmpdir(), "cotal-joinguid-root-"));
+const root = mkdtempSync(pjoin(tmpdir(), `${SMOKE_BROKER_TOKEN}joinguid-root-`));
 const home = mkdtempSync(pjoin(tmpdir(), "cotal-joinguid-home-"));
 mkdirSync(pjoin(root, ".cotal"), { recursive: true });
 

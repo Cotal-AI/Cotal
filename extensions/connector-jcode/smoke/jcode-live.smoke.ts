@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (!/^(1|true|yes|on)$/i.test(process.env.COTAL_E2E_JCODE ?? "")) {
   console.log("SKIP Jcode live E2E — set COTAL_E2E_JCODE=1 (needs an authenticated `jcode` CLI)");
@@ -32,7 +33,7 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 1
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-live-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-live-`));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const space = "jcodelive";
@@ -40,6 +41,7 @@ const peer = "jcodepeer";
 const hostEntry = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
 const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 let host: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
