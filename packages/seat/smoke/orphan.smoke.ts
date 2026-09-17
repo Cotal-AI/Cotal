@@ -33,6 +33,7 @@
  * Run: `pnpm smoke:seat-orphan`
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -318,7 +319,47 @@ setInterval(() => {}, 1000);
     // say why.
     const MAX = (seat as { MAX_SOCKET_PATH?: number }).MAX_SOCKET_PATH;
     const fits = (seat as { assertSocketPathFits?: (s: string) => string }).assertSocketPathFits;
-    check("the transport names its socket-path ceiling", MAX === 107, { MAX_SOCKET_PATH: MAX });
+    // MEASURED, not asserted against a remembered number. An earlier version of this cell hardcoded
+    // 107 from "108 bytes including the NUL", which sounds right and is wrong: a 108-byte path binds
+    // and the exact file appears on disk. Binding real sockets here means the constant is checked
+    // against the kernel on the machine running the suite, so a platform with a different sun_path
+    // reports a mismatch rather than inheriting this author's arithmetic.
+    const bindsExactly = async (len: number): Promise<{ ok: boolean; why: string }> => {
+      const dir = mkdtempSync(join(root, "lim-"));
+      // Pad the FILENAME, so no path separator has to be counted. An earlier version padded a
+      // directory component via `join` and was off by one, which made this cell report a kernel
+      // verdict for a path it had mis-built. The length is asserted BEFORE binding, so a build
+      // error can never be mistaken for a refusal by the kernel.
+      const full = `${dir}/${"p".repeat(len - dir.length - 1)}`;
+      if (full.length !== len) return { ok: false, why: `built ${full.length}, not ${len}` };
+      const srv = createServer();
+      // `listen` is ASYNCHRONOUS: checking the filesystem on the next line would race it and report
+      // "did not bind" for a path that binds perfectly well, which would make this cell lie in the
+      // safe-looking direction. Wait for the callback, or for the error, before looking.
+      const bound = await new Promise<string | undefined>((resolve) => {
+        srv.once("error", (e: NodeJS.ErrnoException) => resolve(e.code ?? "error"));
+        srv.listen(full, () => resolve(undefined));
+      });
+      if (bound !== undefined) {
+        srv.close();
+        return { ok: false, why: `listen ${bound}` };
+      }
+      const exact = existsSync(full);
+      srv.close();
+      return { ok: exact, why: exact ? "exact path created" : "bound, but the exact path is absent: truncated" };
+    };
+    const atLimit = typeof MAX === "number" ? await bindsExactly(MAX) : { ok: false, why: "no MAX" };
+    const pastLimit = typeof MAX === "number" ? await bindsExactly(MAX + 1) : { ok: false, why: "no MAX" };
+    check("the ceiling matches what this kernel actually binds: the limit itself is usable", atLimit.ok, {
+      MAX_SOCKET_PATH: MAX,
+      atLimit,
+    });
+    // `pastLimit.ok === false` is not enough on its own: a mis-built path is also false. Require the
+    // reason to be truncation, so this cell cannot pass for the wrong reason.
+    check("...and one byte past it is silently truncated, which is why the refusal exists", !pastLimit.ok && /truncated/.test(pastLimit.why), {
+      firstTruncating: typeof MAX === "number" ? MAX + 1 : undefined,
+      pastLimit,
+    });
     check("smoke-kit agrees with the package about that ceiling, so a suite's root is sized by the same number", SEAT_MAX_SOCKET_PATH === MAX, {
       smokeKit: SEAT_MAX_SOCKET_PATH,
       seat: MAX,
@@ -334,7 +375,7 @@ setInterval(() => {}, 1000);
       // The message has to carry the number and the cure, because the person reading it is looking
       // at an unexplained death in a detached process.
       check("one byte over is refused, naming the size, the limit and the cause",
-        /over the 107-byte limit/.test(refusedPath) && /\b108 bytes\b/.test(refusedPath) && /shorter custody root/.test(refusedPath),
+        refusedPath.includes(`over the ${MAX}-byte limit`) && refusedPath.includes(`${MAX + 1} bytes`) && /shorter custody root/.test(refusedPath),
         { refusedPath });
     } else {
       check("the transport refuses an oversized socket path", false, { assertSocketPathFits: typeof fits });
@@ -356,7 +397,7 @@ setInterval(() => {}, 1000);
       launchError = (e as Error).message;
     }
     check("a launch under an unusable custody root is refused by name, not as 'exited before ready'",
-      /over the 107-byte limit/.test(launchError) && !/exited before ready/.test(launchError),
+      typeof MAX === "number" && launchError.includes(`over the ${MAX}-byte limit`) && !/exited before ready/.test(launchError),
       { launchError });
   }
 

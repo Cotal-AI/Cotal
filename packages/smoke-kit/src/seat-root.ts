@@ -2,7 +2,7 @@
  * A custody root short enough that the seat socket inside it fits a Unix `sun_path`.
  *
  * WHY THIS EXISTS. A seat socket is `<root>/<32 hex>/seat.sock`, so it costs the root plus 43
- * characters, against a hard 107-character ceiling. Every seat suite built its root from `tmpdir()`,
+ * characters, against a hard 108-byte ceiling. Every seat suite built its root from `tmpdir()`,
  * which is whatever `TMPDIR` says, and the operating instructions for this repo tell an agent to set
  * `TMPDIR` INSIDE its worktree. A worktree path of any depth then pushes the socket past the limit.
  *
@@ -26,8 +26,9 @@ import { join } from "node:path";
 export const SEAT_SOCKET_OVERHEAD = 1 + 32 + 1 + "seat.sock".length;
 
 /** The `sun_path` ceiling, duplicated from `@cotal-ai/seat` on purpose: smoke-kit depends on
- *  nothing in this repo, and the seat suite asserts the two agree. */
-export const SEAT_MAX_SOCKET_PATH = 107;
+ *  nothing in this repo, and the seat suite asserts the two agree. Measured, not derived: a
+ *  108-byte path binds and the exact file appears; 109 truncates to `seat.soc`. */
+export const SEAT_MAX_SOCKET_PATH = 108;
 
 /** Does a custody root at `base` leave room for the socket inside it? `extra` is the length of the
  *  prefix `mkdtemp` will add, plus its six random characters. */

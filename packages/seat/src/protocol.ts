@@ -47,20 +47,23 @@ export type StopMode = "graceful" | "hard";
 /**
  * Longest filesystem socket path this transport accepts.
  *
- * `sun_path` in `struct sockaddr_un` is 108 bytes on Linux INCLUDING its NUL terminator, so 107
- * characters is the real ceiling. What makes this worth a named refusal rather than a comment is
- * that nothing below reports the overflow: libuv copies the path into that fixed buffer and
- * TRUNCATES it, then `listen` SUCCEEDS on the shortened name. Measured directly: a 109-byte path
- * creates `seat.soc`, 110 creates `seat.so`, 111 creates `seat.s`. The custodian then chmods and
- * unlinks the path it MEANT to bind, gets ENOENT, and dies; the launcher, which only sees a pid
- * that went away, reports `custodian exited before ready` and names nothing.
+ * `sun_path` in `struct sockaddr_un` is 108 bytes on Linux. Whether the last byte may hold a path
+ * character or must be the NUL is the kind of detail that is easy to assert and easy to get wrong,
+ * so it was measured rather than reasoned about: a 108-byte path binds and the exact file appears on
+ * disk; 109 creates `seat.soc`, 110 creates `seat.so`, 111 creates `seat.s`. So 108 is usable and
+ * truncation begins at 109.
+ *
+ * What makes this worth a named refusal is that nothing below reports the overflow: libuv copies the
+ * path into that fixed buffer and TRUNCATES it, then `listen` SUCCEEDS on the shortened name. The
+ * custodian then chmods and unlinks the path it MEANT to bind, gets ENOENT, and dies; the launcher,
+ * which only sees a pid that went away, reports `custodian exited before ready` and names nothing.
  *
  * That is not hypothetical. Two independent reviews of this issue set TMPDIR inside their review
- * worktree, whose deeper path pushed the seat socket to 116 bytes, and every gate run they
- * attempted died this way before reaching a single assertion. Both concluded the fix was unproven;
- * the fix was fine and the transport was lying about why it could not start.
+ * worktree, whose deeper path pushed the seat socket to 121 bytes, and every gate run they attempted
+ * died this way before reaching a single assertion. Both concluded the fix was unproven; the fix was
+ * fine and the transport was lying about why it could not start.
  */
-export const MAX_SOCKET_PATH = 107;
+export const MAX_SOCKET_PATH = 108;
 
 /** Refuse a socket path the kernel cannot hold, naming the limit, the overage and the cure. Called
  *  before any process is spawned, so an unusable custody root fails at the launch that asked for it

@@ -35,7 +35,7 @@ if (process.platform !== "linux") {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
-// NOT `mkdtemp(tmpdir())`. A seat socket is `<root>/<32 hex>/seat.sock`, which must fit 107 bytes,
+// NOT `mkdtemp(tmpdir())`. A seat socket is `<root>/<32 hex>/seat.sock`, which must fit 108 bytes,
 // and the operating instructions for this repo tell an agent to put TMPDIR inside its worktree. Two
 // independent reviews ran exactly this script from a review worktree, their sockets came to 121
 // bytes, and every run died before reaching a verdict. `makeSeatRoot` keeps the root short enough
