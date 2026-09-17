@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -140,8 +141,8 @@ class BridgeClient:
                         # installing here is exactly the clobber this fence exists to prevent.
                         try:
                             s.close()
-                        except OSError:
-                            pass
+                        except OSError as exc:
+                            print(f"[cotal-hermes] failed to close retired socket: {exc}", file=sys.stderr, flush=True)
                         return
                     self._sock = s
                 return
@@ -279,8 +280,8 @@ class BridgeClient:
                 pass  # already disconnected; the close below still frees the descriptor
             try:
                 sock.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                print(f"[cotal-hermes] failed to close retired socket: {exc}", file=sys.stderr, flush=True)
         self._stop.clear()
         if reader is not None:
             # Courtesy only: nothing below depends on whether this returns in time.
@@ -332,8 +333,8 @@ class BridgeClient:
                     pass  # already disconnected, and the close below still frees the descriptor
                 try:
                     self._sock.close()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    print(f"[cotal-hermes] failed to close retired socket: {exc}", file=sys.stderr, flush=True)
                 self._sock = None
 
 
