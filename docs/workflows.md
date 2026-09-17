@@ -250,7 +250,11 @@ recorded ownership flag must match its step-derived channel before registry writ
 The mediator retains endpoint-wide checkpoint rights and stream-wide leader reads as trusted
 host authority. Record reads exposed to the driver are restricted to its own run's keys. Reads
 that decide writes remain leader-served. A read of the journal uses the run's filtered replay
-durable, including the diagnostic for a journal with no run record.
+durable, including the diagnostic for a journal with no run record. That durable is named after
+the takeover, and an attempt reads it many times, so reads under one takeover run one at a time in
+the hosting process and a replay removes a durable of its own name that an interrupted earlier read
+left behind. A durable that survives a replay's own delete belongs to a reader the process cannot
+account for, and reading its tail is refused.
 
 A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open
 pause, then a second credential pinned to that token for the answer and settlement.
