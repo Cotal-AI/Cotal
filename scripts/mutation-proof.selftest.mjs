@@ -60,6 +60,13 @@ const stripAnsi = (s) => s.replace(/\[[0-9;]*m/g, "");
 const verdictIs = (out, v) =>
   out.split("\n").some((l) => stripAnsi(l).startsWith(v + " "));
 
+/** Files this suite writes into the shared tmpdir, out of reach of the fixture cleanup. Removed on
+ *  every exit, a failed check's included. */
+const sharedTmpFiles = [];
+process.on("exit", () => {
+  for (const path of sharedTmpFiles) rmSync(path, { force: true });
+});
+
 // ---- a fixture repo: one guard, one suite that depends on it, one that does not ----------------
 mkdirSync(join(root, "src"), { recursive: true });
 writeFileSync(
@@ -922,23 +929,33 @@ check("...and the exit status still reports the signal, not a tidy 0",
 {
   const hungSuite = join(root, "hung-suite.mjs");
   writeFileSync(hungSuite, [
+    "import { existsSync } from 'node:fs';",
     "import { admit } from './src/impl.js';",
     "if (admit(50) === false) {",
     "  console.log('  ✓ clean baseline');",
     "  process.exit(0);",
     "} else {",
     "  console.log('  ✓ mutated hanging');",
-    "  setInterval(() => {}, 1000);",
+    // Hang until this suite says so, not forever. The kill below takes the proof, not this child,
+    // which `run()` starts in a process group of its own, so a bare `setInterval` outlived the
+    // self-test: one orphan per run, and one per mutation when a config drives this suite. Not keyed
+    // on the parent dying: the kill usually lands before the proof has spawned this, so the child
+    // starts already reparented. The timeout bounds a run that never reaches the release.
+    "  const release = process.env.MUTATION_SELFTEST_RELEASE;",
+    "  setInterval(() => { if (release && existsSync(release)) process.exit(0); }, 100);",
+    "  setTimeout(() => process.exit(0), 60_000);",
     "}",
     "",
   ].join("\n"));
   execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm hung-suite", { cwd: root });
 
+  const release = `${root}-release`;
+  sharedTmpFiles.push(release);
   const hardChild = spawn(process.execPath, [TOOL,
     "--command", `${process.execPath} hung-suite.mjs`,
     "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
     "--expect-red", "oversized values are refused",
-  ], { cwd: root, stdio: "ignore" });
+  ], { cwd: root, stdio: "ignore", env: { ...process.env, MUTATION_SELFTEST_RELEASE: release } });
 
   let hardApplied = false;
   for (let i = 0; i < 600 && !hardApplied; i++) {
@@ -947,6 +964,8 @@ check("...and the exit status still reports the signal, not a tidy 0",
   }
   check("hard kill lands while mutation is applied", hardApplied);
   hardChild.kill("SIGKILL");
+  // Kept until this suite exits: a child the proof spawned just before it died may start later.
+  writeFileSync(release, "");
   await new Promise((done) => setTimeout(done, 200));
 
   // The mutant is left on disk right after SIGKILL
