@@ -66,12 +66,23 @@ try {
   // only the named cell varies.
   write("bin/direct.mjs", "export const x = 1;\n");
 
-  // One suite carrying three cells of different kinds, so a fixture can name any of them without
+  // One suite carrying cells of different kinds, so a fixture can name any of them without
   // changing anything else about the run.
+  //
+  // EACH OBSERVING CELL REACHES THE WORLD BY EXACTLY ONE ROUTE, which is the whole reason the cells
+  // are written this way rather than in whatever shape reads most naturally. A cell that reached it
+  // by two routes would stay green with either one deleted, so the arms of the analysis could be
+  // removed one at a time without any cell noticing -- and the resulting suite would be an
+  // instrument that always says accept, which is precisely the defect this file exists to refuse.
   write("bin/smoke/cells.smoke.ts", [
-    'import { spawnSync } from "node:child_process";',
     'import { readFileSync } from "node:fs";',
+    'import { spawnSync } from "node:child_process";',
     "let passed = 0;",
+    "// The suite LAUNCHES the guarded entrypoint once, up front and outside every cell. That is what",
+    "// makes the fixture gradable at all (mutation-coverage requires the suite to reach the mutated",
+    "// file), and keeping it out of the cells is what keeps each cell's route to the world single.",
+    'const launched = spawnSync(process.execPath, ["bin/direct.mjs"], { encoding: "utf8" });',
+    "void launched;",
     "const check = (name, cond) => { if (cond) passed++; console.log(`${cond ? '  ok' : '  FAIL'} ${name}`); };",
     "",
     "// PARSER-ONLY: graded against a string this file wrote. Nothing outside this source can change",
@@ -79,18 +90,25 @@ try {
     "const parse = (text) => (text.match(/expected: (\\\\d+)/) ?? [])[1];",
     'check("the banner parser reads the count out of a banner", parse("expected: 7") === "7");',
     "",
-    "// END-TO-END: runs the guarded entrypoint and grades what came back.",
-    'const run = spawnSync(process.execPath, ["bin/direct.mjs"], { encoding: "utf8" });',
-    'check("the guarded entrypoint exits clean", run.status === 0);',
-    "",
-    "// READS THE SOURCE: observes the guarded file on disk without launching it.",
+    "// THROUGH AN IMPORT ONLY: the verdict rests on a function from another module and on nothing",
+    "// ambient, so deleting the import arm alone reddens the cell that names it.",
     'check("the guarded source still declares an export", readFileSync("bin/direct.mjs", "utf8").includes("export"));',
     "",
+    "// THROUGH A GLOBAL ONLY: the verdict rests on `process`, which reaches the environment and the",
+    "// processes this suite started. No import is involved, so deleting the global arm alone reddens",
+    "// the cell that names it.",
+    'check("the run carries the environment the guarded entrypoint needs", process.env.PATH !== "");',
+    "",
     "// PARSER-ONLY, REPORTED THROUGH A HELPER that computes the verdict itself. A reader that only",
-    "// looked at the call site's arguments would call this one self-fed for the wrong reason, and a",
-    "// reader that walked the whole helper body would call every cell in every suite a witness.",
+    "// looked at the call site's arguments would call this one self-fed for the wrong reason.",
     "const graded = (name, text, want) => { check(name, parse(text) === want); };",
     'graded("the parser is graded through a helper", "expected: 3", "3");',
+    "",
+    "// OBSERVING, REPORTED THROUGH THE SAME HELPER, and it is the twin of the cell above: a reader",
+    "// that stopped at the call site would call this one self-fed too, because everything it",
+    "// observes is reached from inside the helper.",
+    "const gradedRead = (name, path) => { check(name, readFileSync(path, \"utf8\").includes(\"export\")); };",
+    'gradedRead("the guarded source is read from inside a helper", "bin/direct.mjs");',
     "",
     "console.log(`FIXTURE: ${passed} passed, 0 failed`);",
   ].join("\n"));
@@ -142,17 +160,30 @@ try {
   //
   // Each differs from the refusal above ONLY in the named cell. Together they are what shows the
   // refusal is about the relation rather than about this suite, source, or command.
-  result = runTool("--gradable-only", fixture("end-to-end", "the guarded entrypoint exits clean"));
+  result = runTool("--gradable-only", fixture("reads-source", "the guarded source still declares an export"));
   check(
-    "the SAME mutation naming the cell that LAUNCHES the guarded source is accepted",
-    result.status === 0 && /ACCEPTED end-to-end\.json/.test(result.out),
+    "the SAME mutation naming a cell that reaches the world through an IMPORT is accepted",
+    result.status === 0 && /ACCEPTED reads-source\.json/.test(result.out),
     result.out,
   );
 
-  result = runTool("--gradable-only", fixture("reads-source", "the guarded source still declares an export"));
+  // The second route, isolated from the first. This cell touches no import at all, so an accept
+  // here cannot be the import arm answering, and the two together are what show the analysis reads
+  // observation from the binding rather than from one privileged spelling.
+  result = runTool("--gradable-only", fixture("reads-global", "the run carries the environment the guarded entrypoint needs"));
   check(
-    "and so is one naming a cell that READS the guarded source, so the accept is not the launch alone",
-    result.status === 0 && /ACCEPTED reads-source\.json/.test(result.out),
+    "and so is one reaching it through an ambient GLOBAL and no import at all",
+    result.status === 0 && /ACCEPTED reads-global\.json/.test(result.out),
+    result.out,
+  );
+
+  // Reported through the same helper as the refused cell above and differing only in what the
+  // helper reaches. A reader that stopped at the call site would call BOTH self-fed, and this is
+  // the half that would then be a false refusal against a correct entry.
+  result = runTool("--gradable-only", fixture("observes-through-helper", "the guarded source is read from inside a helper"));
+  check(
+    "and so is one whose observation happens INSIDE the reporter helper, not at the call site",
+    result.status === 0 && /ACCEPTED observes-through-helper\.json/.test(result.out),
     result.out,
   );
 
@@ -229,7 +260,7 @@ try {
   // "not accepted" would be true of everything and the refusals would read as passes. This asserts
   // the summary the tool prints when it has examined a selection, so a run that never got that far
   // is visibly different from one that graded.
-  result = runTool("--gradable-only", "end-to-end.json", "reads-source.json", "unlocated.json");
+  result = runTool("--gradable-only", "reads-source.json", "reads-global.json", "unlocated.json");
   check(
     "CONTROL: the validator examines and grades a whole selection, and says so in its summary",
     result.status === 0
@@ -240,12 +271,12 @@ try {
 
   // The mixed selection: one refusal must not stop the others being examined, and the summary must
   // count both sides. A check that aborted the run would be invisible to the single-config cells.
-  result = runTool("--gradable-only", "parser-only.json", "end-to-end.json");
+  result = runTool("--gradable-only", "parser-only.json", "reads-source.json");
   check(
     "a refused config does not hide the config after it, and both are counted",
     result.status !== 0
       && /REFUSED parser-only\.json/.test(result.out)
-      && /ACCEPTED end-to-end\.json/.test(result.out)
+      && /ACCEPTED reads-source\.json/.test(result.out)
       && /examined=2 graded=1 refused-with-reason=1/.test(result.out),
     result.out,
   );
@@ -260,7 +291,7 @@ try {
  * out with a refactor accident and the suite still prints `0 failed` and exits 0, just with a
  * smaller first number nothing compares against. Raise it in the same change that adds a cell.
  */
-const EXPECTED_CELLS = 11;
+const EXPECTED_CELLS = 12;
 console.log(`\nMUTATION CELL-WITNESS SELF-TEST: ${passed} passed, ${failed} failed`);
 if (failed === 0 && passed !== EXPECTED_CELLS) {
   console.log(`  ✗ FAIL: expected ${EXPECTED_CELLS} cells, ran ${passed}: silently skipped cells must not read as green`);
