@@ -58,6 +58,7 @@ import {
   loopLagObserver,
   servedDespiteStarvation,
   STARVED_ATTEMPTS,
+  POLL_ATTEMPTS,
   type LoopLagObserver,
   type LoopLagWindow,
 } from "../src/host-starvation.js";
@@ -297,6 +298,202 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     absorbed.some((n) => n.includes("arming the pause")), absorbed.map((n) => n.slice(0, 40)).join(" | ") || "(none)");
 }
 
+// ── 1c) #1619: a LATE PLANE REPLY on a healthy loop is one poll, not the step's failure ───────
+//
+// THE SECOND INCIDENT, and the one this block exists for. #1508 above is a host that stopped
+// running; this is a host that is running fine while ONE plane read's reply arrives after its own
+// 5s client deadline. The two produce the identical `TimeoutError: timeout`, which is why they
+// share a classifier, and the old one answered `fault` for this half: it required starvation, so a
+// deadline on a HEALTHY loop went straight out as the effect's failure and `perform.ts` recorded
+// `L4000 handler-fault "timeout"`.
+//
+// WHY IT SHOWED UP ON LONG STEPS. A parked step polls the plane about once a second for its whole
+// duration, so the number of chances to draw one late reply grows with how long it waits. Measured
+// on the reporting run: the two asks under 4.5 minutes settled `ok` and the two over 7.5 minutes
+// died with this record, with 11+ minutes of their deadline unspent.
+//
+// THE INJECTION IS ONE REPLY, and everything about that is deliberate. The broker below is real and
+// healthy, the pause is durable, its timer is really armed, and exactly one `getMessage` is made to
+// answer late — and only AFTER the pause is armed, so this grades the settle poll and is not a
+// second copy of cell 1b's arming. A fix that changed nothing leaves the sleep rejecting.
+{
+  console.log("• 1c: a sleep whose settle poll draws one late reply completes rather than failing");
+  const TOKEN = "cG9sbF9sYXRlX3JlcGx5X3Rva2VuMDE";
+
+  // One late reply, armed by the block rather than from the first call: `armed` is what makes this
+  // the POLL's deadline and not the mint's.
+  let injectArmed = false;
+  let injectionsLeft = 1;
+  let injected = 0;
+  const latePlane = new Proxy(jsm, {
+    get(target, prop, receiver) {
+      if (prop !== "streams") return Reflect.get(target, prop, receiver);
+      const streams = Reflect.get(target, prop, receiver) as typeof jsm.streams;
+      return new Proxy(streams, {
+        get(s, p, r) {
+          if (p !== "getMessage") return Reflect.get(s, p, r);
+          return (...args: unknown[]) => {
+            if (injectArmed && injectionsLeft > 0) {
+              injectionsLeft -= 1;
+              injected += 1;
+              // The nats client's own deadline, by CLASS and not by message: the same value the
+              // socket produces when a reply is late, carrying no JetStream code at all.
+              return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" }));
+            }
+            return (Reflect.get(s, p, r) as (...a: unknown[]) => unknown).apply(s, args);
+          };
+        },
+      });
+    },
+  }) as typeof jsm;
+
+  const absorbed: string[] = [];
+  const handler = new MeshHandler(
+    nc, kv, js, latePlane,
+    { space: SPACE, endpoint: EP, runId: "r-starve", caller: CALLER, instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+    new EpfSettleWatcher(latePlane, SPACE, 300),
+    () => Date.now(),
+    undefined,
+    undefined,
+    (note) => absorbed.push(note),
+  );
+  const sleeping = handler.sleep({ duration: "3s" }, ctxOf(TOKEN)).then(() => "ok" as const, (e: Error) => e);
+
+  // The pause is durable and its timer is REALLY armed before anything is injected, so a completion
+  // below is a settle fact this process read and not a wait that was skipped.
+  let durable = false;
+  for (let i = 0; i < 100 && !durable; i += 1) {
+    durable = (await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN }))?.value.state === "waiting";
+    if (!durable) await wait(50);
+  }
+  c("the pause is durable before the late reply is injected", durable);
+  const armed = await armPending(4);
+  c("and its timer is really armed on the broker, so the deadline will pass for real", armed === 1, armed);
+
+  injectArmed = true;
+  await wait(1_200);
+  injectArmed = false;
+  c("one plane read really did answer late: the cell measured something", injected === 1, injected);
+
+  const out = await withDeadline(sleeping, 60_000, "the sleep whose poll drew a late reply");
+  c("the sleep COMPLETES: one late reply is a property of that request, not of the pause behind it",
+    out === "ok", out instanceof Error ? `${(out as EffectError).code ?? out.name}: ${out.message}` : out);
+  c("and it did NOT fail as L4000 carrying the client's bare `timeout`, which is the misattribution #1619 is about",
+    !(out instanceof Error && out.name === "TimeoutError" && out.message === "timeout"),
+    out instanceof Error ? `${out.name}: ${out.message}` : "(completed)");
+  const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN });
+  c("the pause really did settle on the plane: the sleep read a fact, it did not skip the wait",
+    settle?.settle === "expired", settle?.settle);
+  // THE WITNESS, and it is a different sentence from cell 1's on purpose: this notice can only be
+  // emitted on the branch that reads a deadline against a RUNNING loop, which the pre-fix tree
+  // has no code for at all. Cell 1's notice would go on being emitted by a starved retry.
+  c("and the late reply was absorbed by name: the notice says the host WAS scheduling, so the blame is the plane's",
+    absorbed.some((n) => n.includes("WAS scheduling the run's process") && n.includes("the plane's reply was late")),
+    absorbed.map((n) => n.slice(0, 60)).join(" | ") || "(none)");
+}
+
+// ── 1d) the classifier's new branch, with the refusals that bound it ──────────────────────────
+//
+// Cell 1c is the behaviour; these are the seam. A deadline shape is now THREE answers rather than
+// two, and the two boundaries are what keep the new one from swallowing its neighbours: a
+// non-deadline failure on a healthy loop is still a fault, and a deadline on a STARVED loop is
+// still starvation and must not be re-diagnosed as a late plane.
+{
+  console.log("• 1d: a deadline on a running loop is a late reply, and the neighbours are unmoved");
+  const timeoutError = Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  const healthy: LoopLagWindow = { elapsedMs: 10_000, lagMs: 12, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 };
+  const starvedWindow: LoopLagWindow = { elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 3, wallSkewMs: 0 };
+
+  c("a client deadline on a loop that was RUNNING is one late reply, not a broken plane",
+    classifyPauseFailure(timeoutError, healthy).condition === "transient",
+    classifyPauseFailure(timeoutError, healthy).condition);
+  c("a non-deadline failure on the same healthy loop is still a fault: lateness does not launder a refusal",
+    classifyPauseFailure(new Error("stream not found"), healthy).condition === "fault",
+    classifyPauseFailure(new Error("stream not found"), healthy).condition);
+  c("and a deadline on a STARVED loop is still starvation, which names the host rather than the plane",
+    classifyPauseFailure(timeoutError, starvedWindow).condition === "starved",
+    classifyPauseFailure(timeoutError, starvedWindow).condition);
+}
+
+// ── 1e) a plane that NEVER answers fails, bounded, under its own code ─────────────────────────
+//
+// The other half of #1619's repair, and the same shape cell 4 gives starvation: re-reading a pause
+// whose plane has genuinely stopped answering must END, not retry forever, and it must say which of
+// the two conditions it measured. The loop here is healthy on every attempt, so the verdict is the
+// plane's and the code is L4026 rather than L4025.
+{
+  console.log("• 1e: an unanswerable plane fails, bounded, under L4026");
+  const healthyThroughout: LoopLagObserver = {
+    mark: () => ({ at: 0, wallAt: 0, lagMs: 0, ticks: 0 }),
+    since: () => ({ elapsedMs: 10_000, lagMs: 5, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 }),
+  };
+  let attempts = 0;
+  const out = await withDeadline(
+    servedDespiteStarvation(
+      () => { attempts += 1; return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })); },
+      healthyThroughout,
+      "waiting on the pause t",
+      () => { /* quiet in the transcript */ },
+    ).then(() => "ok" as const, (e: unknown) => e),
+    60_000,
+    "the unanswerable plane",
+  );
+  c("it ends rather than re-reading forever", out !== undefined && out !== "ok");
+  c("after a bounded number of reads", attempts === POLL_ATTEMPTS, attempts);
+  c("under L4026, which names the PLANE rather than the effect or the host",
+    out instanceof EffectError && out.code === "L4026" && out.kind === "pause-unanswered",
+    out instanceof EffectError ? `${out.code}/${out.kind}` : String(out));
+  c("and it is NOT reported as starvation, which would send the operator to the wrong box",
+    !(out instanceof EffectError && out.code === "L4025"),
+    out instanceof EffectError ? out.code : String(out));
+}
+
+// ── 1f) the two bounds INTERLEAVED, which is the claim the spec makes and nothing measured ────
+//
+// The change-log row for #1619 says the call is bounded "so neither condition nor any interleaving
+// of them retries forever". That is a claim about a sequence no other cell produces: 1e drives a
+// plane that is always late and 4 drives a host that is always starved, and each fills one counter
+// on its own.
+//
+// THE MUTATION THIS EXISTS FOR IS NAMED, because writing the obvious one first proved it was the
+// wrong one. `unanswered = 0` on each starved attempt SURVIVES: `starved` is never reset either, so
+// it still climbs to its own bound and the call still ends. Measured, not argued — MP18 was that
+// mutation and went green. What actually hangs is reading the counts as "consecutive OF THIS KIND"
+// and clearing the other on every condition change, which is the plausible misreading, and under an
+// alternating sequence neither count ever reaches 6. So that is what MP18 mutates now, and the
+// assertion below is TERMINATION, which is the only thing that separates the two implementations.
+//
+// The ceiling is asserted as a sanity bound rather than as the discriminating claim: no mutation
+// makes it fail on its own, and a cell should not advertise a guard it does not provide.
+{
+  console.log("• 1f: alternating starvation and late replies still terminates");
+  const STARVED_W: LoopLagWindow = { elapsedMs: 10_000, lagMs: 9_500, ticksExpected: 40, ticksObserved: 1, wallSkewMs: 0 };
+  const RUNNING_W: LoopLagWindow = { elapsedMs: 10_000, lagMs: 5, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 };
+  let attempts = 0;
+  // Starved, running, starved, running... the sequence a reset-on-change counter never escapes.
+  const alternating: LoopLagObserver = {
+    mark: () => ({ at: 0, wallAt: 0, lagMs: 0, ticks: 0 }),
+    since: () => ((attempts - 1) % 2 === 0 ? STARVED_W : RUNNING_W),
+  };
+  const out = await withDeadline(
+    servedDespiteStarvation(
+      () => { attempts += 1; return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })); },
+      alternating,
+      "waiting on the pause t",
+      () => { /* quiet in the transcript */ },
+    ).then(() => "ok" as const, (e: unknown) => e),
+    60_000,
+    "the alternating operation",
+  );
+  c("an alternating sequence ENDS rather than retrying forever, which one shared counter would not",
+    out !== undefined && out !== "ok", String(out));
+  c("within the two bounds combined, since neither count is ever reset",
+    attempts > 0 && attempts <= STARVED_ATTEMPTS + POLL_ATTEMPTS, `${attempts} attempts, ceiling ${STARVED_ATTEMPTS + POLL_ATTEMPTS}`);
+  c("failing under whichever condition filled its count first, by name",
+    out instanceof EffectError && (out.code === "L4025" || out.code === "L4026"),
+    out instanceof EffectError ? `${out.code}/${out.kind}` : String(out));
+}
+
 // ── 2) THE PAIRED CELL: a genuine host fault under the same wait still fails as L4000 ────────
 //
 // A repair that simply swallowed every timeout would pass cell 1 and fail here. The fault is real
@@ -359,8 +556,8 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   // And the composition: the classifier needs BOTH, so each half alone is a fault.
   c("the classifier calls it starved only when the shape AND the evidence agree",
     classifyPauseFailure(timeoutError, starvedWindow).condition === "starved");
-  c("a deadline on a loop that was RUNNING is a fault, not starvation",
-    classifyPauseFailure(timeoutError, { elapsedMs: 10_000, lagMs: 12, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 }).condition === "fault");
+  c("a deadline on a loop that was RUNNING is not starvation: the host has nothing to answer for",
+    classifyPauseFailure(timeoutError, { elapsedMs: 10_000, lagMs: 12, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 }).condition === "transient");
   c("a non-deadline failure on a starved loop is still a fault: starvation does not launder it",
     classifyPauseFailure(new Error("stream not found"), starvedWindow).condition === "fault");
 }
@@ -419,8 +616,8 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     // nothing would refuse too, and would refuse just as confidently against a wall-clock window.
     c("and the step is visible in the skew while the window did not move with it",
       w.wallSkewMs > 9_000 && w.elapsedMs < 2_000, JSON.stringify(w));
-    c("and the classifier agrees, so a stepped clock cannot absorb a real deadline",
-      classifyPauseFailure(Object.assign(new Error("timeout"), { name: "TimeoutError" }), w).condition === "fault",
+    c("and the classifier agrees: a stepped clock buys a real deadline none of STARVATION's retries",
+      classifyPauseFailure(Object.assign(new Error("timeout"), { name: "TimeoutError" }), w).condition !== "starved",
       JSON.stringify(w));
   }
 
@@ -500,7 +697,7 @@ done();
 // from this file produced exactly that, a passing run one cell lighter. An assertion silently
 // stops being paid for the moment nobody counts it, which is the same way a displaced mutation
 // anchor stops grading without anything going red.
-const EXPECTED_CELLS = 41;
+const EXPECTED_CELLS = 58;
 const ran = ok + fail;
 if (ran !== EXPECTED_CELLS) {
   console.error(

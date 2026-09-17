@@ -127,6 +127,12 @@ export const CATALOG = {
   // program: a deadline that elapsed while this process was off the CPU is evidence about the box
   // it runs on. It has its own code because `L4000` sends a reader looking at their own source.
   L4025: "Host did not schedule the run",
+  // The PLANE did not answer this host's reads before their own client deadline, while the host's
+  // loop was demonstrably running. Its own code because it is the other half of L4025's question
+  // and the opposite answer: there the process was off the CPU, here it was on it and the reply was
+  // late, and the remedy differs (capacity for this host versus a broker that is behind). `L4000`
+  // would send a reader to their own program for a condition in neither the program nor the effect.
+  L4026: "Pause plane did not answer before the client deadline",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",
