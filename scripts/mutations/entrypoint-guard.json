@@ -55,6 +55,12 @@
     "reaches `scripts/main-entry.mjs` at runtime, so a survivor here would be a coverage gap rather",
     "than a mutant that changed nothing.",
     "",
+    "Mutations thirteen to fifteen put back the old guards of the three probed scripts the first",
+    "three do not reach. `doc-binding.mjs` asks through a `RUN_AS_CLI` assignment, so its anchor is",
+    "that line, and its old spelling brings back the `pathToFileURL` import it needed (an ESM import",
+    "declaration is valid anywhere at module top level). `pr-head-gate.mjs` and",
+    "`verify-publish-closure.mjs` compared through `resolve`, which both still import.",
+    "",
     "NOT ASSERTED, and recorded rather than implied: `upgrade-section-gate.mjs` keeps its own inline",
     "copy of the same realpath comparison and is exempted from the census by name. It already has a",
     "cell and a registered mutant of its own (`scripts/mutations/upgrade-section-gate.json`, `a",
@@ -182,6 +188,30 @@
       "replace": "  return false;",
       "cell": "check-attribution.mjs runs main() by its real path and through a symlink, and answers the same",
       "expectRed": "check-attribution.mjs runs main() by its real path and through a symlink, and answers the same"
+    },
+    {
+      "name": "doc-binding.mjs goes back to comparing argv[1] through pathToFileURL",
+      "file": "scripts/doc-binding.mjs",
+      "find": "const RUN_AS_CLI = isMainEntry(import.meta.url);",
+      "replace": "import { pathToFileURL } from \"node:url\";\nconst RUN_AS_CLI = import.meta.url === pathToFileURL(process.argv[1] ?? \"\").href;",
+      "cell": "doc-binding.mjs runs main() by its real path and through a symlink, and answers the same",
+      "expectRed": "doc-binding.mjs runs main() by its real path and through a symlink, and answers the same"
+    },
+    {
+      "name": "pr-head-gate.mjs goes back to comparing argv[1] through resolve()",
+      "file": "scripts/pr-head-gate.mjs",
+      "find": "if (isMainEntry(import.meta.url)) {",
+      "replace": "if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {",
+      "cell": "pr-head-gate.mjs runs main() by its real path and through a symlink, and answers the same",
+      "expectRed": "pr-head-gate.mjs runs main() by its real path and through a symlink, and answers the same"
+    },
+    {
+      "name": "verify-publish-closure.mjs goes back to comparing argv[1] through resolve()",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "if (isMainEntry(import.meta.url)) {",
+      "replace": "if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {",
+      "cell": "verify-publish-closure.mjs runs main() by its real path and through a symlink, and answers the same",
+      "expectRed": "verify-publish-closure.mjs runs main() by its real path and through a symlink, and answers the same"
     }
   ]
 }
