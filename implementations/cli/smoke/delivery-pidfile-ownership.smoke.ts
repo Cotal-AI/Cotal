@@ -157,8 +157,10 @@ try {
 
   // ---- THE READER HALF: a live pid alone is not proof the process is a delivery daemon ----
   // A record that outlived its daemon is eventually re-pointed at an unrelated process by pid reuse.
-  // The record is moved aside first so the daemon's own file is restored intact afterwards.
-  const daemonRecord = readFileSync(PID_PATH, "utf8");
+  // The record is moved aside first so the daemon's own file is restored intact afterwards. It is
+  // read DEFENSIVELY: this cell is about the reader, not about the writer, and a build that wrote no
+  // record must still reach the control cells below rather than abort the suite on an ENOENT.
+  const daemonRecord = existsSync(PID_PATH) ? readFileSync(PID_PATH, "utf8") : undefined;
   const stranger = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
   strays.push(stranger);
   teardownOnSignal(stranger);
@@ -166,7 +168,8 @@ try {
   writeFileSync(PID_PATH, String(stranger.pid));
   check("CELL: a live pid that is provably NOT a delivery daemon reads FOREIGN, not as a healthy daemon",
     deliveryLiveness(undefined, SPACE) === "foreign", { got: deliveryLiveness(undefined, SPACE), strangerPid: stranger.pid });
-  writeFileSync(PID_PATH, daemonRecord);
+  if (daemonRecord !== undefined) writeFileSync(PID_PATH, daemonRecord);
+  else rmSync(PID_PATH, { force: true }); // there was none: leave the root as this cell found it
   stranger.kill("SIGKILL");
 
   // ---- CLEAN EXIT: the record's lifetime is the daemon's ----
