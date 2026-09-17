@@ -55,7 +55,7 @@ export function selfArgv(): string[] {
     throw new Error(
       `refusing to re-exec this process as \`cotal\`: it was started from ${entry === undefined ? "no entry file" : entry}, which is not the CLI's own entry (\`bin/cotal.ts\` in a checkout, or the \`cotal-ai\` package's \`dist/cotal.js\`, directly or through a symlink).\n` +
         "A child spawned from that entry re-runs it with a cotal subcommand appended, which it does not read; if that file reaches this call on load, every child spawns the next one.\n" +
-        "NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery or ensureControlPlane.",
+        "NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery, ensureControlPlane or ensureAuthService.",
     );
   return [process.execPath, ...process.execArgv, entry];
 }

@@ -169,6 +169,10 @@ if (process.platform !== "win32") {
     suite instanceof Error && /re-runs it with a cotal subcommand appended/.test(suite.message));
   check("and names the fixture remedy rather than only the failure",
     suite instanceof Error && /points `process\.argv\[1\]` at the cotal entry/.test(suite.message));
+  // `ensureAuthService` re-execs through this argv too, so a remedy that leaves it out tells a
+  // fixture author that calling it is safe.
+  check("and names every daemon starter behind the guard, the auth service included",
+    suite instanceof Error && /ensureManager, ensureDelivery, ensureControlPlane or ensureAuthService/.test(suite.message));
 
   // The false-accept direction, which a filename rule gets wrong.
   const foreignTs = put(join(fx, "fixture", "cotal.ts"));

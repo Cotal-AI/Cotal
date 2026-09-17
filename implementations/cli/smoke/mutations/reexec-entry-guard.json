@@ -85,6 +85,14 @@
       "replace": "    const bin = typeof pkg.bin?.cotal === \"string\" ? \"cotal.ts\" : undefined;\n",
       "cell": "the package's declared bin `dist/cotal.js` builds one too",
       "expectRed": "the package's declared bin `dist/cotal.js` builds one too"
+    },
+    {
+      "name": "the remedy line stops naming the auth-service starter",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "ensureControlPlane or ensureAuthService.",
+      "replace": "or ensureControlPlane.",
+      "cell": "and names every daemon starter behind the guard, the auth service included",
+      "expectRed": "and names every daemon starter behind the guard, the auth service included"
     }
   ]
 }
