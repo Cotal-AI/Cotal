@@ -19,4 +19,5 @@ The escape that triggered it is closed at its own end too. A self-test's recursi
 only remove the exact path its `mkdtemp` returned, and only where that path resolves strictly
 beneath the base it was created in. A cleanup handed anything else refuses and exits 2 rather than
 deleting, so a mutant that makes a directory helper return a parent can no longer reach another
-process's files.
+process's files. That rule lives in `scripts/mutation-command-safety.mjs`, next to the existing rule
+bounding what a mutation config may execute: both bound what a config taken from disk can reach.
