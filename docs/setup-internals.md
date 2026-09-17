@@ -154,8 +154,9 @@ comes up identically via `npx`, `npm i -g`, and a dev clone.
 `cotal-ai` package declares (`dist/cotal.js`) or to the `cotal.ts` beside that package's manifest
 (a checkout's `bin/cotal.ts`). Started from any other file, such as a smoke suite under tsx, a
 re-exec would run that file again with a subcommand it ignores, and a file that reaches a starter
-on load would spawn its own successor (#1629). Each caller asks before it writes a pidfile, a log
-or a seed journal entry, so a refused re-exec leaves the root and the seed store unchanged.
+on load would spawn its own successor (#1629). The auth, manager and delivery starters ask before
+they touch a pidfile or a log, and `seedOne` asks before it writes its cursor, stages a payload or
+writes its child marker, so a refusal on those paths leaves none of them behind.
 
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan

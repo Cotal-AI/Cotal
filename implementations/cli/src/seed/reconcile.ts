@@ -532,7 +532,8 @@ function resolveEverSeeded(mode: Mode, generation: string): Set<string> {
 function seedOne(name: string, generation: string, nonce: string, force: boolean): void {
   // The re-exec entry is validated BEFORE anything is journaled (#1629). Asked after the cursor, the
   // staged payload and the pending child marker, a refusal left all three with no child to clear the
-  // marker, and the next boot refused as an interrupted seed until `cotal ext seed --repair`.
+  // marker, and every later boot, `cotal ext seed --repair` included, refused as a seed that may be
+  // mid-flight until the marker was removed by hand.
   //
   // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
   // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.

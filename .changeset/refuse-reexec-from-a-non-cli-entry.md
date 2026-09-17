@@ -12,5 +12,5 @@ refusal names the entry, says what a child spawned from it would run, and names 
 throw rather than a skipped spawn, because a re-exec that silently does not happen reports a healthy
 control plane over nothing.
 
-The manager and delivery starters build that argv before they open their daemon logfile, so a
-refused start of either one no longer creates a log or leaks its descriptor.
+The manager, delivery and auth starters build that argv before they open their daemon logfile, so
+a refused start no longer creates that log or leaks its descriptor.
