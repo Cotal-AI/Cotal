@@ -88,7 +88,15 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { removeSelfTestDir } from "./selftest-containment.mjs";
+// Namespace, for the same reason as mutation-proof.selftest.mjs: a tree without the #1625 cleanup
+// guard must still RUN this suite (it grades the scanner's cells, not the guard) rather than die at
+// link time on an export that tree does not have.
+import * as safety from "./mutation-command-safety.mjs";
+
+const removeSelfTestDir = (dir, dirBase, created) =>
+  typeof safety.removeSelfTestDir === "function"
+    ? safety.removeSelfTestDir(dir, dirBase, created)
+    : rmSync(dir, { recursive: true, force: true });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCANNER = join(HERE, "check-operator-literals.mjs");

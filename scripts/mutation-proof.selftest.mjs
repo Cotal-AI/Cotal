@@ -14,10 +14,27 @@
  */
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync } from "node:fs";
 import { execSync, spawnSync, spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { containmentRefusal, removeSelfTestDir } from "./selftest-containment.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+// NAMESPACE import, not named. The cleanup guard below is the thing this suite grades, and a tree
+// WITHOUT it must fail on the assertion that names it, not on an unresolved import: a named import
+// makes the module fail to link, which kills the run before a single check prints and proves
+// nothing about the behaviour claimed. Read through the namespace, a missing export is a VALUE this
+// suite can assert on. Measured: with the guard removed from the policy module, the named form died
+// with SyntaxError "does not provide an export named 'containmentRefusal'" at 0 checks; this form
+// reds `the cleanup guard refuses a target one level above its own mkdtemp root` by name.
+import * as safety from "./mutation-command-safety.mjs";
+
+/** The guard's verdict, or `undefined` (= "nothing refused") on a tree that has no guard. */
+const refusalFor = (dir, dirBase, created) =>
+  typeof safety.containmentRefusal === "function" ? safety.containmentRefusal(dir, dirBase, created) : undefined;
+/** Guarded removal where the guard exists; the plain pre-#1625 delete where it does not. */
+const removeSelfTestDir = (dir, dirBase, created) =>
+  typeof safety.removeSelfTestDir === "function"
+    ? safety.removeSelfTestDir(dir, dirBase, created)
+    : rmSync(dir, { recursive: true, force: true });
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-proof.mjs");
 const base = tmpdir();
@@ -951,14 +968,54 @@ check("...and the exit status still reports the signal, not a tidy 0",
 // including the live control sockets of every connector on the host. The guard must refuse a
 // target one level up from its own root, and must still allow the root itself.
 check("the cleanup guard refuses a target one level above its own mkdtemp root",
-  containmentRefusal(dirname(root), base, dirname(root)) !== undefined, dirname(root));
+  refusalFor(dirname(root), base, dirname(root)) !== undefined, dirname(root));
 check("...and it names that the target is not beneath its base, not some unrelated reason",
-  /not strictly beneath/.test(containmentRefusal(base, base, base) ?? ""), containmentRefusal(base, base, base));
+  /not strictly beneath/.test(refusalFor(base, base, base) ?? ""), refusalFor(base, base, base));
 check("the cleanup guard refuses a target that is not the path mkdtemp returned",
-  /not the path mkdtemp returned/.test(containmentRefusal(join(root, "sub"), base, root) ?? ""),
-  containmentRefusal(join(root, "sub"), base, root));
+  /not the path mkdtemp returned/.test(refusalFor(join(root, "sub"), base, root) ?? ""),
+  refusalFor(join(root, "sub"), base, root));
 check("...and it still permits the suite's own mkdtemp root",
-  containmentRefusal(root, base, root) === undefined, containmentRefusal(root, base, root));
+  refusalFor(root, base, root) === undefined, refusalFor(root, base, root));
+
+// The predicate checks above read the verdict. This one runs the ACTUAL ESCAPE end to end, because
+// a correct verdict that no cleanup path consults is worth nothing: the report of #1625 is about a
+// delete that happened, not about a boolean. A sandbox base stands in for the shared temp directory
+// and holds a LISTENING unix socket, the same shape as the connector control sockets that were
+// unlinked. A child then runs the mutant cleanup — the helper returns `dirname(created)`, so the
+// base itself is handed to the recursive delete — and must refuse with exit 2 and leave the
+// bystander in place. On a tree WITHOUT the guard this same child deletes the socket and exits 0,
+// which is the original defect reproduced.
+{
+  const sandbox = mkdtempSync(join(base, "mutation-selftest-escape-"));
+  const victimBase = join(sandbox, "shared-tmp");
+  mkdirSync(victimBase, { recursive: true });
+  const bystander = join(victimBase, "bystander.sock");
+  const listener = createServer(() => {});
+  await new Promise((ready) => listener.listen(bystander, ready));
+  const created = mkdtempSync(join(victimBase, "suite-work-"));
+  const escape = join(sandbox, "escape.mjs");
+  writeFileSync(escape, [
+    `import * as safety from ${JSON.stringify(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "mutation-command-safety.mjs")).href)};`,
+    "import { rmSync } from 'node:fs';",
+    "import { dirname } from 'node:path';",
+    `const base = ${JSON.stringify(victimBase)};`,
+    `const created = ${JSON.stringify(created)};`,
+    "// THE MUTANT: the directory helper returns the PARENT of what mkdtemp made.",
+    "const escaped = dirname(created);",
+    "if (typeof safety.removeSelfTestDir === 'function') safety.removeSelfTestDir(escaped, base, created);",
+    "else rmSync(escaped, { recursive: true, force: true });",
+    "",
+  ].join("\n"));
+  const escaped = spawnSync(process.execPath, [escape], { encoding: "utf8" });
+  check("an escaped cleanup refuses instead of deleting, and exits 2 rather than 0 or 1",
+    escaped.status === 2, { status: escaped.status, stderr: (escaped.stderr ?? "").slice(-300) });
+  check("...and the refusal names the containment breach in its own output",
+    /REFUSING to clean up/.test(escaped.stderr ?? ""), (escaped.stderr ?? "").slice(-300));
+  check("...and the bystander socket in the shared base is still there afterwards",
+    existsSync(bystander), { bystander, present: existsSync(bystander) });
+  await new Promise((done) => listener.close(done));
+  removeSelfTestDir(sandbox, base, sandbox);
+}
 
 removeSelfTestDir(root, base, root);
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);

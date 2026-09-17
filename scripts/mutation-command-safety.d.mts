@@ -27,3 +27,11 @@ export function liveShapedFixtureReason(
   },
   options?: LiveCommandSafetyOptions,
 ): string | null;
+
+export function containmentRefusal(
+  dir: string,
+  base: string,
+  created: string,
+): string | undefined;
+
+export function removeSelfTestDir(dir: string, base: string, created: string): void;

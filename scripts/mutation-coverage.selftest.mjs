@@ -2,11 +2,19 @@
 /** Self-test for mutation-coverage's reachability, parser, and whole-corpus accounting. */
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
 import { INFRASTRUCTURE_MARKERS } from "./mutation-command-safety.mjs";
+// Namespace, for the same reason as mutation-proof.selftest.mjs: a tree without the #1625 cleanup
+// guard must still RUN this suite (it grades mutation-coverage, not the guard) rather than die at
+// link time on an export that tree does not have.
+import * as safety from "./mutation-command-safety.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { removeSelfTestDir } from "./selftest-containment.mjs";
+
+const removeSelfTestDir = (dir, dirBase, created) =>
+  typeof safety.removeSelfTestDir === "function"
+    ? safety.removeSelfTestDir(dir, dirBase, created)
+    : rmSync(dir, { recursive: true, force: true });
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
 const base = tmpdir();
