@@ -7955,7 +7955,7 @@ export class Manager {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
     // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
     // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
-    // support "offline" or "absent" for anyone: netcup 2026-09-09 rendered every live seat as
+    // support "offline" or "absent" for anyone: a live deployment on 2026-09-09 rendered every live seat as
     // one of those for hours after the presence stream was recreated under a still-open watch.
     // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
     // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as

@@ -1,7 +1,7 @@
 /**
  * A "NOT FOUND" SEAT IS REPORTED ONLY WHEN EVERY REACHABLE INSTANCE ANSWERED FOR ITSELF (#1638).
  *
- * netcup 2026-09-16: `cotal agent stop <seat>` answered "no managed agent on any of the 2 reachable
+ * A live deployment, 2026-09-16: `cotal agent stop <seat>` answered "no managed agent on any of the 2 reachable
  * manager instances" twice for a seat a three-call union of `cotal ps` still listed as running; the
  * third stop succeeded. `cotal input --name <seat>` did the same for two seats, and the same command
  * with `--on <instance>` succeeded first time for both. The message is a definite negative that
