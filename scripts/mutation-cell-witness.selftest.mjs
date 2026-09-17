@@ -1,0 +1,269 @@
+#!/usr/bin/env node
+/**
+ * Self-test for the cell-target check in `mutation-coverage.mjs` (#1545).
+ *
+ * WHAT IS UNDER TEST. `expectRed` is machine-checked to redden: `mutation-proof` grades WRONG-RED
+ * when the named assertion never printed its failure, and again when it printed its green text
+ * unchanged. Neither can fire when the named assertion reddens for a reason unrelated to the
+ * mutated guard, so an entry could edit an end-to-end guard, name a parser-only cell, and grade a
+ * clean KILLED having proved nothing about the code it edits. PR #1521 shipped two such entries.
+ *
+ * WHAT THE CHECK CLAIMS, AND WHAT THIS SUITE THEREFORE ASSERTS. "This assertion proves that guard"
+ * is semantic and undecidable from text. The necessary condition is decidable: a cell whose verdict
+ * rests on nothing outside the suite's own source cannot be proving anything about a file in
+ * another module, because no edit to that file can change what it prints. Every cell below asserts
+ * that condition and nothing stronger.
+ *
+ * WHY THE FIXTURES COME IN PAIRS. A refusal on its own shows only that something was refused. Each
+ * refusal here has a twin differing ONLY in which cell the mutation names -- same suite, same
+ * guarded source, same command, same anchor -- so what separates them is the RELATION between the
+ * mutated file and the named cell rather than either one alone. A check that refused on the suite,
+ * the source, or the command would fail the twin.
+ *
+ * WHY IT DRIVES THE REAL COMMAND. Each case spawns `scripts/mutation-coverage.mjs` against a
+ * throwaway repository, so the code under test is the shipped validator on its real entry path
+ * rather than a helper this file imports. That is also what keeps the proof honest under a revert:
+ * this suite imports nothing the fix adds, so reverting the fix leaves the module graph intact and
+ * the cells below measure behaviour.
+ *
+ * Run: node scripts/mutation-cell-witness.selftest.mjs
+ */
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
+const root = mkdtempSync(join(tmpdir(), "mutation-cell-witness-"));
+let passed = 0;
+let failed = 0;
+// Report every cell rather than exiting at the first red. A mutant is only proven to bite when the
+// cell it NAMES reds, and a fail-fast run hides every cell after the first.
+const check = (name, condition, detail) => {
+  if (condition) { passed++; console.log(`  ✓ ${name}`); }
+  else { failed++; console.log(`  ✗ FAIL: ${name}${detail !== undefined ? `\n      ${detail}` : ""}`); }
+};
+
+const write = (path, content) => {
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, content);
+};
+
+/** A suite command that prints a parseable total without doing any work. */
+const TALLY = `${JSON.stringify(process.execPath)} -e ${JSON.stringify('console.log("FIXTURE: 3 passed, 0 failed")')}`;
+
+const runTool = (...configs) => {
+  const run = spawnSync(process.execPath, [TOOL, ...configs], {
+    cwd: root, encoding: "utf8", timeout: 120_000,
+  });
+  return { status: run.status, stdout: run.stdout ?? "", stderr: run.stderr ?? "", out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+};
+
+try {
+  // The guarded source every mutation below edits. One file, so the mutated side is held fixed and
+  // only the named cell varies.
+  write("bin/direct.mjs", "export const x = 1;\n");
+
+  // One suite carrying three cells of different kinds, so a fixture can name any of them without
+  // changing anything else about the run.
+  write("bin/smoke/cells.smoke.ts", [
+    'import { spawnSync } from "node:child_process";',
+    'import { readFileSync } from "node:fs";',
+    "let passed = 0;",
+    "const check = (name, cond) => { if (cond) passed++; console.log(`${cond ? '  ok' : '  FAIL'} ${name}`); };",
+    "",
+    "// PARSER-ONLY: graded against a string this file wrote. Nothing outside this source can change",
+    "// what it prints, so no mutation anywhere else is proven by it.",
+    "const parse = (text) => (text.match(/expected: (\\\\d+)/) ?? [])[1];",
+    'check("the banner parser reads the count out of a banner", parse("expected: 7") === "7");',
+    "",
+    "// END-TO-END: runs the guarded entrypoint and grades what came back.",
+    'const run = spawnSync(process.execPath, ["bin/direct.mjs"], { encoding: "utf8" });',
+    'check("the guarded entrypoint exits clean", run.status === 0);',
+    "",
+    "// READS THE SOURCE: observes the guarded file on disk without launching it.",
+    'check("the guarded source still declares an export", readFileSync("bin/direct.mjs", "utf8").includes("export"));',
+    "",
+    "// PARSER-ONLY, REPORTED THROUGH A HELPER that computes the verdict itself. A reader that only",
+    "// looked at the call site's arguments would call this one self-fed for the wrong reason, and a",
+    "// reader that walked the whole helper body would call every cell in every suite a witness.",
+    "const graded = (name, text, want) => { check(name, parse(text) === want); };",
+    'graded("the parser is graded through a helper", "expected: 3", "3");',
+    "",
+    "console.log(`FIXTURE: ${passed} passed, 0 failed`);",
+  ].join("\n"));
+
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["-c", "user.email=a@b", "-c", "user.name=c", "commit", "--quiet", "-m", "fixture"], { cwd: root });
+
+  const fixture = (name, cell, overrides = {}) => {
+    write(`${name}.json`, JSON.stringify({
+      suite: ["bin/smoke/cells.smoke.ts"],
+      command: TALLY,
+      executes: ["bin/direct.mjs"],
+      mutations: [{
+        name: `edits bin/direct.mjs naming ${JSON.stringify(cell)}`,
+        file: "bin/direct.mjs", find: "export const x = 1;", replace: "export const x = 2;",
+        expectRed: cell, cell,
+      }],
+      ...overrides,
+    }));
+    return `${name}.json`;
+  };
+
+  // ---- the refusal ------------------------------------------------------------------------------
+  let result = runTool("--gradable-only", fixture("parser-only", "the banner parser reads the count out of a banner"));
+  check(
+    "a mutation whose named cell observes nothing outside the suite text is refused",
+    result.status !== 0 && /REFUSED parser-only\.json/.test(result.out),
+    result.out,
+  );
+  check(
+    "...and the refusal says WHY in the terms it can actually back, naming the cell it read",
+    /reaches no launch, file read, or module import/.test(result.out)
+      && /cannot be the assertion that proves the mutated guard/.test(result.out)
+      && /the banner parser reads the count out of a banner/.test(result.out),
+    result.out,
+  );
+
+  // The same shape one level in: the verdict is computed inside a helper rather than at the call
+  // site. Reading only the reported expression would miss this and accept it.
+  result = runTool("--gradable-only", fixture("parser-through-helper", "the parser is graded through a helper"));
+  check(
+    "a self-fed cell reported through a helper that computes the verdict is refused too",
+    result.status !== 0 && /REFUSED parser-through-helper\.json/.test(result.out),
+    result.out,
+  );
+
+  // ---- the twins that must stay ACCEPTED --------------------------------------------------------
+  //
+  // Each differs from the refusal above ONLY in the named cell. Together they are what shows the
+  // refusal is about the relation rather than about this suite, source, or command.
+  result = runTool("--gradable-only", fixture("end-to-end", "the guarded entrypoint exits clean"));
+  check(
+    "the SAME mutation naming the cell that LAUNCHES the guarded source is accepted",
+    result.status === 0 && /ACCEPTED end-to-end\.json/.test(result.out),
+    result.out,
+  );
+
+  result = runTool("--gradable-only", fixture("reads-source", "the guarded source still declares an export"));
+  check(
+    "and so is one naming a cell that READS the guarded source, so the accept is not the launch alone",
+    result.status === 0 && /ACCEPTED reads-source\.json/.test(result.out),
+    result.out,
+  );
+
+  // ---- the refusals this check must NOT make ----------------------------------------------------
+  //
+  // A cell the analysis cannot locate is not a cell it has judged. A composed label, or one reported
+  // from a helper module, lands here, and refusing on it would be an accusation the tool cannot back.
+  result = runTool("--gradable-only", fixture("unlocated", "a cell no suite source reports under that literal text"));
+  check(
+    "a cell the analysis cannot locate in the suite is accepted, not refused",
+    result.status === 0 && /ACCEPTED unlocated\.json/.test(result.out),
+    result.out,
+  );
+
+  // A suite mutating its OWN source observes the mutation by running at all. Without this exemption
+  // every tool self-test in the corpus would be refused for a reason that is false about it.
+  write("self.json", JSON.stringify({
+    suite: ["bin/smoke/cells.smoke.ts"],
+    command: TALLY,
+    mutations: [{
+      name: "edits the suite it runs", file: "bin/smoke/cells.smoke.ts",
+      find: 'parse("expected: 7") === "7"', replace: 'parse("expected: 7") === "8"',
+      expectRed: "the banner parser reads the count out of a banner",
+      cell: "the banner parser reads the count out of a banner",
+    }],
+  }));
+  result = runTool("--gradable-only", "self.json");
+  check(
+    "a suite mutating its OWN source is exempt: running it is how it observes the mutation",
+    result.status === 0 && /ACCEPTED self\.json/.test(result.out),
+    result.out,
+  );
+
+  // A fixture with no `cell` at all is the existing REQUIRED-key refusal, not this one. Grading it
+  // here would report the wrong repair for a fixture that has a different problem.
+  write("no-cell.json", JSON.stringify({
+    suite: ["bin/smoke/cells.smoke.ts"],
+    command: TALLY,
+    executes: ["bin/direct.mjs"],
+    mutations: [{
+      name: "carries no cell", file: "bin/direct.mjs", find: "export const x = 1;",
+      replace: "export const x = 2;", expectRed: "the banner parser reads the count out of a banner",
+    }],
+  }));
+  result = runTool("--gradable-only", "no-cell.json");
+  check(
+    "a mutation with no cell is refused for the MISSING key, not for observing nothing",
+    result.status !== 0 && /is missing "cell"/.test(result.out)
+      && !/reaches no launch, file read, or module import/.test(result.out),
+    result.out,
+  );
+
+  // An instrument config (`grades: "tool"`) does not carry a `cell` at all, so this check has
+  // nothing to read and must stay out of its way.
+  write("instrument.json", JSON.stringify({
+    grades: "tool",
+    suite: ["bin/smoke/cells.smoke.ts"],
+    command: TALLY,
+    mutations: [{
+      name: "grades an instrument", file: "bin/direct.mjs", find: "export const x = 1;",
+      replace: "export const x = 2;", expectRed: "the banner parser reads the count out of a banner",
+    }],
+  }));
+  result = runTool("--gradable-only", "instrument.json");
+  check(
+    'a grades:"tool" config is untouched by this check',
+    result.status === 0 && /ACCEPTED instrument\.json/.test(result.out),
+    result.out,
+  );
+
+  // ---- CONTROL: the validator still runs and still reports the rest of its work ------------------
+  //
+  // Every cell above reads a REFUSAL or an ACCEPT of one config. If the validator died on startup,
+  // "not accepted" would be true of everything and the refusals would read as passes. This asserts
+  // the summary the tool prints when it has examined a selection, so a run that never got that far
+  // is visibly different from one that graded.
+  result = runTool("--gradable-only", "end-to-end.json", "reads-source.json", "unlocated.json");
+  check(
+    "CONTROL: the validator examines and grades a whole selection, and says so in its summary",
+    result.status === 0
+      && /enumerated=3 examined=3 graded=3/.test(result.out)
+      && /refused-with-reason=0/.test(result.out),
+    result.out,
+  );
+
+  // The mixed selection: one refusal must not stop the others being examined, and the summary must
+  // count both sides. A check that aborted the run would be invisible to the single-config cells.
+  result = runTool("--gradable-only", "parser-only.json", "end-to-end.json");
+  check(
+    "a refused config does not hide the config after it, and both are counted",
+    result.status !== 0
+      && /REFUSED parser-only\.json/.test(result.out)
+      && /ACCEPTED end-to-end\.json/.test(result.out)
+      && /examined=2 graded=1 refused-with-reason=1/.test(result.out),
+    result.out,
+  );
+} finally {
+  rmSync(root, { recursive: true, force: true });
+}
+
+/**
+ * How many cells this file is expected to run.
+ *
+ * A tally of what DID run cannot tell a full green run from one that quietly did less: guard a cell
+ * out with a refactor accident and the suite still prints `0 failed` and exits 0, just with a
+ * smaller first number nothing compares against. Raise it in the same change that adds a cell.
+ */
+const EXPECTED_CELLS = 11;
+console.log(`\nMUTATION CELL-WITNESS SELF-TEST: ${passed} passed, ${failed} failed`);
+if (failed === 0 && passed !== EXPECTED_CELLS) {
+  console.log(`  ✗ FAIL: expected ${EXPECTED_CELLS} cells, ran ${passed}: silently skipped cells must not read as green`);
+  process.exit(1);
+}
+process.exit(failed === 0 ? 0 : 1);

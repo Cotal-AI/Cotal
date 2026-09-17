@@ -1,0 +1,3 @@
+# Self-test for the cell-target check: a mutation's named cell must be able to observe the file the
+# mutation edits, so an entry cannot edit an end-to-end guard while naming a parser-only cell (#1545).
+smoke:mutation-cell-witness

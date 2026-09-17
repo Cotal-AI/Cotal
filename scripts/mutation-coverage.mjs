@@ -20,6 +20,7 @@ import { dirname, extname, relative, resolve } from "node:path";
 import ts from "typescript";
 import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
+import { gradeCellTarget } from "./mutation-cell-witness.mjs";
 
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
 const FLAG_GRADABLE_ONLY = "--gradable-only";
@@ -1642,6 +1643,38 @@ const assertGradable = (configPath, cfg, suites, mutation) => {
   );
 };
 
+/**
+ * Refuse a mutation whose named `cell` cannot be the assertion proving the guard it edits.
+ *
+ * `expectRed` is checked to redden; nothing checked that the reddening assertion is the one that
+ * PROVES the mutated guard, so an entry could edit an end-to-end guard, name a parser-only cell,
+ * and grade KILLED off the collateral red. `mutation-proof` cannot see this: WRONG-RED fires when
+ * the named assertion does NOT redden, never when it reddens for an unrelated reason.
+ *
+ * The decidable half is the necessary condition. A cell whose verdict rests on nothing outside the
+ * suite's own text cannot be proving anything about a file in another module, because no edit to
+ * that file can change what it prints. That is what is refused, and the message says exactly that
+ * rather than claiming the aim is wrong.
+ *
+ * NOT "the named cell must be the ONLY one that reds". Collateral reddening is normal and correct,
+ * and a gate demanding exclusivity would pressure an author to weaken the neighbouring cells until
+ * they stop noticing. Measured on #1521: the two MIS-targeted mutants each reddened exactly one
+ * cell, while the correctly targeted one reddened five.
+ */
+const assertCellObserves = (suites, mutation) => {
+  if (typeof mutation.cell !== "string" || mutation.cell === "") return;
+  const sources = suites.map((path) => ({ path, sf: ast(path, readFileSync(path, "utf8")), cell: mutation.cell }));
+  const graded = gradeCellTarget(mutation.file, sources);
+  if (graded.verdict !== "self-fed") return;
+  throw new Error(
+    `mutation "${mutation.name}" edits ${mutation.file}, but its named cell ${JSON.stringify(mutation.cell)} `
+    + "reaches no launch, file read, or module import: every value its verdict rests on is written in the suite "
+    + "source itself, so no edit to that file can change what this cell prints and it cannot be the assertion "
+    + "that proves the mutated guard. Name the cell that exercises the guard end to end, or move the mutation to "
+    + "the code this cell does read.",
+  );
+};
+
 const lastMatch = (output, re) => [...output.matchAll(re)].at(-1);
 
 const parseSummary = (cfg, output) => {
@@ -1691,7 +1724,10 @@ const validate = (path, cfg) => {
     for (const key of REQUIRED_MAY_BE_EMPTY) {
       if (typeof mutation[key] !== "string") throw new Error(`mutation "${mutation.name ?? "(unnamed)"}" is missing "${key}"`);
     }
-    if (!gradesTool) assertGradable(path, cfg, suites, mutation);
+    if (!gradesTool) {
+      assertGradable(path, cfg, suites, mutation);
+      assertCellObserves(suites, mutation);
+    }
   }
   return { gradesTool, suites };
 };
