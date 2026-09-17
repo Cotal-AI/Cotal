@@ -15,6 +15,9 @@
  *      guard is about dry runs rather than about this one usage error.
  *
  * Exits non-zero the moment a dry run writes, so the defect cannot ride green through CI.
+ * Every `down` call is anchored to a throwaway sandbox root/COTAL_HOME/XDG_CONFIG_HOME and passed
+ * through the shared `assertSmokeSandboxDown` guard, so a dry run here can never resolve the
+ * developer's real mesh (without COTAL_HOME it walks upward and finds the live one).
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:dry-run-no-seed` does
  * that first. Run: pnpm smoke:dry-run-no-seed
  */
@@ -22,7 +25,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -41,12 +44,22 @@ const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
 );
 const cleanup: string[] = [];
 function cotal(args: string[]): { status: number; stdout: string; stderr: string } {
+  // A fresh sandbox per invocation: the assertion below is "this config dir is still empty", which
+  // only means anything if nothing else could have written it. The sandbox also pins COTAL_HOME, so
+  // `down` reads this throwaway mesh registry instead of walking up into the real one.
+  const sandboxRoot = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-root-"));
   const cfg = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-"));
-  cleanup.push(cfg);
-  const r = spawnSync("node", [BIN, ...args], {
-    encoding: "utf8",
-    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
-  });
+  const cotalHome = join(sandboxRoot, "home");
+  cleanup.push(sandboxRoot, cfg);
+  const sandbox = recordSmokeSandbox({ root: sandboxRoot, cotalHome, xdgConfigHome: cfg });
+  const options = {
+    cwd: sandboxRoot,
+    env: { ...HOST_ENV, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
+    encoding: "utf8" as const,
+  };
+  // Refuses the spawn outright if these args would tear down anything but this sandbox.
+  assertSmokeSandboxDown(sandbox, args, options);
+  const r = spawnSync("node", [BIN, ...args], options);
   // The whole point is "wrote nothing", so assert the DIRECTORY, not a chosen file: any entry the
   // run created under `<config>/cotal` is a mutation the dry run promised not to make.
   const root = join(cfg, "cotal");
@@ -77,12 +90,24 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   );
 }
 
-// ── 2. a VALID dry run plans and prints while writing nothing ─────────────────────────────────────
+// ── 2. a VALID dry run reaches the command body while writing nothing ─────────────────────────────
+// In an isolated sandbox there is no stack to stop, so `down --dry-run` reports exactly that. That
+// is still the cell that matters here: reaching the command body at all proves the boot gate was
+// skipped for a well-formed dry run too, not merely for the one that fails validation. The writes
+// are asserted by the shared `cotal()` helper above.
 {
   const r = cotal(["down", "--dry-run"]);
   const out = `${r.stdout}${r.stderr}`;
-  check("a valid dry run succeeds", r.status === 0, { status: r.status, out: out.slice(0, 400) });
-  check("a valid dry run still renders its plan", /Dry run - nothing was changed/.test(out), out.slice(0, 400));
+  check(
+    "a valid dry run reaches the command body",
+    /Nothing running for the local stack|Dry run - nothing was changed/.test(out),
+    { status: r.status, out: out.slice(0, 400) },
+  );
+  check(
+    "a valid dry run never reports a seed or usage failure",
+    !/seed store payload|bare-whole-stack only/.test(out),
+    out.slice(0, 400),
+  );
 }
 
 for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
