@@ -32,7 +32,27 @@ const assert = new Proxy(nodeAssert, {
     if (typeof value !== "function") return value;
     return (...args: unknown[]) => {
       cells += 1;
-      return (value as (...a: unknown[]) => unknown).apply(target, args);
+      // NAME EVERY CELL ON STDOUT, PASS OR FAIL. A suite that prints only a final tally prints
+      // NOTHING when it dies on its first failure, and a red run with zero named assertions is
+      // indistinguishable from a harness that never ran: a revert gate reads that shape as a void
+      // run rather than as the catch it actually is. The message is the last argument on every
+      // assert form used here.
+      //
+      // ONE LINE PER CELL, whatever the message carries. Several of these messages embed the text
+      // under test, which is precisely text a peer chose and may hold line breaks: a cell name that
+      // a peer can split is the same defect this suite exists to close, one level out, and it would
+      // also make the printed count disagree with the cell count.
+      const name = String(args.at(-1) ?? `assertion ${cells}`)
+        .replace(/\r\n?|[\n\v\f\u0085\u2028\u2029]/g, " ⏎ ")
+        .slice(0, 160);
+      try {
+        const out = (value as (...a: unknown[]) => unknown).apply(target, args);
+        console.log(`  ✓ ${name}`);
+        return out;
+      } catch (error) {
+        console.log(`  ✗ ${name}`);
+        throw error;
+      }
     };
   },
 }) as typeof nodeAssert;
@@ -53,14 +73,19 @@ const probe = fileURLToPath(new URL("./injection-framing.probe.py", import.meta.
 
 const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { stdio: "ignore" }).status === 0);
 // No Python means this surface is unverified, and a suite that quietly passes when it cannot check
-// anything is the failure mode the neighbouring suites exist to close. Fail loud.
-assert.ok(python, "no python3/python on PATH: the Hermes injected-frame rendering cannot be verified");
+// anything is the failure mode the neighbouring suites exist to close. Fail loud. The cell is phrased
+// as the claim that holds, not the fault, since every cell name is printed on the passing path too.
+assert.ok(python, "python is on PATH, so the injected-frame rendering can be verified at all");
 
 function run(mode: "subject" | "raw-concat"): Record<string, string> {
   const res = spawnSync(python!, [probe, pkgDir + "plugin", mode], { encoding: "utf8", timeout: 60_000 });
-  assert.equal(res.status, 0, `the ${mode} probe did not run:\n${res.stdout}\n${res.stderr}`);
+  // The probe's own output is reported through the failure path rather than the cell name, so a
+  // cell stays one short line and the transcript still carries the whole thing when it matters.
+  if (res.status !== 0) console.error(`the ${mode} probe exited ${res.status}:\n${res.stdout}\n${res.stderr}`);
+  assert.equal(res.status, 0, `the ${mode} probe ran`);
   const line = res.stdout.split("\n").find((l) => l.startsWith("RESULT "));
-  assert.ok(line, `the ${mode} probe printed no result, so its silence is not an answer:\n${res.stdout}`);
+  if (!line) console.error(`the ${mode} probe printed no RESULT line:\n${res.stdout}`);
+  assert.ok(line, `the ${mode} probe reported a result, so its silence is not an answer`);
   return JSON.parse(line!.slice("RESULT ".length)) as Record<string, string>;
 }
 
