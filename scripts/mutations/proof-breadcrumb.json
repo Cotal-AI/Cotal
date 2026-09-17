@@ -1,0 +1,102 @@
+{
+  "grades": "tool",
+  "suite": [
+    "scripts/mutation-proof.selftest.mjs"
+  ],
+  "guard": "a proof killed mid-mutation leaves a breadcrumb naming what it broke, and the next run or --recover puts the file back, bytes and timestamp, or refuses by naming the interrupted proof",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/proof-breadcrumb.json",
+  "why": [
+    "A signal handler covers the kills that can be caught. SIGKILL cannot be, and it is the signal this",
+    "repo's own reproof harness sends to a proof that overruns its 140-minute budget",
+    "(`mutation-reproof.mjs`, `PROOF_TIMEOUT_MS` and `killSignal: \"SIGKILL\"`). The file such a proof",
+    "leaves is syntactically valid and deliberately sabotaged, every surface reports a clean checkout,",
+    "and the breadcrumb is the only thing that says otherwise.",
+    "",
+    "Seven mutations for six properties, because each property is a separate way for the mechanism to",
+    "be present and useless, and each is repaired differently: the breadcrumb is never written, the",
+    "recovery never runs, a completed proof leaves its breadcrumb behind, the recovery puts the bytes",
+    "back but not the timestamp, a breadcrumb whose file already matches is treated as live, and a",
+    "mutation the tool cannot put back is measured instead of refused.",
+    "",
+    "THE TIMESTAMP PAIR IS THE ONE WORTH ARGUING ABOUT, and it is two mutations for the reason",
+    "`restore-mtime.json` gives: a call that is gone and a call that writes the wrong time fail",
+    "differently. No byte comparison can see either. `smoke:dist-freshness` is an mtime ORDERING",
+    "test, so a recovered file whose timestamp is the time of the recovery makes it name a package",
+    "stale for a file nobody edited, which is the defect the happy path's `utimesSync` exists for.",
+    "",
+    "THIS SUITE IS FAIL-FAST, so each mutation's named cell has to be the FIRST cell it reddens or",
+    "the verdict points at the wrong line. `a proof that completes leaves no breadcrumb behind` sits",
+    "right after the first completed proof for that reason: a leftover breadcrumb records the clean",
+    "hash of the file `a dirty tree is refused` then dirties, and that cell would redden first, for",
+    "the wrong reason.",
+    "",
+    "NO top-level `completionMarker`, for the reason `restore-mtime.json` states about this same",
+    "suite: it is fail-fast, so its success banner is not printed on a red run, and a completion",
+    "marker pointed at it turns every genuine kill INCONCLUSIVE.",
+    "",
+    "NOT ASSERTED, and recorded rather than implied: that a backup which does not hash to the",
+    "breadcrumb is refused before anything is written over the file. The recovery copies the backup",
+    "first and hashes the result afterwards, so there is no such check to mutate. Whether it should",
+    "check first is a question about the recovery's behaviour, raised on #1632 rather than settled",
+    "inside a coverage fixture."
+  ],
+  "mutations": [
+    {
+      "name": "the breadcrumb is never written, so a killed proof leaves nothing that names it",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "  writeFileSync(bcPath, JSON.stringify(data));",
+      "replace": "  void data;",
+      "cell": "...and a breadcrumb outside the tree names the file, its pre-mutation hash and the backup",
+      "expectRed": "...and a breadcrumb outside the tree names the file, its pre-mutation hash and the backup"
+    },
+    {
+      "name": "the recovery never runs, so the breadcrumb is written and nothing reads it",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "checkAndRecoverBreadcrumbs(cwd);\nif (a.recover) {",
+      "replace": "if (a.recover) {",
+      "cell": "next invocation recovers from breadcrumb",
+      "expectRed": "next invocation recovers from breadcrumb"
+    },
+    {
+      "name": "a proof that restored its file leaves the breadcrumb behind",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "    clearBreadcrumb(path, cwd);",
+      "replace": "    void cwd;",
+      "cell": "a proof that completes leaves no breadcrumb behind",
+      "expectRed": "a proof that completes leaves no breadcrumb behind"
+    },
+    {
+      "name": "the recovery puts the bytes back and does not put the timestamp back",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "            utimesSync(targetPath, new Date(atimeMs), new Date(mtimeMs));\n",
+      "replace": "",
+      "cell": "...and recovery puts the timestamp back, not the time of the recovery",
+      "expectRed": "...and recovery puts the timestamp back, not the time of the recovery"
+    },
+    {
+      "name": "the recovery writes the CURRENT time instead of the recorded one",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "            utimesSync(targetPath, new Date(atimeMs), new Date(mtimeMs));",
+      "replace": "            utimesSync(targetPath, new Date(), new Date());",
+      "cell": "...and recovery puts the timestamp back, not the time of the recovery",
+      "expectRed": "...and recovery puts the timestamp back, not the time of the recovery"
+    },
+    {
+      "name": "a breadcrumb whose file already matches its baseline is refused as live, so a git recovery refuses every later run",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "      if (currentSha !== shaBefore) {",
+      "replace": "      if (true) {",
+      "cell": "a breadcrumb whose file already matches its baseline is cleared, and the proof runs",
+      "expectRed": "a breadcrumb whose file already matches its baseline is cleared, and the proof runs"
+    },
+    {
+      "name": "a mutation the recovery cannot put back is reported and then measured anyway",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "before running again.\");\n        process.exit(3);",
+      "replace": "before running again.\");",
+      "cell": "a live mutation with no backup is refused by naming the interrupted proof, not the dirty tree",
+      "expectRed": "a live mutation with no backup is refused by naming the interrupted proof, not the dirty tree"
+    }
+  ]
+}
