@@ -46,12 +46,12 @@
       "cell": "a self-fed cell is still refused when its reporter writes a transcript of its own"
     },
     {
-      "name": "the reporter helper is never entered, so a verdict computed inside it reads as absent",
+      "name": "an unreadable reporter yields no observation, so a cell it reports is refused on its arguments",
       "file": "scripts/mutation-cell-witness.mjs",
       "find": "  if (fn === undefined) { witnesses.push({ kind: \"unresolved-reporter\", node: site }); return witnesses; }",
       "replace": "  if (fn === undefined) return witnesses;",
-      "expectRed": "a self-fed cell reported through a helper that computes the verdict is refused too",
-      "cell": "a self-fed cell reported through a helper that computes the verdict is refused too"
+      "expectRed": "a cell reported from a module this cannot read is accepted, however its arguments look",
+      "cell": "a cell reported from a module this cannot read is accepted, however its arguments look"
     },
     {
       "name": "every ambient global counts as an observation, so nothing is ever self-fed",
