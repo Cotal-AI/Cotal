@@ -224,6 +224,19 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
+ * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
+ * tail of an oversized write stays queued and swallows the submit key that follows it (issue #1649).
+ * Sized in CHARS against a byte buffer on purpose — a multi-byte character can only make a slice
+ * shorter in characters than in bytes, never longer, so the margin cannot be eaten from below. */
+const INPUT_SLICE_CHARS = 2048;
+/** Bracketed-paste delimiters (DECSET 2004). `input` wraps a seat's text in these so the return it
+ * writes afterwards is a KEYSTROKE rather than the newline trailing a pasted block: a TUI that
+ * classifies a fast burst as a paste consumes that trailing newline and the text sits unsubmitted
+ * in the composer until the next call's return (issue #1649). Framing, never content - these bytes
+ * are not counted into the receipt, so `bytes` still reports what the caller asked to deliver. */
+export const PASTE_START = "\x1b[200~";
+export const PASTE_END = "\x1b[201~";
 /** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
  * tick lands inside every renewal owner's `[renewAt, exp)` window.
  *
@@ -7854,15 +7867,63 @@ export class Manager {
     // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
-    const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
-    const intendedBytes = Buffer.byteLength(data, "utf8");
-    let bytes: number;
-    try {
-      bytes = await write(data);
-    } catch (error) {
-      throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+    //
+    // THE TEXT IS DELIVERED AS A BRACKETED PASTE AND THE RETURN FOLLOWS IT AS ITS OWN WRITE, and
+    // that is the whole of issue #1649. A TUI harness reads keystrokes, so a return fused onto the
+    // tail of the text (`${text}\r`) is the text's last character rather than the submit key: the
+    // line waits in the composer and the NEXT call's return submits the PREVIOUS call's text, so
+    // every delivery runs one call behind while the op still reports the full byte count.
+    //
+    // Separating the return is necessary and NOT sufficient, which is the part that cost a second
+    // round of measurement. A TUI classifies a fast burst of input as a PASTE and eats the newline
+    // that trails it (Jcode spells this `paste_guard::consume_paste_trailing_enter`), so a text big
+    // enough to need more than one write is still one call behind even when the return is written
+    // alone. Measured on a real seat, delivering in 2048-char slices with a yield before the return:
+    // 120 and 700 bytes submitted on their own call, 2500 and 3100 bytes did not - each appeared
+    // only when the NEXT call's return arrived. That is the reported symptom exactly.
+    //
+    // Bracketed paste states the boundary instead of guessing at it. `ESC[200~ text ESC[201~`
+    // delimits the pasted block, so the return after it is unambiguously a keystroke and the guard
+    // has no trailing newline to consume. This is a CLASSIFIER, not a race, so a sleep would be the
+    // wrong instrument: measured on a real seat, a 250ms pause before the return still lost the
+    // submission while 1000ms carried it, and any margin chosen from those numbers is a guess a
+    // loaded host breaks. Bracketed delivery submitted 120, 2600 and 5912 bytes (the issue's own
+    // size) each on its own call. The terminal advertises support by enabling DECSET 2004, which
+    // Jcode's TUI does.
+    //
+    // The bytes the SEAT receives as text are unchanged, and the receipt still counts the text plus
+    // the return: the paste markers are framing this op adds, never content the caller asked to
+    // deliver, so counting them would make `bytes` disagree with what the caller sent.
+    const text = String(args.text);
+    const submit = args.enter !== false;
+    const intendedBytes = Buffer.byteLength(text, "utf8") + (submit ? 1 : 0);
+    const parts: Array<{ data: string; counted: boolean }> = [{ data: PASTE_START, counted: false }];
+    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS)
+      parts.push({ data: text.slice(i, i + INPUT_SLICE_CHARS), counted: true });
+    parts.push({ data: PASTE_END, counted: false });
+    // `enter:false` still presses nothing: the text is delivered into the composer and left there.
+    if (submit) parts.push({ data: "\r", counted: true });
+    let bytes = 0;
+    for (const [i, part] of parts.entries()) {
+      // Yield BEFORE each write but the first, so the child drains the previous slice rather than
+      // the pty buffer merging them. `setImmediate` runs after I/O, which a microtask would not.
+      if (i > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      let accepted: number;
+      try {
+        accepted = await write(part.data);
+      } catch (error) {
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+      }
+      if (!Number.isSafeInteger(accepted)) {
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${intendedBytes} bytes`);
+      }
+      // A short write on ANY part is a failed delivery, including a marker: a paste block that was
+      // opened but not closed would leave the seat's composer in paste mode.
+      if (accepted !== Buffer.byteLength(part.data, "utf8"))
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${accepted} of ${Buffer.byteLength(part.data, "utf8")} bytes of one write`);
+      if (part.counted) bytes += accepted;
     }
-    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)
+    if (bytes !== intendedBytes)
       throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);
     return { name: a.name, bytes };
   }
