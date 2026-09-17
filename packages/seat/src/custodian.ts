@@ -136,7 +136,13 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   const settleTerminal = (): void => {
     if (alive || settling || !ready) return;
-    if (clients.size > 0) return;
+    // Only an AUTHENTICATED peer holds this custodian open. A connected socket that never said
+    // hello owns no session, no output subscription and no wait, so it is owed nothing by a settle,
+    // and counting it kept a custodian whose child had already exited resident for nothing: one
+    // unauthenticated dial (a probe, a half-open connect) pinned ~65 MB for the life of the host.
+    // Every authed socket is added to `controllers` by the same `hello` that authenticates it and
+    // removed by `drop`, so this is exactly "someone can still be told something".
+    if (controllers.size > 0) return;
     if (!seenClient) return;
     settling = true;
     if (confirmTimer) {
@@ -352,6 +358,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         }
         session.setAuthed(true);
         seenClient = true;
+        // Join the controller set BEFORE anything below can settle. `markExited` runs the settle,
+        // and a settle with no controller tears this socket down mid-`hello`, so the peer that just
+        // authenticated would see "custodian socket closed" instead of its reply.
+        controllers.add(sock);
         if (handoffTimer) {
           clearTimeout(handoffTimer);
           handoffTimer = undefined;
@@ -368,7 +378,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           status: alive ? "running" : "exited",
           ...(exit ? { exit } : {}),
         });
-        controllers.add(sock);
         if (!alive) send(sock, { event: "exit" });
         return;
       }
