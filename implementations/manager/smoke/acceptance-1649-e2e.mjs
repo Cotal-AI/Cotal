@@ -105,13 +105,18 @@ if (!process.env.JCODE_PROVIDER_CLIPROXY_API_KEY && existsSync(KEY_FILE)) {
 if (!process.env.JCODE_PROVIDER_CLIPROXY_API_KEY) noResult("no provider key for the seat; it could never start a turn");
 
 // THE THREE TEXTS, distinct byte lengths on purpose: a submission shifted by one call is then a
-// different NUMBER, not a coincidence. The longest is over the 2048-byte slice the fix writes in,
-// so the oversized-write half of the defect is exercised too.
+// different NUMBER, not a coincidence. The default sizes span the 2048-char slice boundary.
+// ACC1649_SIZES overrides them, which is how reviewer x's exact experiment (5912, 1986, 231) is
+// reproduced through this same harness rather than a second one.
 const mk = (n, tag) => {
   const head = `Reply with the single word ${tag} and nothing else. Padding follows: `;
   return head + "x".repeat(Math.max(0, n - head.length));
 };
-const TEXTS = [mk(120, "ALPHA"), mk(700, "BRAVO"), mk(2600, "CHARLIE")];
+const TAGS = ["ALPHA", "BRAVO", "CHARLIE"];
+const SIZES = (process.env.ACC1649_SIZES ?? "120,700,2600").split(",").map((s) => Number(s.trim()));
+if (SIZES.length !== 3 || SIZES.some((n) => !Number.isSafeInteger(n) || n < 60))
+  noResult(`ACC1649_SIZES must be three byte counts of at least 60; got ${process.env.ACC1649_SIZES}`);
+const TEXTS = SIZES.map((n, i) => mk(n, TAGS[i]));
 const WANT = TEXTS.map((t) => Buffer.byteLength(t, "utf8"));
 
 /** The seat's PRIVATE managed jcode home, as the connector derives it under the workspace root. */
