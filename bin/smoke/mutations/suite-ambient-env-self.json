@@ -1,0 +1,84 @@
+{
+  "suite": [
+    "bin/smoke/suite-ambient-env-self.smoke.ts"
+  ],
+  "guard": "no suite may read the ambient environment through configFromEnv/controlFromEnv/hasIdentity without a module-scope COTAL_ prefix scrub before that first read",
+  "command": "pnpm smoke:suite-ambient-env-self",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/suite-ambient-env-self.json",
+  "why": [
+    "Issue #833. The sibling census smoke:suite-ambient-env grades the environment a suite hands a",
+    "CHILD. Nothing graded a suite that reads its OWN process environment. Whatever runs a suite may",
+    "be a managed agent session, so such a read is handed a live identity nobody chose: the connector",
+    "config layer refuses the two-carrier launch and the suite dies inside its own import, with an",
+    "error that reads exactly like a code defect in the thing under test. CI carries none of those",
+    "variables, so CI never saw it.",
+    "",
+    "N1 removes the scrub from the suite #833 names by file. It must redden that file's per-file",
+    "cell, which is the census's only real output for a missing scrub.",
+    "",
+    "N2 is ORDER, not presence. A scrub below the read is still a scrub to any check that only asks",
+    "whether the line exists, and the live refusal still fires. Collapsing the ordering test into a",
+    "presence test must redden the fixture that puts a scrub after the read.",
+    "",
+    "N3 is the census shrinking silently. Every per-file cell is generated from the census, so",
+    "walking one package deletes cells rather than failing them, and a suite with fewer cells still",
+    "exits 0. The package-span cell is what makes that red.",
+    "",
+    "N4 is the distinction the brief of this census turns on: a scrub written inside a function is a",
+    "promise that the function runs before every read, and source cannot see whether it does.",
+    "Accepting a scrub at any depth must redden the uncalled-function fixture.",
+    "",
+    "N5 is the narrow scrub. Deleting the single variable that throws today leaves the twelve beside",
+    "it, so recognising a named delete as a prefix scrub must redden the single-variable fixture.",
+    "",
+    "NO BUILD STEP: the suite reads source files off disk and imports nothing from a built package,",
+    "so there is no dist/ copy that could disagree with the mutation."
+  ],
+  "mutations": [
+    {
+      "name": "N1 the connector-core tool-input-closed suite loses its ambient scrub, which is the reported defect",
+      "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
+      "find": "for (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];\n\nprocess.env.COTAL_SPACE ||= \"toolclosed\";",
+      "replace": "\nprocess.env.COTAL_SPACE ||= \"toolclosed\";",
+      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts scrubs COTAL_ from its own process.env at module scope",
+      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts scrubs COTAL_ from its own process.env at module scope",
+      "note": "The exact file issue #833 names. Without the scrub, running it from inside a connected session dies in its own import on the one-identity-plane refusal."
+    },
+    {
+      "name": "N2 ordering collapses into presence, so a scrub below the read reads as compliant",
+      "file": "bin/smoke/suite-ambient-env-self.smoke.ts",
+      "find": "    ordered: scrub !== undefined && scrub < reads[0],",
+      "replace": "    ordered: scrub !== undefined,",
+      "expectRed": "fixture: a scrub AFTER the read is rejected on order, not accepted on presence",
+      "cell": "fixture: a scrub AFTER the read is rejected on order, not accepted on presence",
+      "note": "Presence is not position. A scrub below the read is still a scrub to any check that only asks whether the line exists, while the suite's identity is already resolved from the ambient environment by the time it runs. This is aimed at a fixture rather than at a real file because every real member is compliant, so without the negative control the ordering requirement would be unprovable."
+    },
+    {
+      "name": "N3 the census is scoped to the package that reported the defect",
+      "file": "bin/smoke/suite-ambient-env-self.smoke.ts",
+      "find": "for (const file of suiteSources(repoRoot)) {",
+      "replace": "for (const file of suiteSources(join(repoRoot, \"extensions\", \"connector-core\"))) {",
+      "expectRed": "the census spans more than one package directory, so it is keyed on content and not on one connector",
+      "cell": "the census spans more than one package directory, so it is keyed on content and not on one connector",
+      "note": "Narrowing the walk does not FAIL the per-file cells, it stops emitting them. A census of one file still exits 0 unless the span cell fires."
+    },
+    {
+      "name": "N4 scrub ownership stops being module scope and accepts any depth",
+      "file": "bin/smoke/suite-ambient-env-self.smoke.ts",
+      "find": "  for (const statement of file.statements) {\n    if (!ts.isForOfStatement(statement)) continue;",
+      "replace": "  const statements: ts.Statement[] = [];\n  const collect = (n: ts.Node): void => { if (ts.isForOfStatement(n)) statements.push(n); ts.forEachChild(n, collect); };\n  collect(file);\n  for (const statement of statements) {\n    if (!ts.isForOfStatement(statement)) continue;",
+      "expectRed": "fixture: a scrub inside an uncalled function is not ownership",
+      "cell": "fixture: a scrub inside an uncalled function is not ownership",
+      "note": "The distinction this census exists to encode. A scrub inside a function is a promise that the function runs before every read, and reading source cannot check that promise."
+    },
+    {
+      "name": "N5 a delete of the single named variable counts as a prefix scrub",
+      "file": "bin/smoke/suite-ambient-env-self.smoke.ts",
+      "find": "function moduleScopeScrubPosition(file: ts.SourceFile): number | undefined {\n  for (const statement of file.statements) {",
+      "replace": "function moduleScopeScrubPosition(file: ts.SourceFile): number | undefined {\n  for (const statement of file.statements) {\n    if (ts.isExpressionStatement(statement) && ts.isDeleteExpression(statement.expression) && /COTAL_/.test(statement.expression.getText(file))) return statement.getStart(file);\n  }\n  for (const statement of file.statements) {",
+      "expectRed": "fixture: dropping a single named variable is not a prefix scrub",
+      "cell": "fixture: dropping a single named variable is not a prefix scrub",
+      "note": "The scrub the previous round of this defect installed. It stops the one variable that throws today and leaves the rest of the prefix, so the next variable the config layer reads brings the same failure back."
+    }
+  ]
+}
