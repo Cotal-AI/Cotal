@@ -147,9 +147,16 @@ jobs:
             echo "PARTIAL PUBLISH — failing the job."
             exit 1
           elif [ "$rc" -eq 2 ]; then
+            # The quiet skips end the step here rather than falling out of the `fi`. A version-PR
+            # push that publishes nothing must not red the job, and leaving that outcome to be
+            # decided by whatever follows made it a property of the whole script instead of the
+            # arm: a later line, or a trap installed above, silently turned the skip into a
+            # failure with the branch itself still reading as correct (#1518).
             echo "UNSETTLED — the registry has not converged. Skipping the Release."
+            exit 0
           elif [ "$rc" -eq 3 ]; then
             echo "NONE — this push published nothing. Skipping the Release."
+            exit 0
           else
             echo "Unexpected exit code $rc from verify-publish-closure.mjs — failing the job."
             exit 1
