@@ -63,6 +63,7 @@ import {
 import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type Connection, type ControlAuth } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
+import { journalOutcomeOf } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
@@ -443,7 +444,7 @@ async function journal(planes: Planes, runId: string | undefined, takeoverId: st
     // The key the operator sees is the key `answer <stepKey>` takes back, so it is rendered by
     // the same export the journal itself keys with, never a second hand-rolled copy of the rule.
     const step = journalEntryKeyString(e);
-    const outcome = e.state === "pending" ? "pending" : `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
+    const outcome = journalOutcomeOf(e);
     console.log(`#${record.n}  step        ${step}  ${outcome}`);
     // WHAT AN OPEN PAUSE ASKS, under the step an answer is addressed by. `answer <run> <stepKey>`
     // is the whole interface to a checkpoint, and without this the operator on the other end of it
