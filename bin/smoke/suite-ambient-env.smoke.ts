@@ -709,6 +709,10 @@ assert.deepEqual(
  */
 const REVIEWED: Record<string, string> = {
   "bin/smoke/suite-ambient-env.smoke.ts": "this census itself: its ambient spreads occur only in fixture strings and it spawns nothing",
+  "bin/smoke/suite-ambient-env-self.smoke.ts":
+    "the in-process sibling of this census: its ambient spreads occur only in fixture strings it feeds to a parser, and it spawns nothing",
+  "bin/smoke/suite-own-process-material.smoke.ts":
+    "the connection-material census: same shape, its ambient spreads are fixture strings handed to a parser and it spawns nothing",
   "implementations/cli/smoke/command-kernel.smoke.ts":
     "spawns the cotal CLI for an ext-update path; the child consumes COTAL_UPDATE_* and COTAL_SKIP_CONNECTOR_SEED and never calls configFromEnv/controlFromEnv",
   "implementations/cli/smoke/update-concurrency.smoke.ts":
