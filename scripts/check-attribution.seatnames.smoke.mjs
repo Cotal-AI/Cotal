@@ -105,6 +105,7 @@ const PERMITTED_IDENTITIES = [
   ['a hyphenated human surname', 'Jane Doe-Smith <jane@example.org>'],
   ['the bot account GitHub itself sets on a merge', 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'],
   ['a hyphenated handle with no serial segment', 'jane-doe <jane@example.org>'],
+  ['a human handle disambiguated by a single digit', 'jane-doe-2 <jane@example.org>'],
 ];
 
 for (const [why, identity] of PERMITTED_IDENTITIES) {

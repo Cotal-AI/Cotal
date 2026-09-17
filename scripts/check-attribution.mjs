@@ -137,8 +137,15 @@ export const RULES = [
 //
 // Measured against every author and committer identity in this repository's history, the only
 // identity it reports is an automation lane's, which is the identity it exists to refuse.
+//
+// THE SERIAL MUST BE A SERIAL, not any digit. `jane-doe-2` is a human disambiguating a taken
+// handle, and the asymmetry this file's header states (a false positive is cheap to reword) does
+// not hold for an identity: a contributor cannot reword their own name to get a merge, so a false
+// positive here blocks a person rather than costing them an edit. A seat serial is two or more
+// digits, a short letter prefix on three or more, a version counter, or a model family, which is
+// the same tag grammar the seat rule uses. One trailing digit is not one.
 const IDENTITY_SLUG = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+$/i;
-const IDENTITY_TAG = /^(?:[a-z]{0,3}\d+[a-z]?|v\d+|gpt|grok|glm|gemini|sol|opus|sonnet|haiku|claude|codex)$/i;
+const IDENTITY_TAG = /^(?:\d{2,}[a-z]?|[a-z]{1,3}\d{3,}[a-z]?|v\d+|gpt|grok|glm|gemini|sol|opus|sonnet|haiku|claude|codex)$/i;
 
 /** The display name of a `Name <mailbox>` identity line, without the mailbox. */
 export function displayName(identity) {
@@ -345,6 +352,7 @@ const IDENTITY_FIXTURES = [
   ['a human name with a hyphen passes', 'Jane Doe-Smith <jane@example.org>', []],
   ['a bot account GitHub itself sets passes', 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>', []],
   ['a hyphenated single-word handle with no serial passes', 'jane-doe <jane@example.org>', []],
+  ['a human handle disambiguated by one digit passes', 'jane-doe-2 <jane@example.org>', []],
 ];
 
 /** Grade one line and return the rule ids it produced. */
