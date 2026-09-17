@@ -425,9 +425,28 @@ let P = "";
   await Promise.race([held.driven, wait(15_000)]);
 }
 
+// ── 11) a revoke that names nobody and no reason is refused before it writes ─────────────────
+//
+// The argument parser hands `--by ""` and `--reason ""` through as empty strings, and a marker
+// written from them renders as `revoked by  ()`. The marker is permanent, so the refusal belongs
+// at the writer, before the create.
+{
+  reset();
+  await wf(["start"], { file: PURE });
+  const eid = startedId() ?? "";
+  const refused = await wf(["revoke", eid], { by: "", reason: "" }).then(() => undefined, (e: Error) => e);
+  c("revoke refuses an empty --by and --reason",
+    eid !== "" && refused !== undefined && refused.message.includes("by and reason must be non-empty"), refused?.message ?? captured());
+
+  reset();
+  await withStderr(() => wf(["ps"])).catch(() => undefined);
+  c("...and writes no marker, so ps lists that run by its record and never as `revoked by  ()`",
+    stateOf(psRow(eid)) === "completed" && !captured().includes(`${EP}/${eid}: revoked by`), captured());
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 38;
+const DECLARED = 40;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

@@ -178,6 +178,12 @@ export async function createRunAdmission(kv: KV, admission: RunAdmission): Promi
 /** Create the revocation marker, create-only and idempotent on an existing marker. */
 export async function revokeRunAdmission(kv: KV, endpoint: string, revocation: RunRevocation): Promise<void> {
   const snap = revocationSnapshot(revocation, revocation.runId);
+  // A marker is written naming who revoked the run and why, as an operator admission's provenance
+  // is. The READER stays tolerant of an empty field on purpose: a marker already written that way is
+  // still a revocation, and refusing to read it would make the run's admission unreadable, which
+  // also refuses the conclave cleanup a revoked run is still owed.
+  if (snap.by.length === 0 || snap.reason.length === 0)
+    throw new Error(`run revocation of ${snap.runId} names who revoked it and why; by and reason must be non-empty`);
   try {
     await kv.create(revocationKey(endpoint, snap.runId), enc.encode(canonicalJson(snap)));
   } catch (e) {

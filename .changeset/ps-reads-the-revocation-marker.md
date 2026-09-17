@@ -14,6 +14,8 @@ absence of evidence rather than evidence of absence. The reason and the record's
 stderr, every other row still prints, and the command exits 1. The change is display only: a revoke
 writes no terminal state, because no host drove the run to one. `revoke` now says what the table
 will show, and `readRunRevocation` reads the marker alone so a listing does not refuse over a run
-with no admission record.
+with no admission record. `revokeRunAdmission` refuses a revocation with an empty `by` or `reason`
+before it writes, since the argument parser passed `--by ""` through and the permanent marker it left
+printed as `revoked by  ()`; a marker already written that way still reads as a revocation.
 
 Refs #1621

@@ -206,7 +206,8 @@ whose caller had no channels can still sleep, checkpoint and turn agents; its `w
 is refused at the effect.
 
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. The admission itself is never rewritten. Every host reads the marker
+from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
+admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
 takeover or manager restart continues the run. Revoking twice is not an error, and the first
 reason stands. A run whose admission is missing or revoked is left parked by the manager's boot

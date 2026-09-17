@@ -2,7 +2,7 @@
   "suite": [
     "implementations/runtime/smoke/run-command.smoke.ts"
   ],
-  "guard": "`run ps --local` reads the revocation marker beside each run record and prints `revoked` whatever the record says, names the revoker and the reason under the table, and `revoke` says what the table will now show; the record itself is never rewritten. A marker the listing cannot read prints `unchecked` in the STATE column, its reason and the record's own state go to stderr, every other row still prints, and the command exits 1",
+  "guard": "`run ps --local` reads the revocation marker beside each run record and prints `revoked` whatever the record says, names the revoker and the reason under the table, and `revoke` says what the table will now show; the record itself is never rewritten. A marker the listing cannot read prints `unchecked` in the STATE column, its reason and the record's own state go to stderr, every other row still prints, and the command exits 1. A revoke with an empty by or reason is refused before the marker is written",
   "command": "pnpm smoke:runtime-run-command",
   "completionMarker": "run-command:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/ps-revocation.json",
@@ -43,6 +43,11 @@
     "that control can see a listing that always exits 1. The core mutant that swallows a failed read",
     "grades the `readRunRevocation` contract that `no marker` and `could not look` are different",
     "answers; it is measured through the table, since no suite reads that export on its own.",
+    "",
+    "THE EMPTY-FIELD REFUSAL IS AT THE WRITER ONLY. The argument parser passes `--by \"\"` through as an",
+    "empty string, so the CLI could write a marker that rendered as `revoked by  ()`. The reader stays",
+    "tolerant: refusing an existing marker would make the run's admission unreadable, and an",
+    "unreadable admission also refuses the conclave cleanup a revoked run is still owed.",
     "",
     "NOT ASSERTED, and recorded rather than implied: the manager-hosted `run ps` has the same",
     "defect at `implementations/runtime/src/run-host.ts` `list()`, which builds `RunListRow` from",
@@ -153,6 +158,17 @@
       "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "note": "The export's docblock says a failed read still throws. Swallowed, the table has nothing to print but the record's own word, and a revoked run reads as live the moment its marker cannot be read."
+    },
+    {
+      "name": "the writer accepts a revocation with an empty by and reason",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  if (snap.by.length === 0 || snap.reason.length === 0)",
+      "replace": "  if (false)",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-command",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "revoke refuses an empty --by and --reason",
+      "expectRed": "revoke refuses an empty --by and --reason",
+      "note": "The shape before the refusal: `revoke --by \"\" --reason \"\"` wrote a permanent marker that `ps` printed as `revoked by  ()`."
     }
   ]
 }
