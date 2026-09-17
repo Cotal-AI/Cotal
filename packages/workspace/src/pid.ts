@@ -140,6 +140,23 @@ export function commandIsCotalSupervisor(command: string): boolean {
   return /(^|\s)supervise(\s|$)/.test(command);
 }
 
+/**
+ * Does this command line belong to a Cotal delivery daemon?
+ *
+ * Same rule and same direction as {@link commandIsCotalSupervisor}, one component over: the test is
+ * the `deliver` ARGV TOKEN, which is the daemon's own subcommand and is present however it was
+ * started — `cotal up`'s detached re-exec, a container entrypoint, systemd, or an operator typing
+ * `cotal deliver --space …`. A token, not a substring, so `delivery-thing` and a `--creds
+ * .../delivery.creds` path are not mistaken for the daemon.
+ *
+ * IT FAILS TOWARD "OURS" for the reason the manager's does: a live pid whose argv cannot be read is
+ * still trusted, which is exactly the behaviour every reader had before attribution existed. Only
+ * affirmative evidence that the live process is something else may downgrade a record.
+ */
+export function commandIsCotalDelivery(command: string): boolean {
+  return /(^|\s)deliver(\s|$)/.test(command);
+}
+
 // ---- CREATION IDENTITY: one stable scheme across launch, record, status and teardown (#969) ----
 
 /**

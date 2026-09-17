@@ -332,6 +332,7 @@
     "smoke:component-health": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/component-health.smoke.ts",
     "smoke:delivery-responder-visibility": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-responder-visibility.smoke.ts",
     "smoke:delivery-boot-honesty": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-boot-honesty.smoke.ts",
+    "smoke:delivery-pidfile-ownership": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-pidfile-ownership.smoke.ts",
     "smoke:systemd-supervision": "tsx implementations/cli/smoke/systemd-supervision.smoke.ts",
     "smoke:web-seed:live": "tsx implementations/cli/smoke/web-seed-live.smoke.ts",
     "smoke:delivery-cred:auth": "tsx packages/core/smoke/delivery-cred-confinement.smoke.ts",

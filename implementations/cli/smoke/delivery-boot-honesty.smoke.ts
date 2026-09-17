@@ -99,7 +99,11 @@ try {
   // — it connects the way the real daemon does.
   const holderCreds = join(root, "holder.creds");
   writeFileSync(holderCreds, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
-  holder = spawn(process.execPath, [join(import.meta.dirname, "delivery-responder-holder.mjs"), server, SPACE, "claim", holderCreds], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  // The trailing `deliver` token is this fixture's argv the way the manager stand-in below carries
+  // `supervise`: the delivery record's reader attributes on the daemon's own subcommand (#1528), so
+  // a stand-in for a live daemon has to look like one or it reads as a stranger. The holder script
+  // takes four positionals and ignores the rest.
+  holder = spawn(process.execPath, [join(import.meta.dirname, "delivery-responder-holder.mjs"), server, SPACE, "claim", holderCreds, "deliver"], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   // The holder is a child of this process too, and it outlives a killed wrapper for the same reason.
   // No store dir is passed: the holder owns no tree of its own, and `root` is already owned above.
   releaseHolder = teardownOnSignal(holder);
