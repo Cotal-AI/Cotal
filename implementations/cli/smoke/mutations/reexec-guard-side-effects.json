@@ -2,15 +2,18 @@
   "suite": [
     "implementations/cli/smoke/delivery-boot-honesty.smoke.ts"
   ],
-  "guard": "a refused detached start leaves the mesh root exactly as it found it, with no manager log and no leaked descriptor",
+  "guard": "a refused detached start leaves the mesh root exactly as it found it: no manager or delivery log, no leaked descriptor, and every dead pre-upgrade record still in place",
   "command": "pnpm smoke:delivery-boot-honesty",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/reexec-guard-side-effects.json",
   "why": [
     "The #1629 guard is only half a guard if it runs after the side effects. `startManagerDetached`",
     "opened `manager.<key>.log` before it built the argv, so a refusal created that log and leaked",
-    "its descriptor into every fixture root that reached the call. Ordering is the whole content of",
-    "this fixture: the mutant forks nothing and still fails, which is the point.",
+    "its descriptor into every fixture root that reached the call. #1641 moved the argv above the log",
+    "open but left both starters' pre-upgrade reclaim above it, so a refused manager start deleted the",
+    "dead `manager.pid` and `manager.delivery-aware`, and a refused delivery start deleted `delivery.pid`.",
+    "Ordering is the whole content of this fixture: every mutant forks nothing and still fails, which",
+    "is the point.",
     "",
     "NOT MUTATED HERE, deliberately: removing the guard itself. This suite is the one whose entry is",
     "not the cotal entry, so a run with the guard gone re-execs the suite as its own manager and each",
@@ -24,10 +27,46 @@
     {
       "name": "the log is created before the argv is validated, so a refused start still leaves it behind",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  const logPath = managerLogPath(space);\n",
-      "replace": "  const logPath = managerLogPath(space);\n  closeSync(openSync(logPath, \"a\", 0o600));\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = selfArgv();\n",
+      "replace": "  closeSync(openSync(managerLogPath(space), \"a\", 0o600));\n  const [node, ...self] = selfArgv();\n",
       "cell": "CELL: the refused spawn left no manager log behind either",
       "expectRed": "CELL: the refused spawn left no manager log behind either",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the manager's pre-upgrade pidfile is reclaimed before the argv is validated",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n  const [node, ...self] = selfArgv();\n",
+      "cell": "CELL: the refused manager start left the dead pre-upgrade manager pidfile in place",
+      "expectRed": "CELL: the refused manager start left the dead pre-upgrade manager pidfile in place",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the manager's pre-upgrade delivery-aware marker is reclaimed before the argv is validated",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));\n  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));\n",
+      "cell": "CELL: and the dead pre-upgrade delivery-aware marker",
+      "expectRed": "CELL: and the dead pre-upgrade delivery-aware marker",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the delivery starter reclaims its pre-upgrade pidfile before the argv is validated, as #1641 shipped it",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const [node, ...self] = selfArgv();\n",
+      "cell": "CELL: the refused delivery start left the dead pre-upgrade delivery pidfile in place",
+      "expectRed": "CELL: the refused delivery start left the dead pre-upgrade delivery pidfile in place",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the delivery log is opened before the argv is validated",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), \"a\");\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));\n  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), \"a\");\n  const [node, ...self] = selfArgv();\n",
+      "cell": "CELL: the refused delivery start left no delivery log behind",
+      "expectRed": "CELL: the refused delivery start left no delivery log behind",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
