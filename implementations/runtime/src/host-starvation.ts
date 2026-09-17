@@ -275,16 +275,22 @@ export function wasStarved(w: LoopLagWindow): boolean {
  *
  * `fault` is TODAY'S ANSWER AND IT IS UNCHANGED: the caller raises, the interpreter records
  * `L4000`, and a genuine broken host or handler reads exactly as it did before this file existed.
- * The one thing that moves is the case where the error is deadline-shaped AND this process can show
- * its own loop was not running, which was never evidence about the plane at all.
+ * The two things that move are the cases where the error is DEADLINE-SHAPED, which was never
+ * evidence about the plane's health at all, only about a reply that did not arrive in time:
+ *
+ *   - `starved`, when this process can show its own loop was not running (#1508). The deadline
+ *     could not fire because nothing could.
+ *   - `transient`, when the loop WAS running (#1619). The deadline fired honestly and the reply
+ *     was merely late, which is a property of one request and not of the pause behind it.
  */
 export type PauseCondition =
   | { readonly condition: "starved"; readonly window: LoopLagWindow }
+  | { readonly condition: "transient"; readonly window: LoopLagWindow }
   | { readonly condition: "fault" };
 
 export function classifyPauseFailure(error: unknown, window: LoopLagWindow): PauseCondition {
   if (!isDeadlineShaped(error)) return { condition: "fault" };
-  if (!wasStarved(window)) return { condition: "fault" };
+  if (!wasStarved(window)) return { condition: "transient", window };
   return { condition: "starved", window };
 }
 
@@ -316,21 +322,53 @@ export const STARVED_ATTEMPTS = 6;
 export const STARVED_YIELD_MS = 250;
 
 /**
- * Perform a pause-plane operation, and do not let this host's own starvation be recorded as the
- * effect's failure.
+ * How many CONSECUTIVE late replies a pause operation gets before the plane is declared unable to
+ * answer it (#1619).
+ *
+ * COUNTED SEPARATELY from {@link STARVED_ATTEMPTS}, and not merged with it, because the two are
+ * different diagnoses with different remedies and an operator acts on which one they got: one says
+ * give this host capacity, the other says the broker is not answering. Counting them apart also
+ * keeps the whole call bounded no matter how the two interleave — neither counter is ever reset, so
+ * an alternating sequence cannot retry forever between them.
+ */
+export const POLL_ATTEMPTS = 6;
+
+/**
+ * The first wait between late replies, DOUBLED each time and capped at {@link POLL_BACKOFF_MAX_MS}.
+ *
+ * Backoff rather than the flat yield starvation uses, because the two are waiting for different
+ * things to recover. A starved loop needs the CPU back, which the next macrotask already measures;
+ * a plane answering late is usually a broker under momentary load, and re-issuing at the same
+ * cadence adds to exactly the queue that is already behind. Each attempt additionally costs the
+ * client's own deadline before it can fail again, so the bound is real wall-clock time either way.
+ */
+export const POLL_BACKOFF_MS = 250;
+export const POLL_BACKOFF_MAX_MS = 2_000;
+
+/**
+ * Perform a pause-plane operation, and do not let this host's own starvation, or one late reply
+ * from the plane, be recorded as the effect's failure.
  *
  * THE OPERATION MUST BE IDEMPOTENT, which the pause plane's are by construction: `arm` mints
  * idempotently-if-identical and otherwise attaches, and `settle` reads a one-use fact that is
- * either there or not. Re-entering either after a starved attempt observes the same world.
+ * either there or not. Re-entering either after a starved or unanswered attempt observes the same
+ * world.
  *
  * A SLEEP PROMISES AT-LEAST, NOT AT-MOST, so a starved one COMPLETES LATE rather than failing: the
  * broker armed a real timer, it fired while this process was off the CPU, and the fact is waiting
  * to be read. Retrying reads it and the step settles `ok`. That is the whole repair for the
  * incident in #1508, the run in it would have completed.
  *
+ * AND A PARKED STEP IS NOT ITS POLLS (#1619). While a pause is parked this host issues roughly one
+ * 5s plane read per second for the step's whole duration, so the chance that ONE of them gets a
+ * late reply grows with how long the step waits — measured, the asks over 7.5 minutes died and the
+ * ones under 4.5 did not. A late reply says nothing about the pause, which is durable on the plane
+ * and still answerable, so it is re-read rather than raised.
+ *
  * WHAT IS NOT SWALLOWED: a failure that is not deadline-shaped is raised on the FIRST attempt with
- * no retry and no inspection of the loop, and a deadline-shaped failure on a loop that was running
- * is raised the same way. Both keep `L4000` and its message exactly as they are today.
+ * no retry and no inspection of the loop, keeping `L4000` and its message exactly as they are
+ * today. And neither retry is unbounded: each condition carries its own count, and exhausting
+ * either fails under a code that names what was measured.
  */
 export async function servedDespiteStarvation<T>(
   operation: () => Promise<T>,
@@ -339,6 +377,8 @@ export async function servedDespiteStarvation<T>(
   onStarved: (note: string) => void = (note) => console.error(note),
 ): Promise<T> {
   let last: LoopLagWindow | undefined;
+  let starved = 0;
+  let unanswered = 0;
   for (let attempt = 1; ; attempt += 1) {
     const mark = lag.mark();
     try {
@@ -350,14 +390,35 @@ export async function servedDespiteStarvation<T>(
       if (verdict.condition === "fault") throw error;
       last = verdict.window;
       const evidence = describe(last);
-      if (attempt >= STARVED_ATTEMPTS) {
+      if (verdict.condition === "transient") {
+        unanswered += 1;
+        if (unanswered >= POLL_ATTEMPTS) {
+          throw new EffectError(
+            "L4026",
+            "pause-unanswered",
+            `${what} could not be served: the pause plane did not answer ${unanswered} consecutive reads before their client deadline, while this host's own event loop was running (${evidence}). `
+            + `The pause and its timer are intact on the plane and nothing about the program or the resource it waits on is at fault; `
+            + `the run can be resumed once the broker is answering.`,
+            { attempts: unanswered, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
+          );
+        }
+        // SAID OUT LOUD, for the same reason the starved notice is: a run that is merely taking a
+        // while looks identical to one whose plane reads keep timing out, and the operator is the
+        // person who can act on the difference.
+        onStarved(`${what}: attempt ${attempt} reached its client deadline while this host WAS scheduling the run's process (${evidence}); the plane's reply was late, retrying rather than failing the step`);
+        // Unrefed, as below: a retry loop is not a reason for a finished process to stay alive.
+        await new Promise((r) => setTimeout(r, Math.min(POLL_BACKOFF_MS * 2 ** (unanswered - 1), POLL_BACKOFF_MAX_MS)).unref?.());
+        continue;
+      }
+      starved += 1;
+      if (starved >= STARVED_ATTEMPTS) {
         throw new EffectError(
           "L4025",
           "host-starved",
-          `${what} could not be served: this host did not schedule the run's process across ${attempt} consecutive attempts (${evidence}). `
+          `${what} could not be served: this host did not schedule the run's process across ${starved} consecutive attempts (${evidence}). `
           + `The pause and its timer are intact on the plane and nothing about the program or the resource it waits on is at fault; `
           + `the run can be resumed once the host has capacity.`,
-          { attempts: attempt, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
+          { attempts: starved, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
         );
       }
       // SAID OUT LOUD, once per starved attempt. The operator reading a slow run is the person who

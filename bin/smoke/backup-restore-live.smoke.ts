@@ -28,7 +28,7 @@ import {
   createAttemptClone,
   startIsolatedBroker,
 } from "../../implementations/cli/src/lib/isolated-broker.js";
-import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const freePort = () => new Promise<number>((resolvePort, reject) => {
   const server = createServer();
@@ -40,7 +40,8 @@ const freePort = () => new Promise<number>((resolvePort, reject) => {
 });
 
 const occupy = async (port: number): Promise<ChildProcess> => {
-  const child = spawn("nats-server", ["-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+  const child = spawn("nats-server", ["-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+  teardownOnSignal(child);
   for (let i = 0; i < 50; i++) {
     if ((await probeConnect(`nats://127.0.0.1:${port}`, { timeoutMs: 200 })).ok) return child;
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));

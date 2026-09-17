@@ -64,6 +64,7 @@ import {
   deliveryBucket,
   managerBucket,
   MANAGER_LEASE_KEY,
+  MANAGER_RENEWAL_LEASE_KEY,
   connzRequestSubject,
   accountConnectSubject,
   accountDisconnectSubject,
@@ -1504,6 +1505,9 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         `$JS.API.STREAM.INFO.${MKV}`,
         `$JS.API.STREAM.MSG.GET.${MKV}`, // readManagerLease (last_by_subj lease.*) + CAS-conflict kv.get
         `$KV.${managerBucket(space)}.${MANAGER_LEASE_KEY}.*`, // this instance's lease.<id> key (create/update/delete = $KV publishes)
+        // #1634: the per-space daemon-credential renewal lease, the CAS that picks ONE renewal owner
+        // when several managers share the daemon's store. Same bucket, its own key outside `lease.*`.
+        `$KV.${managerBucket(space)}.${MANAGER_RENEWAL_LEASE_KEY}`,
         // Presence: publish OWN key + watch the roster. Own key only (no peer-key forge — residual 3); no
         // presence-stream purge/delete (no force-offline tamper). No presence kv.get (roster is the in-memory
         // watch cache + sweep), so no STREAM.MSG.GET on presence.

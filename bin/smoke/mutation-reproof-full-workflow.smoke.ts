@@ -34,8 +34,8 @@ function check(name: string, ok: unknown, detail = ""): void {
 const reproof = shardJob?.steps?.find((step: { name?: string }) =>
   step.name === "Re-prove every mutation fixture assigned to this shard");
 const report = shardJob?.steps?.find((step: { name?: string }) => step.name === "Report elapsed");
-check("full_shard is a 12-way fail-fast-disabled Tenki matrix",
-  shardJob?.["runs-on"] === "tenki-standard-medium-4c-8g"
+check("full_shard is a 12-way fail-fast-disabled GitHub-hosted matrix",
+  shardJob?.["runs-on"] === "ubuntu-latest"
     && shardJob?.["timeout-minutes"] === 240
     && shardJob?.strategy?.["fail-fast"] === false
     && JSON.stringify(shardJob?.strategy?.matrix?.shard) === JSON.stringify(shards));

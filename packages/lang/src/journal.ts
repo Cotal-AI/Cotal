@@ -25,6 +25,16 @@ export interface EntryError {
   readonly code: string;
   readonly kind: string;
   readonly message: string;
+  /**
+   * WHERE THE THROW CAME FROM, kept only when the thrown value actually carried one.
+   *
+   * A handler fault is the one failure class whose cause is outside both the program and the
+   * language, so the message alone ("timeout") names the symptom and nothing else. The stack is
+   * the only field that says which host code produced it, and reading a fault out of a durable
+   * journal is usually the only look anyone gets. Absent whenever the thrown value had no string
+   * `stack`: a primitive throw carries none, and inventing one would name a place that never ran.
+   */
+  readonly stack?: string;
   readonly detail?: Readonly<Record<string, unknown>>;
 }
 

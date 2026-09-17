@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { canonicalLocalProcessPath, findCotalRoot, localProcessPath, spaceKey, DELIVERY_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
-import { DEFAULT_SPACE } from "@cotal-ai/core";
+import { DEFAULT_SPACE, loadAgentFile } from "@cotal-ai/core";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-home-"));
 const configHome = mkdtempSync(join(tmpdir(), "cotal-setup-config-"));
@@ -141,6 +141,10 @@ ok("output never claims to start anything", !/running at|manager up|mesh running
 
 // C — the default persona write happened (in the INVOKING folder's .cotal) and was announced.
 ok("default persona written", existsSync(join(proj, ".cotal", "agents", "default.md")));
+const defaultPersona = loadAgentFile(join(proj, ".cotal", "agents", "default.md"));
+ok("setup default grants spawn and run",
+  defaultPersona.capabilities?.includes("spawn") === true && defaultPersona.capabilities.includes("run"),
+  defaultPersona.capabilities);
 for (const f of ["david.md", "sven.md", "me.md"]) {
   ok(`demo persona ${f} not written by default`, !existsSync(join(proj, ".cotal", "agents", f)));
 }

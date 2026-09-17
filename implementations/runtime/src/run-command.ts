@@ -48,6 +48,7 @@ import {
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
+  unansweredRail,
   unansweredRequest,
   walkKvEntries,
   type EpErrorDetail,
@@ -158,11 +159,12 @@ async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<Ru
  * drives of one run derive the same fencing token and epoch from one record read, and the
  * activation barrier deliberately relaxes the exact (token, holder, epoch) tuple as a process
  * picking its own run back up — so a constant id would let a second concurrent drive co-activate
- * through that relaxation instead of being refused.
+ * through that relaxation instead of being refused. The local admission also uses this id as
+ * its actor, so it must use the owner-token alphabet.
  */
 function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   const uid = randomUUID().replaceAll("-", "");
-  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
+  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
 }
 
 function readProgram(values: RunValues): string {
@@ -505,6 +507,34 @@ function parseAnswerValue(values: RunValues): unknown {
 
 // ── the manager-hosted path (SPEC 14.3) ─────────────────────────────────────────────────────
 
+/**
+ * What a hosted `run` verb prints when its manager describe drew no answer, SCOPED TO THE RAIL the
+ * describe rode ({@link unansweredRail}, SPEC 13.15).
+ *
+ * On the LEGACY `ep` rail there is one rail and nothing answered on it, so "is a manager running?"
+ * is the right question and `--local` is the right remedy.
+ *
+ * On the VERSIONED (issued) rail it is not. SPEC 13.15 keeps the two rails disjoint at the broker
+ * and requires an endpoint to serve both, so a manager older than the versioned rail subscribes
+ * `ep` alone: it is running, it is on the roster, and this caller cannot reach it. #1630 measured
+ * both halves of the damage. The question ASSERTS one of two causes, and `--local` is the remedy
+ * that follows from it: it drives the run from this process and NAMES THE CALLER as its answerer,
+ * so an operator who takes the tool's advice on a mesh whose manager is merely old submits an
+ * answer under the wrong identity.
+ *
+ * So the versioned wording names BOTH causes and asserts neither, because this side cannot tell
+ * them apart: the service registry records no package version. Naming only the skew is the same
+ * defect one step over, and it is reachable - `bin/smoke/control-transport-dial.smoke.ts` runs a
+ * fixture with no manager at all, and an operator there would have been sent to check a version.
+ */
+export function unansweredManagerRefusal(e: EpEnvelopeError): string {
+  const detail = `${e.code}: ${e.message}`;
+  const rail = unansweredRail(e);
+  if (rail === undefined || rail === "ep")
+    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
+  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
+}
+
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke. The reply's data on success; on a refusal
  *  the manager's own sentence, printed, and a non-zero exit. */
@@ -538,9 +568,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     return r.reply.data;
   } catch (e) {
     if (e instanceof EpEnvelopeError) {
-      console.error(unansweredRequest(e)
-        ? `no manager answered on the endpoint rails (${e.code}: ${e.message}); is a manager running for this mesh? A run can still be driven from this terminal with --local`
-        : `${e.code}: ${e.message}`);
+      console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
       process.exit(1);
     }
     throw e;

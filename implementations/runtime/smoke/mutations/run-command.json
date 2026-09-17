@@ -19,8 +19,8 @@
     {
       "name": "a constant holder id lets concurrent drives co-activate through the exact-tuple relaxation",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
-      "replace": "  return { id: \"cli-run\", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: \"cli_run\", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
       "expectRed": "concurrent drives never co-activate: every activation token is held exactly once",
       "completionMarker": "run-command:",
       "cell": "concurrent drives never co-activate: every activation token is held exactly once",
@@ -35,6 +35,16 @@
       "completionMarker": "run-command:",
       "cell": "the journal render shows an open pause's question under the step an answer is addressed by",
       "note": "An open checkpoint is answered by step key, and the only place a person can read WHAT it asks is this render. Without it the journal shows a pending row and no question, and the answerer has to guess what they are approving."
+    },
+    {
+      "name": "a local holder contains a forbidden owner-token separator",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "expectRed": "local authenticated publish admission accepts its generated holder identity",
+      "completionMarker": "run-command:",
+      "cell": "local authenticated publish admission accepts its generated holder identity",
+      "note": "Exercise authenticated local admission with a publish channel; the forbidden separator must fail the named start cell before any workflow effect is performed. A none ceiling does not format a chat subject and cannot observe this defect."
     }
   ]
 }

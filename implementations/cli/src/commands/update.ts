@@ -139,18 +139,24 @@ async function reconcileCurrent(
   target: Record<string, unknown>,
   finish: (reconciled: boolean) => number,
 ): Promise<number> {
+  // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
+  // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
+  // `update --self` against a mesh that predates this release's authority stores rewrote the store
+  // and only then failed its `running manager continuity check`, leaving the machine migrated by a
+  // run that refused to proceed (#1620). The continuity check is a pure read of the running manager
+  // and the selected target; nothing may be written until it has answered.
+  try {
+    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
+  } catch (e) {
+    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
+    return finish(false);
+  }
+
   rt.out(c.bold("Built-in connectors"));
   try {
     await rt.reconcile();
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
-    return finish(false);
-  }
-
-  try {
-    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
-  } catch (e) {
-    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
     return finish(false);
   }
 
@@ -227,7 +233,13 @@ async function reportRunningManager(flags: Record<string, unknown>): Promise<"no
   }, "control-caller-admin");
   const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
   if (!status.ok) {
-    if (status.unanswered && /no manager reachable/i.test(status.error ?? "")) return "none";
+    // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
+    // core's answer-provenance marker; the headline beside it is operator prose and is now scoped to
+    // the rail the caller rode (#1630), so this call, which runs under an issued control caller, saw
+    // the headline naming the versioned rail and threw instead of reporting "none". The string test
+    // was redundant the day it was written: this call passes no `--on`, so an unanswered reply here
+    // can only ever be the unpinned verdict.
+    if (status.unanswered) return "none";
     throw new Error(status.error ?? "manager status request failed");
   }
   const seats = await askManager(target.space, target.server, "ps", undefined, target.auth);

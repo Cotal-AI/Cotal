@@ -19,8 +19,10 @@
  *
  * Run: npx tsx implementations/manager/smoke/_probe-routed-attach.ts
  */
+import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces , tmpdir } from "node:os";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   newArtifactSigner, SESSION_GRANT_MAX_TTL_MS, openSessionRail,
@@ -35,6 +37,7 @@ import {
   decodeTerminalFrame,
   type TerminalFrame,
 } from "../src/session/index.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -63,7 +66,8 @@ const TARGET = { name: "worker-1", lifecycleUid: "t".repeat(26) };
 
 // Bind the broker to the ROUTED address only. `-a <LAN>` means a client dialling 127.0.0.1 cannot
 // reach it at all, so a green here cannot have come from a loopback path.
-const broker = spawn("nats-server", ["-p", String(PORT), "-a", LAN], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-p", String(PORT), "-a", LAN, "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
 process.on("exit", () => broker.kill("SIGKILL"));
 let up = false;
 for (let i = 0; i < 60 && !up; i++) {

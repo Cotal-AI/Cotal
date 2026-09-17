@@ -1,0 +1,40 @@
+{
+  "suite": ["implementations/cli/smoke/ep-rail-failure.smoke.ts"],
+  "guard": "an unanswered describe is rendered against the rail it rode, so silence on the versioned rail is never printed as a verdict about the mesh",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-rail-failure",
+  "completionMarker": "EP-RAIL-FAILURE POLARITY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/ep-rail-scoped-verdict.json",
+  "why": [
+    "Issue #1630 measured the pre-fix rendering against a live mesh: a 0.49.0 CLI reported `no",
+    "manager answered on the endpoint rails` and offered `--local` while the 0.48.2 manager was up,",
+    "idle on the roster and answering `cotal ps` the whole time. The two rails are disjoint subject",
+    "spaces at the broker (SPEC 13.15), so the request reached nobody and the silence said nothing",
+    "about whether a manager exists.",
+    "",
+    "Two things have to hold and each is mutated on its own. Core must RECORD the plane it published",
+    "on, or the renderer has nothing to scope the verdict with and falls back to the unscoped one.",
+    "And the renderer must READ it, or the fact is recorded and thrown away. Restoring either half to",
+    "its pre-fix form puts the false verdict back, which is what these mutations check the suite",
+    "still notices.",
+    "",
+    "The core mutation carries a build because this suite loads `@cotal-ai/core` through a package",
+    "specifier that resolves to `dist`; without it the mutated source is not the code that runs."
+  ],
+  "mutations": [
+    {
+      "name": "the renderer stops reading the rail and returns to the unscoped verdict",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "      error: instanceId !== undefined\n        ? `manager instance ${instanceId} did not answer${versioned === undefined ? \"\" : ` on the ${versioned} rail`} (${detail})${skew}`\n        : versioned === undefined\n          ? `no manager reachable on the ep rails (${detail})`\n          : `no manager answered on the ${versioned} rail (${detail})${skew}`,",
+      "replace": "      error: instanceId !== undefined\n        ? `manager instance ${instanceId} did not answer (${detail})`\n        : `no manager reachable on the ep rails (${detail})`,",
+      "expectRed": "versioned rail unpinned: the verdict names ep.v1 and never pronounces the mesh managerless"
+    },
+    {
+      "name": "the describe deadline goes back to the rail-blind text and marker",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\", rail }])), deadlineMs); });",
+      "replace": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\" }])), deadlineMs); });",
+      "expectRed": "live: the CLI renders the ep.v1 skew as a named refusal, not as 'no manager reachable'",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

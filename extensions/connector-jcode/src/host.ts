@@ -58,6 +58,8 @@ import {
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
+/** How often the relay checks that its socket path still exists. See the re-bind in `startRelay`. */
+const RELAY_REBIND_POLL_MS = 1_000;
 /** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
  *
  *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
@@ -115,6 +117,8 @@ export function permanentBridgeRecoveryFailure(error: unknown): error is Harness
 }
 
 interface RelayEndpoint {
+  /** The owner-only directory that holds {@link path}. Empty on Windows, which uses a named pipe. */
+  dir: string;
   path: string;
   token: string;
 }
@@ -217,13 +221,30 @@ function writeMcpConfig(home: string, relay: RelayEndpoint, config: AgentConfig)
   if (process.platform !== "win32") hardenPrivate(path, "file");
 }
 
+/**
+ * Where this launch keeps its tool relay socket.
+ *
+ * The socket used to sit at the top level of the shared temp directory. Anything that empties that
+ * directory — a distribution's periodic cleaner, or a self-test whose recursive cleanup escaped its
+ * own root — unlinked the control path of every live seat at once. The host kept listening on the
+ * now-nameless inode, so every `cotal_*` call failed with `connect ENOENT` and the only recovery was
+ * a respawn, which discards the session's context (#1625). One private per-launch directory keeps
+ * the socket out of a top-level sweep, and `startRelay` re-binds the path if it disappears anyway.
+ */
 function relayEndpoint(space: string, name: string): RelayEndpoint {
   const token = randomBytes(32).toString("base64url");
   const id = createHash("sha256").update(`${space}\0${name}\0${process.pid}\0${token}`).digest("base64url").slice(0, 32);
-  return {
-    path: process.platform === "win32" ? `\\\\.\\pipe\\cotal-jcode-${id}` : join("/tmp", `cotal-jcode-${id}.sock`),
-    token,
-  };
+  if (process.platform === "win32") return { dir: "", path: `\\\\.\\pipe\\cotal-jcode-${id}`, token };
+  // `/tmp` rather than `tmpdir()`, as the SDK alias directory does: this path is AF_UNIX and an
+  // overridden TMPDIR can push it past sun_path.
+  const dir = join("/tmp", `cotal-jcode-${id}`);
+  return { dir, path: join(dir, "relay.sock"), token };
+}
+
+function ensureRelayDirectory(endpoint: RelayEndpoint): void {
+  if (process.platform === "win32") return;
+  mkdirSync(endpoint.dir, { recursive: true, mode: 0o700 });
+  hardenPrivate(endpoint.dir, "dir");
 }
 
 function instructions(config: AgentConfig, persona: string | undefined): string {
@@ -244,6 +265,7 @@ function constantTokenMatches(presented: unknown, expected: string): boolean {
 
 async function startRelay(agent: MeshAgent, config: AgentConfig, endpoint: RelayEndpoint): Promise<Server> {
   const specs = new Map(cotalToolSpecs(config, "jcode").map((spec) => [spec.name, spec]));
+  ensureRelayDirectory(endpoint);
   if (process.platform !== "win32" && existsSync(endpoint.path)) rmSync(endpoint.path, { force: true });
   const server = createServer((socket) => {
     let input = "";
@@ -283,18 +305,49 @@ async function startRelay(agent: MeshAgent, config: AgentConfig, endpoint: Relay
     });
     socket.on("error", () => {});
   });
-  await new Promise<void>((resolvePromise, reject) => {
-    server.once("error", reject);
-    server.listen(endpoint.path, () => {
-      server.removeListener("error", reject);
-      resolvePromise();
+  const listen = (): Promise<void> =>
+    new Promise<void>((resolvePromise, reject) => {
+      server.once("error", reject);
+      server.listen(endpoint.path, () => {
+        server.removeListener("error", reject);
+        resolvePromise();
+      });
     });
-  });
+  await listen();
+  if (process.platform !== "win32") {
+    // A listener whose path was unlinked serves nobody: the bridge connects by name and gets
+    // ENOENT. Re-bind it so a deleted socket costs one poll interval instead of a respawn (#1625).
+    // `server.listening` is false once shutdown closes the server for good, which retires this.
+    let rebinding = false;
+    const watch = setInterval(() => {
+      if (rebinding || !server.listening || existsSync(endpoint.path)) return;
+      rebinding = true;
+      void (async () => {
+        try {
+          ensureRelayDirectory(endpoint);
+          await closeServer(server);
+          await listen();
+          writeJcodeDiagnostic(`[cotal-jcode] the tool relay socket was deleted; re-bound it at the same path\n`);
+        } catch (error) {
+          writeJcodeDiagnostic(`[cotal-jcode] the tool relay socket was deleted and could not be re-bound: ${(error as Error).message}\n`);
+        } finally {
+          rebinding = false;
+        }
+      })();
+    }, RELAY_REBIND_POLL_MS);
+    watch.unref?.();
+  }
   return server;
 }
 
 function closeServer(server: Server | undefined): Promise<void> {
   return new Promise((resolve) => server?.close(() => resolve()) ?? resolve());
+}
+
+/** Close the relay and take its private directory with it, so a retired launch leaves nothing. */
+async function retireRelay(server: Server | undefined, endpoint: RelayEndpoint): Promise<void> {
+  await closeServer(server);
+  if (process.platform !== "win32") rmSync(endpoint.dir, { recursive: true, force: true });
 }
 
 function noCotalEnv(): NodeJS.ProcessEnv {
@@ -668,7 +721,7 @@ export async function runJcodeHost(): Promise<void> {
     } catch {
       /* already gone */
     }
-    await closeServer(relayServer);
+    await retireRelay(relayServer, relay);
     let exit = code;
     try {
       await stopPrivateJcode();
@@ -1812,7 +1865,7 @@ export async function runJcodeHost(): Promise<void> {
     // process exit code instead of racing it to process.exit with a failure report.
     if (stopping) return;
     startControl?.close();
-    await closeServer(relayServer);
+    await retireRelay(relayServer, relay);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
     // hands the manager a retired seat while an unverified daemon would keep running (#839).
     try {

@@ -13,10 +13,28 @@ export function requireRuntimeAdopt(runtime: Runtime, reference: RuntimeReferenc
   return runtime.adopt(reference);
 }
 
-/** What a {@link CustodialRuntime.reap} proved. `absent`: no custody record exists for that
- *  reference (the runtime already forgot it, so nothing it addresses is running). `reaped`: every
- *  process the record named was signalled and verified gone, or found already gone by identity. */
+/** What a {@link CustodialRuntime.reap} proved. `absent`: the custody record for that reference
+ *  could not be read. That is a statement about ADDRESSABILITY, not about liveness, and the two are
+ *  not the same fact: a custodian that dies after spawning its child and before writing the record
+ *  leaves a LIVE seat and no record, and a stale or wrong reference looks for a record that exists
+ *  at a different path. `reaped`: every process the record named was signalled and verified gone, or
+ *  found already gone by identity. Only `reaped` proves anything about a process. */
 export type RuntimeReapEvidence = { outcome: "absent" } | { outcome: "reaped"; detail: string };
+
+/** A reap that could not PROVE the seat gone, thrown by {@link requireRuntimeReap} on an `absent`
+ *  outcome so no caller can render it as a disposal it did not make. Carries the reference so the
+ *  operator has the one thing that lets them go look: what to search for. */
+export class RuntimeReapUnproven extends Error {
+  readonly reference: RuntimeReference;
+  constructor(runtimeKind: string, reference: RuntimeReference) {
+    super(
+      `runtime "${runtimeKind}" holds no custody record for ${reference.kind}:${reference.id}, so the seat it addresses is NOT proved gone; ` +
+        `a custodian that died before writing its record leaves a live seat behind this same outcome`,
+    );
+    this.name = "RuntimeReapUnproven";
+    this.reference = reference;
+  }
+}
 
 /**
  * A runtime that OWNS the processes it starts, durably enough to address them after the manager
@@ -50,10 +68,19 @@ export function isCustodialRuntime(runtime: Runtime): runtime is CustodialRuntim
 /** Reap an orphaned custody by reference, or refuse by name when this runtime does not custody its
  *  own processes. Absent means REFUSE, never "assume gone": the lifecycle stays held rather than
  *  retiring over a live seat. */
-export function requireRuntimeReap(runtime: Runtime, reference: RuntimeReference): Promise<RuntimeReapEvidence> {
+export async function requireRuntimeReap(
+  runtime: Runtime,
+  reference: RuntimeReference,
+): Promise<{ outcome: "reaped"; detail: string }> {
   if (!isCustodialRuntime(runtime))
     throw new Error(`runtime "${runtime.kind}" does not support reap; the orphaned process for ${reference.kind}:${reference.id} cannot be proved gone`);
-  return runtime.reap(reference);
+  const evidence = await runtime.reap(reference);
+  // The refusal this function's contract promises, made structural: `absent` never leaves here, so
+  // the return type carries no branch a caller could render as success. Placing it at the callsites
+  // instead left each one free to describe an unread record as a reaped process, which is what both
+  // of them did.
+  if (evidence.outcome === "absent") throw new RuntimeReapUnproven(runtime.kind, reference);
+  return evidence;
 }
 
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External

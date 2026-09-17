@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 import { CotalEndpoint, createSpaceAuth, evictDeniedPrincipalWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { readRecord, recordPath } from "@cotal-ai/seat";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
   console.log(`ORPHAN-SEAT ROLLBACK COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -63,7 +63,7 @@ for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete 
 
 const alias = "rollbackworker";
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `rollback-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); const seatRoot = join(dir, "seats"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", `${alias}.md`), `---\nname: ${alias}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); const seatRoot = makeSeatRoot("seats-"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", `${alias}.md`), `---\nname: ${alias}\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n`); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; let manager: ChildProcess | undefined; const pids: number[] = [];
 try {
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50); await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -109,5 +109,6 @@ try {
   broker.kill("SIGKILL");
   await wait(300);
   rmSync(dir, { recursive: true, force: true });
+  rmSync(seatRoot, { recursive: true, force: true }); // its own root now: `dir` no longer contains it
   releaseBroker();
 }

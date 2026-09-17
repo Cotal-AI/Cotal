@@ -27,11 +27,13 @@ import {
 import { Journal, JournalAppendRejected, KeyScope } from "@cotal-ai/lang";
 import { RunJournalStore, RunJournalUnavailable } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "wfjstore";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfjstore-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfjstore-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;

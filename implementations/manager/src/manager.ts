@@ -10,7 +10,7 @@ import {
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
-  divergentSecretStoreRefusal,
+  divergentSecretStoreNotice,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
@@ -67,6 +67,7 @@ import {
   isCustodialRuntime,
   requireRuntimeAdopt,
   requireRuntimeReap,
+  RuntimeReapUnproven,
   type AgentHandle,
   type Runtime,
   type RuntimeMode,
@@ -224,6 +225,19 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
+ * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
+ * tail of an oversized write stays queued and swallows the submit key that follows it (issue #1649).
+ * Sized in CHARS against a byte buffer on purpose — a multi-byte character can only make a slice
+ * shorter in characters than in bytes, never longer, so the margin cannot be eaten from below. */
+const INPUT_SLICE_CHARS = 2048;
+/** Bracketed-paste delimiters (DECSET 2004). `input` wraps a seat's text in these so the return it
+ * writes afterwards is a KEYSTROKE rather than the newline trailing a pasted block: a TUI that
+ * classifies a fast burst as a paste consumes that trailing newline and the text sits unsubmitted
+ * in the composer until the next call's return (issue #1649). Framing, never content - these bytes
+ * are not counted into the receipt, so `bytes` still reports what the caller asked to deliver. */
+export const PASTE_START = "\x1b[200~";
+export const PASTE_END = "\x1b[201~";
 /** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
  * tick lands inside every renewal owner's `[renewAt, exp)` window.
  *
@@ -1119,6 +1133,11 @@ export class Manager {
   private leaseRenewInFlight = false;
   /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
+  /** #1634: does THIS manager own the delivery daemon's credential renewal? True only while the
+   *  daemon reloads from this manager's store AND this manager holds the per-space renewal lease.
+   *  Starts false: a manager that has not proved both must not remint. */
+  private daemonRenewalOwner = false;
+  private daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   private maintenanceState: ManagerMaintenanceState = "active";
   private lifecycleInFlight = 0;
   private lifecycleDrainWaiters: Array<() => void> = [];
@@ -1424,7 +1443,15 @@ export class Manager {
     // every half-TTL: re-sign the daemon creds files for their EXISTING nkeys, request the explicit
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
-      await this.assertDaemonSharesSecretStore();
+      // #1634: a space may be served by several managers, so ownership of the daemon's credential
+      // renewal is decided here rather than by being the only manager able to start.
+      await this.claimDaemonRenewalOwnership();
+      // ARMED BEFORE the first remint, not after. That first `renewDaemonCreds()` re-signs through
+      // the SecretStore, and a slow or contended store makes the one pass outlast the lease's
+      // MANAGER_LEASE_TTL_MS. Arming afterwards leaves the whole first remint unprotected: the lease
+      // expires mid-pass, a second manager's CAS create succeeds, and both remint into one store.
+      this.daemonRenewalLeaseTimer = setInterval(() => { void this.keepDaemonRenewalLease(); }, MANAGER_LEASE_RENEW_MS);
+      this.daemonRenewalLeaseTimer.unref?.();
       await this.renewDaemonCreds();
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
@@ -1485,7 +1512,7 @@ export class Manager {
    *  challenge runs again before every remint, so a later daemon on a foreign store is
    *  refused then rather than certified by an earlier absence. A request timeout is not
    *  absence: a hung rail would skip the proof, so it fails closed. */
-  private async assertDaemonSharesSecretStore(): Promise<"shared" | "absent"> {
+  private async daemonStoreRelation(): Promise<"shared" | "absent" | "divergent"> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
@@ -1504,9 +1531,52 @@ export class Manager {
     } catch (e) {
       throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
     }
-    if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon))
-      throw new Error(divergentSecretStoreRefusal(this.secretStoreIdentity, daemon));
+    if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) {
+      console.error(`! ${divergentSecretStoreNotice(this.secretStoreIdentity, daemon)}`);
+      return "divergent";
+    }
     return "shared";
+  }
+
+  /** Keep this manager's renewal lease alive between credential passes (#1634). The manager bucket
+   *  expires keys at MANAGER_LEASE_TTL_MS, far below the credential pass's cadence, so the lease
+   *  needs its own heartbeat like the per-instance liveness lease. A non-owner calls this too: the
+   *  CAS is how a survivor picks up a dead owner's expired lease with no operator step. Never
+   *  throws; a failed heartbeat leaves ownership to the next pass rather than ending the process. */
+  private async keepDaemonRenewalLease(): Promise<void> {
+    if (!this.auth) return;
+    try {
+      const held = await this.ep.holdDaemonRenewalLease(this.managerInstanceId);
+      if (this.daemonRenewalOwner && !held)
+        console.error(`! daemon credential renewal for space "${this.space}" passed to another manager (this one lost the renewal lease) - it keeps serving its seats`);
+      this.daemonRenewalOwner = held;
+    } catch (e) {
+      console.error(`! could not refresh the daemon renewal lease: ${(e as Error).message} - ownership is re-decided on the next pass`);
+    }
+  }
+
+  /** Decide whether THIS manager owns the daemon's credential renewal (#1634). Both conditions are
+   *  required, because each answers a question the other cannot:
+   *
+   *  1. The daemon must reload from this manager's store (#1447). Reminting into a store the daemon
+   *     never reads writes bytes nobody adopts, and fingerprint-only `reloadCreds` would then name a
+   *     generation the daemon cannot see.
+   *  2. This manager must hold the per-space renewal lease. Store identity CANNOT pick one owner on
+   *     its own: `sameSecretStoreIdentity` is pure equality with no holder and no tiebreak, so every
+   *     manager sharing one store passes it, and two owners reminting on independent timers have no
+   *     ordering between them - one's write lands between the other's re-sign and its adoption
+   *     request, which is the #773 refusal the challenge exists to prevent.
+   *
+   *  A manager failing either test serves the space normally and skips only the daemon remint. */
+  private async claimDaemonRenewalOwnership(): Promise<void> {
+    if ((await this.daemonStoreRelation()) === "divergent") {
+      // Not our daemon's store: drop any lease we hold rather than sit on it, so the manager that
+      // CAN remint is not blocked behind us.
+      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease();
+      this.daemonRenewalOwner = false;
+      return;
+    }
+    await this.keepDaemonRenewalLease();
   }
 
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
@@ -1519,7 +1589,10 @@ export class Manager {
     const release = this.beginLifecycle();
     if (!release) return;
     try {
-      await this.assertDaemonSharesSecretStore();
+      // #1634: re-decide every pass, so a daemon that moved onto this manager's store becomes
+      // ownable, one that moved off retires this manager's ownership, and a crashed owner's expired
+      // lease is taken over by a survivor.
+      await this.claimDaemonRenewalOwnership();
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
@@ -1527,9 +1600,11 @@ export class Manager {
       // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
       // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
       // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.
-      const results = await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
-        preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
-      });
+      const results = this.daemonRenewalOwner
+        ? await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
+            preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
+          })
+        : [];
       const resigned = results.filter((r) => r.ok);
       let adoption: RenewalRecord["adoption"];
       if (resigned.length) {
@@ -1556,7 +1631,10 @@ export class Manager {
       if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
       // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
       // the `doctor auth --fix` writer too), so the results pass straight through.
-      writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+      // A non-owner (#1634) re-signed nothing, so it writes no record: an empty one renders in
+      // `doctor auth` as a pass that never ran.
+      if (this.daemonRenewalOwner)
+        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       this.warnOnSystemCredExpiry();
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
@@ -2141,6 +2219,7 @@ export class Manager {
     await starting?.catch(() => {});
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
+    if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     let releaseFailures: string[] = [];
     if (this.maintenanceState === "active" && !this.resumeRequired) {
@@ -2151,6 +2230,9 @@ export class Manager {
       await this.stopRetainedAgentsOnExit();
     }
     await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);
+    // #1634: hand the renewal lease back on a clean stop so a sibling picks it up on its next pass
+    // rather than waiting out the bucket TTL. A non-owner holds no revision and this is a no-op.
+    await this.ep.releaseDaemonRenewalLease();
     // Capture BEFORE the serve loop is torn down: `stopServiceServe` clears the state, and what is
     // being asked here is "did this process register a service instance", which only the state
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
@@ -7127,9 +7209,16 @@ export class Manager {
     } else {
       try {
         const evidence = await requireRuntimeReap(this.runtime, got);
-        disposal = `the spawned seat was reaped (${evidence.outcome === "absent" ? "already forgotten by the runtime" : evidence.detail})`;
+        disposal = `the spawned seat was reaped (${evidence.detail})`;
       } catch (e) {
-        disposal = `the spawned seat could NOT be reaped: ${(e as Error).message}`;
+        // Two unrelated failures used to share one sentence here, and the difference is the part the
+        // reader has to act on. A runtime that cannot reap at all left nothing behind to find. An
+        // UNPROVEN reap may have left a live seat under a reference no durable row names, which is
+        // the one case where somebody has to go looking, so it says so and names what to look for.
+        disposal =
+          e instanceof RuntimeReapUnproven
+            ? `the spawned seat was NOT proved gone and may still be running as ${e.reference.kind}:${e.reference.id} (${e.message})`
+            : `the spawned seat could NOT be reaped: ${(e as Error).message}`;
       }
     }
     throw new Error(
@@ -7154,8 +7243,11 @@ export class Manager {
         console.error(`static retirement ${a.name}: no custody reference reached this terminal, though runtime "${this.runtime.kind}" custodies its seats; any seat it launched is not addressable from here`);
       return;
     }
+    // An unproven reap throws from here rather than printing, so it propagates into
+    // driveStaticRetirement's catch, which records the failure and HOLDS the name. That is the whole
+    // point of refusing: the alias must not be freed while a seat nobody proved gone may still run.
     const evidence = await requireRuntimeReap(this.runtime, a.runtime);
-    console.error(`static retirement ${a.name}: orphan seat process ${evidence.outcome === "absent" ? `already forgotten by runtime "${a.runtime.kind}" (${a.runtime.id})` : evidence.detail}`);
+    console.error(`static retirement ${a.name}: orphan seat process ${evidence.detail}`);
   }
 
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
@@ -7854,15 +7946,63 @@ export class Manager {
     // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
-    const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
-    const intendedBytes = Buffer.byteLength(data, "utf8");
-    let bytes: number;
-    try {
-      bytes = await write(data);
-    } catch (error) {
-      throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+    //
+    // THE TEXT IS DELIVERED AS A BRACKETED PASTE AND THE RETURN FOLLOWS IT AS ITS OWN WRITE, and
+    // that is the whole of issue #1649. A TUI harness reads keystrokes, so a return fused onto the
+    // tail of the text (`${text}\r`) is the text's last character rather than the submit key: the
+    // line waits in the composer and the NEXT call's return submits the PREVIOUS call's text, so
+    // every delivery runs one call behind while the op still reports the full byte count.
+    //
+    // Separating the return is necessary and NOT sufficient, which is the part that cost a second
+    // round of measurement. A TUI classifies a fast burst of input as a PASTE and eats the newline
+    // that trails it (Jcode spells this `paste_guard::consume_paste_trailing_enter`), so a text big
+    // enough to need more than one write is still one call behind even when the return is written
+    // alone. Measured on a real seat, delivering in 2048-char slices with a yield before the return:
+    // 120 and 700 bytes submitted on their own call, 2500 and 3100 bytes did not - each appeared
+    // only when the NEXT call's return arrived. That is the reported symptom exactly.
+    //
+    // Bracketed paste states the boundary instead of guessing at it. `ESC[200~ text ESC[201~`
+    // delimits the pasted block, so the return after it is unambiguously a keystroke and the guard
+    // has no trailing newline to consume. This is a CLASSIFIER, not a race, so a sleep would be the
+    // wrong instrument: measured on a real seat, a 250ms pause before the return still lost the
+    // submission while 1000ms carried it, and any margin chosen from those numbers is a guess a
+    // loaded host breaks. Bracketed delivery submitted 120, 2600 and 5912 bytes (the issue's own
+    // size) each on its own call. The terminal advertises support by enabling DECSET 2004, which
+    // Jcode's TUI does.
+    //
+    // The bytes the SEAT receives as text are unchanged, and the receipt still counts the text plus
+    // the return: the paste markers are framing this op adds, never content the caller asked to
+    // deliver, so counting them would make `bytes` disagree with what the caller sent.
+    const text = String(args.text);
+    const submit = args.enter !== false;
+    const intendedBytes = Buffer.byteLength(text, "utf8") + (submit ? 1 : 0);
+    const parts: Array<{ data: string; counted: boolean }> = [{ data: PASTE_START, counted: false }];
+    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS)
+      parts.push({ data: text.slice(i, i + INPUT_SLICE_CHARS), counted: true });
+    parts.push({ data: PASTE_END, counted: false });
+    // `enter:false` still presses nothing: the text is delivered into the composer and left there.
+    if (submit) parts.push({ data: "\r", counted: true });
+    let bytes = 0;
+    for (const [i, part] of parts.entries()) {
+      // Yield BEFORE each write but the first, so the child drains the previous slice rather than
+      // the pty buffer merging them. `setImmediate` runs after I/O, which a microtask would not.
+      if (i > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      let accepted: number;
+      try {
+        accepted = await write(part.data);
+      } catch (error) {
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+      }
+      if (!Number.isSafeInteger(accepted)) {
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${intendedBytes} bytes`);
+      }
+      // A short write on ANY part is a failed delivery, including a marker: a paste block that was
+      // opened but not closed would leave the seat's composer in paste mode.
+      if (accepted !== Buffer.byteLength(part.data, "utf8"))
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${accepted} of ${Buffer.byteLength(part.data, "utf8")} bytes of one write`);
+      if (part.counted) bytes += accepted;
     }
-    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)
+    if (bytes !== intendedBytes)
       throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);
     return { name: a.name, bytes };
   }
@@ -7955,7 +8095,7 @@ export class Manager {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
     // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
     // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
-    // support "offline" or "absent" for anyone: netcup 2026-09-09 rendered every live seat as
+    // support "offline" or "absent" for anyone: a live deployment on 2026-09-09 rendered every live seat as
     // one of those for hours after the presence stream was recreated under a still-open watch.
     // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
     // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as

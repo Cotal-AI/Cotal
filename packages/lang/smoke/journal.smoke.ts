@@ -1455,4 +1455,73 @@ await sleep("3h", { name: "after-the-catch" });
   );
 }
 
+// ---- and a handler fault carries WHERE it was thrown from --------------------------------------
+
+/**
+ * #1619's field. A handler fault is the one failure class whose cause is in neither the program nor
+ * the language, so the recorded `message` ("timeout") is the symptom with no origin at all, and the
+ * durable entry is usually the only look anyone gets. The stack is what says which host code threw.
+ *
+ * Read back OUT OF A RECORDED ENTRY, through the real interpreter path, rather than off the raised
+ * error: the raised error has a stack whatever the recorder does, so asserting there would pass with
+ * the field dropped. The two guards have their own cells, because "read `.stack` off whatever came"
+ * is the recorder replacing the handler's failure with its own on a primitive throw.
+ */
+{
+  const throwing = async (thrown: unknown, runId: string): Promise<JournalEntry | undefined> => {
+    const sim = new SimHandler({});
+    const thrower = Object.create(sim) as EffectHandler;
+    thrower.turn = async () => { throw thrown; };
+    const journal = new Journal({ run: runId });
+    await run(
+      'const b = await spawn("b");\nlet caught = null;\ntry {\n  await turn(b, { name: "build" });\n} catch (e) {\n  caught = "caught";\n}\ncaught;',
+      { runId, journal, handler: thrower },
+    );
+    return journal.entries().find((e) => e.status === "failed");
+  };
+
+  // The ordinary case: a handler throws an Error, and the entry keeps where it came from.
+  const thrown = new Error("the plane never answered");
+  const failed = await throwing(thrown, "r-stk-a");
+  ok(
+    "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
+    typeof failed?.error?.stack === "string" && failed.error.stack === thrown.stack,
+    { recorded: String(failed?.error?.stack).split("\n")[0], kind: failed?.error?.kind },
+  );
+  ok(
+    "...and it is the stack, not the message repeated into the field",
+    /journal\.smoke/.test(String(failed?.error?.stack)) && String(failed?.error?.stack).includes("\n"),
+    String(failed?.error?.stack).slice(0, 120),
+  );
+
+  // AND IT SURVIVES THE STORE, which is the only form a later reader meets.
+  const reloaded = new Journal({
+    run: "r-stk-a",
+    entries: JSON.parse(JSON.stringify([failed])) as readonly JournalEntry[],
+  });
+  ok(
+    "the recorded stack survives a serialized round trip, which is the form a later reader gets",
+    reloaded.entries()[0]?.error?.stack === thrown.stack,
+    String(reloaded.entries()[0]?.error?.stack).split("\n")[0],
+  );
+
+  // GUARD 1: other people's code may throw a primitive, which has no stack to keep.
+  const primitive = await throwing("just a string", "r-stk-b");
+  ok(
+    "a primitive throw records NO stack rather than inventing one, and still records the fault",
+    primitive?.error?.stack === undefined && primitive?.error?.kind === "handler-fault"
+      && primitive?.error?.message === "just a string",
+    primitive?.error,
+  );
+
+  // GUARD 2: and `stack` is not always a string, so the field is read rather than trusted.
+  const notAString = await throwing({ message: "shaped like an error", stack: 42 }, "r-stk-c");
+  ok(
+    "a thrown value whose `stack` is not a string records no stack, and the rest of the fault is unharmed",
+    notAString?.error?.stack === undefined && notAString?.error?.code === "L4000"
+      && notAString?.error?.message === "shaped like an error",
+    notAString?.error,
+  );
+}
+
 console.log(`journal.smoke: ${pass} checks passed`);

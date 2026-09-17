@@ -207,7 +207,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     const exp = credsClaims(currentRwCreds).exp;
     if (typeof exp !== "number" || exp * 1000 > Date.now()) return;
     const why = rwIsSource
-      ? "the membership feed's rw creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
+      ? "the membership feed's rw creds have expired and renewal is failing - not presenting the expired credential to the broker; conn B closed permanently"
       : "the membership feed's rw creds have expired and the feed holds no rw creds source to renew them - replace the credential and restart the feed (pass an rw creds FUNCTION for standing renewal)";
     log(why);
     throw new Error(why);

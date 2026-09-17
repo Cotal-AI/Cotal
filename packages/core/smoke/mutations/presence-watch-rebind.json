@@ -2,7 +2,7 @@
   "command": "pnpm smoke:presence-watch-rebind",
   "mutations": [
     {
-      "name": "R1 the rebind call is dropped from sweep, so a dead consumer under a live connection leaves the view stale forever (netcup 2026-09-09)",
+      "name": "R1 the rebind call is dropped from sweep, so a dead consumer under a live connection leaves the view stale forever (a live deployment, 2026-09-09)",
       "file": "packages/core/src/endpoint.ts",
       "find": "      this.rebindStalePresenceWatch(now);\n      return;\n",
       "replace": "      return;\n",
@@ -30,7 +30,7 @@
       "expectRed": "2.6 no per-peer offline verdict was emitted for the observer's own deafness"
     },
     {
-      "name": "R5 the epoch fence in startPresenceWatch is dropped, so a bind that completes after stop() installs a watch on the stopped endpoint (rev-1421-gpt BLOCK on c67c0bb9)",
+      "name": "R5 the epoch fence in startPresenceWatch is dropped, so a bind that completes after stop() installs a watch on the stopped endpoint (reviewer BLOCK on c67c0bb9)",
       "file": "packages/core/src/endpoint.ts",
       "find": "    if (epoch !== this.presenceEpoch) {\n      try { iter.stop(); } catch { /* its connection may already be gone */ }\n      hydrated();\n      return false;\n    }\n",
       "replace": "",
@@ -51,7 +51,7 @@
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch"
     },
     {
-      "name": "R8 the bind-time pending peek is dropped, so a rebind onto an EMPTY bucket (no entry ever delivered) leaves the view stale for good (rev-1421-grok BLOCK on c67c0bb9)",
+      "name": "R8 the bind-time pending peek is dropped, so a rebind onto an EMPTY bucket (no entry ever delivered) leaves the view stale for good (second-reviewer BLOCK on c67c0bb9)",
       "file": "packages/core/src/endpoint.ts",
       "find": "        if (pending === 0) await this.onPresenceBucketEmpty();\n",
       "replace": "",
@@ -72,7 +72,7 @@
       "expectRed": "8.8 CONTROL: after a delivery on that watch, silence past TTL reads stale again (the empty-bucket hold does not outlive the first write)"
     },
     {
-      "name": "R11 a registering observer treats an empty bucket like a probe does (marks every peer and ITSELF offline, holds the view current), so cotal ps prints a false verdict for up to one heartbeat after a stream recreation (rev-1421-gpt BLOCK on 2d8be7e3)",
+      "name": "R11 a registering observer treats an empty bucket like a probe does (marks every peer and ITSELF offline, holds the view current), so cotal ps prints a false verdict for up to one heartbeat after a stream recreation (reviewer BLOCK on 2d8be7e3)",
       "file": "packages/core/src/endpoint.ts",
       "find": "      await this.publishPresence();\n      return;\n    }\n    this.markPresenceBucketEmpty();\n",
       "replace": "    }\n    this.markPresenceBucketEmpty();\n",

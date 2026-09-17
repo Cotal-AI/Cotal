@@ -36,11 +36,12 @@ import { Kvm } from "@nats-io/kv";
 import { isReachable, managerBucket, managerLeaseKey, presenceBucket, principalKey, DEV_OWNER } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { readPresenceWithoutConsumer } from "../src/commands/down.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "leasetomb";   // base; each cell appends its ordering so it gets its own bucket
-const store = mkdtempSync(join(tmpdir(), "cotal-leasetomb-"));
+const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}leasetomb-`));
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
@@ -49,6 +50,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { stdio: "ignore" });
+teardownOnSignal(srv, store);
 process.on("exit", () => { try { srv.kill("SIGKILL"); } catch { /* gone */ } rmSync(store, { recursive: true, force: true }); });
 
 const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));

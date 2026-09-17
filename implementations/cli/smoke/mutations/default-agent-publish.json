@@ -15,8 +15,8 @@
     {
       "name": "M1 remove the default wildcard post grant",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: [\">\"]\ncapabilities: [spawn]",
-      "replace": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: []\ncapabilities: [spawn]",
+      "find": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: [\">\"]\ncapabilities: [spawn, run]",
+      "replace": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: []\ncapabilities: [spawn, run]",
       "expectRed": "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
       "cell": "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
       "note": "This is the exact shipped regression. Typecheck remains green, then the static template assertion observes that a fresh default can no longer create or post to a concrete channel."
@@ -47,6 +47,15 @@
       "expectRed": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
       "cell": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
       "note": "A future current-template edit must not redefine which prior-release bytes are eligible. This compile-clean mutation makes the frozen fixture cease representing the shipped empty-post default."
+    },
+    {
+      "name": "M5 remove workflow capability from the setup default",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "allowPublish: [\">\"]\ncapabilities: [spawn, run]\n---",
+      "replace": "allowPublish: [\">\"]\ncapabilities: [spawn]\n---",
+      "expectRed": "default-workflow-capability: the default declares spawn and run",
+      "cell": "default-workflow-capability: the default declares spawn and run",
+      "note": "Restores the spawn-only default; the real setup subprocess also checks the parsed on-disk capabilities."
     }
   ]
 }

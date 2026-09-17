@@ -15,6 +15,8 @@ import type { PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
   fmtFrom,
+  fmtChannel,
+  fmtKind,
   channelMeta,
   type MeshAgent,
   type InboxItem,
@@ -463,7 +465,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
     const content = pullHint
       ? `📨 ${pullHint}`
       : item
-      ? `📨 New ${item.kind}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
+      ? `📨 New ${fmtKind(item.kind)}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
       : `📨 ${n} Cotal message${n === 1 ? "" : "s"} waiting — delivering your inbox now.`;
     void notify({ content, meta: item ? channelMeta(item) : { kind: "batch" } }).then(
       () => {
@@ -496,7 +498,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   // Focus-only: a channel @mention was acked-and-dropped (not buffered) but still wakes us to PULL it
   // — F4=B (wake-only). Its body isn't injected; cotal_inbox recalls it.
   agent.on("mention-wake", (item: InboxItem) => {
-    const hint = `You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — pull it with cotal_inbox.`;
+    const hint = `You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — pull it with cotal_inbox.`;
     pendingMentionWake = { item, hint }; // remembered BEFORE the push, so a rejection is retryable
     nudge(item, hint, true);
   });

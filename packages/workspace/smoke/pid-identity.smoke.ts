@@ -55,16 +55,18 @@ const alive = (pid: number | undefined): boolean => {
 };
 const reap = (child: { kill: (s?: NodeJS.Signals) => void }) => { try { child.kill("SIGKILL"); } catch { /* gone */ } };
 
-/** A child that dies on SIGTERM, reporting its own exit through `exitCode`. */
-const spawnTarget = (): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
-  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);"], { stdio: "ignore" });
+/** A child that dies on SIGTERM, reporting its own exit through `exitCode`. `as` adds the argv
+ *  token that path's own command attribution reads, so a cell grading the identity pin is not
+ *  answered first by attribution (#1528). */
+const spawnTarget = (as?: "supervise" | "deliver"): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);", ...(as ? [as] : [])], { stdio: "ignore" });
   return { child, pid: child.pid };
 };
 /** A FOREIGN process: it records being signalled by dying with a distinctive exit code. For the
- *  manager cell, `asSupervisor` adds a trailing argv token so the process passes the manager
- *  path's OWN command attribution first - grading the identity refusal, not attribution. */
-const spawnForeign = (asSupervisor = false): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
-  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(9)); setInterval(()=>{},1000);", ...(asSupervisor ? ["supervise"] : [])], { stdio: "ignore" });
+ *  manager and delivery cells the argv token (`supervise` / `deliver`) is added so the process
+ *  passes that path's OWN command attribution first - grading the identity refusal, not attribution. */
+const spawnForeign = (as?: "supervise" | "deliver"): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(9)); setInterval(()=>{},1000);", ...(as ? [as] : [])], { stdio: "ignore" });
   return { child, pid: child.pid };
 };
 
@@ -82,7 +84,10 @@ try {
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const foreign = spawnForeign();
+    // The trailing `deliver` argv makes command attribution PASS, so the PIN is the only thing that
+    // can refuse here: a reused pid running a delivery-looking command line (another mesh's daemon)
+    // is exactly the case attribution cannot catch and the pin must (#1528).
+    const foreign = spawnForeign("deliver");
     strays.push(foreign.child);
     await wait(150);
     // The post-reuse state: pidfile holds the FOREIGN process's pid, the pin holds a start token
@@ -107,7 +112,7 @@ try {
     // The trailing `supervise` argv makes command attribution PASS, so the pin is the only thing
     // that can refuse here: a reused pid that happens to run a supervisor-looking command line
     // (another mesh's manager) is exactly the case attribution cannot catch and the pin must.
-    const foreign = spawnForeign(true);
+    const foreign = spawnForeign("supervise");
     strays.push(foreign.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "manager.pid"), String(foreign.pid));
@@ -159,7 +164,7 @@ try {
   // ── C. THE HAPPY PATH still tears down: a MATCHING pin is signalled and its death confirmed ─
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const target = spawnTarget();
+    const target = spawnTarget("deliver");
     strays.push(target.child);
     await wait(150);
     const token = defaultStartToken(target.pid!); // the REAL start token of the REAL process
@@ -191,7 +196,7 @@ try {
   // ── E. LEGACY records warn + proceed; TORN records still refuse on a LIVE pid ─────────────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const foreign = spawnForeign();
+    const foreign = spawnForeign("deliver");
     strays.push(foreign.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(foreign.pid)); // legacy: no pin
@@ -204,7 +209,7 @@ try {
     await wait(200);
     check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", sent === 1 && foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { sent, exitCode: foreign.child.exitCode, warning });
     check("E2 the legacy record auto-clears after confirmed death", !existsSync(join(root, ".cotal", "delivery.pid")));
-    const torn = spawnForeign();
+    const torn = spawnForeign("deliver");
     strays.push(torn.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(torn.pid));

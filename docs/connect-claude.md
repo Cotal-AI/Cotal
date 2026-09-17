@@ -69,7 +69,10 @@ who's present, and unread counts. The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
 (`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
-agent's toolset matches what it can actually invoke. Clearing retained history is
+agent's toolset matches its declared capabilities. `cotal_run` is gated separately by
+`run`; use `capabilities: [spawn, run]` for both. Fresh setup defaults include both.
+See [workflow tool setup](workflows.md#from-an-agent-session) for a first run and missing-tool checks.
+Clearing retained history is
 operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
 
 ## How it binds
@@ -219,6 +222,14 @@ the broker still authorizes and delivers. Focus's real effect is shrinking the
 untrusted-ambient injection surface (only subject-authenticated dm/anycast auto-inject).
 It resets to **open** on `SessionStart`, so a restarted agent never stays silently deaf.
 Your attention is mirrored into presence so peers can see it.
+
+Whatever does reach a turn is framed so a peer cannot write the frame. A line that begins at column
+zero is written by the connector; one message is one line plus indented continuations, with the
+sender inside a single bracket pair. A message body, a sender name and role, and a service or
+channel label are all peer-controlled, so each passes through the same neutralization the
+`cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
+rendered attribution. This matters more for an injected block than for a reply, because the agent
+did not ask for it and so never had the chance to distrust it.
 
 ## Presence mapping
 

@@ -460,7 +460,7 @@ registry.register(recNoResumeCon);
     kind: "fake",
     spawn: (name) => liveHandle(name),
   };
-  (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, stop: async () => {} });
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {} });
   (mgr as unknown as { attach: { stop: () => Promise<void> } }).attach = { stop: async () => {} };
   await mgr.startAgent({ name: "shut1", agent: "smoke-rec" });
   await mgr.startAgent({ name: "shut2", agent: "smoke-rec" });

@@ -34,6 +34,9 @@
   "files": [
     "dist"
   ],
+  "devDependencies": {
+    "@cotal-ai/smoke-kit": "workspace:*"
+  },
   "publishConfig": {
     "access": "public"
   }

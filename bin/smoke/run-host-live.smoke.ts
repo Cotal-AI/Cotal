@@ -19,6 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-runhost-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -445,9 +446,10 @@ try {
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const spaceB = "runhost-open";
-  const sd = mkdtempSync(join(tmpdir(), "cotal-runhost-js-"));
+  const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}runhost-js-`));
   scratch.push(sd);
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", sd], { stdio: "ignore" });
+  teardownOnSignal(broker, sd);
   kids.push(broker);
   let up = false;
   for (let i = 0; i < 60 && !up; i++) { up = (await probeConnect(server, { timeoutMs: 400 })).ok; if (!up) await wait(120); }

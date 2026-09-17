@@ -746,6 +746,17 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   `ps` says the manager registry could not be read rather than pronouncing on the managers, which
   may all be up.
 
+**The verdict is scoped to the endpoint rail the request rode.** An issued caller rides the
+versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
+both (SPEC 13.15). A manager older than the versioned rail serves `ep` alone, so it can be running,
+registered and answering while an issued caller's request reaches nobody. Silence on `ep.v1` is
+reported as `no manager answered on the ep.v1 rail` and names both causes it is consistent with:
+no manager running, or one older than the rail. The CLI cannot tell them apart, because the service
+registry records no package version, so check whether a manager is running and, if it is, its
+version. The same scoping applies to `cotal run`'s hosted verbs, which drop the `--local`
+suggestion there, since `--local` drives the run from the calling process and names the caller as
+its answerer.
+
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
 static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
@@ -756,10 +767,15 @@ lookup itself is degraded. It is also the **only** route on a **user-auth mesh**
 bearer does not hold the registry-read rows the lookup needs, so there the verbs stay on the class
 queue unless you pin them yourself.
 
-If no reachable instance has the seat, the error reports how many managers answered and names
-those that did not. It does not collapse that state into a bare `no agent <name>`. That distinction matters
-because a single manager cannot tell "hosted elsewhere" from "does not exist": it answers
-`not-found` for both.
+A seat is reported as **not found** only when every reachable instance answered for itself. An
+instance that stayed silent past the deadline, or that refused the read rather than answering, said
+nothing about which seats it hosts, so the seat may be running on it. That case reports that the
+location could not be established, names the instances that did not answer, and states outright
+that it is not a report that the seat is gone. Read it as unknown and retry with
+`--on <instance>`; a retry loop that treats it as "already gone" stops looking for a seat that is
+still running. A single manager cannot tell "hosted elsewhere" from "does not exist": it answers
+`not-found` for both, which is why the search asks all of them and why an incomplete search
+concludes nothing.
 - **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
   read against the manager's in-memory roster, owner-filtered). It does **not** report other
   manager instances. It cannot tell you that one is down: an unreachable manager is absent

@@ -46,7 +46,7 @@
  * fixes; the token covers the case it cannot. Neither covers both.
  */
 import type { ChildProcess } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 
 /** The stable half of the token: what marks a store dir as a smoke broker's at all. */
 export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
@@ -142,8 +142,24 @@ function removeOwnedPaths(entries: readonly Owned[]): void {
 }
 
 const stillAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; }
+  try { process.kill(pid, 0); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+  // IT ANSWERED, WHICH IS NOT THE SAME AS RUNNING. A child this process spawned and then killed
+  // becomes a ZOMBIE until it is waited on, and a zombie still accepts signal 0, so `kill(pid, 0)`
+  // reports it alive forever. That is not a corner case here: the suite's own `finally` SIGKILLs the
+  // broker first and this helper runs afterwards on the exit hook, so the common green path hits it
+  // every time. Measured directly: after `child.kill("SIGKILL")`, `/proc/<pid>/stat` reads `Z` while
+  // `kill(pid, 0)` keeps succeeding, so the loop below burned its full 3s deadline and then printed
+  // `pid N did not exit before path cleanup` about a process that had already died. A false alarm on
+  // a teardown path is worse than silence, because it is the line someone reads while diagnosing a
+  // real leak. A zombie holds no port and no file, which is all this wait exists to protect against.
+  // ON A PLATFORM WITHOUT PROCFS this reads as gone rather than alive, and that direction is
+  // deliberate: the only cost is skipping a wait that exists to avoid an rmSync race, while the
+  // other direction would hang every teardown for the full deadline on macOS. The wait is a
+  // best-effort guard, not a correctness requirement, so losing it off Linux is acceptable and
+  // silently hanging there is not.
+  try { return !/^Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()?.split(" ")[0] ?? ""); }
+  catch { return false; } // no procfs entry: it is gone
 };
 
 /** Synchronously stop an exact child by OS pid. Exit/signal hooks cannot await promises reliably:
