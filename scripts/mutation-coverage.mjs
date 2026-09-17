@@ -64,6 +64,14 @@ const JOINERS = ["join", "resolve", "dirname", "fileURLToPath"];
 const JOINER_MODULES = ["path", "url"];
 /** A loader CLI that occupies the first positional and executes the NEXT one (tsx's own cli.mjs). */
 const RUNNER_CLI = /(?:^|\/)(?:tsx|ts-node|tsimp)(?:\/dist)?\/(?:cli|esm)\.(?:m?js|cjs)$/i;
+/**
+ * Ask `namedAliases` about ANY imported binding rather than a named export of a named module.
+ *
+ * A distinct object, not a string or `"*"`, so it can never collide with a real module specifier or
+ * export name. It is used by the one witness whose question is "did this value leave this file
+ * through a binding something else owns", where the module is genuinely open.
+ */
+const ANY_IMPORT = Symbol("any imported binding");
 
 const calleeText = (expr) => {
   if (ts.isIdentifier(expr)) return expr.text;
@@ -90,12 +98,18 @@ const calleeText = (expr) => {
  * repo genuinely reaches through more than one.
  */
 const namedAliases = (source, fromSpec, originals) => {
-  const specs = (Array.isArray(fromSpec) ? fromSpec : [fromSpec]).flatMap((spec) => [spec, `node:${spec}`]);
+  const anyModule = fromSpec === ANY_IMPORT;
+  const anyName = originals === ANY_IMPORT;
+  const specs = anyModule ? []
+    : (Array.isArray(fromSpec) ? fromSpec : [fromSpec]).flatMap((spec) => [spec, `node:${spec}`]);
   const names = new Set();
   const namespaces = new Set();
   const visit = (node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      if (!specs.includes(node.moduleSpecifier.text)) return;
+      if (!anyModule && !specs.includes(node.moduleSpecifier.text)) return;
+      // A default import binds a callee exactly as a named one does, and it is only consulted for
+      // the ANY question: the witnesses that name their module ask about a specific export.
+      if (anyName && node.importClause?.name !== undefined) names.add(node.importClause.name.text);
       const named = node.importClause?.namedBindings;
       if (!named) return;
       if (ts.isNamespaceImport(named)) {
@@ -105,7 +119,7 @@ const namedAliases = (source, fromSpec, originals) => {
       if (!ts.isNamedImports(named)) return;
       for (const el of named.elements) {
         const orig = (el.propertyName ?? el.name).text;
-        if (originals.includes(orig)) names.add(el.name.text);
+        if (anyName || originals.includes(orig)) names.add(el.name.text);
       }
     }
     ts.forEachChild(node, visit);
@@ -190,7 +204,7 @@ const namedAliases = (source, fromSpec, originals) => {
   return (expr) => {
     if (ts.isPropertyAccessExpression(expr) || ts.isPropertyAccessChain(expr)) {
       return ts.isIdentifier(expr.expression) && namespaces.has(expr.expression.text)
-        && originals.includes(expr.name.text) && !shadowed(expr.expression, expr.expression.text);
+        && (anyName || originals.includes(expr.name.text)) && !shadowed(expr.expression, expr.expression.text);
     }
     if (!ts.isIdentifier(expr)) return false;
     return names.has(expr.text) && !shadowed(expr, expr.text);
@@ -380,16 +394,6 @@ const coversPath = (got, want) => {
   const g = resolve(got).replaceAll("\\", "/");
   const w = resolve(want).replaceAll("\\", "/");
   return g === w || g.startsWith(w + "/");
-};
-
-const exprCovers = (evalPath, node, want) => {
-  if (coversPath(evalPath(node), want)) return true;
-  if (ts.isArrayLiteralExpression(node)) {
-    return node.elements.some((el) => !ts.isOmittedExpression(el) && !ts.isSpreadElement(el) && exprCovers(evalPath, el, want));
-  }
-  let hit = false;
-  ts.forEachChild(node, (child) => { if (exprCovers(evalPath, child, want)) hit = true; });
-  return hit;
 };
 
 const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "-pe"]);
@@ -1089,11 +1093,19 @@ const launchedPaths = (suite, source) => {
 
 
 /**
- * Does this suite COPY the declared root? Only the source argument counts.
+ * Does this suite COPY the declared root? Only the source argument's own VALUE counts.
  *
  * `cpSync(src, dest, options)` copies `src`. Scanning every argument let an options object carry
  * the root, such as `{ note: join(ROOT, "packages", "seat") }` or a `filter` mentioning it, and that is a
  * mention again, one argument to the right of the one that does the work.
+ *
+ * Scanning the source argument's whole SUBTREE is the same defect one level further in, and it is
+ * live: `cpSync(elsewhere(join(ROOT, "packages", "seat")), dest)` copies whatever `elsewhere`
+ * returns, while the declared root sits inside an argument of that call and never names the tree
+ * copied. So the source expression is EVALUATED, by the same path evaluator every other witness
+ * here uses, and the root counts only when the value the copier receives covers it. A source this
+ * evaluator cannot resolve is a refusal, which costs a config visibly, rather than an accept, which
+ * is silent.
  */
 const copiesRoot = (suite, source, root) => {
   const { sf, evalPath } = pathEval(suite, source);
@@ -1102,8 +1114,7 @@ const copiesRoot = (suite, source, root) => {
   const visit = (node) => {
     if (ts.isCallExpression(node) && copiers(node.expression) && evaluated(node, sf)) {
       const from = node.arguments[0];
-      if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)
-        && exprCovers(evalPath, from, root)) hit = true;
+      if (from && !ts.isSpreadElement(from) && coversPath(evalPath(from), root)) hit = true;
     }
     ts.forEachChild(node, visit);
   };
@@ -1200,9 +1211,49 @@ const sourceOfBuilt = (absolute) => {
   return candidateFiles(resolve(root, src, rel));
 };
 
+/**
+ * Is the object carrying this `entry` property HANDED to a call that can start the thread?
+ *
+ * The property records a path; only passing the object to something else makes that path run. The
+ * receiving callee must resolve to an imported binding, by the same provenance rule the launcher,
+ * reader and copier witnesses use: a local `function runInWorker(){}` starts no thread, and neither
+ * does `console.log`. The call must also be reached on load, so a helper nothing invokes does not
+ * count. The object is followed through one `const` binding, because
+ * `const options = { entry: … }; runInWorker(input, options)` hands it over exactly as an inline
+ * literal does.
+ */
+const handedToImportedCall = (property, sf, imported) => {
+  const object = property.parent;
+  if (!ts.isObjectLiteralExpression(object)) return false;
+  const passedTo = (expr) => {
+    const parent = expr.parent;
+    if (parent === undefined) return false;
+    if (!ts.isCallExpression(parent) && !ts.isNewExpression(parent)) return false;
+    if (!parent.arguments?.includes(expr)) return false;
+    return imported(parent.expression) && evaluated(parent, sf);
+  };
+  if (passedTo(object)) return true;
+  const declaration = object.parent;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration)
+    || !ts.isIdentifier(declaration.name)) return false;
+  const name = declaration.name.text;
+  let hit = false;
+  const scan = (node) => {
+    if (hit) return;
+    if (ts.isIdentifier(node) && node.text === name && node !== declaration.name && passedTo(node)) {
+      hit = true;
+      return;
+    }
+    ts.forEachChild(node, scan);
+  };
+  scan(sf);
+  return hit;
+};
+
 const importsBuiltOutput = (path, source) => {
   const roots = [];
   const sf = ast(path, source);
+  const imported = namedAliases(source, ANY_IMPORT, ANY_IMPORT);
   // A worker entry is written as `new URL(spec, import.meta.url)`, as a plain string, or as a
   // const holding one. An identifier is resolved to the initialiser it is DECLARED with rather
   // than by its spelling, so the fact recorded is the path the program actually hands over.
@@ -1250,7 +1301,14 @@ const importsBuiltOutput = (path, source) => {
     // mutated source is compiled into that artifact, so the caller still pairs this with a build
     // exactly as for a dist import, because without one the thread starts a stale artifact. Only a
     // `dist` path is recorded, by the same `record` that guards every other route here.
-    if (ts.isPropertyAssignment(node) && node.name.getText() === "entry") {
+    //
+    // HANDING IT OVER is the whole fact, so the property alone is not enough: writing
+    // `const options = { entry: new URL("../dist/index.js", …) }; console.log(options)` starts no
+    // thread, and recording it is the mention-shaped accept of #1434 arriving one route over. The
+    // object therefore has to be an argument of a call that actually runs, and the callee has to be
+    // a binding an import put there, by the same provenance rule the launcher and reader witnesses
+    // use. A local helper or a global writer receiving the object proves nothing about a thread.
+    if (ts.isPropertyAssignment(node) && node.name.getText() === "entry" && handedToImportedCall(node, sf, imported)) {
       record(distUrlText(node.initializer));
     }
     ts.forEachChild(node, visit);
@@ -1550,6 +1608,44 @@ const substitutePath = (expr, bound, evalPath) => {
   return local(expr);
 };
 
+/**
+ * npm/pnpm flags whose VALUE is the next argv element, so that element is not the packed directory.
+ *
+ * `--pack-destination <dir>` names where the tarball is WRITTEN. Reading it as a packed root
+ * credits a suite with observing the build output of a tree it only wrote a file into, which is the
+ * mention shape this witness exists to refuse. `-C`/`--dir` names the working directory the pack
+ * resolves from, which is the packed tree only when no positional follows, so it is not read as one
+ * either.
+ */
+const PACK_VALUE_FLAGS = new Set(["--pack-destination", "-C", "--dir", "--filter", "--workspace", "-w"]);
+
+/**
+ * The directories an `npm pack` call actually packs: its positional arguments after `pack`.
+ *
+ * A flag and the value it consumes are skipped by the tool's own argument grammar, the same way the
+ * launched-script slot is located by node's flag rules. Taking every non-literal element instead let
+ * `["pack", "--pack-destination", <seat>, <clone>]` report `seat` as packed when the tarball it
+ * produces is of `clone`.
+ */
+const packPositionals = (argv) => {
+  const elements = argvElements(argv);
+  const out = [];
+  let seenPack = false;
+  for (let i = 0; i < elements.length; i++) {
+    const text = stringValue(elements[i]);
+    if (!seenPack) {
+      if (text === "pack") seenPack = true;
+      continue;
+    }
+    if (typeof text === "string" && text.startsWith("-")) {
+      if (!text.includes("=") && PACK_VALUE_FLAGS.has(flagName(text))) i += 1;
+      continue;
+    }
+    out.push(elements[i]);
+  }
+  return out;
+};
+
 const packedRoots = (suite, source) => {
   const { sf, evalPath } = pathEval(suite, source);
   // The pack has to be performed by a REAL launcher, for the #1612 reason: a local function
@@ -1567,8 +1663,7 @@ const packedRoots = (suite, source) => {
         if (program !== undefined && /(?:^|\/)npm$/.test(String(program).replaceAll("\\", "/"))
           && argv && ts.isArrayLiteralExpression(argv)
           && argv.elements.some((el) => stringValue(el) === "pack")) {
-          for (const el of argv.elements) {
-            if (stringValue(el) !== undefined) continue;
+          for (const el of packPositionals(argv)) {
             const value = evalPath(el);
             if (typeof value === "string") { roots.push(value); continue; }
             // The packed directory is often a parameter of a small helper (`pack(dir)`). Resolve it
