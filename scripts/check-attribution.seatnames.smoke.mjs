@@ -119,7 +119,7 @@ const PERMITTED_PROSE = [
   ['hyphenated words that are not seat names',
     'docs: rev-2 of the prev-1 layout; see path/rev-3-gpt/file and version-mgr-4.'],
   ['a seat-shaped segment inside a filesystem path',
-    'chore: drop the stale worktree at /home/example/wt/mgr-t0001 after the rebase.'],
+    'chore: drop the stale worktree at /srv/build/wt/mgr-t0001 after the rebase.'],
   ['a product name in a scoped subject',
     'fix(connector-claude-code): list marketplace plugins as objects with a source (#1416)'],
 ];
