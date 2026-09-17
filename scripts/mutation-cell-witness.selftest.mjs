@@ -75,8 +75,9 @@ try {
   // removed one at a time without any cell noticing -- and the resulting suite would be an
   // instrument that always says accept, which is precisely the defect this file exists to refuse.
   write("bin/smoke/cells.smoke.ts", [
-    'import { readFileSync } from "node:fs";',
+    'import { readFileSync, appendFileSync } from "node:fs";',
     'import { spawnSync } from "node:child_process";',
+    'import { report } from "./report.js";',
     "let passed = 0;",
     "// The suite LAUNCHES the guarded entrypoint once, up front and outside every cell. That is what",
     "// makes the fixture gradable at all (mutation-coverage requires the suite to reach the mutated",
@@ -110,8 +111,25 @@ try {
     "const gradedRead = (name, path) => { check(name, readFileSync(path, \"utf8\").includes(\"export\")); };",
     'gradedRead("the guarded source is read from inside a helper", "bin/direct.mjs");',
     "",
+    "// SELF-FED VERDICT, OBSERVING BOOKKEEPING. The reporter writes a transcript, so its body",
+    "// reaches the filesystem while the verdict it is handed reaches nothing. A reader that walked",
+    "// the whole helper body rather than the part consuming the verdict would call this observing,",
+    "// and since every reporter in every suite does SOMETHING on the side, it would call every cell",
+    "// in the corpus observing and refuse nothing ever again.",
+    "const logged = (name, cond) => { appendFileSync(\"run.log\", `${name}\\n`); check(name, cond); };",
+    'logged("the parser is reported by a helper that writes a transcript", parse("expected: 9") === "9");',
+    "",
+    "// REPORTED BY AN IMPORTED HELPER, verdict self-fed. The verdict may be computed anywhere inside",
+    "// a module this analysis does not read, so it has no standing to refuse and must accept. A",
+    "// refusal here would be an accusation the tool cannot back, against an entry that may be right.",
+    'report("the parser is reported from another module", parse("expected: 5") === "5");',
+    "",
     "console.log(`FIXTURE: ${passed} passed, 0 failed`);",
   ].join("\n"));
+
+  // The reporter this analysis cannot read: a different module, so the verdict it is handed may be
+  // computed anywhere inside it.
+  write("bin/smoke/report.js", "export const report = (name, cond) => { console.log(`${cond ? '  ok' : '  FAIL'} ${name}`); };\n");
 
   execFileSync("git", ["init", "--quiet"], { cwd: root });
   execFileSync("git", ["add", "."], { cwd: root });
@@ -187,6 +205,17 @@ try {
     result.out,
   );
 
+  // The reporter's own side effects are not evidence about the code under test. A reader that
+  // walked the whole helper body would call this cell observing, and since every reporter does
+  // SOMETHING on the side, it would then accept every cell in the corpus and refuse nothing ever
+  // again -- an instrument that always says accept, which is this issue's own defect one level up.
+  result = runTool("--gradable-only", fixture("logging-reporter", "the parser is reported by a helper that writes a transcript"));
+  check(
+    "a self-fed cell is still refused when its reporter writes a transcript of its own",
+    result.status !== 0 && /REFUSED logging-reporter\.json/.test(result.out),
+    result.out,
+  );
+
   // ---- the refusals this check must NOT make ----------------------------------------------------
   //
   // A cell the analysis cannot locate is not a cell it has judged. A composed label, or one reported
@@ -195,6 +224,17 @@ try {
   check(
     "a cell the analysis cannot locate in the suite is accepted, not refused",
     result.status === 0 && /ACCEPTED unlocated\.json/.test(result.out),
+    result.out,
+  );
+
+  // A cell reported from ANOTHER MODULE is accepted whatever its arguments look like: the verdict
+  // may be computed anywhere inside a module this analysis does not read, so it has no standing to
+  // refuse. This cell's arguments are self-fed, so an accept here can only be the unreadable
+  // reporter and not the values at the call site.
+  result = runTool("--gradable-only", fixture("imported-reporter", "the parser is reported from another module"));
+  check(
+    "a cell reported from a module this cannot read is accepted, however its arguments look",
+    result.status === 0 && /ACCEPTED imported-reporter\.json/.test(result.out),
     result.out,
   );
 
@@ -291,7 +331,7 @@ try {
  * out with a refactor accident and the suite still prints `0 failed` and exits 0, just with a
  * smaller first number nothing compares against. Raise it in the same change that adds a cell.
  */
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 14;
 console.log(`\nMUTATION CELL-WITNESS SELF-TEST: ${passed} passed, ${failed} failed`);
 if (failed === 0 && passed !== EXPECTED_CELLS) {
   console.log(`  ✗ FAIL: expected ${EXPECTED_CELLS} cells, ran ${passed}: silently skipped cells must not read as green`);

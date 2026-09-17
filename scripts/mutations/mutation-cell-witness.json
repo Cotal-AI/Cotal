@@ -42,16 +42,16 @@
       "file": "scripts/mutation-cell-witness.mjs",
       "find": "    const scanBody = (node) => {\n      if (ts.isExpression(node) && consumes(node)) { walk(node); return; }\n      ts.forEachChild(node, scanBody);\n    };\n    scanBody(fn.body);",
       "replace": "    walk(fn.body);",
-      "expectRed": "a mutation whose named cell observes nothing outside the suite text is refused",
-      "cell": "a mutation whose named cell observes nothing outside the suite text is refused"
+      "expectRed": "a self-fed cell is still refused when its reporter writes a transcript of its own",
+      "cell": "a self-fed cell is still refused when its reporter writes a transcript of its own"
     },
     {
       "name": "the reporter helper is never entered, so a verdict computed inside it reads as absent",
       "file": "scripts/mutation-cell-witness.mjs",
       "find": "  if (fn === undefined) { witnesses.push({ kind: \"unresolved-reporter\", node: site }); return witnesses; }",
       "replace": "  if (fn === undefined) return witnesses;",
-      "expectRed": "and so is one whose observation happens INSIDE the reporter helper, not at the call site",
-      "cell": "and so is one whose observation happens INSIDE the reporter helper, not at the call site"
+      "expectRed": "a self-fed cell reported through a helper that computes the verdict is refused too",
+      "cell": "a self-fed cell reported through a helper that computes the verdict is refused too"
     },
     {
       "name": "every ambient global counts as an observation, so nothing is ever self-fed",
