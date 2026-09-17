@@ -388,8 +388,13 @@ const r = spawnSync(process.execPath, [${JSON.stringify(grandchild)}], { env: sc
 process.stdout.write(r.stdout || r.stderr);
 `,
     );
+    // A MINIMAL environment, not `{ ...process.env }`. Whatever runs this suite may itself be a
+    // managed agent session carrying a live creds path and control token, and a spread would hand
+    // all of it to this child (`smoke:suite-ambient-env` fails the suite for it, and caught exactly
+    // that here). The cell needs PATH to run node and COTAL_RUN to be the thing under test, and the
+    // minimal env is also a stronger fixture: the marker cannot arrive by some other inherited route.
     const chain = spawnSync(process.execPath, [scrubber], {
-      env: { ...process.env, COTAL_RUN: chainRun },
+      env: { PATH: process.env.PATH ?? "", COTAL_RUN: chainRun },
       encoding: "utf8",
     });
     const chainOut = (chain.stdout || chain.stderr).trim();
