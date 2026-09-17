@@ -77,6 +77,24 @@
       "expectRed": "the reported facts distinguish stopped from disconnected, which agree on both other facts",
       "cell": "the reported facts distinguish stopped from disconnected, which agree on both other facts",
       "note": "connectionState reads the private field, so this leaves `state` correct and breaks only the reported facts. Without it the three reported facts cannot reproduce the state, because stopped and disconnected agree on the other two, and the caller has to take the derivation on trust."
+    },
+    {
+      "name": "the stall clock resets on ANY automatic commit rather than on the queue head (#1526)",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const since = Math.max(oldest, this._lastAutomaticHeadDrainedAt ?? 0);",
+      "replace": "    const since = Math.max(oldest, this._lastAutomaticDrainedAt ?? 0);",
+      "expectRed": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
+      "cell": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
+      "note": "This restores the exact pre-fix measure. A seat that commits the traffic arriving on top of a head it cannot deliver resets its own clock every turn and reports `ready` indefinitely, which is the reported incident: 96 deliveries owed, the oldest over two hours old, every health field green. The cells above it stage no automatic queue at all and stay green under this mutant, so the red is located on the behaviour rather than on a collapse of the suite."
+    },
+    {
+      "name": "head progress is recorded for any automatic entry in the batch, not the head itself",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (selected.some((p) => !p.pullOnly && p.item.recvKey === head)) this._lastAutomaticHeadDrainedAt = Date.now();",
+      "replace": "    if (selected.some((p) => !p.pullOnly)) this._lastAutomaticHeadDrainedAt = Date.now();",
+      "expectRed": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
+      "cell": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
+      "note": "The second half of the fix, mutated separately from the measure it feeds. Keying the new mark on any automatic entry makes it a slower-spelled copy of the old one, so the fix could be half-reverted here and still look present at the call site. The accepting cell below it pins the other direction, so a mutant that simply never records progress is not mistaken for a pass."
     }
   ]
 }
