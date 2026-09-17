@@ -19,3 +19,6 @@ extensions/connector-core/src/.egress-guard-arm-*.ts
 examples/02-self-improving-console/harness/.*.log
 examples/04-frontier-faces/assets/
 product
+
+# Lane work product; it records absolute worktree paths.
+fix-report.json
