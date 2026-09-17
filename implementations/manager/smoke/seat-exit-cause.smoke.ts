@@ -96,7 +96,7 @@ function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<strin
   (manager as unknown as { ep: unknown }).ep = {
     ref: () => ({ id: "local.manager", name: "manager", role: "manager" }),
     getRoster: () => [], on: () => {}, off: () => {},
-    releaseManagerLease: async () => {}, stop: async () => {},
+    releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {},
   };
   (manager as unknown as { attach: unknown }).attach = { stop: async () => {} };
   agents.set(handle.name, {
