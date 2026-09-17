@@ -76,6 +76,20 @@ for the space it serves ([Config](config.md#project-files)). That path is projec
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
 systemd unit does not put those lines in that unit's journal.
 
+The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
+removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
+container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
+too, and a record written only by the launcher goes stale the moment any of those restarts it. The
+write happens once the daemon holds the single-flight lease, because that is the point at which it is
+the space's daemon: one that loses the lease refuses to bind and exits, and must not overwrite the
+live holder's record on its way out.
+
+Readers verify the record before believing it. A recorded pid is trusted only when the process behind
+it is alive **and** its command line names a delivery daemon, so a record that outlived its process
+and had its number reused is reported as stale rather than as a healthy daemon. `cotal down` never
+signals such a process. Where a command line cannot be read, the record is trusted as before: the
+check only ever downgrades on proof.
+
 The daemon also hosts the space's **checkpoint timer writer** ([SPEC §13.9](../SPEC.md#139-authority-boundary)):
 the standing pump that turns workflow `.schedule` requests into armed broker schedules, on its own
 connection under the same delivery credential. Without a running writer no workflow pause on the
