@@ -589,7 +589,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is " +
         "bound with a live transport while automatic deliveries have been queued with no progress " +
         "for over ten minutes: the connection is fine and the seat is not consuming, so peer " +
-        "messages are piling up behind it. `degraded` is bound while the " +
+        "messages are piling up behind it. Progress is measured at the HEAD of the queue, so a seat " +
+        "that keeps committing fresh arrivals while its oldest deliveries never come off reports " +
+        "`stalled` rather than `ready`. `degraded` is bound while the " +
         "transport underneath is DOWN, so sends queue or fail until the client reconnects; this is " +
         "the state that needs attention. `connecting` is a live transport whose Cotal bind has not " +
         "finished. `disconnected` is neither. `stopped` means this session was shut down " +
@@ -639,6 +641,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // the same reason the three liveness facts are reported next to the state they derive.
         const stalledForMs = agent.automaticQueueStalledForMs();
         const lastAutomaticAt = agent.lastAutomaticDrainedAt;
+        // #1526: the two automatic marks are reported SEPARATELY because the gap between them is the
+        // fault. A seat committing fresh arrivals over a head it cannot deliver has a moving
+        // `lastAutomaticDrainedAt` and a frozen `lastAutomaticHeadDrainedAt`, and reporting only the
+        // first describes that seat as busy and healthy while its oldest messages never arrive.
+        const lastHeadAt = agent.lastAutomaticHeadDrainedAt;
         return ok(
           JSON.stringify(
             {
@@ -657,6 +664,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ...presenceField,
               ...(lastDrainedAt !== undefined ? { lastDrainedAt: new Date(lastDrainedAt).toISOString() } : {}),
               ...(lastAutomaticAt !== undefined ? { lastAutomaticDrainedAt: new Date(lastAutomaticAt).toISOString() } : {}),
+              ...(lastHeadAt !== undefined ? { lastAutomaticHeadDrainedAt: new Date(lastHeadAt).toISOString() } : {}),
               ...(oldestAutomaticAt !== undefined ? { oldestAutomaticAt: new Date(oldestAutomaticAt).toISOString() } : {}),
               ...(stalledForMs !== undefined ? { automaticQueueStalledForMs: stalledForMs } : {}),
             },
