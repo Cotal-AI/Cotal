@@ -72,20 +72,29 @@
     {
       "name": "the carriage return is appended unconditionally, so `enter:false` submits the line anyway",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const data = `${String(args.text)}${args.enter !== false ? \"\\r\" : \"\"}`;",
-      "replace": "    const data = `${String(args.text)}\\r`;",
+      "find": "    const submit = args.enter !== false;",
+      "replace": "    const submit = true;",
       "expectRed": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
       "cell": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
-      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count acknowledged for what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply."
+      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count acknowledged for what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply. RE-ANCHORED for #1649: the one-character ternary moved out of a fused `${text}${...}` template into the `submit` flag when the return became its own write, so the old anchor matched nothing and graded nothing. Same decision, same cell, same kill."
     },
     {
       "name": "the manager restores an intended-buffer receipt and ignores the runtime's accepted-byte count",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    let bytes: number;\n    try {\n      bytes = await write(data);\n    } catch (error) {\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n    }\n    if (!Number.isSafeInteger(bytes) || bytes !== intendedBytes)\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);\n    return { name: a.name, bytes };",
-      "replace": "    const intendedBytes = Buffer.byteLength(data, \"utf8\");\n    try {\n      await write(data);\n    } catch (error) {\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n    }\n    return { name: a.name, bytes: intendedBytes };",
+      "find": "      let accepted: number;\n      try {\n        accepted = await write(part);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n      if (!Number.isSafeInteger(accepted)) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: runtime accepted ${String(accepted)} of ${intendedBytes} bytes`);\n      }\n      bytes += accepted;\n    }\n    if (bytes !== intendedBytes)\n      throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);\n    return { name: a.name, bytes };",
+      "replace": "      try {\n        await write(part);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n    }\n    return { name: a.name, bytes: intendedBytes };",
       "expectRed": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
       "cell": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
-      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and reports the intended buffer length. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change."
+      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and reports the intended buffer length. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change. RE-ANCHORED for #1649: the single write became a loop over slices when the return was split out, so the accumulate-and-compare the receipt now rests on is the per-part `accepted` plus the total check. The mutation still deletes exactly the acknowledgement and still substitutes the intended buffer."
+    },
+    {
+      "name": "the return is fused back onto the text, so a seat submits one call behind (issue #1649)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const parts: string[] = [];\n    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS) parts.push(text.slice(i, i + INPUT_SLICE_CHARS));\n    if (submit) parts.push(\"\\r\");",
+      "replace": "    const parts: string[] = [submit ? `${text}\\r` : text];",
+      "expectRed": "THE RETURN WAS WRITTEN ALONE, not fused onto the text: the harness is handed a submit key",
+      "cell": "THE RETURN WAS WRITTEN ALONE, not fused onto the text: the harness is handed a submit key",
+      "note": "The shipped defect, restored exactly: one write carrying the text and its return. The BYTES are identical either way, so the sink cells cannot see it and stay green - that is why #1649 shipped and why this mutation is worth a row. A TUI harness reads keystrokes, so a fused return is the text's last character rather than the submit key: the line waits in the composer and the next call's return submits the previous call's text, while the op reports the full byte count and the seat still starts a turn. Only the write shape separates them, which is why cell 10 records what the handler hands the pty through a pass-through rather than reading the child's sink. This mutation also reds the 4096-byte slice assertion, because the fused form re-introduces the oversized single write the kernel re-splits."
     }
   ]
 }
