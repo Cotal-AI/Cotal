@@ -76,9 +76,16 @@ import {
   type Connector, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager, PASTE_START, PASTE_END } from "../src/manager.js";
+import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+// The wire bytes, written out rather than imported from the code under test. Importing the
+// production constants made every expectation compare production against itself, and it made the
+// revert gate impossible: restoring manager.ts removes the exports, so the suite died at module
+// instantiation with a SyntaxError instead of failing an assertion by name.
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
