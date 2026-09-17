@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, w
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
-import { unsupportedTransport } from "./protocol.js";
+import { unattendedMs, unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
   command: string;
@@ -34,6 +34,42 @@ function custodianEntry(): string {
   return path;
 }
 
+/**
+ * The RUN this launch belongs to, as an argv marker a census can read straight out of
+ * `/proc/<pid>/cmdline` (#1648).
+ *
+ * Orphan custodians carried the worktree path only as their cwd, so finding them meant walking
+ * `/proc/*\/cwd`, which needs the right uid for every pid on the box and cannot say WHICH run left
+ * one behind. `COTAL_RUN` names the run when a caller sets it (a suite runner, a CI job); otherwise
+ * the launching process's own pid names it, which is still enough to tell one run's orphans from
+ * another's. It goes on ARGV, not only in the environment: `/proc/<pid>/cmdline` is world-readable
+ * while `/proc/<pid>/environ` is readable by the owner alone, so argv is the half a census can rely
+ * on. It carries no secret: the launch JSON (token, provider keys) still arrives on stdin.
+ */
+export const RUN_MARKER_FLAG = "--cotal-run";
+
+export function runMarker(env: NodeJS.ProcessEnv = process.env, pid: number = process.pid): string {
+  const named = env.COTAL_RUN?.trim();
+  // Newlines and spaces would split one marker into two argv-looking tokens in a census.
+  return named ? named.replace(/\s+/g, "_") : `pid-${pid}`;
+}
+
+/** The run marker carried by a live custodian, read back from its argv. Undefined when that pid is
+ *  not a custodian started with one. This is the read side of {@link runMarker}: the census a
+ *  reaper takes is this call over the pids it is considering. */
+export function runMarkerOf(pid: number): string | undefined {
+  let cmdline: string;
+  try {
+    cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+  } catch {
+    return undefined;
+  }
+  const argv = cmdline.split("\0").filter((s) => s.length > 0);
+  const at = argv.indexOf(RUN_MARKER_FLAG);
+  if (at < 0) return undefined;
+  return argv[at + 1];
+}
+
 function pidLive(pid: number | undefined): boolean {
   if (typeof pid !== "number" || pid <= 0) return false;
   try {
@@ -57,6 +93,7 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
   if (existsSync(recPath)) throw new Error(`seat ${id} already holds a custody record at ${recPath}; a custody id is used for one launch`);
   mkdirSync(dirname(recPath), { recursive: true, mode: 0o700 });
   const logPath = join(dirname(recPath), "custodian.log");
+  const run = runMarker();
   const payload = JSON.stringify({
     id,
     name: opts.name,
@@ -69,17 +106,27 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
     recordPath: recPath,
     logPath,
     confirm: opts.spec.confirm,
+    run,
+    // Resolved HERE, not in the custodian: the custodian's environment is scrubbed to `PATH` plus the
+    // run marker, so it cannot read an override the caller set.
+    unattendedMs: unattendedMs(),
   });
   // Payload carries spec.env (provider keys) and the capability token.
   // argv is world-readable via /proc/<pid>/cmdline (0444). Inherit a 0600
   // file as stdin so the JSON never appears on argv.
+  //
+  // The run marker is the one thing deliberately ON argv, because that is the point of it: a census
+  // must be able to attribute an orphan without the uid needed to read `/proc/<pid>/cwd`. It names a
+  // run, never a credential.
   const launchPath = join(dirname(recPath), "launch.json");
   writeFileSync(launchPath, payload, { mode: 0o600 });
   const launchFd = openSync(launchPath, "r");
-  const child = spawn(process.execPath, [custodianEntry()], {
+  const child = spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run], {
     detached: true,
     stdio: [launchFd, "ignore", "ignore"],
-    env: { PATH: process.env.PATH ?? "" },
+    // COTAL_RUN is re-exported so a custodian's own descendants stay attributable to the same run,
+    // and so `/proc/<pid>/environ` answers the same question argv does for a reader who can read it.
+    env: { PATH: process.env.PATH ?? "", COTAL_RUN: run },
   });
   closeSync(launchFd);
   try {

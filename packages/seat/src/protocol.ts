@@ -8,6 +8,30 @@ export const SCROLLBACK_ROWS = 1000;
 export const CONFIRM_TIMEOUT_MS = 15_000;
 export const GRACE_MS = 3_000;
 /**
+ * How long a custodian stays up with NO authenticated controller before it stops its child and
+ * exits. A custodian is meant to outlive the manager that adopted it only until a successor adopts
+ * or reaps it; one whose manager and broker are both gone has nobody left to answer and holds ~65 MB
+ * for nothing. Ten minutes is long enough for a manager restart to re-adopt a detached seat and for
+ * a successor's reap to arrive, and short enough that a host running review lanes does not
+ * accumulate orphans across a day (#1648).
+ *
+ * The child is stopped rather than abandoned: the custodian owns the only reader of that PTY, so an
+ * exit that left the child running would trade a 65 MB orphan for a blocked one nobody can address.
+ */
+export const UNATTENDED_MS = 10 * 60_000;
+
+/** {@link UNATTENDED_MS}, or the override in `COTAL_SEAT_UNATTENDED_MS` (milliseconds, > 0). A
+ *  malformed or non-positive value throws rather than silently restoring the default: a test or
+ *  operator that asks for a bound and gets the ten-minute one instead would wait on the wrong clock. */
+export function unattendedMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.COTAL_SEAT_UNATTENDED_MS;
+  if (raw === undefined || raw === "") return UNATTENDED_MS;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms <= 0)
+    throw new Error(`COTAL_SEAT_UNATTENDED_MS must be a positive number of milliseconds; got ${JSON.stringify(raw)}`);
+  return ms;
+}
+/**
  * Max JSON body the local protocol accepts in one frame.
  * A 1000-row, 120-col 16-color serialize is ~744 KiB, and JSON-escaping that
  * snapshot is 1_365_109 bytes. Truecolor fg+bg per cell is 4_876_998. 8 MiB

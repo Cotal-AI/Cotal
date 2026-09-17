@@ -1,0 +1,2 @@
+# A custodian whose manager is gone must exit on its own, and a census must be able to name its run.
+smoke:seat-orphan
