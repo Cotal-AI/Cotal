@@ -41,7 +41,16 @@ def body_safe(text: object) -> str:
 
 
 def format_injection(msg: dict) -> str:
-    """One mesh message as one injected line: neutralized attribution, then an indented body."""
+    """One mesh message as one injected line: neutralized attribution, then an indented body.
+
+    ``kind`` goes through the same neutralization as the rest, and it is worth saying why, because
+    it is NOT peer-controlled the way the others are. Every path that reaches this bridge derives it
+    from the subject the message arrived on rather than from the payload, so no live forgery runs
+    through it today. It is neutralized because this function's rule is positional and stated
+    absolutely: what is rendered outside the body cannot write the frame. A renderer whose guarantee
+    holds only while every upstream path keeps deriving one field correctly is a renderer whose
+    guarantee belongs to somebody else's code.
+    """
     kind = attribution_safe(msg.get("kind"))
     sender = attribution_safe(msg.get("fromName") or "peer")
     role = msg.get("fromRole")

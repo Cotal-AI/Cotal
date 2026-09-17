@@ -60,7 +60,7 @@ const assert = new Proxy(nodeAssert, {
 /** The count is a FLOOR. A derived tally proves the suite RAN its assertions, not that it still
  *  CONTAINS them: delete one and the tally quietly reads lower and the shard still passes. Raise it
  *  deliberately when you add a cell; a drop means one vanished. */
-const EXPECTED_CELLS = 24;
+const EXPECTED_CELLS = 33;
 
 if (process.platform === "win32") {
   console.log("✓ hermes injection framing skipped on Windows (the Hermes connector is Unix-only)");
@@ -140,6 +140,30 @@ assert.equal(columnZeroLines(subject.name_newline).length, 1,
   `a sender name cannot add an injected line: ${JSON.stringify(subject.name_newline)}`);
 assert.ok(columnZeroLines(control.name_newline).length > 1,
   "refuse control: the pre-fix rendering really did let a name add a line, or this grader is blind");
+
+// `kind` is rendered outside the body too, so the positional rule covers it. NOT A LIVE HOLE, and
+// the cell says so rather than implying one: every path that reaches this bridge derives `kind`
+// from the subject the message arrived on, never from the payload, so no peer sets it today. It is
+// pinned because the rule is stated absolutely, and a renderer whose guarantee holds only while
+// every upstream path keeps deriving one field correctly is a renderer whose guarantee is somebody
+// else's. This is why there is no refuse control on these two: the pre-fix rendering forged here
+// too, but nothing reaches it, so calling that a caught defect would overstate what was measured.
+for (const key of ["kind_bracket", "kind_newline"] as const) {
+  assert.equal(columnZeroLines(subject[key]).length, 1,
+    `a message kind cannot add an injected line, defence in depth (${key}): ${JSON.stringify(subject[key])}`);
+  assert.equal(openBrackets(subject[key]), 1,
+    `a message kind cannot open a second attribution, defence in depth (${key}): ${subject[key]}`);
+  assert.equal(closeBrackets(subject[key]), 1,
+    `a message kind cannot close the attribution, defence in depth (${key}): ${subject[key]}`);
+}
+
+// The frame must hold for a kind other than dm, since the adapter takes a different branch for one.
+assert.equal(columnZeroLines(subject.channel).length, 1,
+  `a channel message's body cannot add an injected line either: ${JSON.stringify(subject.channel)}`);
+assert.ok(subject.channel.startsWith("[channel from Ada] "),
+  `a channel message keeps its own attribution: ${subject.channel}`);
+assert.ok(columnZeroLines(control.channel).length > 1,
+  "refuse control: the pre-fix rendering forged on the channel branch too, or this grader is blind");
 
 console.log("hermes injected frame: body and attribution both neutralized; the pre-fix control forged on every case");
 if (cells !== EXPECTED_CELLS) {
