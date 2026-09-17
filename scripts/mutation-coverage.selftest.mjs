@@ -2,13 +2,24 @@
 /** Self-test for mutation-coverage's reachability, parser, and whole-corpus accounting. */
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
 import { INFRASTRUCTURE_MARKERS } from "./mutation-command-safety.mjs";
+// Namespace, for the same reason as mutation-proof.selftest.mjs: a tree without the #1625 cleanup
+// guard must still RUN this suite (it grades mutation-coverage, not the guard) rather than die at
+// link time on an export that tree does not have.
+import * as safety from "./mutation-command-safety.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const removeSelfTestDir = (dir, dirBase, created) =>
+  typeof safety.removeSelfTestDir === "function"
+    ? safety.removeSelfTestDir(dir, dirBase, created)
+    : rmSync(dir, { recursive: true, force: true });
+
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
-const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
+const base = tmpdir();
+// The cleanups below may only remove this exact path, and only beneath this base (#1625).
+const root = mkdtempSync(join(base, "mutation-coverage-selftest-"));
 let pass = 0;
 let failed = 0;
 // Normally the first failing cell stops the run, which keeps a failure legible. Grading the
@@ -20,7 +31,7 @@ const check = (name, condition, extra) => {
     failed++;
     console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
     if (CONTINUE) return;
-    rmSync(root, { recursive: true, force: true });
+    removeSelfTestDir(root, base, root);
     process.exit(1);
   }
   pass++;
@@ -1440,7 +1451,7 @@ try {
     report(result),
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestDir(root, base, root);
 }
 // `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
 // report-all mode, where the run continues, and the exit status follows it rather than the literal.
