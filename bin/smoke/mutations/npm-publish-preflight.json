@@ -202,6 +202,24 @@
       "cell": "a 503 on one exact-version read refuses the release as inconclusive"
     },
     {
+      "name": "the incomplete guard block is deleted whole",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"incomplete\") {\n    printPublishCensus(rows, log);\n    throw new Error(\"the packages that would publish are not the complete fixed group\");\n  }\n",
+      "replace": "",
+      "expectRed": "every verdict the shipped ladder produces has an arm beneath it that throws or returns",
+      "cell": "every verdict the shipped ladder produces has an arm beneath it that throws or returns, apart from the named all-absent fall-through, so an arm cannot be deleted while its verdict is still produced",
+      "note": "The verdict this arm guards has no reachable census input, so no fixture can drive it and this mutation is killed by a structural join rather than by a scenario. The deletion is reachable even though the state is not, and a verdict with no arm falls through into the credential stage and returns a publish-ready state."
+    },
+    {
+      "name": "the incomplete guard stops refusing and only prints the census",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    throw new Error(\"the packages that would publish are not the complete fixed group\");\n",
+      "replace": "",
+      "expectRed": "every verdict the shipped ladder produces has an arm beneath it that throws or returns",
+      "cell": "every verdict the shipped ladder produces has an arm beneath it that throws or returns, apart from the named all-absent fall-through, so an arm cannot be deleted while its verdict is still produced",
+      "note": "The quieter half of the same defect: the arm is still written and still matches by text, but it falls out of its own block, so the verdict continues into the credential stage exactly as a deleted arm would."
+    },
+    {
       "name": "an unreadable exact-version response is treated as absent",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    return `unknown:${response.status}`;\n",
