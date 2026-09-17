@@ -29,7 +29,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
-import { runWorkflow } from "../src/index.js";
+import { runWorkflow, journalOutcomeOf } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -185,6 +185,29 @@ let P = "";
   c("journal prints the activation", captured().includes("activation"), captured());
 }
 
+// ── 3b) the journal's outcome column names a settled checkpoint's disposition ────────────────
+// #1439: an expired checkpoint and an answered one both printed `ok`, because the render took the
+// settled STATUS, and the status of a settled checkpoint is `ok` either way. The disposition lives
+// in the settled RESULT (`resolved` / `expired`); the render now reads it there. A real expiry
+// needs the mediated timer writer a local start cannot arm (the command's own contract, above), so
+// these cells pin the pure renderer against every branch and the `answer` section proves the
+// resolved side end to end.
+{
+  const base = { v: 1, seq: 1, run: "r", scope: "s", kind: "checkpoint", name: "approve", occurrence: 0, inputHash: "h", state: "settled", status: "ok" } as JournalEntry;
+  c("an answered checkpoint renders resolved, not the settled status",
+    journalOutcomeOf({ ...base, result: { outcome: "resolved", at: 1 } }) === "resolved",
+    journalOutcomeOf({ ...base, result: { outcome: "resolved", at: 1 } }));
+  c("an expired checkpoint renders expired, not the settled status",
+    journalOutcomeOf({ ...base, result: { outcome: "expired", at: 1 } }) === "expired",
+    journalOutcomeOf({ ...base, result: { outcome: "expired", at: 1 } }));
+  c("a settled non-checkpoint result keeps the settled status",
+    journalOutcomeOf({ ...base, result: { value: 42 } }) === "ok",
+    journalOutcomeOf({ ...base, result: { value: 42 } }));
+  c("a failed step keeps its status and error code",
+    journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }) === "failed (L4000)",
+    journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }));
+}
+
 // ── 4) resume: a completed run replays to the same completion ────────────────────────────────
 {
   reset();
@@ -234,6 +257,14 @@ let P = "";
   // unconditionally HANGS on that defect instead of failing on it. A hang is not a red.
   const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
   c("and the held start completes", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
+  // The answered pause is settled by the time the run completed, so the render's outcome column
+  // carries the disposition the settle named — the other half of #1439, read back the way an
+  // operator reads it. Read AFTER completion: the driver appends the settle asynchronously, and a
+  // journal read taken straight off the answer command can still show the pause pending.
+  await wf(["journal", cid]);
+  c("the answered checkpoint renders resolved, not the settled status ok",
+    captured().includes("/checkpoint:approve#0  resolved"),
+    captured().split("\n").filter((l) => l.includes("checkpoint")).join(" | "));
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -446,7 +477,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 40;
+const DECLARED = 45;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

@@ -54,8 +54,8 @@
     {
       "name": "launcher aliases are ignored",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "        if (originals.includes(orig)) names.add(el.name.text);",
-      "replace": "        if (originals.includes(orig)) names.add(orig);",
+      "find": "        if (anyName || originals.includes(orig)) names.add(el.name.text);",
+      "replace": "        if (anyName || originals.includes(orig)) names.add(orig);",
       "expectRed": "a launcher imported under an alias still witnesses the script it runs",
       "cell": "a launcher imported under an alias still witnesses the script it runs"
     },
@@ -102,8 +102,8 @@
     {
       "name": "an unused join of a declared root is treated as a copy",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "      const from = node.arguments[0];\n      if (from && !ts.isSpreadElement(from) && !ts.isObjectLiteralExpression(from)\n        && exprCovers(evalPath, from, root)) hit = true;",
-      "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && exprCovers(evalPath, arg, root)) hit = true;\n      }",
+      "find": "      const from = node.arguments[0];\n      if (from && !ts.isSpreadElement(from) && coversPath(evalPath(from), root)) hit = true;",
+      "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && coversPath(evalPath(arg), root)) hit = true;\n      }",
       "expectRed": "a root appearing as a copy's DESTINATION is not a copy of that root",
       "cell": "a root appearing as a copy's DESTINATION is not a copy of that root"
     },
@@ -398,7 +398,7 @@
     {
       "name": "a worker entry handed over as a value is invisible",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "    if (ts.isPropertyAssignment(node) && node.name.getText() === \"entry\") {\n      record(distUrlText(node.initializer));\n    }",
+      "find": "    if (ts.isPropertyAssignment(node) && node.name.getText() === \"entry\" && handedToImportedCall(node, sf, imported)) {\n      record(distUrlText(node.initializer));\n    }",
       "replace": "",
       "expectRed": "a dist entry handed to a worker plus its build is gradable",
       "cell": "a dist entry handed to a worker plus its build is gradable"
