@@ -67,6 +67,7 @@ import {
   isCustodialRuntime,
   requireRuntimeAdopt,
   requireRuntimeReap,
+  RuntimeReapUnproven,
   type AgentHandle,
   type Runtime,
   type RuntimeMode,
@@ -7208,9 +7209,16 @@ export class Manager {
     } else {
       try {
         const evidence = await requireRuntimeReap(this.runtime, got);
-        disposal = `the spawned seat was reaped (${evidence.outcome === "absent" ? "already forgotten by the runtime" : evidence.detail})`;
+        disposal = `the spawned seat was reaped (${evidence.detail})`;
       } catch (e) {
-        disposal = `the spawned seat could NOT be reaped: ${(e as Error).message}`;
+        // Two unrelated failures used to share one sentence here, and the difference is the part the
+        // reader has to act on. A runtime that cannot reap at all left nothing behind to find. An
+        // UNPROVEN reap may have left a live seat under a reference no durable row names, which is
+        // the one case where somebody has to go looking, so it says so and names what to look for.
+        disposal =
+          e instanceof RuntimeReapUnproven
+            ? `the spawned seat was NOT proved gone and may still be running as ${e.reference.kind}:${e.reference.id} (${e.message})`
+            : `the spawned seat could NOT be reaped: ${(e as Error).message}`;
       }
     }
     throw new Error(
@@ -7235,8 +7243,11 @@ export class Manager {
         console.error(`static retirement ${a.name}: no custody reference reached this terminal, though runtime "${this.runtime.kind}" custodies its seats; any seat it launched is not addressable from here`);
       return;
     }
+    // An unproven reap throws from here rather than printing, so it propagates into
+    // driveStaticRetirement's catch, which records the failure and HOLDS the name. That is the whole
+    // point of refusing: the alias must not be freed while a seat nobody proved gone may still run.
     const evidence = await requireRuntimeReap(this.runtime, a.runtime);
-    console.error(`static retirement ${a.name}: orphan seat process ${evidence.outcome === "absent" ? `already forgotten by runtime "${a.runtime.kind}" (${a.runtime.id})` : evidence.detail}`);
+    console.error(`static retirement ${a.name}: orphan seat process ${evidence.detail}`);
   }
 
   /** The static F1 terminal for one departed incarnation (Unit B): delegates the gate/head CAS
