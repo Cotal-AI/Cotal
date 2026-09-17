@@ -88,6 +88,10 @@ writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport:
 const WT_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const TSX = join(WT_ROOT, "node_modules", ".bin", "tsx");
 const WRAPPER = join(import.meta.dirname, "signal-ownership-wrapper.fixture.ts");
+/** The REAL CLI entry. Two cells below borrow it as `process.argv[1]`, because that is what every
+ *  re-exec builds its child's argv from (#1629) — named once so the two uses cannot drift, and so
+ *  neither is a duplicated literal a future mutation anchor could match twice. */
+const CLI_ENTRY = join(WT_ROOT, "bin", "cotal.ts");
 
 let broker: ChildProcess | undefined, holder: ChildProcess | undefined;
 /** A manager the composition cell's `ensureControlPlane` really started, detached and unref'ed, so
@@ -172,7 +176,7 @@ try {
   // `selfArgv` now refuses an entry that is not the CLI's, so without this line the composition cell
   // below could only ever grade the refusal. Same idiom as `delivery-explicit-space.smoke.ts`.
   const realArgv1 = process.argv[1];
-  process.argv[1] = join(WT_ROOT, "bin", "cotal.ts");
+  process.argv[1] = CLI_ENTRY;
   const planeLines: string[] = [];
   const origErr2 = console.error;
   console.error = (...a: unknown[]) => { planeLines.push(a.join(" ")); };
@@ -329,12 +333,12 @@ try {
   // The POSITIVE half, so the guard cannot be satisfied by refusing everything — that would break
   // every real `cotal up`, which is the same outage one direction over.
   const savedArgv1 = process.argv[1];
-  process.argv[1] = join(WT_ROOT, "bin", "cotal.ts");
+  process.argv[1] = CLI_ENTRY;
   let realEntryArgv: string[] | undefined;
   try { realEntryArgv = selfArgv(); } catch { /* recorded by the check below */ }
   process.argv[1] = savedArgv1;
   check("CELL (#1629): the REAL CLI entry still builds a re-exec argv (the guard is not blanket)",
-    realEntryArgv?.at(-1) === join(WT_ROOT, "bin", "cotal.ts"), realEntryArgv);
+    realEntryArgv?.at(-1) === CLI_ENTRY, realEntryArgv);
 
   console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and
