@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { parseCiSuites, readCiSuiteFragments, suitesForShard, CI_SUITES_PATH } from "./ci-suites.mjs";
 import { readFileSync } from "node:fs";
 import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
+import { reapRunCustodians, reportCustodians } from "./reap-seat-custodians.mjs";
 import { neverRanBlock } from "./shard-never-ran.mjs";
 import { parseSentinel } from "./sentinel.mjs";
 
@@ -37,7 +38,15 @@ const all = [...legacy, ...fragments].map((s) => `pnpm ${s}`);
 if (all.length === 0) { console.error(`no suites in ${listPath}`); process.exit(2); }
 const mine = suitesForShard(legacy, fragments, shard, count).map((s) => `pnpm ${s}`);
 
+// NAME THIS RUN, and hand the name to every suite. `@cotal-ai/seat` stamps it onto each custodian's
+// argv, so the sweep after a suite can kill the custodians THIS run started and leave every other
+// lane's alone (#1648). Set before the first suite starts, because a suite that launches a seat
+// before the marker exists would leave one nothing here can claim.
+const RUN_MARKER = process.env.COTAL_RUN ?? `smoke-shard-${shard}-${count}-${process.pid}`;
+process.env.COTAL_RUN = RUN_MARKER;
+
 console.log(`smoke:ci shard ${shard}/${count} — ${mine.length} of ${all.length} smokes:\n  ${mine.join("\n  ")}\n`);
+console.log(`[seat-reaper] this run is named ${RUN_MARKER}; custodians it leaves behind are reaped by that marker\n`);
 
 // Clear the field BEFORE attributing anything. A developer box accumulates these, and a broker that
 // predates this run is not evidence against the suite that happens to run first: reaped, counted,
@@ -72,6 +81,7 @@ function runSuite(bin, args) {
 }
 
 const leaked = [];
+const leakedSeats = [];
 let failure;
 let totalCells = 0;
 
@@ -96,6 +106,12 @@ async function main() {
     const after = reapSmokeBrokers();
     reportReaped(cmd, after);
     if (after.reaped.length > 0) leaked.push({ cmd, count: after.reaped.length });
+    // Same rule for seat custodians: anything still carrying this run's marker outlived the suite
+    // that launched it, so it is that suite's leak and it is killed here rather than left to the
+    // custodian's own (much longer) unattended timer.
+    const seats = reapRunCustodians(RUN_MARKER);
+    reportCustodians(cmd, seats);
+    if (seats.reaped.length > 0) leakedSeats.push({ cmd, count: seats.reaped.length });
     if (r.status !== 0) {
       failAt(cmd, i, `exit ${r.status}`, r.status || 1);
       break;
@@ -118,6 +134,13 @@ async function main() {
   // suite is reported by its own status first: it already has a reason, and a leak on the way out is a
   // consequence of it, not an independent finding.
   if (failure !== undefined) process.exit(failure);
+  if (leakedSeats.length > 0) {
+    console.error(`\n✗ shard ${shard}/${count}: ${leakedSeats.length} suite(s) passed but LEAKED a seat custodian:`);
+    for (const { cmd, count: n } of leakedSeats) console.error(`    ${cmd} (${n})`);
+    console.error(`  A custodian that outlives the suite that launched it holds ~65 MB with no manager left to`);
+    console.error(`  answer, and they accumulate across runs. Each was killed; the suite must reap its own.`);
+    process.exit(1);
+  }
   if (leaked.length > 0) {
     console.error(`\n✗ shard ${shard}/${count}: ${leaked.length} suite(s) passed but LEAKED a broker they owned:`);
     for (const { cmd, count: n } of leaked) console.error(`    ${cmd} (${n})`);

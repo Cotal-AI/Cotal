@@ -23,3 +23,6 @@ product
 # linked install has a node_modules SYMLINK, which git will happily add, and a repository that
 # carries that link fails every CI install with ENOTDIR before any test runs.
 node_modules
+
+# Lane work product; it records absolute worktree paths.
+fix-report.json

@@ -37,10 +37,23 @@ owns exactly one `node-pty` object, its child relationship, its screen mirror, a
 observation. A manager worker connects to that custodian over a 0600 filesystem Unix socket
 authenticated by `SO_PEERCRED` uid match plus a per-seat capability token. Path possession is
 not enough. Child exit is pushed to every authenticated controller socket. After the child
-exits and the last client disconnects, the custodian closes the Unix server, unlinks the
+exits and the last authenticated client disconnects, the custodian closes the Unix server, unlinks the
 socket and record, and exits. An active child, or a still-connected observer of an exited
-child, keeps the process. A seat whose child has already exited at listen stays up briefly
-so the launcher can adopt it.
+child, keeps the process. A connected socket that never authenticated does not: it owns no
+session, no output subscription and no wait, so a settle owes it nothing. A seat whose child has
+already exited at listen stays up briefly so the launcher can adopt it.
+
+A custodian with no authenticated controller stops its child and exits after `UNATTENDED_MS`
+(ten minutes, overridable at launch with `COTAL_SEAT_UNATTENDED_MS`). The window restarts at each
+disconnect, so a manager that detaches and re-adopts keeps its seats; one that crashes, or a suite
+that returns without reaping, no longer leaves a custodian holding memory for a controller that
+will never come back. The bound is resolved by the launcher and carried in the launch payload,
+because the custodian's own environment is scrubbed.
+
+Every custodian carries `--cotal-run <marker>` on its argv and `COTAL_RUN` in its environment.
+`COTAL_RUN` names the run when a caller sets one, otherwise the launching pid does.
+`censusCustodians(run?)` reads that marker back out of `/proc/<pid>/cmdline`, which is
+world-readable, so a reaper can find and attribute orphans without walking `/proc/*/cwd`.
 
 Generation CAS, the crash journal, N/N-1 protocol compatibility, and manager-worker activation
 are later milestones. This package currently speaks a single implicit controller.
