@@ -76,7 +76,7 @@ import {
   type Connector, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
+import { Manager, PASTE_START, PASTE_END } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
@@ -296,9 +296,14 @@ try {
     check("the op is served and reports the seat + the byte count (text + the appended \\r)",
       r.reply.ok === true && (r.reply.data as { name: string; bytes: number }).name === typist.name
       && (r.reply.data as { bytes: number }).bytes === 6, r.reply);
-    const got = await sinkReaches(typist.name, 6);
-    check("THE CHILD RECEIVED EXACTLY `hello\\r`: the bytes left the manager, crossed the pty and arrived",
-      got.equals(Buffer.from("hello\r", "utf8")), { hex: got.toString("hex"), want: Buffer.from("hello\r", "utf8").toString("hex") });
+    // The child receives the text wrapped in bracketed-paste markers and then the return, which is
+    // what makes the return a keystroke rather than a pasted block's trailing newline (cell 10 and
+    // issue #1649). The markers are FRAMING: they are not counted into the receipt above, so the
+    // byte count still reports what the caller asked to deliver.
+    const want = Buffer.from(`${PASTE_START}hello${PASTE_END}\r`, "utf8");
+    const got = await sinkReaches(typist.name, want.length);
+    check("THE CHILD RECEIVED EXACTLY `hello` as a bracketed paste followed by a lone `\\r`: the bytes left the manager, crossed the pty and arrived",
+      got.equals(want), { hex: got.toString("hex"), want: want.toString("hex") });
   }
 
   console.log("\n3. enter:false types the text and presses nothing (mutation-proof cell `input-enter`)");
@@ -311,15 +316,16 @@ try {
     const r = await A.call("input", { text: "part", enter: false }, { actor: typist.id, lifecycleUid: typist.lifecycleUid });
     check("the op reports 4 bytes: the text alone, no carriage return counted",
       r.reply.ok === true && (r.reply.data as { bytes: number }).bytes === 4, r.reply);
-    const got = await sinkReaches(typist.name, before + 4);
+    const wantPart = Buffer.from(`${PASTE_START}part${PASTE_END}`, "utf8");
+    const got = await sinkReaches(typist.name, before + wantPart.length);
     const delta = got.subarray(before);
-    check("THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
-      delta.equals(Buffer.from("part", "utf8")), { hex: delta.toString("hex"), want: Buffer.from("part", "utf8").toString("hex") });
+    check("THE CHILD RECEIVED EXACTLY `part` as a bracketed paste with NO trailing carriage return",
+      delta.equals(wantPart), { hex: delta.toString("hex"), want: wantPart.toString("hex") });
     // Belt and braces on the whole conversation: a mutation that appended `\r` unconditionally
     // would be caught by the delta above, and one that appended it LATE (say on the next write)
     // would not. The full transcript pins the exact byte sequence the child has ever seen.
-    check("...and the child's WHOLE transcript is `hello\\r` then `part`, in that order, nothing else",
-      got.equals(Buffer.from("hello\rpart", "utf8")), { hex: got.toString("hex") });
+    check("...and the child's WHOLE transcript is the `hello` paste + `\\r`, then the `part` paste, in that order, nothing else",
+      got.equals(Buffer.from(`${PASTE_START}hello${PASTE_END}\r${PASTE_START}part${PASTE_END}`, "utf8")), { hex: got.toString("hex") });
   }
 
   console.log("\n4. a caller that did NOT spawn the seat is refused (mutation-proof cell `input-authz`)");
@@ -355,9 +361,10 @@ try {
     });
     check("ANY-mode input is served for an agent the caller did not spawn (admin reach, the attach/despawn row shape)",
       r.reply.ok === true && (r.reply.data as { bytes: number }).bytes === 12, r.reply);
-    const got = await sinkReaches(opseat.name, 12);
-    check("THE CHILD RECEIVED EXACTLY `/model opus\\r`: a leading `/` survives the whole path unparsed",
-      got.equals(Buffer.from("/model opus\r", "utf8")), { hex: got.toString("hex") });
+    const wantOp = Buffer.from(`${PASTE_START}/model opus${PASTE_END}\r`, "utf8");
+    const got = await sinkReaches(opseat.name, wantOp.length);
+    check("THE CHILD RECEIVED EXACTLY `/model opus` as a bracketed paste + `\\r`: a leading `/` survives the whole path unparsed",
+      got.equals(wantOp), { hex: got.toString("hex"), want: wantOp.toString("hex") });
     await opNc.drain().catch(() => opNc.close());
   }
 
@@ -428,9 +435,10 @@ try {
     const out = strip(run.out);
     check("`cotal input --name <seat> --text \"/compact\"` exits 0", run.status === 0, { status: run.status, tail: out.slice(-400) });
     check("...and reports what it delivered", /✓ sent 9 bytes to /.test(out) && out.includes(cliseat.name), out.slice(-400));
-    const got = await sinkReaches(cliseat.name, 9);
-    check("THE SEAT'S HARNESS RECEIVED EXACTLY `/compact\\r`: a slash command typed in a UI reaches the child verbatim",
-      got.equals(Buffer.from("/compact\r", "utf8")), { hex: got.toString("hex"), want: Buffer.from("/compact\r", "utf8").toString("hex") });
+    const wantCompact = Buffer.from(`${PASTE_START}/compact${PASTE_END}\r`, "utf8");
+    const got = await sinkReaches(cliseat.name, wantCompact.length);
+    check("THE SEAT'S HARNESS RECEIVED EXACTLY `/compact` as a bracketed paste + `\\r`: a slash command typed in a UI reaches the child verbatim",
+      got.equals(wantCompact), { hex: got.toString("hex"), want: wantCompact.toString("hex") });
 
     // The receipt is derived from the runtime acknowledgement, not from `data`. A dropped write that
     // resolves without an accepted-byte count is the mutation control from issue #1333: before the
@@ -471,9 +479,10 @@ try {
     mustHaveRun(run2, "`cotal input --no-enter`");
     const out2 = strip(run2.out);
     check("`--no-enter` exits 0 and reports only the text's bytes", run2.status === 0 && /✓ sent 12 bytes to /.test(out2), { status: run2.status, tail: out2.slice(-400) });
-    const got2 = await sinkReaches(cliseat.name, before + 12);
+    const wantFlag = Buffer.from(`${PASTE_START}--not-a-flag${PASTE_END}`, "utf8");
+    const got2 = await sinkReaches(cliseat.name, before + wantFlag.length);
     check("...and the child received EXACTLY `--not-a-flag`, unparsed and with no carriage return",
-      got2.subarray(before).equals(Buffer.from("--not-a-flag", "utf8")), { hex: got2.subarray(before).toString("hex") });
+      got2.subarray(before).equals(wantFlag), { hex: got2.subarray(before).toString("hex"), want: wantFlag.toString("hex") });
 
     // THE SPACE FORM OF A DASH-LEADING VALUE MUST FAIL LOUD, and this is graded rather than
     // reasoned because the alternative outcomes are both bad and both plausible: `parseArgs` could
@@ -538,22 +547,28 @@ try {
   console.log("\n10. THE SUBMIT KEY IS ITS OWN KEYSTROKE (issue #1649, mutation-proof cell `input-submit`)");
   {
     // WHAT BROKE, AND WHY EVERY CELL ABOVE STAYED GREEN THROUGH IT. `input` used to hand the runtime
-    // ONE `${text}\r`. The BYTES are identical either way, so the sink cannot see the difference: it
-    // is a concatenation and `submit-me` + `\r` and `submit-me\r` are the same file. What differs is
-    // the shape of the writes, and a TUI harness reads keystrokes: with the return fused onto the
-    // tail of the text it is the text's last character rather than the submit key, so the line sits
-    // in the composer and the NEXT call's return submits the PREVIOUS call's text. Every delivery
-    // runs one call behind while the op still reports the full byte count and the seat still starts
-    // a turn, so every observable signal says "delivered".
+    // ONE `${text}\r`. A TUI harness reads keystrokes, so with the return fused onto the tail of the
+    // text it is the text's last character rather than the submit key: the line sits in the composer
+    // and the NEXT call's return submits the PREVIOUS call's text. Every delivery runs one call
+    // behind while the op still reports the full byte count, so every observable signal says
+    // "delivered".
     //
-    // Measured on a REAL jcode seat driven through a real pty before this fix: a 1986-byte text
-    // written fused was never submitted at all, and the same text written as text-then-return was
-    // answered on the call that sent it.
+    // SEPARATING THE RETURN IS NOT ENOUGH, which is what a second round of live measurement showed.
+    // A TUI classifies a fast burst of input as a PASTE and consumes the newline trailing it (Jcode
+    // spells this `paste_guard::consume_paste_trailing_enter`), so any text long enough to need more
+    // than one write was STILL one call behind with a lone return. Measured on a real jcode seat
+    // through a real pty, 2048-char slices with a yield before the return: 120 and 700 bytes were
+    // submitted on their own call; 2500 and 3100 bytes were not, each appearing only when the NEXT
+    // call's return arrived. The text is therefore delivered as a BRACKETED PASTE
+    // (`ESC[200~ … ESC[201~`), which states the block's boundary so the following return is
+    // unambiguously a keystroke. Bracketed, 120 / 2600 / 5912 bytes each submitted on their own call.
     //
     // GRADED AT THE RUNTIME SEAM, on a live managed seat, by recording what the handler hands the
     // pty. That is the manager's half of the contract and the only half it owns: how promptly a
     // given harness then redraws is the harness's, and a cell that waited on a child's read
-    // boundaries would be grading the child's scheduler and would flake in CI.
+    // boundaries would be grading the child's scheduler and would flake in CI. That the SEAT then
+    // submits on the call that sent it is graded end to end, on a real jcode seat, by
+    // `implementations/manager/smoke/acceptance-1649-e2e.mjs`.
     const shapeseat = await spawnLive(A.call, { name: "typist", agent: "input-echo", cwd: repoRoot });
     const managed = M.agents.get(shapeseat.name);
     if (!managed?.handle.write) throw new Error(`FIXTURE FAILURE: ${shapeseat.name} has no writable managed handle`);
@@ -566,41 +581,44 @@ try {
     try {
       managed.handle.write = record;
       const r = await A.call("input", { text: "submit-me" }, { actor: shapeseat.id, lifecycleUid: shapeseat.lifecycleUid });
-      check("the op still reports the text + the appended \\r as ONE byte count (the receipt is unchanged)",
+      check("the op still reports the text + the appended \\r as ONE byte count, with the paste markers NOT counted (framing, not content)",
         r.reply.ok === true && (r.reply.data as { bytes: number }).bytes === 10, r.reply);
-      const got = await sinkReaches(shapeseat.name, 10);
-      check("the child still received EXACTLY `submit-me\\r`: this fix changes the WRITES, never the bytes",
-        got.equals(Buffer.from("submit-me\r", "utf8")), { hex: got.toString("hex") });
-      check("THE RETURN WAS WRITTEN ALONE, not fused onto the text: the harness is handed a submit key",
-        writes.length === 2 && writes[0] === "submit-me" && writes[1] === "\r", { writes });
+      const wantShape = Buffer.from(`${PASTE_START}submit-me${PASTE_END}\r`, "utf8");
+      const got = await sinkReaches(shapeseat.name, wantShape.length);
+      check("the child received the text wrapped in paste markers with the return after the close marker",
+        got.equals(wantShape), { hex: got.toString("hex"), want: wantShape.toString("hex") });
+      check("THE RETURN WAS WRITTEN ALONE, AFTER the paste close: the harness is handed a submit key, not a pasted newline",
+        writes.length === 4 && writes[0] === PASTE_START && writes[1] === "submit-me"
+        && writes[2] === PASTE_END && writes[3] === "\r", { writes });
 
-      // THE SIZE ARM. A single write past the pty's 4096-byte input buffer is re-split by the KERNEL
-      // at its own boundary, leaving a tail still queued when the return goes out — so the return is
-      // delivered coalesced onto that tail and is again not a keystroke of its own, however the
-      // handler meant it. The text is therefore written in slices UNDER that buffer. Measured: a
-      // 5912-byte order delivered as one write reached the child as reads of 4095 and 1818 bytes,
-      // the second ending in the return.
+      // THE SIZE ARM, which is where a lone return alone was measured to fail. A text past one slice
+      // is several writes, so the burst looks like a paste to the harness; the markers are what stop
+      // its trailing-newline rule from eating the submit key. A single write past the pty's
+      // 4096-byte input buffer is also re-split by the KERNEL at its own boundary, so the slices stay
+      // under it.
       writes.length = 0;
       const big = "x".repeat(5912);
       const beforeBig = sinkBytes(shapeseat.name).length;
       const rBig = await A.call("input", { text: big }, { actor: shapeseat.id, lifecycleUid: shapeseat.lifecycleUid });
-      check("a 5912-byte order is accepted and acknowledged in full (5913 with the return)",
+      check("a 5912-byte order is accepted and acknowledged in full (5913 with the return, markers uncounted)",
         rBig.reply.ok === true && (rBig.reply.data as { bytes: number }).bytes === 5913, rBig.reply);
-      const gotBig = await sinkReaches(shapeseat.name, beforeBig + 5913);
-      check("...and every byte of it reached the child, in order, with the return last",
-        gotBig.subarray(beforeBig).equals(Buffer.from(`${big}\r`, "utf8")), { got: gotBig.length - beforeBig, want: 5913 });
+      const wantBig = Buffer.from(`${PASTE_START}${big}${PASTE_END}\r`, "utf8");
+      const gotBig = await sinkReaches(shapeseat.name, beforeBig + wantBig.length);
+      check("...and every byte of it reached the child, in order, inside the paste with the return last",
+        gotBig.subarray(beforeBig).equals(wantBig), { got: gotBig.length - beforeBig, want: wantBig.length });
       check("...and NO single write exceeded the pty's 4096-byte input buffer, so no write is re-split by the kernel",
         writes.length > 1 && writes.every((w) => Buffer.byteLength(w, "utf8") <= 4096), { sizes: writes.map((w) => Buffer.byteLength(w, "utf8")) });
-      check("...and ITS return was written alone too, so a large order submits on the call that sent it",
-        writes.at(-1) === "\r" && !writes.some((w) => w.length > 1 && w.endsWith("\r")),
-        { last: JSON.stringify(writes.at(-1)), fusedTails: writes.filter((w) => w.length > 1 && w.endsWith("\r")).map((w) => w.length) });
+      check("...and it was delivered as a CLOSED paste block whose return is the last write, so a large order submits on the call that sent it",
+        writes[0] === PASTE_START && writes.at(-2) === PASTE_END && writes.at(-1) === "\r"
+        && !writes.some((w) => w.length > 1 && w.endsWith("\r")),
+        { first: JSON.stringify(writes[0]), last2: writes.slice(-2).map((w) => JSON.stringify(w)) });
 
       // The control that stops every assertion above from being satisfied by "always write a lone
-      // return": `enter:false` must still press nothing at all.
+      // return": `enter:false` must still press nothing at all, while the paste is still closed.
       writes.length = 0;
       await A.call("input", { text: "staged", enter: false }, { actor: shapeseat.id, lifecycleUid: shapeseat.lifecycleUid });
-      check("...while `enter:false` writes the text and NO return at all",
-        writes.length === 1 && writes[0] === "staged", { writes });
+      check("...while `enter:false` writes the text as a CLOSED paste and NO return at all",
+        writes.length === 3 && writes[0] === PASTE_START && writes[1] === "staged" && writes[2] === PASTE_END, { writes });
     } finally {
       managed.handle.write = realWrite;
     }
