@@ -36,6 +36,17 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
+/**
+ * How many cells this suite must run. A COUNT, because the exit status cannot express "it got there
+ * and quietly did less": a block that stops executing takes its own assertions with it, so every
+ * remaining cell passes, `failed=0`, and the suite exits 0 having silently graded nothing. The
+ * shard runner only refuses a sentinel of ZERO cells, so a partial run clears it too.
+ *
+ * Measured rather than assumed: wrapping the #1629 cells in a skip path drops this suite 19 -> 16
+ * and everything still reports green. Update this number deliberately when adding or removing a
+ * cell — that edit is the point, since it is what makes a silent drop impossible to miss.
+ */
+const EXPECTED_CELLS = 19;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The pid a detached component recorded under `<root>/.cotal`, by record PREFIX rather than an
@@ -339,6 +350,12 @@ try {
   process.argv[1] = savedArgv1;
   check("CELL (#1629): the REAL CLI entry still builds a re-exec argv (the guard is not blanket)",
     realEntryArgv?.at(-1) === CLI_ENTRY, realEntryArgv);
+
+  // EVERY CELL RAN. Last, so it sees the full tally, and counted as a cell itself so the number it
+  // checks includes it. A silently skipped block leaves `failed=0` and a green exit; only an
+  // enumerated count catches that, and it is the one guard a passing run cannot supply for itself.
+  check(`CELL: every cell ran (${EXPECTED_CELLS} expected; silently skipped cells must not read as green)`,
+    pass + fail + 1 === EXPECTED_CELLS, { ran: pass + fail + 1, expected: EXPECTED_CELLS });
 
   console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and
