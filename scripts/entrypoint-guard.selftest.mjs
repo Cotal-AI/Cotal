@@ -45,9 +45,10 @@ const ROOT = dirname(SCRIPTS);
  * an argv that reaches the network or the working tree would make this suite a side effect.
  *
  * `status` and `stderr` are the witness that `main()` ran: the exit code of that refusal and one
- * whole line of the diagnostic it prints. Neither is enough alone. A skipped `main()` exits 0, but
+ * whole line of the diagnostic it prints. Neither is enough alone. A guard that runs `main()` but
+ * drops its return value prints the line and exits 0, which only the code catches.
  * `live-job-conclusion.mjs` refuses with 1, which is also what Node exits with when the script
- * cannot even load; only the line tells those apart.
+ * cannot load at all, which only the line catches.
  */
 const PROBES = [
   {

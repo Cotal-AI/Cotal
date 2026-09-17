@@ -61,6 +61,14 @@
     "declaration is valid anywhere at module top level). `pr-head-gate.mjs` and",
     "`verify-publish-closure.mjs` compared through `resolve`, which both still import.",
     "",
+    "Mutations sixteen and seventeen grade the two halves of the witness apart, since every mutation",
+    "above breaks both at once. Sixteen points the helper import of `live-job-conclusion.mjs` at a",
+    "file that does not exist: the script cannot load, exits 1 by both paths with the same stack, and",
+    "so matches its refusal's exit code and agrees across paths. Only the stderr line catches it, and",
+    "it is the same failure `--preserve-symlinks-main` produces (see COVERAGE BOUNDARY). Seventeen",
+    "keeps `check-attribution.mjs` running main() but drops its return value, so both paths print the",
+    "usage line and exit 0. Only the exit code catches it.",
+    "",
     "NOT ASSERTED, and recorded rather than implied: `upgrade-section-gate.mjs` keeps its own inline",
     "copy of the same realpath comparison and is exempted from the census by name. It already has a",
     "cell and a registered mutant of its own (`scripts/mutations/upgrade-section-gate.json`, `a",
@@ -212,6 +220,22 @@
       "replace": "if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {",
       "cell": "verify-publish-closure.mjs runs main() by its real path and through a symlink, and answers the same",
       "expectRed": "verify-publish-closure.mjs runs main() by its real path and through a symlink, and answers the same"
+    },
+    {
+      "name": "live-job-conclusion.mjs cannot load its entry helper and exits 1 by both paths, the code its refusal uses",
+      "file": "scripts/live-job-conclusion.mjs",
+      "find": "import { isMainEntry } from \"./main-entry.mjs\";",
+      "replace": "import { isMainEntry } from \"./main-entry-missing.mjs\";",
+      "cell": "live-job-conclusion.mjs runs main() by its real path and through a symlink, and answers the same",
+      "expectRed": "live-job-conclusion.mjs runs main() by its real path and through a symlink, and answers the same"
+    },
+    {
+      "name": "check-attribution.mjs runs main() but drops its exit code, by both paths",
+      "file": "scripts/check-attribution.mjs",
+      "find": "  process.exit(main(process.argv));",
+      "replace": "  main(process.argv);",
+      "cell": "check-attribution.mjs runs main() by its real path and through a symlink, and answers the same",
+      "expectRed": "check-attribution.mjs runs main() by its real path and through a symlink, and answers the same"
     }
   ]
 }
