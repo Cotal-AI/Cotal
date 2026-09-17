@@ -50,8 +50,8 @@
       "file": "scripts/mutation-cell-witness.mjs",
       "find": "  if (fn === undefined) { witnesses.push({ kind: \"unresolved-reporter\", node: site }); return witnesses; }",
       "replace": "  if (fn === undefined) return witnesses;",
-      "expectRed": "a self-fed cell reported through a helper that computes the verdict is refused too",
-      "cell": "a self-fed cell reported through a helper that computes the verdict is refused too"
+      "expectRed": "and so is one whose observation happens INSIDE the reporter helper, not at the call site",
+      "cell": "and so is one whose observation happens INSIDE the reporter helper, not at the call site"
     },
     {
       "name": "every ambient global counts as an observation, so nothing is ever self-fed",
@@ -66,16 +66,16 @@
       "file": "scripts/mutation-cell-witness.mjs",
       "find": "      if (binding === undefined) {\n        if (!PURE_GLOBALS.has(node.text)) witnesses.push({ kind: \"global\", node });\n        return;\n      }",
       "replace": "      if (binding === undefined) return;",
-      "expectRed": "the SAME mutation naming the cell that LAUNCHES the guarded source is accepted",
-      "cell": "the SAME mutation naming the cell that LAUNCHES the guarded source is accepted"
+      "expectRed": "and so is one reaching it through an ambient GLOBAL and no import at all",
+      "cell": "and so is one reaching it through an ambient GLOBAL and no import at all"
     },
     {
       "name": "an import stops being an observation, so a cell reaching another module is refused",
       "file": "scripts/mutation-cell-witness.mjs",
       "find": "      if (binding.kind === \"import\") { witnesses.push({ kind: \"import\", spec: binding.spec, node }); return; }",
       "replace": "      if (binding.kind === \"import\") return;",
-      "expectRed": "and so is one naming a cell that READS the guarded source, so the accept is not the launch alone",
-      "cell": "and so is one naming a cell that READS the guarded source, so the accept is not the launch alone"
+      "expectRed": "the SAME mutation naming a cell that reaches the world through an IMPORT is accepted",
+      "cell": "the SAME mutation naming a cell that reaches the world through an IMPORT is accepted"
     }
   ]
 }
