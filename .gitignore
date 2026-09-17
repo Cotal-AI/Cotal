@@ -19,3 +19,7 @@ extensions/connector-core/src/.egress-guard-arm-*.ts
 examples/02-self-improving-console/harness/.*.log
 examples/04-frontier-faces/assets/
 product
+# Without the bare form, `node_modules/` matches only a directory. A worktree that borrows a
+# linked install has a node_modules SYMLINK, which git will happily add, and a repository that
+# carries that link fails every CI install with ENOTDIR before any test runs.
+node_modules

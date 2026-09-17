@@ -5495,9 +5495,9 @@ export class CotalEndpoint extends EventEmitter {
    *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
    *
    *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
-   *  empty bucket under it means the bucket was wiped since its last heartbeat (the netcup
+   *  empty bucket under it means the bucket was wiped since its last heartbeat (the stream
    *  recreation), and the same wipe took every peer's record: their absence says the bucket is
-   *  new, not that they left. rev-1421-gpt reproduced the previous behaviour at default timing:
+   *  new, not that they left. a reviewer reproduced the previous behaviour at default timing:
    *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
    *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
    *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
@@ -5655,7 +5655,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
       this.emitPresenceViewIfChanged();
       // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
-      // the transport is up and the watch's own consumer is what died. Measured on netcup
+      // the transport is up and the watch's own consumer is what died. Measured on a live deployment
       // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
       // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
       // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client

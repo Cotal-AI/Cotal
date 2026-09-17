@@ -21,7 +21,7 @@
  * Either one alone is satisfiable by a band-aid. A fix that swallows every timeout passes the first
  * and fails the second; a fix that changes nothing passes the second and fails the first.
  *
- * THE WITNESS IS NOT A NO-OP. @mgr-i1411 found a cell on another lane whose action early-returned
+ * THE WITNESS IS NOT A NO-OP. a reviewer found a cell on another lane whose action early-returned
  * on a flag its own fixture set, so it would have gone green against a system that did nothing at
  * all. The witness here is the resolution of the `sleep` promise itself under a loop that was
  * measurably blocked: the cell fails if the sleep rejects, AND fails if the block it depends on did
@@ -251,7 +251,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // ── 1a) the starvation the cell above depends on was REAL, measured by the same observer ─────
 //
 // Without this, cell 1 would go green on a host that was never blocked at all, the exact vacuity
-// class @mgr-i1411 reported on #1517. It reads the observer the implementation reads.
+// class reported on #1517. It reads the observer the implementation reads.
 {
   const lag = loopLagObserver(50);
   const mark = lag.mark();

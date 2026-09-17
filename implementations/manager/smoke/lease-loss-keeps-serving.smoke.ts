@@ -6,7 +6,7 @@
  *
  * THE DEFECT. `renewLease` fail-closed: one tick past the lease TTL with no answer from the broker, or
  * on a key read back gone or held by another pid, it stopped serving, detached or stopped every seat it
- * held, and called `process.exit(1)`. On the live space "netcup" (2026-08-27) the broker denied the
+ * held, and called `process.exit(1)`. On a live space (2026-08-27) the broker denied the
  * manager's KV publishes for a few seconds; the renew failed, the re-read failed, and ten seconds later
  * the manager was gone, and with it every pty seat it held (a pty child dies with its parent). Nothing
  * restarted it. The outage lasted until an operator noticed, ten hours later.
