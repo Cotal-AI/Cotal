@@ -863,6 +863,84 @@ r = runTool([
 ]);
 check("reclaims stale proof lock when recorded PID is dead and runs successfully",
   r.status === 0 && stripAnsi(r.stdout).includes("KILLED"), r.stdout.slice(-300));
+// A killed proof must leave the tree byte-identical (#1607). Gated on an OBSERVED
+// applied mutation, not on a fixed delay: a timer that lands between fixtures
+// reads clean and would pass as a clean bill of health.
+const slow = join(root, "slow-suite.mjs");
+writeFileSync(slow, "console.log('  ✓ started'); setTimeout(() => { console.log('  ✓ done'); }, 4_000);\n");
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm slow-suite", { cwd: root });
+const child = spawn(process.execPath, [TOOL,
+  "--command", `${process.execPath} slow-suite.mjs`,
+  "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
+  "--expect-red", "oversized values are refused",
+], { cwd: root, stdio: "ignore" });
+let observedApplied = false;
+for (let i = 0; i < 600 && !observedApplied; i++) {
+  observedApplied = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() !== "";
+  if (!observedApplied) await new Promise((done) => setTimeout(done, 50));
+}
+check("the kill lands while a mutation is really applied (the control that would otherwise lie)", observedApplied);
+child.kill("SIGTERM");
+let killedCode, killedSignal;
+await new Promise((done) =>
+  child.once("exit", (code, signal) => {
+    killedCode = code;
+    killedSignal = signal;
+    done(null);
+  }),
+);
+await new Promise((done) => setTimeout(done, 250));
+check("a killed proof leaves the tree byte-identical to its pre-run state",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "",
+  execSync("git status --porcelain", { cwd: root, encoding: "utf8" }));
+check("...and the exit status still reports the signal, not a tidy 0",
+  killedSignal === "SIGTERM" && killedCode === null,
+  `code=${killedCode} signal=${killedSignal}`);
+
+// Breadcrumb recovery survives SIGKILL (#1607): when killed with uncatchable SIGKILL,
+// the next mutation-proof invocation recovers from the breadcrumb before proceeding.
+{
+  const hungSuite = join(root, "hung-suite.mjs");
+  writeFileSync(hungSuite, [
+    "import { admit } from './src/impl.js';",
+    "if (admit(50) === false) {",
+    "  console.log('  ✓ clean baseline');",
+    "  process.exit(0);",
+    "} else {",
+    "  console.log('  ✓ mutated hanging');",
+    "  setInterval(() => {}, 1000);",
+    "}",
+    "",
+  ].join("\n"));
+  execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm hung-suite", { cwd: root });
+
+  const hardChild = spawn(process.execPath, [TOOL,
+    "--command", `${process.execPath} hung-suite.mjs`,
+    "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
+    "--expect-red", "oversized values are refused",
+  ], { cwd: root, stdio: "ignore" });
+
+  let hardApplied = false;
+  for (let i = 0; i < 600 && !hardApplied; i++) {
+    hardApplied = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() !== "";
+    if (!hardApplied) await new Promise((done) => setTimeout(done, 50));
+  }
+  check("hard kill lands while mutation is applied", hardApplied);
+  hardChild.kill("SIGKILL");
+  await new Promise((done) => setTimeout(done, 200));
+
+  // The mutant is left on disk right after SIGKILL
+  check("mutant was left on disk after SIGKILL before recovery",
+    readFileSync(join(root, "src/impl.js"), "utf8").includes("if (false)"));
+
+  // Next run recovers the breadcrumb automatically
+  r = runTool(["--recover"]);
+  check("next invocation recovers from breadcrumb",
+    r.status === 0 && stripAnsi(r.stdout).includes("restored original contents"),
+    r.stdout.slice(-300));
+  check("...and the working tree is clean again after breadcrumb recovery",
+    execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "");
+}
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);
