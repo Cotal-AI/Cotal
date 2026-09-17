@@ -45,10 +45,30 @@
  * The missing-history control proves that: a well-formed SHA that is not in the checkout, with
  * fetch disabled, must throw `missing-history:` rather than classify anything.
  *
+ * THE PINNED FLOOR IS NOT THE PREDECESSOR, WHICH IS WHY THE RESOLVER EXISTS. `PREDECESSOR` is a
+ * fixed historical sha. Grading against it alone answers "is this at least as strong as
+ * `ee73e33c1`", which is a floor, not the invariant in the title: a guard that becomes stricter
+ * than that floor and is then weakened back toward it reports WEAKER 0 and passes. Measured on
+ * this head, the predicate HEAD actually replaces is `7c221ac71`, a commit the pinned pairs never
+ * load. So {@link resolveBaseFor} names, for the code under test, the newest ancestor whose
+ * `agui.ts` differs from it AND still carries a classifier role, and that pair is graded too.
+ * Uncommitted work is included: the content under test for HEAD is the working-tree file, so the
+ * base of a change that is not yet a commit is HEAD itself. `COTAL_EGRESS_DIFF_BASE` adds a pair
+ * against an explicit base (a PR base sha in CI); it is an EXTRA pair, never a replacement, so
+ * setting it cannot make the instrument ask less than it asks by default.
+ *
+ * A RESOLVED PAIR CANNOT PIN ROW IDENTITIES, so it does not pretend to. Its base moves with
+ * history, and a list of expected answers keyed to a moving ref grades nothing. It asserts the
+ * one thing that holds for every base: WEAKER is zero. STRICTER is printed rather than budgeted.
+ * DIVERGENT rows are graded into the same tally there instead of being pinned, so a weakening
+ * cannot hide in the declared-divergence list. The resolver's own sensitivity is a control:
+ * resolving the base of `1698fe253` and grading that pair must report at least one WEAKER row,
+ * or the resolved path is a zero-only detector and says so.
+ *
  * Run: pnpm smoke:egress-guard-differential
  */
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -211,6 +231,12 @@ export const APPENDED_AXES = [
     rationale:
       "Production hands the guard a WAL-frozen body. Object.freeze is a stand-in for that shape; neither prior corpus froze a body. Shallow freeze cannot grow properties; it is not the WAL encoder.",
   },
+  {
+    id: "closed-schema",
+    origin: "NOVEL",
+    rationale:
+      "#1432 added `extra-property`: a key outside the known frame set, or outside the per-type event set, withholds. The corpus reached that branch ONLY through CUSTOM, whose extras are a side effect of how eventOf builds it, so the branch had no row that names it. A frame-level extra and an event-level extra on an otherwise valid frame are the rows; both are clean at every predecessor, so they are exactly the shape a pinned historical floor cannot grade and a resolved base can.",
+  },
 ] as const;
 
 export const AXES = [...ORIGINAL_AXES, ...APPENDED_AXES];
@@ -218,7 +244,23 @@ export type AxisId = (typeof AXES)[number]["id"];
 
 type Raw =
   | { shape: "boolean"; value: "ALLOW" | "REFUSE" | "THROW"; detail?: string }
-  | { shape: "three-way"; value: "clean" | "forbidden-kind" | "unreadable" | "THROW"; detail?: string };
+  | {
+      shape: "three-way";
+      value: "clean" | "forbidden-kind" | "unreadable" | "extra-property" | "THROW" | "NON-VERDICT";
+      detail?: string;
+    };
+
+/**
+ * The verdicts a three-way arm may answer. `extra-property` joined after #1432, which is the
+ * point: the vocabulary GROWS, and the loader used to fold anything it did not recognise into
+ * `THROW`. That fold is the instrument carrying the defect it grades. A new verdict that MEANS
+ * publish would have been recorded as a throw, read as withheld, and the weakening it represents
+ * would have compared equal. So an unrecognised answer is `NON-VERDICT`: still withheld for the
+ * comparison, because guessing publish would be worse, and counted so a named cell reds on it
+ * rather than a reader having to notice a word in a log line.
+ */
+const VERDICTS = new Set(["clean", "forbidden-kind", "unreadable", "extra-property"]);
+let nonVerdicts: string[] = [];
 
 /** Explicit publish mapping. Three-way is never folded into a boolean. */
 const publishes = (raw: Raw): boolean => {
@@ -248,10 +290,11 @@ const bindRole = (mod: Record<string, unknown>, ref: string): Arm => {
       classify: (body) => {
         try {
           const v = fn(body);
-          if (v === "clean" || v === "forbidden-kind" || v === "unreadable") {
-            return { shape: "three-way", value: v };
+          if (typeof v === "string" && VERDICTS.has(v)) {
+            return { shape: "three-way", value: v as "clean" | "forbidden-kind" | "unreadable" | "extra-property" };
           }
-          return { shape: "three-way", value: "THROW", detail: `non-verdict ${JSON.stringify(v)}` };
+          nonVerdicts.push(`${ref}: ${JSON.stringify(v)}`);
+          return { shape: "three-way", value: "NON-VERDICT", detail: JSON.stringify(v)?.slice(0, 60) };
         } catch (e) {
           return { shape: "three-way", value: "THROW", detail: (e as Error).message?.slice(0, 80) };
         }
@@ -319,7 +362,94 @@ const ensureCommit = (sha: string, opts: { fetch: boolean }): void => {
   }
 };
 
+/**
+ * A shallow checkout has no ancestor to resolve, so the resolver deepens on demand. 250 at a time
+ * because the predicate's own last change is 236 commits behind this head and the gap only grows;
+ * 8 rounds is a ceiling on a suite that must not sit fetching forever on a broken remote.
+ */
+const DEEPEN_STEP = 250;
+const DEEPEN_ROUNDS = 8;
+
+const isShallow = (): boolean => {
+  try {
+    return (
+      execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
+        encoding: "utf8",
+        cwd: REPO,
+      }).trim() === "true"
+    );
+  } catch {
+    return false;
+  }
+};
+
+const deepen = (depth: number): boolean =>
+  gitOk(["fetch", "--no-tags", `--deepen=${depth}`, "origin"]);
+
+/**
+ * The source of the classifier as it stands at `ref`. `HEAD` means the WORKING TREE file, not the
+ * committed blob: an uncommitted weakening is the case this instrument exists for, and reading the
+ * commit there would grade a file nobody changed.
+ */
+const sourceAt = (ref: string): string =>
+  ref === "HEAD"
+    ? readFileSync(join(REPO, AGUI_PATH), "utf8")
+    : execFileSync("git", ["show", `${ref}:${AGUI_PATH}`], { encoding: "utf8", cwd: REPO });
+
+/** A blob that exports neither role is not a predecessor of this predicate; it is older than it. */
+const carriesRole = (src: string): boolean =>
+  /^export function frozenBodyEgressVerdict\b/m.test(src) ||
+  /^export function frozenBodyViolatesEgressPolicy\b/m.test(src);
+
+/**
+ * The predicate `ref` REPLACED: the newest ancestor of `ref` whose `agui.ts` differs from the
+ * source under test and still carries a classifier role.
+ *
+ * `--follow` is deliberately absent. It is a heuristic over renames, and a heuristic that picks
+ * the wrong file silently grades the wrong function. The path has not moved; if it ever does, the
+ * walk stops finding a role-carrying ancestor and this reports `null`, which is an assertion
+ * failure rather than a quiet bind of something else.
+ *
+ * Returns `null` when no such ancestor exists (a shallow clone, or the commit that introduced the
+ * predicate). The caller names that, and never falls back to the pinned floor as if it were the
+ * base: a fallback here would restore the defect this resolver exists to remove.
+ */
+const resolveBaseFor = (ref: string, opts: { fetch: boolean } = { fetch: true }): string | null => {
+  const current = sourceAt(ref);
+  const walk = ref === "HEAD" ? "HEAD" : ref;
+  // The smoke job checks out at depth 1 (`actions/checkout@v6`, no fetch-depth), where
+  // `git log HEAD -- <path>` lists one commit and there is no ancestor to resolve. Deepening on
+  // demand is what makes this pair exist in CI at all; without it the resolved grading would be
+  // absent on every CI run and present only on a developer box, which is the same invisibility
+  // this file exists to remove. Bounded rounds, and only while the repo is still shallow.
+  for (let round = 0; ; round++) {
+    let log: string;
+    try {
+      log = execFileSync("git", ["log", "--format=%H", walk, "--", AGUI_PATH], {
+        encoding: "utf8",
+        cwd: REPO,
+      });
+    } catch {
+      return null;
+    }
+    for (const sha of log.trim().split("\n").filter(Boolean)) {
+      let src: string;
+      try {
+        src = sourceAt(sha);
+      } catch {
+        continue; // a shallow clone can list a commit whose blob is absent
+      }
+      if (src === current) continue;
+      if (!carriesRole(src)) return null; // walked past the predicate's own introduction
+      return sha;
+    }
+    if (round >= DEEPEN_ROUNDS || !opts.fetch || !isShallow()) return null;
+    if (!deepen(DEEPEN_STEP)) return null;
+  }
+};
+
 const loadedFiles: string[] = [];
+
 const loadArm = async (ref: string, opts: { fetch: boolean } = { fetch: true }): Promise<Arm> => {
   if (ref === "HEAD") {
     const mod = (await import("../src/agui.js")) as Record<string, unknown>;
@@ -513,7 +643,7 @@ for (const type of forbiddenTypes) {
   push("forbidden-kind", `forbidden: well-formed ${type}`, [frameOf([eventOf(type)], 1)]);
 }
 for (const type of allowedTypes) {
-  // CUSTOM is in DIVERGENT: predecessor ALLOW, HEAD THROW (extra-property from spread
+  // CUSTOM is in DIVERGENT: predecessor ALLOW, HEAD extra-property (from spread
   // TextMessageContent siblings). Pinned by identity, not counted in expectStricterMax.
   if (type === "CUSTOM") continue;
   push("allowed-kind", `allowed: well-formed ${type}`, [frameOf([eventOf(type)])]);
@@ -664,7 +794,7 @@ const DIVERGENT: DivergentRow[] = [
     name: "allowed: well-formed CUSTOM",
     axis: "allowed-kind",
     body: [frameOf([eventOf("CUSTOM")])],
-    expected: { [PREDECESSOR]: "ALLOW", HEAD: "THROW", [ADAPTER_FREE]: "ALLOW" },
+    expected: { [PREDECESSOR]: "ALLOW", HEAD: "extra-property", [ADAPTER_FREE]: "ALLOW" },
   },
   {
     name: "across parts: unreadable then TOOL_CALL_RESULT",
@@ -709,6 +839,26 @@ const DIVERGENT: DivergentRow[] = [
       return [f];
     },
     expected: { [PREDECESSOR]: "THROW", HEAD: "unreadable", [ADAPTER_FREE]: "REFUSE" },
+  },
+  // The closed-schema class (#1432). Both are `clean` at the pinned floor AND at the adapter-free
+  // weakening, so the pinned pairs can only ever see them as STRICTER. They are here because they
+  // are the shape that makes the resolved base matter: were the #1432 branch dropped tomorrow,
+  // these rows would go WEAKER against the resolved predecessor and stay invisible to a floor.
+  {
+    name: "closed schema: frame-level extra key on an otherwise valid frame",
+    axis: "closed-schema",
+    body: () => [Object.assign(rt(good()), { recovery: MARK })],
+    expected: { [PREDECESSOR]: "ALLOW", HEAD: "extra-property", [ADAPTER_FREE]: "ALLOW" },
+  },
+  {
+    name: "closed schema: event-level extra key on an otherwise valid frame",
+    axis: "closed-schema",
+    body: () => {
+      const f = rt(good());
+      (f.events[0] as unknown as Record<string, unknown>).leaked = MARK;
+      return [f];
+    },
+    expected: { [PREDECESSOR]: "ALLOW", HEAD: "extra-property", [ADAPTER_FREE]: "ALLOW" },
   },
 ];
 
@@ -820,6 +970,10 @@ const gradePair = (base: Arm, head: Arm, pair: Pair) => {
   for (const row of DIVERGENT) {
     const b = base.classify(materialise(row.body));
     const h = head.classify(materialise(row.body));
+    // A declared divergence is still a row on an axis. Counting it keeps the coverage cell below
+    // honest for an axis whose only rows are pinned ones, instead of reporting n=0 for an axis
+    // that is in fact exercised on every pair.
+    byAxis[row.axis]!.n += 1;
     const wantB = row.expected[base.ref];
     const wantH = row.expected[head.ref];
     ok(`declared divergence, both answers as pinned: ${row.name} [${pair.name}]`, b.value === wantB && h.value === wantH, {
@@ -850,19 +1004,91 @@ const gradePair = (base: Arm, head: Arm, pair: Pair) => {
     { stricter: stricter.length, names: stricter.slice(0, 20) },
   );
 
-  console.log(`  (${pair.name}: ${CORPUS.length} corpus rows, WEAKER ${weaker.length}, STRICTER ${stricter.length})`);
+  console.log(`  (${pair.name}: ${CORPUS.length} corpus rows + ${DIVERGENT.length} divergent, WEAKER ${weaker.length}, STRICTER ${stricter.length})`);
   console.log("  axes covered / weaker / stricter:");
   for (const axis of AXES) {
     const slot = byAxis[axis.id]!;
     console.log(`    ${axis.id}: n=${slot.n} weaker=${slot.weaker} stricter=${slot.stricter}`);
   }
   const uncovered = AXES.map((a) => a.id).filter((id) => (byAxis[id]?.n ?? 0) === 0);
-  ok(`${pair.name}: every named axis has at least one corpus row`, uncovered.length === 0, uncovered);
+  ok(`${pair.name}: every named axis has at least one row`, uncovered.length === 0, uncovered);
+};
+
+/**
+ * Grade a pair whose BASE WAS RESOLVED rather than pinned.
+ *
+ * Different from {@link gradePair} in what it can honestly claim. A pinned pair knows both refs, so
+ * it can pin per-row answers and hold STRICTER to zero. A resolved pair's base moves with history:
+ * pinning row identities against it would grade nothing, and a STRICTER budget would go red on the
+ * next legitimate tightening. So this asserts the one property that holds for every base, which is
+ * also the property in the issue title: no row where the base withheld and the head publishes.
+ * STRICTER is counted and printed as information.
+ *
+ * DIVERGENT rows are graded into the SAME tally here rather than pinned. Their pins are
+ * base-specific; leaving them out would give a weakening a list of rows to hide in.
+ */
+const gradeResolved = (
+  base: Arm,
+  head: Arm,
+  label: string,
+  opts: { expectWeakerMin: number },
+): { weaker: number; stricter: number } => {
+  const before = { base: controls(base), head: controls(head) };
+  ok(
+    `${label}: controls BEFORE the corpus (positive publishes, both forbidden types withhold)`,
+    before.base.ok && before.head.ok,
+    {
+      base: { pos: fmt(before.base.pos), negR: fmt(before.base.negR), negA: fmt(before.base.negA) },
+      head: { pos: fmt(before.head.pos), negR: fmt(before.head.negR), negA: fmt(before.head.negA) },
+    },
+  );
+
+  const weaker: string[] = [];
+  let stricter = 0;
+  for (const row of [...CORPUS, ...DIVERGENT]) {
+    const b = base.classify(materialise(row.body));
+    const h = head.classify(materialise(row.body));
+    if (!publishes(b) && publishes(h)) {
+      weaker.push(row.name);
+      console.log(`  WEAKER | base=${fmt(b).padEnd(16)} | head=${fmt(h).padEnd(16)} | ${row.name}`);
+    } else if (publishes(b) && !publishes(h)) {
+      stricter += 1;
+      console.log(`  STRICT | base=${fmt(b).padEnd(16)} | head=${fmt(h).padEnd(16)} | ${row.name}`);
+    }
+  }
+
+  const after = { base: controls(base), head: controls(head) };
+  ok(
+    `${label}: controls AFTER the corpus (an arm that died mid-run is caught)`,
+    after.base.ok && after.head.ok,
+    {
+      base: { pos: fmt(after.base.pos), negR: fmt(after.base.negR), negA: fmt(after.base.negA) },
+      head: { pos: fmt(after.head.pos), negR: fmt(after.head.negR), negA: fmt(after.head.negA) },
+    },
+  );
+
+  if (opts.expectWeakerMin === 0) {
+    ok(
+      `${label}: WEAKER count is zero (the replacement withholds everything its predecessor withheld)`,
+      weaker.length === 0,
+      { weaker: weaker.length, names: weaker.slice(0, 20) },
+    );
+  } else {
+    ok(
+      `${label}: WEAKER count is at least ${opts.expectWeakerMin} (the resolved path detects a real weakening, not only zeroes)`,
+      weaker.length >= opts.expectWeakerMin,
+      { weaker: weaker.length, names: weaker.slice(0, 20) },
+    );
+  }
+  console.log(
+    `  (${label}: ${CORPUS.length + DIVERGENT.length} rows, WEAKER ${weaker.length}, STRICTER ${stricter})`,
+  );
+  return { weaker: weaker.length, stricter };
 };
 
 try {
   ok("ORIGINAL_AXES is the committed 15", ORIGINAL_AXES.length === 15, ORIGINAL_AXES.length);
-  ok("APPENDED_AXES is append-only (5)", APPENDED_AXES.length === 5, APPENDED_AXES.length);
+  ok("APPENDED_AXES is append-only (6)", APPENDED_AXES.length === 6, APPENDED_AXES.length);
   ok(
     "KNOWN_AGUI_EVENT_TYPES from this sha is 14",
     knownTypes.length === 14,
@@ -930,6 +1156,80 @@ try {
   for (const pair of PAIRS) {
     gradePair(arms[pair.baseRef]!, arms[pair.headRef]!, pair);
   }
+
+  // ---- THE RESOLVED PAIRS: the predicate each head actually replaced, not a pinned floor. ----
+
+  // Sensitivity of the RESOLVED PATH itself, run first. `1698fe253` shipped a weakening, and its
+  // own resolved base must show it. Without this cell, the resolved grading below is a detector
+  // whose only observed output is zero, and a resolver that silently returned an identical arm
+  // would produce exactly that zero.
+  const weakBase = resolveBaseFor(ADAPTER_FREE);
+  ok(
+    `resolver names a predecessor for the known weakening ${ADAPTER_FREE.slice(0, 9)}`,
+    weakBase !== null && SHA.test(weakBase) && weakBase !== ADAPTER_FREE,
+    weakBase,
+  );
+  if (weakBase) {
+    ok(
+      `resolved base of ${ADAPTER_FREE.slice(0, 9)} is an ancestor of it and not the pinned floor`,
+      gitOk(["merge-base", "--is-ancestor", weakBase, ADAPTER_FREE]) && weakBase !== PREDECESSOR,
+      { weakBase, PREDECESSOR },
+    );
+    gradeResolved(
+      await loadArm(weakBase),
+      arms[ADAPTER_FREE]!,
+      `RESOLVED sensitivity: ${weakBase.slice(0, 9)} -> ${ADAPTER_FREE.slice(0, 9)}`,
+      { expectWeakerMin: 1 },
+    );
+  }
+
+  // The pair this issue is about: the guard under test against the guard it replaces.
+  const headBase = resolveBaseFor("HEAD");
+  ok(
+    "resolver names the predicate HEAD replaces (not a fixed historical floor, and never a silent fallback to one)",
+    headBase !== null && SHA.test(headBase),
+    headBase,
+  );
+  if (headBase) {
+    ok(
+      "the resolved base is an ancestor of HEAD",
+      gitOk(["merge-base", "--is-ancestor", headBase, "HEAD"]),
+      headBase,
+    );
+    const headBaseArm = await loadArm(headBase);
+    ok(`resolved base ${headBase.slice(0, 9)}: classifier role bound`, Boolean(headBaseArm), headBaseArm.role);
+    gradeResolved(headBaseArm, arms.HEAD!, `RESOLVED: ${headBase.slice(0, 9)} -> HEAD`, {
+      expectWeakerMin: 0,
+    });
+  }
+
+  // An explicit base, for a CI job that knows its PR base sha. EXTRA, never a replacement: an
+  // unset or unusable value cannot subtract a pair that ran without it.
+  const declared = (process.env.COTAL_EGRESS_DIFF_BASE ?? "").trim();
+  if (declared) {
+    const resolved = gitOk(["rev-parse", "--verify", `${declared}^{commit}`])
+      ? execFileSync("git", ["rev-parse", `${declared}^{commit}`], { encoding: "utf8", cwd: REPO }).trim()
+      : "";
+    ok(`COTAL_EGRESS_DIFF_BASE=${declared} resolves to a commit in this checkout`, SHA.test(resolved), resolved);
+    if (SHA.test(resolved) && sourceAt(resolved) !== sourceAt("HEAD")) {
+      gradeResolved(await loadArm(resolved), arms.HEAD!, `DECLARED BASE: ${resolved.slice(0, 9)} -> HEAD`, {
+        expectWeakerMin: 0,
+      });
+    } else {
+      console.log(`  (declared base ${declared}: same classifier source as HEAD, nothing to grade)`);
+    }
+  } else {
+    console.log("  (COTAL_EGRESS_DIFF_BASE unset; the resolved pair above is the one that runs)");
+  }
+
+  // Every answer every arm gave, over every pair, was a verdict this file KNOWS. A verdict the
+  // loader does not know is withheld for the comparison, which is the safe guess and not a
+  // correct one: the next one added could mean publish. This names it instead of logging it.
+  ok(
+    "no arm answered a verdict outside the vocabulary this loader binds",
+    nonVerdicts.length === 0,
+    [...new Set(nonVerdicts)].slice(0, 10),
+  );
 } finally {
   for (const f of loadedFiles) {
     try {
