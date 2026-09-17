@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "implementations/cli/smoke/seed-checkout-store.smoke.ts"
+  ],
+  "guard": "a connector seed whose `ext add` re-exec is refused journals nothing: no crash cursor, no staged payload, no pending child marker, so the next reconcile is not wedged",
+  "command": "pnpm smoke:seed-checkout-store",
+  "completionMarker": "seed-checkout-store smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/reexec-refusal-seed-journal.json",
+  "why": [
+    "`seedOne` wrote its crash cursor, staged the payload and wrote the pending child marker, and only",
+    "then built the `ext add` argv with `selfArgv()`. Since #1629 that call can refuse, and the marker",
+    "is cleared only after the spawn, so a refusal left the cursor and the marker behind. Measured with",
+    "the real CLI entry afterwards: `cotal ext list` exited 1 with `a connector seed may be mid-flight`.",
+    "",
+    "Every place the guard could slide back to has a mutant, each naming the record it would leave:",
+    "after the marker (the order #1641 shipped, graded on the retry), after the cursor, after the",
+    "staging, and the marker hoisted above the guard."
+  ],
+  "mutations": [
+    {
+      "name": "the entry is validated after the marker is written, as #1641 shipped it",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "  const [bin, ...argv] = selfArgv();\n  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  writePendingChildMarker(nonce);\n",
+      "replace": "  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  writePendingChildMarker(nonce);\n  const [bin, ...argv] = selfArgv();\n",
+      "cell": "re-exec refused: the next reconcile meets the same refusal, not an interrupted seed",
+      "expectRed": "re-exec refused: the next reconcile meets the same refusal, not an interrupted seed"
+    },
+    {
+      "name": "the entry is validated after the cursor reaches phase add",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "  const [bin, ...argv] = selfArgv();\n  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  writePendingChildMarker(nonce);\n",
+      "replace": "  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  const [bin, ...argv] = selfArgv();\n  writePendingChildMarker(nonce);\n",
+      "cell": "re-exec refused: no crash cursor is left for the next boot",
+      "expectRed": "re-exec refused: no crash cursor is left for the next boot"
+    },
+    {
+      "name": "the pending child marker is written before the entry is validated",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "  const [bin, ...argv] = selfArgv();\n  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  writePendingChildMarker(nonce);\n",
+      "replace": "  writePendingChildMarker(nonce);\n  const [bin, ...argv] = selfArgv();\n  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n",
+      "cell": "re-exec refused: no pending seed-child marker is left either",
+      "expectRed": "re-exec refused: no pending seed-child marker is left either"
+    },
+    {
+      "name": "the entry is validated after the payload is staged",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "  const [bin, ...argv] = selfArgv();\n  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  writePendingChildMarker(nonce);\n",
+      "replace": "  writeCursor({ nonce, package: name, phase: \"copy\" });\n  const storePath = stageSeedPayload(generation, name, { force });\n  const [bin, ...argv] = selfArgv();\n  writeCursor({ nonce, package: name, phase: \"add\" });\n  writePendingChildMarker(nonce);\n",
+      "cell": "re-exec refused: no payload was staged",
+      "expectRed": "re-exec refused: no payload was staged"
+    }
+  ]
+}

@@ -530,13 +530,17 @@ function resolveEverSeeded(mode: Mode, generation: string): Set<string> {
  *  The child is authenticated: it carries the live reconcile lock's nonce + this parent's PID so a
  *  forged `COTAL_EXT_SEEDING` can't skip the mutation lock for an arbitrary `ext add`. */
 function seedOne(name: string, generation: string, nonce: string, force: boolean): void {
+  // The re-exec entry is validated BEFORE anything is journaled (#1629). Asked after the cursor, the
+  // staged payload and the pending child marker, a refusal left all three with no child to clear the
+  // marker, and the next boot refused as an interrupted seed until `cotal ext seed --repair`.
+  //
+  // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
+  // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
+  const [bin, ...argv] = selfArgv();
   writeCursor({ nonce, package: name, phase: "copy" });
   const storePath = stageSeedPayload(generation, name, { force });
   writeCursor({ nonce, package: name, phase: "add" });
-  // Record intent to spawn BEFORE the spawn, so the orphan window never opens ownerless: a repair
-  // after a parent SIGKILL sees this pending marker and fails loud rather than racing the installer.
   writePendingChildMarker(nonce);
-  const [bin, ...argv] = selfArgv();
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
     encoding: "utf8",
     env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
