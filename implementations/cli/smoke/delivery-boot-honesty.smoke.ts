@@ -21,7 +21,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,6 +37,20 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The pid a detached component recorded under `<root>/.cotal`, by record PREFIX rather than an
+ *  exact filename: these records are space-keyed (`manager.<spaceKey>.pid`), so a fixed name would
+ *  silently match nothing and the teardown below would quietly reap nothing. */
+function readRecordedPid(cotalDir: string, component: string): number | undefined {
+  let names: string[] = [];
+  try { names = readdirSync(cotalDir); } catch { return undefined; }
+  for (const name of names) {
+    if (!name.startsWith(`${component}.`) || !name.endsWith(".pid")) continue;
+    const pid = Number(readFileSync(join(cotalDir, name), "utf8").trim());
+    if (Number.isInteger(pid) && pid > 0) return pid;
+  }
+  return undefined;
+}
 
 const SPACE = "boot-honesty";
 const root = mkdtempSync(join(tmpdir(), "cotal-boot-honesty-root-"));
@@ -76,6 +90,9 @@ const TSX = join(WT_ROOT, "node_modules", ".bin", "tsx");
 const WRAPPER = join(import.meta.dirname, "signal-ownership-wrapper.fixture.ts");
 
 let broker: ChildProcess | undefined, holder: ChildProcess | undefined;
+/** A manager the composition cell's `ensureControlPlane` really started, detached and unref'ed, so
+ *  no ChildProcess handle owns it and only its recorded pid can reap it. */
+let managerPid: number | undefined;
 let releaseBroker: () => void = () => {};
 let releaseHolder: () => void = () => {};
 // `undefined` until the kill cell adopts the wrapper, so the cell below grades the adoption itself
@@ -148,6 +165,14 @@ try {
   // bare fixture root, and what matters is that the delivery answer SURVIVES the composition. So the
   // call is allowed to throw, and the assertion is on the value when it returns.
   const { ensureControlPlane } = await import("../src/lib/delivery-proc.js");
+  // POINT THE RE-EXEC AT THE REAL CLI ENTRY (#1629). Every re-exec builds its child's argv from
+  // `process.argv[1]`, which under tsx is THIS FILE — so `ensureManager` used to start "the manager"
+  // by running this suite again with `supervise` appended to an argv it never reads. Each generation
+  // reached this same line and spawned the next: 970 generations in 4.7 hours on a persistent host.
+  // `selfArgv` now refuses an entry that is not the CLI's, so without this line the composition cell
+  // below could only ever grade the refusal. Same idiom as `delivery-explicit-space.smoke.ts`.
+  const realArgv1 = process.argv[1];
+  process.argv[1] = join(WT_ROOT, "bin", "cotal.ts");
   const planeLines: string[] = [];
   const origErr2 = console.error;
   console.error = (...a: unknown[]) => { planeLines.push(a.join(" ")); };
@@ -159,6 +184,11 @@ try {
     planeThrew = (e as Error).message;
   } finally {
     console.error = origErr2;
+    process.argv[1] = realArgv1;
+    // Whatever the call did, a manager it started is a REAL detached process in this scratch root,
+    // and the `finally` at the foot of this file removes that root. Record it for teardown before
+    // anything below can throw.
+    managerPid = readRecordedPid(join(root, ".cotal"), "manager");
   }
   if (plane) {
     check("CELL: ensureControlPlane PROPAGATES responderBound=false to its caller (`cotal up`)",
@@ -270,6 +300,42 @@ try {
   releaseWrapper?.();
   releaseWrapper = undefined;
 
+  // ---------- #1629: A FIXTURE THAT REACHES `ensureManager` MUST NOT RE-EXEC ITSELF ----------
+  // THE DEFECT. `selfArgv()` built every re-exec's argv as `[node, ...execArgv, process.argv[1]]`.
+  // Under tsx `process.argv[1]` is the SUITE, so the detached "manager" was this file again with
+  // `supervise --space …` appended to an argv it never reads: it ran the whole suite, reached the
+  // composition cell above, and spawned the next generation. On a persistent host that is a fork
+  // chain — 970 generations in 4.7 hours, each with its own nats-server and holder.
+  //
+  // WHY THE ASSERTION IS ON `selfArgv` AND NOT ON A SURVIVOR COUNT. The chain's own aftermath is
+  // unobservable from inside it: each generation is detached, `unref`ed and reparented to init, so
+  // by the time this process could count anything it has already spawned its successor. The
+  // PRECONDITION is what is checkable in-process, and it is the exact thing that was wrong — which
+  // argv a re-exec would hand the child while this suite is the entry.
+  //
+  // `teardownOnSignal` cannot cover this (issue ask 3): it owns CHILDREN, and a `startManagerDetached`
+  // child is unref'ed and disowned, so the guard has to be at the argv site.
+  const { selfArgv } = await import("../src/lib/self-exec.js");
+  let selfArgvRefusal: string | undefined;
+  try {
+    selfArgv(); // `process.argv[1]` is THIS SUITE here, restored after the composition cell above
+  } catch (e) {
+    selfArgvRefusal = (e as Error).message;
+  }
+  check("CELL (#1629): selfArgv REFUSES to build a re-exec argv from a non-CLI entry (this suite)",
+    selfArgvRefusal !== undefined, { argv1: process.argv[1], got: selfArgvRefusal });
+  check("CELL (#1629): the refusal names the entry it would otherwise have re-execed",
+    selfArgvRefusal?.includes("delivery-boot-honesty.smoke.ts") === true, selfArgvRefusal);
+  // The POSITIVE half, so the guard cannot be satisfied by refusing everything — that would break
+  // every real `cotal up`, which is the same outage one direction over.
+  const savedArgv1 = process.argv[1];
+  process.argv[1] = join(WT_ROOT, "bin", "cotal.ts");
+  let realEntryArgv: string[] | undefined;
+  try { realEntryArgv = selfArgv(); } catch { /* recorded by the check below */ }
+  process.argv[1] = savedArgv1;
+  check("CELL (#1629): the REAL CLI entry still builds a re-exec argv (the guard is not blanket)",
+    realEntryArgv?.at(-1) === join(WT_ROOT, "bin", "cotal.ts"), realEntryArgv);
+
   console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and
   // the banner above only parses through a legacy compatibility branch.
@@ -287,6 +353,16 @@ try {
   releaseHolder();
   if (broker) await killAndAwaitExit(broker);
   releaseBroker();
+  // The composition cell starts a REAL detached manager, which no handle owns. Reap it before the
+  // scratch root it runs in is removed, or the suite strands it exactly like the chain it now guards.
+  if (managerPid !== undefined) {
+    try { process.kill(managerPid, "SIGTERM"); } catch { /* already gone */ }
+    for (let i = 0; i < 60; i++) {
+      try { process.kill(managerPid, 0); } catch { break; }
+      await sleep(50);
+    }
+    try { process.kill(managerPid, "SIGKILL"); } catch { /* exited */ }
+  }
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 }

@@ -1,15 +1,51 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
+import { cliPackageRoot } from "../seed/paths.js";
 
 /** This CLI's own invocation as argv: `[node, ...loaderFlags, entryScript]`. The loader flags carry
  *  tsx in dev (so a re-exec can run the `.ts` entry) and are empty in prod (entry = compiled JS).
  *  Re-execed children (web, manager) and cmux pane commands use this so they never depend on
  *  `cotal` being on PATH — works the same via `npx`, `npm i -g`, and a dev clone. */
 export function selfArgv(): string[] {
-  return [process.execPath, ...process.execArgv, process.argv[1]];
+  return [process.execPath, ...process.execArgv, assertSelfEntry()];
+}
+
+/**
+ * {@link selfArgv}'s entry script, PROVEN to be this CLI's own.
+ *
+ * `process.argv[1]` is whatever started this process, and a re-exec appends a subcommand to it. When
+ * the starter is NOT the CLI — a smoke suite, a test runner, an embedder's script — the detached
+ * child is that same script again with `supervise` (or `deliver`) appended to an argv it never
+ * reads, so it runs its own body instead of the daemon. A suite that reaches `ensureManager` in a
+ * fixture therefore RE-EXECS ITSELF, and every generation reaches the same call: #1629 measured 970
+ * generations in 4.7 hours on a persistent host, each with its own broker and holder.
+ *
+ * Proven the way `seedWriterKind` proves the same thing: the nearest `package.json` above the
+ * resolved entry must be `cotal-ai`. That holds for a published install, an `npx` unpack and
+ * `tsx bin/cotal.ts` in a dev clone, and fails for every path that is not this CLI.
+ *
+ * REFUSING IS THE ONLY SAFE ANSWER, and it belongs HERE, at the one place every re-exec's argv is
+ * built: the children are detached and `unref`ed, so no caller owns one, and a suite's own signal
+ * teardown cannot reap what it never parented. A guard at any single spawn site would leave the
+ * siblings (`deliver`, the bearer preflight, the seed child) re-execing the same wrong entry.
+ */
+function assertSelfEntry(): string {
+  const entry = process.argv[1];
+  let owner: unknown;
+  try {
+    owner = (JSON.parse(readFileSync(join(cliPackageRoot(), "package.json"), "utf8")) as { name?: unknown }).name;
+  } catch {
+    owner = undefined; // no entry, an unresolvable one, or no readable package.json above it
+  }
+  if (owner === "cotal-ai") return entry as string;
+  throw new Error(
+    `refusing to re-exec ${entry ?? "(no entry script)"}: it is not this CLI's entry (no \`cotal-ai\` package.json above it).\n` +
+      `A re-exec appends a subcommand (\`supervise\`, \`deliver\`) to that path, so the detached child would be that script again, running its own body instead of the daemon - and if the script is what reached this line, each generation spawns the next.\n` +
+      `NEXT: run this through the \`cotal\` binary (or \`tsx bin/cotal.ts\` in a checkout). A test or embedder that must reach this path sets \`process.argv[1]\` to the real CLI entry first.`,
+  );
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */
