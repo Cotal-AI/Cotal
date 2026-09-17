@@ -26,3 +26,5 @@ node_modules
 
 # Lane work product; it records absolute worktree paths.
 fix-report.json
+# Per-run scratch TMPDIR for smokes that spawn a daemon needing a stable path.
+.repro-tmp/

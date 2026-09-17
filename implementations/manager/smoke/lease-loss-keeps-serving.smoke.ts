@@ -128,6 +128,7 @@ function managerWith(handles: FakeHandle[], wire: LeaseWire, opts: { resumeAttem
     readOwnManagerLease: wire.read,
     acquireManagerLease: async () => { acquires++; if (!wire.acquire) throw new Error("acquire not expected in this cell"); return wire.acquire(); },
     releaseManagerLease: async () => {},
+    releaseDaemonRenewalLease: async () => {},
     stop: async () => {},
   };
   m.attach = { stop: async () => {} };
