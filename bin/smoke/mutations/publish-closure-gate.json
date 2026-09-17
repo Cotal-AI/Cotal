@@ -13,7 +13,8 @@
     "A 200 without a body identifying the package at the requested version is no longer treated as presence. Each mutation below breaks one property the smoke is supposed to hold.",
     "The rc-2 and rc-3 cells used to substring-match the branch comparison, which sees that the branch exists and nothing about what it does: an exit 1 added to either quiet-skip path left the suite green while every no-publish push to main would have failed (#1518). The cells now parse each branch body, and these mutations are what shows they can see into it.",
     "Three rounds closed evasions by position, quoting and verb, and a fourth produced eleven quiet arms that carry no failure word at all yet exit 1 (`test 1 -eq 2`, `command false`, `((0))`, `trap \"exit 1\" EXIT`). The property is the arm's last status, which is a fact about execution, so the cells now run the body under the workflow's own `bash -e` with `rc` bound instead of matching its text.",
-    "Grading arms in isolation is still not the whole property: an arm that declines to fail only produces a quiet skip if the SCRIPT stops failing too. While the quiet arms fell out of the `fi`, that verdict was decided by every line after them, so a `trap \"exit 1\" EXIT` in the prologue or a tidy-up `exit $rc` below the chain turned every no-publish push red with all four arms still reading as correct, and the per-body cells stayed green. The quiet arms now `exit 0` themselves, and the step's own run script is executed once per documented exit code with `node` stubbed to return it."
+    "Grading arms in isolation is still not the whole property: an arm that declines to fail only produces a quiet skip if the SCRIPT stops failing too. While the quiet arms fell out of the `fi`, that verdict was decided by every line after them, so a `trap \"exit 1\" EXIT` in the prologue or a tidy-up `exit $rc` below the chain turned every no-publish push red with all four arms still reading as correct, and the per-body cells stayed green. The quiet arms now `exit 0` themselves, and the step's own run script is executed once per documented exit code with `node` stubbed to return it.",
+    "Fixture D from the triage of #1518, the one that settles its severity: both quiet arms deleted and replaced by a catch-all that fails the job on every no-publish push, with `\"$rc\" -eq 2` and `\"$rc\" -eq 3` surviving only inside a `#` comment. The workflow then has no quiet-skip branch at all and the graded suite still passed, because a comment carries the text an includes() reads. It is registered here so the cells are pinned against a workflow that satisfies every text-level assertion about this branching while doing the opposite."
   ],
   "mutations": [
     {
@@ -193,6 +194,15 @@
       "expectRed": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
       "cell": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
       "note": "The arm still fails the job, so every status-based cell stays green, but the output it leaves behind is the one the Release step gates on. Only the output column can see this."
+    },
+    {
+      "name": "both quiet arms are replaced by a failing catch-all, the comparisons left in a comment",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          elif [ \"$rc\" -eq 2 ]; then\n            # The quiet skips end the step here rather than falling out of the `fi`. A version-PR\n            # push that publishes nothing must not red the job, and leaving that outcome to be\n            # decided by whatever follows made it a property of the whole script instead of the\n            # arm: a later line, or a trap installed above, silently turned the skip into a\n            # failure with the branch itself still reading as correct (#1518).\n            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 0\n          elif [ \"$rc\" -eq 3 ]; then\n            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 0\n",
+      "replace": "          # quiet skips handled below: [ \"$rc\" -eq 2 ] and [ \"$rc\" -eq 3 ]\n          elif [ \"$rc\" -ge 2 ]; then\n            echo \"no publish - failing the job.\"\n            exit 1\n",
+      "expectRed": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "cell": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "note": "Triage fixture D, graded SURVIVED against the substring cells. No rc-2 or rc-3 branch remains, so a body-parsing cell finds nothing to grade and a text-matching cell reads the comment and reports success. Only running the script sees it: rc 2 and rc 3 both red the step."
     }
   ]
 }

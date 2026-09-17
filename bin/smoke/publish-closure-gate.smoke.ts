@@ -10,7 +10,7 @@
  *    the gate removed must fail the same assertion, so the check is shown to discriminate. The
  *    rc-branch cells grade each branch body by the status bash gives it, not by its text (#1518).
  *
- * A2. The step end to end — runs the closure-gate step's own script under `bash -e` with `node`
+ * A2. The step end to end, runs the closure-gate step's own script under `bash -e` with `node`
  *    stubbed to each exit code the verifier documents, and asserts the status the step leaves, the
  *    `closure_ok` it publishes, and that the two quiet-skip arms end the step themselves. Grading
  *    arms in isolation cannot see a `trap` above the chain or a line below the `fi`, and either one
