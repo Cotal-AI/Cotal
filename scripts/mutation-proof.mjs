@@ -46,7 +46,7 @@
  * Measured here: a subset config keyed on `expectRed` outlived a cell rename and re-ran the
  * pre-fix mutation for a minute before the mismatch was noticed.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync, unlinkSync, mkdirSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -146,6 +146,31 @@ function parseArgs(argv) {
 const countOccurrences = (hay, needle) => hay.split(needle).length - 1;
 
 /** The tree must be recoverable WITHOUT this tool before a destructive experiment starts. */
+function assertNoLiveProof(cwd) {
+  const lockPath = join(cwd, ".cotal", "mutation-proof.lock");
+  if (!existsSync(lockPath)) return;
+  try {
+    const raw = readFileSync(lockPath, "utf8");
+    const owner = JSON.parse(raw);
+    if (owner && typeof owner.pid === "number" && owner.pid > 0) {
+      let alive = false;
+      try {
+        process.kill(owner.pid, 0);
+        alive = true;
+      } catch (e) {
+        if (e.code === "EPERM") alive = true;
+        else if (e.code === "ESRCH") alive = false;
+      }
+      if (alive) {
+        say(`${C.red}REFUSING: a mutation proof is already live against the tree (PID ${owner.pid}).${C.off}`);
+        process.exit(3);
+      }
+    }
+  } catch {
+    // unparseable or error reading lock file -> treat as stale / ignore
+  }
+}
+
 function assertCleanTree(cwd, allowDirty) {
   const out = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
   if (!out) return;
@@ -510,7 +535,15 @@ if (a.config) {
 }
 if (!opts.command) usage("no --command given (and none in the config)");
 
+assertNoLiveProof(cwd);
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
+
+const proofLockPath = join(cwd, ".cotal", "mutation-proof.lock");
+mkdirSync(join(cwd, ".cotal"), { recursive: true });
+writeFileSync(proofLockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+process.on("exit", () => {
+  try { unlinkSync(proofLockPath); } catch {}
+});
 
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
 //
