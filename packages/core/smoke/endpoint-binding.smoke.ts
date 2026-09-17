@@ -45,6 +45,7 @@ import {
   type EpCaller, type RecordKindDef,
   assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT,
   admissionBucket, admissionKey, acceptedBucket, issuedBucket, issuedEvidenceKey, openIssuedStore,
+  revocationKey, readRunRevocation, revokeRunAdmission,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -733,6 +734,32 @@ try {
     const first = await read(key);
     const neighbour = await read(other);
     c("after every refused route the admission row and its neighbour read exactly as created", first === '{"seed":1}' && neighbour === '{"seed":2}', { first, neighbour });
+  }
+  {
+    // The revocation marker read a listing makes (SPEC 14.8), measured on its own rather than only
+    // through `cotal run ps`. No marker answers undefined; a marker the reader cannot read THROWS,
+    // because a caller that took it for no marker would print a revoked run as live. The writer
+    // refuses a marker that names nobody or no reason, before it creates anything.
+    const store = await kvm.open(admissionBucket(SPACE));
+    const enc = new TextEncoder();
+    const outcome = (p: Promise<unknown>): Promise<string> => p.then((v) => `answered ${JSON.stringify(v)}`, (e: Error) => `threw: ${e.message}`);
+    const absent = await outcome(readRunRevocation(jsm, SPACE, "manager", "run-unrevoked"));
+    c("readRunRevocation answers undefined for a run with no marker", absent === "answered undefined", absent);
+    await revokeRunAdmission(store, "manager", { version: 1, runId: "run-revoked", reason: "suite revoke", by: "smoke", revokedAt: Date.now() });
+    const written = await readRunRevocation(jsm, SPACE, "manager", "run-revoked").catch((e: Error) => e);
+    c("readRunRevocation returns the marker a revoke wrote",
+      !(written instanceof Error) && written?.by === "smoke" && written.reason === "suite revoke", written);
+    await store.create(revocationKey("manager", "run-newer"),
+      enc.encode(JSON.stringify({ version: 2, runId: "run-newer", reason: "a newer revoker", by: "smoke", revokedAt: Date.now() })));
+    const newer = await outcome(readRunRevocation(jsm, SPACE, "manager", "run-newer"));
+    c("readRunRevocation throws on a marker version it does not know, never answering no marker", newer.startsWith("threw"), newer);
+    await store.create(revocationKey("manager", "run-truncated"), enc.encode('{"version":1,"runId":"run-trunc'));
+    const truncated = await outcome(readRunRevocation(jsm, SPACE, "manager", "run-truncated"));
+    c("readRunRevocation throws on a truncated marker, never answering no marker", truncated.startsWith("threw"), truncated);
+    const anonymous = await outcome(revokeRunAdmission(store, "manager", { version: 1, runId: "run-anonymous", reason: "", by: "", revokedAt: Date.now() }));
+    const left = await outcome(readRunRevocation(jsm, SPACE, "manager", "run-anonymous"));
+    c("revokeRunAdmission refuses a marker with an empty by and reason and creates nothing",
+      anonymous.includes("by and reason must be non-empty") && left === "answered undefined", { anonymous, left });
   }
   {
     // The evidence store cannot be write-once (its attempt row advances by CAS), so a later write
