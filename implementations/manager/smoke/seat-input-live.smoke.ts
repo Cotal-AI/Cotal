@@ -615,5 +615,16 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
+// Every cell this suite is expected to run, counted INCLUDING this assertion itself. A suite that
+// only reports `N passed, 0 failed` is green when cells are silently dropped: deleting cell 10
+// entirely (the #1649 guards) leaves 29 passed, 0 failed, exit 0 - measured, not supposed. The
+// tally has nothing to compare itself against, so a refactor that skips a block removes the
+// evidence without removing the green. Bumping this number is the deliberate edit that makes such
+// a drop impossible to miss. The count is read BEFORE this cell is tallied, so it is the number of
+// preceding cells (37), not 38.
+const EXPECTED_CELLS = 37;
+check(`every cell ran (a silently skipped cell must not read as green): expected ${EXPECTED_CELLS}`,
+  pass + fail === EXPECTED_CELLS, { ran: pass + fail, expected: EXPECTED_CELLS });
+
 console.log(`\n${fail === 0 ? "SEAT INPUT SMOKE OK ✅" : "SEAT INPUT SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
