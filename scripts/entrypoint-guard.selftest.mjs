@@ -48,7 +48,8 @@ const ROOT = dirname(SCRIPTS);
  * whole line of the diagnostic it prints. Neither is enough alone. A guard that runs `main()` but
  * drops its return value prints the line and exits 0, which only the code catches.
  * `live-job-conclusion.mjs` refuses with 1, which is also what Node exits with when the script
- * cannot load at all, which only the line catches.
+ * cannot load at all, which only the line catches. `doc-binding.mjs` and `pr-head-gate.mjs` have no
+ * function called `main`; the CLI body inside their guard plays that part.
  */
 const PROBES = [
   {
