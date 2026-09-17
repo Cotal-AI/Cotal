@@ -489,6 +489,13 @@ try {
 
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
+  // The per-launch directory is the containment, so it has to be removed with the launch or the
+  // shared temp directory fills with one abandoned directory per seat instead (#1625).
+  check(
+    "a retired launch leaves no relay socket or private relay directory behind",
+    !existsSync(relaySocket) && !existsSync(relayDir),
+    { relaySocket, relayDir },
+  );
 
   // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
   // verify the provider route that will receive the effort instead of treating the provider default
