@@ -3785,6 +3785,24 @@ export class CotalEndpoint extends EventEmitter {
     })().catch((e) => this.emit("error", e as Error));
   }
 
+  /** The principal recorded as holding a shard's delivery lease, read by THIS process from the row,
+   *  or `undefined` when no row is live or the read failed.
+   *
+   *  THE POINT IS WHO ESTABLISHES THE FACT. Everything a requester learns from a request/reply rail
+   *  is something a responder chose to send, and the delivery-admin rail is queue-grouped, so any
+   *  process permitted to serve it decides what arrives. The lease row is the other kind of fact: a
+   *  KV key whose only writer is the `delivery` credential's own `lease.*` grant, read here under
+   *  THIS endpoint's credential, which no reply on any rail participates in. A caller comparing an
+   *  answerer against the holder needs that, rather than the answerer's word for which one it is.
+   *
+   *  `undefined` is a genuine unknown and is NEVER a statement that nobody holds the shard: a read
+   *  that throws (a denied or unreadable bucket, a broker that will not answer) must not collapse
+   *  into "nothing is there". Callers must treat it as a failure to determine (#1694). */
+  async deliveryLeaseHolder(shardIndex: number): Promise<string | undefined> {
+    try { return (await this.readDeliveryLeaseEntry(shardIndex))?.info.holder; }
+    catch { return undefined; }
+  }
+
   /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
    *  CAS release are argued against, so a caller re-establishing ownership after a failed renew
    *  needs the BROKER's sequence, not the one it last cached: a renew can fail with its write
@@ -4600,8 +4618,27 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: "reloadStoreIdentity: this daemon did not name the SecretStore it reloads from" };
       try {
         const identity = this.plane3.reloadStoreIdentity();
+        // WHO IS ANSWERING is part of the answer. This rail is queue-grouped, so the broker hands
+        // the request to any bound responder, and every process with a `delivery` credential for
+        // the space can bind it, while only the DELIVERY LEASE HOLDER actually reloads the standing
+        // credentials. A bare store identity therefore lets a second responder's store stand in for
+        // the reloading process's, and the manager's remint decision is then made about a process
+        // that reloads nothing. So the reply carries this responder's wire identity and whether it
+        // holds the lease, and the caller requires the binding (#1694).
+        //
+        // The lease read is the LIVE row, not a cached claim: a holder that lost the shard must not
+        // keep asserting it. A read that fails is reported as `false` rather than thrown, because
+        // "I cannot prove I hold the shard" is what a non-holder's answer says, and it sends the
+        // caller down the same fail-closed path rather than inventing an authority.
+        let holdsDeliveryLease = false;
+        try {
+          const own = await this.readDeliveryLeaseEntry(0);
+          holdsDeliveryLease = own !== undefined && this.ownsDeliveryLease(own.info);
+        } catch {
+          holdsDeliveryLease = false;
+        }
         // Round-trip through the closed parser so a hook cannot smuggle extra fields onto the rail.
-        return { ok: true, data: parseSecretStoreIdentity(identity) };
+        return { ok: true, data: { identity: parseSecretStoreIdentity(identity), responder: this.card.id, holdsDeliveryLease } };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

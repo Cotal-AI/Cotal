@@ -11,6 +11,7 @@ import {
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
   divergentSecretStoreNotice,
+  parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
@@ -61,7 +62,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -1566,6 +1567,11 @@ export class Manager {
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
   }
 
+  /** The delivery shard whose lease names the process that reloads the standing credentials.
+   *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
+   *  keeps the manager's binding check and that reply arguing about the same row. */
+  private static readonly DELIVERY_SHARD = 0;
+
   /** Proof that this manager remints into the store the delivery daemon reloads from.
    *  Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores
    *  refuse the pass. A daemon that is not bound yet is not a named store: start and
@@ -1586,12 +1592,42 @@ export class Manager {
       throw new Error(
         reply.error ?? "delivery daemon refused to name the SecretStore it reloads from",
       );
-    let daemon: SecretStoreIdentity;
+    let answer: DaemonStoreAnswer;
     try {
-      daemon = parseSecretStoreIdentity(reply.data);
+      answer = parseDaemonStoreAnswer(reply.data);
     } catch (e) {
-      throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
+      throw new Error(
+        `delivery daemon named an unreadable SecretStore: ${(e as Error).message}. A daemon older ` +
+          `than #1694 replies with a bare store identity and no answerer binding; this manager ` +
+          `cannot establish which process answered, so nothing reminted - upgrade the delivery daemon`,
+      );
     }
+    // The answerer's own claim first, so an honest non-holder is refused by its own admission and
+    // the operator-facing reason names that. This is the CHEAP half of the test and NOT the binding
+    // one: a responder that does not hold the lease can assert `true` here just as easily.
+    if (!answer.holdsDeliveryLease)
+      throw new Error(
+        "the delivery-admin rail was answered by a responder that does not hold this space's " +
+          "delivery lease, so its SecretStore is not the store the daemon reloads from - nothing reminted",
+      );
+    // THE BINDING TEST, measured by this manager rather than asserted by the answerer. The lease
+    // row's holder is read here under this manager's own credential; the answerer must BE that
+    // principal. A reply asserting the claim while some other process holds the shard fails here,
+    // which is the case a bare store identity could not see. An unreadable row is an unknown and
+    // refuses too: this test may never be satisfied by failing to run.
+    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);
+    if (holder === undefined)
+      throw new Error(
+        "this manager could not read the delivery lease row, so it cannot verify that the answering " +
+          "responder is the process that reloads the standing credentials - nothing reminted",
+      );
+    if (holder !== answer.responder)
+      throw new Error(
+        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of ` +
+          `this space's delivery lease (${holder}), so its SecretStore is not the store the daemon ` +
+          `reloads from - nothing reminted`,
+      );
+    const daemon = answer.identity;
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) {
       console.error(`! ${divergentSecretStoreNotice(this.secretStoreIdentity, daemon)}`);
       return "divergent";
