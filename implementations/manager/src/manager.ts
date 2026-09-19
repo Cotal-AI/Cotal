@@ -1423,6 +1423,21 @@ export class Manager {
     }
     this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_RENEW_MS);
     this.leaseTimer.unref?.();
+    // THE PEER-READABLE LIVENESS RESPONDER for the manager plane (#1577). Bound HERE — after the
+    // lease, before registration — precisely so it is up during the window in which the manager is
+    // NOT yet serving. A responder that only appeared once everything worked could never report the
+    // broken state it exists to report, which is the reported defect in a new place.
+    //
+    // WHAT IT GRADES is `serviceServe`, the v0.4 service endpoint's serve handle, which is assigned
+    // only after `serveEndpoint` has bound this instance's rails. That is a RESPONDER fact. It is
+    // deliberately NOT "this process is alive": this process is trivially alive whenever it answers
+    // at all, so grading on that would make the surface a `pgrep` that also lies in both directions
+    // — the exact instrument the reporter's evidence table indicts. Between lease acquisition and a
+    // successful registration the honest answer is `unbound`, and that is what a peer is told.
+    //
+    // The lease row is never consulted and never sent: presence is the whole ask, and the row
+    // carries the operator's workspace root and pid.
+    this.ep.serveLiveness("manager", () => (this.serviceServe?.handle ? "bound" : "unbound"));
     // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
     // comes up below, then the sweep overlaps the remaining registration work. Two-window

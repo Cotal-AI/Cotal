@@ -47,6 +47,7 @@ export * from "./acls.js";
 export * from "./membership-feed.js";
 export * from "./evict.js";
 export * from "./lease.js";
+export * from "./liveness.js";
 export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
