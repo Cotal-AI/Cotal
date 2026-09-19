@@ -34,11 +34,13 @@ import {
   admissionBucket,
   createRunAdmission,
   readRunAdmission,
+  readRunRevocation,
   revokeRunAdmission,
   chatSubject,
   DEV_OWNER,
   type RunAdmission,
   type RunAdmissionView,
+  type RunRevocation,
   type IssuedSubjectAllow,
   readRunProgram,
   readRunRecord,
@@ -302,6 +304,10 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
+    // What the operator will see NEXT, because the two surfaces disagreed for as long as one of
+    // them never read the marker. Saying it here means the acknowledgement and the table cannot
+    // drift apart without somebody noticing at the moment of the revoke.
+    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -391,6 +397,12 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   // is an authority stream whose consumer surface is an exact audited list (SPEC 13.9).
   const seen = new Set<string>();
   const rows: string[][] = [];
+  /** Why each revoked row reads `revoked`, printed under the table: the marker carries `by` and the
+   *  reason, and the table has no column for either. */
+  const revocations = new Map<string, RunRevocation>();
+  /** Rows whose revocation could not be read at all, each with the reason and its record's state,
+   *  printed to stderr after the table. */
+  const unchecked: string[] = [];
   for (const e of await walkKvEntries(planes.kv, "run.*.*.spec")) {
     const parts = e.key.split(".");
     if (parts.length !== 4 || parts[3] !== "spec") continue;
@@ -404,10 +416,37 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
     if (record === undefined) continue;
     const st = record.status?.value;
     const lineage = record.spec.value.forkedFrom;
+    // THE ADMISSION STORE, not the status record alone. A revocation is a create-only marker under
+    // its own key and nothing rewrites the record (SPEC 14.8, docs/workflows.md), while the record
+    // is written only by a driver. A driver that dies mid-run therefore leaves `running` behind
+    // with nothing left to write anything else, and this table listed that run as live for as long
+    // as it existed. `resume` already reads the marker and refuses; the table was the one surface
+    // that never learned.
+    //
+    // DISPLAY ONLY. A revoke does not make a run `failed` or `released`: nobody drove it there, the
+    // journal owns the facts, and fabricating a terminal state here would put a fact in front of an
+    // operator that no host ever recorded.
+    let state = st?.state ?? "(no status)";
+    try {
+      const revoked = await readRunRevocation(planes.jsm, planes.space, endpoint, runId);
+      if (revoked !== undefined) {
+        revocations.set(dedupe, revoked);
+        state = "revoked";
+      }
+    } catch (e) {
+      // Absence of EVIDENCE, and the STATE column itself says so. A marker this call could not read
+      // (a store it could not reach, a marker version or shape it does not know) says nothing about
+      // whether the run was revoked. The record's own word is what a revoked run printed before
+      // this table read the marker, so the column says `unchecked` and the record's word goes to
+      // stderr with the reason, where `awk '{print $3}'` and `grep running` over stdout never see it.
+      // The row itself still prints: one unreadable marker does not hide the rest of the listing.
+      state = "unchecked";
+      unchecked.push(`${dedupe}: revocation marker could not be read (${(e as Error).message}); its record reads ${st?.state ?? "(no status)"}`);
+    }
     rows.push([
       runId,
       endpoint,
-      st?.state ?? "(no status)",
+      state,
       st?.holder ?? "-",
       st === undefined ? "-" : String(st.journalHigh),
       lineage === undefined ? "-" : `${lineage.run}@${lineage.step}`,
@@ -422,6 +461,16 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   const line = (r: string[]) => r.map((cell, i) => cell.padEnd(widths[i] as number)).join("  ");
   console.log(line(header));
   for (const r of rows) console.log(line(r));
+  // WHO revoked it and WHY, under the table rather than in it. The marker carries both and the
+  // columns carry neither, and a state of `revoked` with no attribution anywhere sends the
+  // operator to a second command to learn what they are looking at.
+  for (const [key, r] of revocations)
+    console.log(`${key}: revoked by ${r.by} (${r.reason}); the status record is left as its driver last wrote it`);
+  // A listing with an unchecked row is incomplete, and the exit status says so after every row
+  // has been printed, as `ls` and `find` do when one entry cannot be read: the rows on stdout, the
+  // failed reads on stderr, and a non-zero status a caller can test without parsing the column.
+  for (const u of unchecked) console.error(u);
+  if (unchecked.length > 0) process.exitCode = 1;
 }
 
 async function journal(planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {
