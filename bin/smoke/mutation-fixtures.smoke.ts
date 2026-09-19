@@ -84,7 +84,21 @@ function jsonFiles(dir: string, out: string[] = [], root = ROOT, skip = SUBMODUL
     if (skip.has(relative(root, path))) continue;
     let st;
     try { st = statSync(path); } catch { continue; }
-    if (st.isDirectory()) jsonFiles(path, out, root, skip);
+    if (st.isDirectory()) {
+      // A NESTED CHECKOUT IS NOT THIS TREE EITHER, for exactly the reason given above the submodule
+      // skip. A git worktree or clone parked inside the tree carries a full copy of every fixture in
+      // it, so the walk grades the same file once per checkout and reports each copy as a separate
+      // finding. Measured on a box with 25 worktrees under `.claude/worktrees/`: 6877 findings, of
+      // which 6876 came from those copies. CI checks out one tree and sees none of it, which is the
+      // asymmetry the submodule note calls the defect, and it landed the same way, with the gate
+      // red locally, green on CI, and therefore ignored.
+      //
+      // `.git` is the marker whether the checkout is a clone (a directory) or a worktree (a file
+      // holding `gitdir:`), so `existsSync` covers both without caring which. The `.git` entry
+      // itself is already in SKIP; this skips the directory CONTAINING one.
+      if (existsSync(join(path, ".git"))) continue;
+      jsonFiles(path, out, root, skip);
+    }
     else if (entry.endsWith(".json")) out.push(path);
   }
   return out;
@@ -245,6 +259,29 @@ try {
   );
 } finally {
   rmSync(probe, { recursive: true, force: true });
+}
+
+const nested = mkdtempSync(join(tmpdir(), "mutation-fixtures-nested-"));
+try {
+  mkdirSync(join(nested, "wt"), { recursive: true });
+  writeFileSync(join(nested, "wt", ".git"), "gitdir: /elsewhere/.git/worktrees/wt\n");
+  writeFileSync(
+    join(nested, "wt", "planted.mutations.json"),
+    JSON.stringify({ mutations: [{ name: "planted", file: "gone.ts", find: "// a prose anchor" }] }),
+  );
+  cell(
+    "a fixture-shaped file inside a nested checkout is not walked",
+    jsonFiles(nested, [], nested, new Set()).length === 0,
+  );
+  // The control, same reasoning as the submodule pair: remove only the marker and the identical
+  // tree must yield the file, or the 0 above is an empty directory rather than a skip.
+  rmSync(join(nested, "wt", ".git"));
+  cell(
+    "and the same tree without the .git marker finds it, so the 0 above is the skip",
+    jsonFiles(nested, [], nested, new Set()).length === 1,
+  );
+} finally {
+  rmSync(nested, { recursive: true, force: true });
 }
 
 // The real entry point, which the three cells above do not cover: they build their input by hand,
