@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Journal, digest, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
-import { replayRunJournal, type RunHostPlanes, type RunHostLease, type RunJournalActivation } from "@cotal-ai/core";
+import type { RunHostPlanes, RunHostLease, RunJournalActivation } from "@cotal-ai/core";
+import { replayOwnJournal } from "./journal-store.js";
 
 interface RunScopeSnapshot {
   readonly entries: readonly JournalEntry[];
@@ -15,7 +16,7 @@ export function createRunScopeAuthority(
 ): RunScopeAuthority {
   const pinned = structuredClone(lease);
   return new RunScopeAuthority(runId, async () => {
-    const replay = await replayRunJournal(broker.js, broker.jsm, broker.space, runId, pinned.takeoverId);
+    const replay = await replayOwnJournal(broker.js, broker.jsm, broker.space, runId, pinned.takeoverId);
     const last = replay.records.findLast(({ record }) => record.kind === "activation")?.record;
     return {
       entries: replay.records.flatMap(({ record }) => record.kind === "step" ? [record.entry as JournalEntry] : []),

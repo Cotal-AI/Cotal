@@ -78,6 +78,7 @@
     "smoke:runtime-run-driver-auth": "tsx implementations/runtime/smoke/run-driver-auth.smoke.ts",
     "smoke:runtime-run-command": "tsx implementations/runtime/smoke/run-command.smoke.ts",
     "smoke:runtime-run-command-usage": "tsx implementations/runtime/smoke/run-command-usage.smoke.ts",
+    "smoke:runtime-run-host-replay": "tsx implementations/runtime/smoke/run-host-replay.smoke.ts",
     "smoke:lang-pins": "tsx packages/lang/smoke/pins.smoke.ts",
     "smoke:lang-scopes": "tsx packages/lang/smoke/scopes.smoke.ts",
     "smoke:lang-sim": "tsx packages/lang/smoke/sim.smoke.ts",
