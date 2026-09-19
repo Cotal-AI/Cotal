@@ -350,7 +350,13 @@ const SEAMS: Seam[] = [
   // `find`/`replace` STRINGS in bin/smoke/mutations/attach-open-mode.json, which arrived on main,
   // and it counts because this reader scans text and a mutation body is text that will become
   // code. All three state `tls` explicitly, so the seam itself is unchanged.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 156, untypecheckedSites: 116 },
+  // 156/116 -> 157/117: one more smoke-side connection, in
+  // implementations/runtime/smoke/run-command.smoke.ts (#1633). It exists to write a revocation
+  // marker RAW, under the one-shot `run-admitter` profile `revoke` mints, because the exported
+  // writer validates what it writes and a marker the reader CANNOT read has to be created past it.
+  // That is what lets `run ps` be graded on the `unchecked` path, where the marker is unreadable
+  // rather than absent. It states `tls` explicitly, so the seam itself is unchanged.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 157, untypecheckedSites: 117 },
 ];
 
 /**
