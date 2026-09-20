@@ -690,7 +690,19 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const progress = p.status === "working" ? "working · progress unknown" : p.status;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
-        return ok(`Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
+        // A roster is a liveness claim only while the presence watch is current. If the bucket
+        // has been silent past the liveness window (or the initial snapshot has not landed), every
+        // peer reads `offline` at once - a stale VIEW, not a mesh where everyone died inside one
+        // TTL. `cotal ps` already refuses a liveness word there (`mesh unknown`); say the same
+        // here instead of letting a reader take last-known state as fact.
+        const view = agent.presenceView();
+        const header =
+          view.state === "current"
+            ? `Present in "${config.space}" (${roster.length}):`
+            : `Last-known roster for "${config.space}" (${roster.length}) - presence view ${
+                view.state === "stale" ? "is stale" : "is not yet populated"
+              }, so these statuses are last-known, NOT current:`;
+        return ok(`${header}\n${lines.join("\n")}`);
       },
     },
     {

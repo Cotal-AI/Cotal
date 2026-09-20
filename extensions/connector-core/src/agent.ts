@@ -16,6 +16,7 @@ import {
   unansweredRequest,
   renderLifecycleBlocked,
   type EpAttributedReply,
+  type PresenceView,
   type EpVerbTarget,
   type ControlReply,
   type Delivery,
@@ -1820,6 +1821,12 @@ export class MeshAgent extends EventEmitter {
   /** The full roster, including ourselves. */
   roster(): Presence[] {
     return this.ep.getRoster();
+  }
+
+  /** Trust state of THIS session's presence watch (SPEC §6). Anything other than `current` means
+   *  the roster is last-known rather than live, so it cannot carry a liveness or absence claim. */
+  presenceView(): PresenceView {
+    return this.ep.presenceView();
   }
 
   /** Our last self-reported presence status. */

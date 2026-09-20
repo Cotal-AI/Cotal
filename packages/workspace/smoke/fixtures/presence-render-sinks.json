@@ -170,7 +170,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`Present in \"${config.space}\" (${roster.length}):\\n${lines.join(\"\\n\")}`",
+      "anchor": "`${header}\\n${lines.join(\"\\n\")}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
