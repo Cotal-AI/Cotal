@@ -302,6 +302,12 @@ No fallback to in-process signing. Named refusals:
 design. A KMS that signs without export is a different implementation of the same
 `sign-user` seam, not a second fallback.
 
+`remintDaemonCreds` today returns per-file skips and never throws (`renewal.ts`). That
+contract is not a fallback here: when isolation is on, a missing socket or a non-empty
+`signingSeed` in the caller is a hard failure, and `mintCreds` itself refuses `fromSeed`
+in a signer-client process. User-mode meshes still self-mint the supervisor cred from this
+seed (`runStart`); they take the same socket.
+
 ---
 
 ## 4. Rotation after the split
@@ -359,15 +365,34 @@ Operator procedure on Linux. Substitute the workspace root, the space name, and 
 uids from §6. Do not print file contents: a successful steal would be a JWT or a seed, and
 either one is a failed proof.
 
+Do not print process argument vectors. Command lines on a shared host are a publication
+surface (a runtime can pass a persona as an argv token). This procedure therefore never uses
+`ps -o cmd`, `ps -f`, `ps -ef`, `pgrep -f`, or `/proc/<pid>/cmdline`. Identify a process by
+uid, `comm`, unit metadata, or a single named environment key.
+
 Positive control uses `cotal mint` (or a managed spawn) as the authorized client. The negative
 arms run as the agent uid, which is the child's uid after the spawn drop.
 
 1. Confirm the manager is running under the manager uid and the signer unit is running under
-   the signer uid:
+   the signer uid. Prefer the unit, which already names the User:
 
    ```bash
-   ps -o user,pid,cmd -C node
-   # expect a signer process user=cotal-signer and a manager user=cotal-manager
+   systemctl show cotal-signer@<space>  -p User -p ExecMainPID
+   systemctl show cotal-manager@<space> -p User -p ExecMainPID
+   # User=cotal-signer and User=cotal-manager. Do not pass -p Environment (it dumps every
+   # variable). Three-uid isolation is system units. If this host instead runs linger user
+   # units, the same two properties are:
+   systemctl --user show cotal-signer@<space>  -p User -p ExecMainPID
+   systemctl --user show cotal-manager@<space> -p User -p ExecMainPID
+   ```
+
+   If the units are not installed yet, list by comm and uid only, then read one env key:
+
+   ```bash
+   ps -o user,pid,comm -C node
+   # then, for each pid whose USER is cotal-signer or cotal-manager:
+   tr '\0' '\n' < /proc/<pid>/environ | grep -E '^COTAL_NAME='
+   # print only that key. Do not dump the rest of environ (tokens live there).
    ```
 
 2. Confirm the seed file is not readable by the manager uid or the agent uid:
@@ -386,39 +411,41 @@ arms run as the agent uid, which is the child's uid after the spawn drop.
    only:
 
    ```bash
-   sudo -u cotal-manager python3 -c \
-     'import json,sys; p=sys.argv[1]; d=json.load(open(p)); s=d.get("account",{}).get("signingSeed",""); sys.exit(1 if s else 0)' \
-     "$ROOT/.cotal/auth/account.<hex>.json"; echo $?
+   ACCOUNT_RECORD="$ROOT/.cotal/auth/account.<hex>.json" \
+   sudo -u cotal-manager --preserve-env=ACCOUNT_RECORD python3 -c \
+     'import json,os; d=json.load(open(os.environ["ACCOUNT_RECORD"])); raise SystemExit(1 if d.get("account",{}).get("signingSeed","") else 0)'; echo $?
    # must print 0 (non-zero means the record still carries a signingSeed)
    ```
 
 4. Positive control: mint still works through the socket.
 
    ```bash
-   sudo -u cotal-manager cotal mint proof-agent --profile agent --out /tmp/proof-agent.creds
-   # exit 0, writes a creds file. Do not print the file.
+   umask 077
+   sudo -u cotal-manager mkdir -p /home/cotal-manager/cotal-proof
+   sudo -u cotal-manager cotal mint proof-agent --profile agent --out /home/cotal-manager/cotal-proof/proof-agent.creds >/dev/null
+   echo $?
+   # must print 0. Judge only the exit status; do not copy stdout (it names the new
+   # principal) into a log or channel. Do not write the creds file under /tmp.
    ```
 
 5. Negative control: the agent child cannot read the seed. Spawn any managed agent, then:
 
    ```bash
-   pid=$(pgrep -u cotal-agent -n -f <agent-binary>)
-   sudo nsenter -t "$pid" -m -u -p \
-     sudo -u cotal-agent test -r /var/lib/cotal/signer/<space>/signing.seed; echo $?
+   pid=$(pgrep -u cotal-agent -n)
+   sudo nsenter -t "$pid" -m -- sudo -u cotal-agent test -r /var/lib/cotal/signer/<space>/signing.seed; echo $?
    # must print 1
-   sudo nsenter -t "$pid" -m \
-     sudo -u cotal-agent python3 -c \
-       'import json,sys; p=sys.argv[1]; d=json.load(open(p)); s=d.get("account",{}).get("signingSeed",""); print("empty" if not s else "LEAK")' \
-       "$ROOT/.cotal/auth/account.<hex>.json"
+   ACCOUNT_RECORD="$ROOT/.cotal/auth/account.<hex>.json" \
+   sudo nsenter -t "$pid" -m -- env ACCOUNT_RECORD="$ACCOUNT_RECORD" sudo -u cotal-agent --preserve-env=ACCOUNT_RECORD python3 -c \
+     'import json,os; d=json.load(open(os.environ["ACCOUNT_RECORD"])); print("empty" if not d.get("account",{}).get("signingSeed","") else "LEAK")'
    # must print empty, never LEAK
    ```
 
 6. Negative control: the agent child cannot dial the signer.
 
    ```bash
-   sudo -u cotal-agent python3 -c \
-     'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])' \
-     /var/run/cotal/signer/<space>.sock; echo $?
+   SIGNER_SOCK=/var/run/cotal/signer/<space>.sock \
+   sudo -u cotal-agent --preserve-env=SIGNER_SOCK python3 -c \
+     'import os,socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ["SIGNER_SOCK"])'; echo $?
    # must be non-zero (EACCES). If connect succeeded, the proof has failed even before peercred.
    ```
 
