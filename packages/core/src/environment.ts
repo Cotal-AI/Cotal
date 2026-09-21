@@ -1,74 +1,169 @@
-type Digest = string;
-type Count = number;
+export type HostedEnvironmentDigest = string;
+export type HostedEnvironmentCount = number;
 
-export interface EnvironmentReference {
+export interface HostedEnvironmentReference {
   kind: string;
   id: string;
 }
 
-export interface OperationContext {
+export interface HostedOperationContext {
   id: string;
   signal: AbortSignal;
   deadline: number;
 }
 
-export interface EnvironmentFileReference {
-  path: string;
-  byteLength: Count;
-  sha256: Digest;
+export interface HostedEnvironmentRuntimeReference {
+  kind: string;
+  id: string;
 }
 
-export type EnvironmentImageReference =
-  | { kind: "oci"; manifest: EnvironmentFileReference }
-  | { kind: "template"; ref: string };
+export interface HostedEnvironmentFileReference {
+  path: string;
+  byteLength: HostedEnvironmentCount;
+  sha256: HostedEnvironmentDigest;
+}
 
-export interface EnvironmentImageDescription {
-  reference: EnvironmentImageReference;
-  record: { kind: "template" | "oci"; ref: string; digest?: string };
-  bundleSha256: Digest;
+export interface HostedMaterialDescriptor {
+  id: string;
+  purpose: "persona" | "customer-config" | "customer-key" | "agent-credential" | "mesh-tls-trust";
+  lifetime: "launch" | "persistent";
+  generation: HostedEnvironmentCount;
+  byteLength: HostedEnvironmentCount;
+  sha256: HostedEnvironmentDigest;
+  homePath: string | null;
+  envName: string | null;
+}
+
+export interface HostedAgentCredentialDescriptor extends HostedMaterialDescriptor {
+  purpose: "agent-credential";
+  lifetime: "launch";
+  homePath: null;
+  envName: null;
+}
+
+export const HOSTED_ENVIRONMENT_RECORD_TEXT_MAX_BYTES = 2048;
+export const HOSTED_AUTHORITY_URL_MAX_BYTES = 2048;
+
+const hostedRecordTextBrand: unique symbol = Symbol("HostedEnvironmentRecordText");
+const hostedAuthorityUrlBrand: unique symbol = Symbol("HostedAuthorityHttpsUrl");
+const hostedPositiveStepBrand: unique symbol = Symbol("HostedPositiveStepMs");
+
+export type HostedEnvironmentRecordText = string & { readonly [hostedRecordTextBrand]: true };
+export type HostedAuthorityHttpsUrl = string & { readonly [hostedAuthorityUrlBrand]: true };
+export type HostedPositiveStepMs = number & { readonly [hostedPositiveStepBrand]: true };
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+/** Validate a nonsecret string before it enters a dashboard-readable environment record. */
+export function validateHostedEnvironmentRecordText(value: unknown, field: string): HostedEnvironmentRecordText {
+  if (typeof value !== "string" || !value || utf8Bytes(value) > HOSTED_ENVIRONMENT_RECORD_TEXT_MAX_BYTES)
+    throw new Error(`${field} must be a non-empty string of at most ${HOSTED_ENVIRONMENT_RECORD_TEXT_MAX_BYTES} UTF-8 bytes`);
+  if (/\p{Cc}/u.test(value)) throw new Error(`${field} contains a control character`);
+  if (/-----BEGIN [A-Z ]*(?:PRIVATE KEY|CREDENTIAL)[A-Z ]*-----/.test(value) || /^Bearer\s/i.test(value)
+    || /(?:^|[^A-Za-z])(token|secret|api[_-]?key|credential|password)\s*[:=]/i.test(value))
+    throw new Error(`${field} carries credential-shaped material`);
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || [...url.searchParams.keys()].some((key) => /token|key|secret|signature|credential|bearer/i.test(key)))
+      throw new Error(`${field} carries credential-shaped URL material`);
+  } catch (error) {
+    if (error instanceof Error && error.message === `${field} carries credential-shaped URL material`) throw error;
+  }
+  return value as HostedEnvironmentRecordText;
+}
+
+/** Validate the remote bearer endpoint. The branded result is the only URL the launch type accepts. */
+export function validateHostedAuthorityHttpsUrl(value: unknown): HostedAuthorityHttpsUrl {
+  if (typeof value !== "string" || !value || utf8Bytes(value) > HOSTED_AUTHORITY_URL_MAX_BYTES)
+    throw new Error(`hosted authority URL must be a non-empty string of at most ${HOSTED_AUTHORITY_URL_MAX_BYTES} UTF-8 bytes`);
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error("hosted authority URL is not a URL"); }
+  if (url.protocol !== "https:") throw new Error("hosted authority URL must use https");
+  if (!url.hostname) throw new Error("hosted authority URL must name a host");
+  if (url.username || url.password) throw new Error("hosted authority URL must not contain userinfo");
+  if (url.search) throw new Error("hosted authority URL must not contain a query");
+  if (url.hash) throw new Error("hosted authority URL must not contain a fragment");
+  return url.toString() as HostedAuthorityHttpsUrl;
+}
+
+/** Validate a provider's fixed positive extension step. */
+export function validateHostedPositiveStepMs(value: unknown): HostedPositiveStepMs {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0)
+    throw new Error("hosted environment extension step must be a positive safe integer");
+  return value as HostedPositiveStepMs;
+}
+
+export type HostedEnvironmentImageReference =
+  | { kind: "oci"; manifest: HostedEnvironmentFileReference }
+  | { kind: "template"; ref: HostedEnvironmentRecordText };
+
+export interface HostedEnvironmentRecordImage {
+  kind: "template" | "oci";
+  ref: HostedEnvironmentRecordText;
+  digest?: HostedEnvironmentDigest;
+}
+
+export type HostedEnvironmentImageDescription = {
+  bundleSha256: HostedEnvironmentDigest;
   architecture: string;
   abi: string;
   protocolVersion: string;
-  connector: { name: string; version: string; packageSha256: Digest };
-  systemCaSetSha256: Digest;
-}
+  connector: { name: string; version: string; packageSha256: HostedEnvironmentDigest };
+  systemCaSetSha256: HostedEnvironmentDigest;
+} & (
+  | {
+      manifest: HostedEnvironmentFileReference;
+      reference?: never;
+      record?: HostedEnvironmentRecordImage;
+    }
+  | {
+      manifest?: never;
+      reference: { kind: "template"; ref: HostedEnvironmentRecordText };
+      record: HostedEnvironmentRecordImage & { kind: "template" };
+    }
+);
 
-export interface EnvironmentPlan {
+interface HostedEnvironmentPlanBase {
   version: "cotal-environment-plan/v1";
   ownerInstanceId: string;
-  profile: { name: string; sha256: Digest };
-  image: {
-    reference: EnvironmentImageReference;
-    bundleSha256: Digest;
-    architecture: string;
-  };
-  network: string | null;
-  limits: { cpus: Count; memoryMiB: Count; diskGiB: Count };
+  profile: { name: string; sha256: HostedEnvironmentDigest };
+  limits: { cpus: HostedEnvironmentCount; memoryMiB: HostedEnvironmentCount; diskGiB: HostedEnvironmentCount };
   hostLimits: {
-    memoryMaxMiB: Count;
-    cpuQuotaMicros: Count;
-    cpuPeriodMicros: Count;
-    pidsMax: Count;
-    nofile: Count;
+    memoryMaxMiB: HostedEnvironmentCount;
+    cpuQuotaMicros: HostedEnvironmentCount;
+    cpuPeriodMicros: HostedEnvironmentCount;
+    pidsMax: HostedEnvironmentCount;
+    nofile: HostedEnvironmentCount;
   };
-  workspaceSeed: EnvironmentFileReference | null;
-  inputs: {
-    descriptor: {
-      id: string;
-      purpose: "persona" | "customer-config" | "customer-key" | "agent-credential" | "mesh-tls-trust";
-      lifetime: "launch" | "persistent";
-      generation: Count;
-      byteLength: Count;
-      sha256: Digest;
-      homePath: string | null;
-      envName: string | null;
-    };
-    source: EnvironmentFileReference;
-  }[];
+  workspaceSeed: HostedEnvironmentFileReference | null;
+  inputs: { descriptor: HostedMaterialDescriptor; source: HostedEnvironmentFileReference }[];
   providerOptions: unknown;
 }
 
-export interface EnvironmentCapabilities {
+/** The local manifest arm preserves the pending local-provider plan shape. */
+export type HostedEnvironmentPlan = HostedEnvironmentPlanBase & (
+  | {
+      image: {
+        manifest: HostedEnvironmentFileReference;
+        bundleSha256: HostedEnvironmentDigest;
+        architecture: string;
+      };
+      network?: HostedEnvironmentRecordText | null;
+    }
+  | {
+      image: {
+        reference: { kind: "template"; ref: HostedEnvironmentRecordText };
+        bundleSha256: HostedEnvironmentDigest;
+        architecture: string;
+      };
+      network: HostedEnvironmentRecordText | null;
+    }
+);
+
+export interface HostedEnvironmentCapabilities {
   guestBuild: boolean;
   custody: boolean;
   sessionHistory: boolean;
@@ -83,139 +178,139 @@ export interface EnvironmentCapabilities {
   durableSeatHome: boolean;
   screen: boolean;
   exec: boolean;
-  extend: false | { stepMs: number };
+  extend: false | { stepMs: HostedPositiveStepMs };
 }
 
-export interface EnvironmentPreflightCheck {
+export interface HostedEnvironmentPreflightCheck {
   name: string;
   ok: boolean;
   detail: string;
 }
 
-export interface EnvironmentPreflight {
-  checks: EnvironmentPreflightCheck[];
-  capabilities: EnvironmentCapabilities;
+export interface HostedEnvironmentPreflight {
+  checks: HostedEnvironmentPreflightCheck[];
+  capabilities: HostedEnvironmentCapabilities;
   probedAt: number;
 }
 
-export interface EnvironmentLifetime {
+export interface HostedEnvironmentLifetime {
   expiresAt: number | null;
   observedAt: number;
 }
 
-export interface EnvironmentStatus {
-  state: "reserved" | "provisioning" | "running" | "paused" | "stopping" | "stopped" | "destroying" | "destroyed" | "unknown";
-  operation: null | {
-    id: string;
-    kind: "provision" | "start" | "stop" | "checkpoint" | "restore" | "import" | "extend" | "destroy" | "maintenance";
-    phase: "pending" | "active" | "held";
-  };
-  seat: { kind: string; id: string } | null;
-  observedAt: number;
+export interface HostedEnvironmentProviderFileReference {
+  environment: HostedEnvironmentReference;
+  id: HostedEnvironmentRecordText;
+  byteLength: HostedEnvironmentCount;
+  sha256: HostedEnvironmentDigest;
 }
 
-export interface EnvironmentProviderFileReference {
-  environment: EnvironmentReference;
-  id: string;
-  byteLength: Count;
-  sha256: Digest;
+/** The first arm is the pending local-provider output shape. */
+export type HostedCheckpointOutput =
+  | { path: string; maxBytes: HostedEnvironmentCount }
+  | { kind: "host-path"; path: string; maxBytes: HostedEnvironmentCount }
+  | { kind: "provider-file"; maxBytes: HostedEnvironmentCount };
+
+export type HostedCheckpointExport =
+  | { kind: "host-path"; file: HostedEnvironmentFileReference }
+  | { kind: "provider-file"; file: HostedEnvironmentProviderFileReference };
+
+export type HostedEnvironmentBearerSource =
+  | { kind: "socket"; path: HostedEnvironmentRecordText }
+  | { kind: "https"; url: HostedAuthorityHttpsUrl };
+
+export interface HostedEnvironmentLaunchAuthentication {
+  bearerSource: HostedEnvironmentBearerSource;
 }
 
-export type CheckpointOutput =
-  | { kind: "host-path"; path: string; maxBytes: Count }
-  | { kind: "provider-file"; maxBytes: Count };
-
-export type CheckpointExport =
-  | { kind: "host-path"; file: EnvironmentFileReference }
-  | { kind: "provider-file"; file: EnvironmentProviderFileReference };
-
-export type EnvironmentBearerSource =
-  | { kind: "socket"; path: string }
-  | { kind: "https"; url: string };
-
-export interface EnvironmentLaunchAuthentication {
-  bearerSource: EnvironmentBearerSource;
+/** Closed base request fields remain required for both local and hosted providers. */
+export interface ProviderEnvironmentLaunchRequest<Intent> {
+  version: "cotal-environment-launch/v1";
+  intent: Intent;
+  intentSha256: HostedEnvironmentDigest;
+  environment: HostedEnvironmentReference;
+  seat: HostedEnvironmentRuntimeReference;
+  guestBootId: string;
+  operationId: string;
+  issuance: { generation: string; acceptedToken: string };
+  credential: HostedAgentCredentialDescriptor;
+  materialSetSha256: HostedEnvironmentDigest;
+  authentication?: HostedEnvironmentLaunchAuthentication;
 }
 
-export interface EnvironmentLaunchRequest {
-  authentication: EnvironmentLaunchAuthentication;
-  credential: {
-    id: string;
-    purpose: "agent-credential";
-    lifetime: "launch";
-    generation: Count;
-    byteLength: Count;
-    sha256: Digest;
-    homePath: null;
-    envName: null;
-  };
+/** A remote hosted launch requires the validated bearer source in addition to every base field. */
+export interface HostedEnvironmentLaunchRequest<Intent> extends ProviderEnvironmentLaunchRequest<Intent> {
+  authentication: HostedEnvironmentLaunchAuthentication;
 }
 
-export interface EnvironmentProviderFacts {
-  environment: EnvironmentReference;
-  providerRef: string;
-  engine: string;
-  volumeId: string;
+export interface HostedEnvironmentProviderFacts {
+  environment: HostedEnvironmentReference;
+  providerRef: HostedEnvironmentRecordText;
+  engine: HostedEnvironmentRecordText;
+  volumeId: HostedEnvironmentRecordText;
   state: "creating" | "running" | "stopped" | "failed";
   stoppedAt?: number;
   expiresAt?: number;
-  network?: string;
+  network?: HostedEnvironmentRecordText;
   observedAt: number;
 }
 
-export interface EnvironmentDriver {
-  describeImage(reference: EnvironmentImageReference, op: OperationContext): Promise<EnvironmentImageDescription>;
-  preflight(plan: EnvironmentPlan): Promise<EnvironmentPreflight>;
-  reserve(id: string): EnvironmentReference;
-  facts(ref: EnvironmentReference, op: OperationContext): Promise<EnvironmentProviderFacts>;
-  extend(ref: EnvironmentReference, op: OperationContext): Promise<EnvironmentLifetime>;
+/** Methods a driver adds beside the pending local-provider EnvironmentDriver contract. */
+export interface HostedEnvironmentDriverExtension {
+  describeHostedImage(reference: HostedEnvironmentImageReference, op: HostedOperationContext): Promise<HostedEnvironmentImageDescription>;
+  preflightHosted(plan: HostedEnvironmentPlan): Promise<HostedEnvironmentPreflight>;
+  reserveHosted(id: HostedEnvironmentRecordText): HostedEnvironmentReference;
+  hostedFacts(ref: HostedEnvironmentReference, op: HostedOperationContext): Promise<HostedEnvironmentProviderFacts>;
+  extendHosted(ref: HostedEnvironmentReference, op: HostedOperationContext): Promise<HostedEnvironmentLifetime>;
 }
 
-export interface EnvironmentHandle {
-  exportCheckpoint(ref: { environment: EnvironmentReference; id: string }, output: CheckpointOutput, op: OperationContext): Promise<CheckpointExport>;
-  readProviderFile(ref: EnvironmentProviderFileReference, op: OperationContext): AsyncIterable<Uint8Array>;
+/** Methods a handle adds beside the pending local-provider EnvironmentHandle contract. */
+export interface HostedEnvironmentHandleExtension {
+  exportHostedCheckpoint(
+    ref: { environment: HostedEnvironmentReference; id: string },
+    output: HostedCheckpointOutput,
+    op: HostedOperationContext,
+  ): Promise<HostedCheckpointExport>;
+  readHostedProviderFile(
+    ref: HostedEnvironmentProviderFileReference,
+    op: HostedOperationContext,
+  ): AsyncIterable<Uint8Array>;
 }
 
-export interface EnvironmentRecordImage {
-  kind: "template" | "oci";
-  ref: string;
-  digest?: string;
-}
-
-export interface EnvironmentRecord {
+export interface ManagedEnvironmentRecord {
   version: "cotal-manager-environment-record/v1";
-  id: string;
-  provider: string;
-  providerRef: string;
-  space: string;
-  host: string;
-  arch: string;
-  engine: string;
-  volumeId: string;
-  image: EnvironmentRecordImage;
-  owner: string;
+  id: HostedEnvironmentRecordText;
+  provider: HostedEnvironmentRecordText;
+  providerRef: HostedEnvironmentRecordText;
+  space: HostedEnvironmentRecordText;
+  host: HostedEnvironmentRecordText;
+  arch: HostedEnvironmentRecordText;
+  engine: HostedEnvironmentRecordText;
+  volumeId: HostedEnvironmentRecordText;
+  image: HostedEnvironmentRecordImage;
+  owner: HostedEnvironmentRecordText;
   createdAt: number;
   state: "creating" | "running" | "stopped" | "failed";
   stoppedAt?: number;
   expiresAt?: number;
-  network?: string;
-  capabilities: EnvironmentCapabilities;
+  network?: HostedEnvironmentRecordText;
+  capabilities: HostedEnvironmentCapabilities;
   probedAt?: number;
 }
 
 export interface EnvironmentHostFacts {
   version: "cotal-environment-host-facts/v1";
-  instanceId: string;
-  host: string;
-  arch: string;
-  os: { platform: string; release: string };
-  engines: { name: string; version?: string }[];
+  instanceId: HostedEnvironmentRecordText;
+  host: HostedEnvironmentRecordText;
+  arch: HostedEnvironmentRecordText;
+  os: { platform: HostedEnvironmentRecordText; release: HostedEnvironmentRecordText };
+  engines: { name: HostedEnvironmentRecordText; version?: HostedEnvironmentRecordText }[];
   kvm: { present: boolean; usable: boolean };
   headroom: {
-    cpus: Count;
-    memoryMiB: Count;
-    diskGiB: Count;
-    environmentSlots: Count;
+    cpus: HostedEnvironmentCount;
+    memoryMiB: HostedEnvironmentCount;
+    diskGiB: HostedEnvironmentCount;
+    environmentSlots: HostedEnvironmentCount;
   };
   observedAt: number;
 }

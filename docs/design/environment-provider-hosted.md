@@ -31,17 +31,21 @@ response from boot inventory and live manager state.
 
 ## Contract types
 
-The additive declarations are in `packages/core/src/environment.ts`. They are the merge surface for
-the pending environment contract. They do not make environment records part of the wire spec.
+The additive declarations use `Hosted*`, `ProviderEnvironmentLaunchRequest` and
+`ManagedEnvironmentRecord` names where the hosted shape differs from the pending local contract.
+This keeps the pending `EnvironmentPlan`, `EnvironmentLaunchRequest`, `CheckpointOutput`,
+`EnvironmentDriver` and `EnvironmentHandle` declarations unchanged when the branches merge. The
+module is exported from `packages/core/src/index.ts`. These declarations do not make environment
+records part of the wire spec.
 
 ## 1. Probe capabilities
 
-Decision: `EnvironmentPreflight` returns one closed `EnvironmentCapabilities` value and `probedAt`.
+Decision: `HostedEnvironmentPreflight` returns one closed `HostedEnvironmentCapabilities` value and `probedAt`.
 Every provider reports every capability for the selected plan and current deployment. No manager
 infers capability from provider name, engine name or status.
 
 ```ts
-interface EnvironmentCapabilities {
+interface HostedEnvironmentCapabilities {
   guestBuild: boolean;
   custody: boolean;
   sessionHistory: boolean;
@@ -56,12 +60,12 @@ interface EnvironmentCapabilities {
   durableSeatHome: boolean;
   screen: boolean;
   exec: boolean;
-  extend: false | { stepMs: number };
+  extend: false | { stepMs: HostedPositiveStepMs };
 }
 
-interface EnvironmentPreflight {
-  checks: EnvironmentPreflightCheck[];
-  capabilities: EnvironmentCapabilities;
+interface HostedEnvironmentPreflight {
+  checks: HostedEnvironmentPreflightCheck[];
+  capabilities: HostedEnvironmentCapabilities;
   probedAt: number;
 }
 ```
@@ -71,7 +75,7 @@ or product default would turn a deployment fact into an assumption.
 
 Contract:
 
-- `preflight(plan)` probes the selected deployment and returns an epoch-millisecond `probedAt`.
+- `preflightHosted(plan)` probes the selected deployment and returns an epoch-millisecond `probedAt`.
 - The manager persists the returned capabilities with the environment record.
 - A required `false` capability refuses before reservation or credential issuance.
 - `pauseKeepsMemory: false` means pause is not a memory-retaining lifecycle action.
@@ -84,14 +88,16 @@ Contract:
 
 ## 2. Image and template references
 
-Decision: `EnvironmentPlan.image.reference` is a discriminated `EnvironmentImageReference`.
-`describeImage` accepts the same reference and returns it unchanged in `EnvironmentImageDescription`,
-with a normalized record projection.
+Decision: `HostedEnvironmentPlan` adds a template arm beside the pending local manifest arm. Its
+template arm carries a discriminated `HostedEnvironmentImageReference`.
+`HostedEnvironmentDriverExtension.describeHostedImage` accepts the hosted reference and returns it
+unchanged in `HostedEnvironmentImageDescription`, with a normalized record projection. The pending
+local `describeImage(manifest)` signature stays unchanged.
 
 ```ts
-type EnvironmentImageReference =
-  | { kind: "oci"; manifest: EnvironmentFileReference }
-  | { kind: "template"; ref: string };
+type HostedEnvironmentImageReference =
+  | { kind: "oci"; manifest: HostedEnvironmentFileReference }
+  | { kind: "template"; ref: HostedEnvironmentRecordText };
 ```
 
 Reason: an OCI image is selected by a manager-local manifest, while a hosted provider creates from an
@@ -100,10 +106,10 @@ input from preflight, journaling and reconciliation.
 
 Contract:
 
-- The manager selects exactly one reference before preflight.
+- The manager selects one reference before preflight.
 - An OCI reference retains the current bounded local manifest validation.
 - A template `ref` is opaque nonsecret provider input. It is not an API key, signed URL or bearer.
-- `describeImage` performs a bounded read-only inspection and returns the exact input reference, a
+- `describeHostedImage` performs a bounded read-only inspection and returns the input reference, a
   normalized `{ kind, ref, digest? }` record projection, architecture, guest ABI, protocol version,
   connector pin, bundle digest and system trust digest.
 - For a template, `bundleSha256` is the digest of the Cotal guest bundle measured or attested inside
@@ -115,21 +121,24 @@ Contract:
 
 ## 3. Network mode and lifetime
 
-Decision: network selection is part of `EnvironmentPlan` and is immutable after provision. The driver
-also has an `extend` verb. Providers that do not support extension report `extend: false` and the verb
-refuses.
+Decision: network selection is part of `HostedEnvironmentPlan` and is immutable after provision.
+The driver also has an `extendHosted` verb. Providers that do not support extension report
+`extend: false` and the verb refuses.
 
 ```ts
-interface EnvironmentPlan {
+interface HostedEnvironmentPlan {
   // existing fields
   network: string | null;
 }
 
-interface EnvironmentDriver {
-  extend(ref: EnvironmentReference, op: OperationContext): Promise<EnvironmentLifetime>;
+interface HostedEnvironmentDriverExtension {
+  extendHosted(
+    ref: HostedEnvironmentReference,
+    op: HostedOperationContext,
+  ): Promise<HostedEnvironmentLifetime>;
 }
 
-interface EnvironmentLifetime {
+interface HostedEnvironmentLifetime {
   expiresAt: number | null;
   observedAt: number;
 }
@@ -145,11 +154,13 @@ Contract:
   default. The provider records the resolved network and never changes it in place.
 - A network change requires a new environment. Reconcile observes the recorded selection but does not
   repair drift by choosing another network.
-- `extend` is admitted, journaled and reconciled like other mutating driver operations.
-- `EnvironmentStatus.operation.kind` includes `extend`.
-- `extend: { stepMs }` promises that one successful call moves the provider deadline by at most that
-  fixed positive step. The manager reaches a longer requested lifetime through bounded repeated calls.
-- `extend` returns the provider-observed deadline. `expiresAt: null` means the provider reported no
+- `extendHosted` is admitted, journaled and reconciled like other mutating driver operations.
+- The merged environment operation union includes `extend`.
+- `extend: { stepMs }` carries a `HostedPositiveStepMs` constructed only by
+  `validateHostedPositiveStepMs`. One successful call moves the provider deadline by at most that
+  fixed positive step. The manager reaches a longer requested lifetime through bounded repeated
+  calls.
+- `extendHosted` returns the provider-observed deadline. `expiresAt: null` means the provider reported no
   deadline. It never means an unknown fetch result.
 - Timeout or cancellation leaves the operation uncertain until reconcile proves the same logical
   operation's result.
@@ -160,16 +171,16 @@ Decision: checkpoint output is a destination request, and export returns the ver
 A provider file is read through a separate bounded streaming method.
 
 ```ts
-type CheckpointOutput =
+type HostedCheckpointOutput =
   | { kind: "host-path"; path: string; maxBytes: number }
   | { kind: "provider-file"; maxBytes: number };
 
-type CheckpointExport =
-  | { kind: "host-path"; file: EnvironmentFileReference }
-  | { kind: "provider-file"; file: EnvironmentProviderFileReference };
+type HostedCheckpointExport =
+  | { kind: "host-path"; file: HostedEnvironmentFileReference }
+  | { kind: "provider-file"; file: HostedEnvironmentProviderFileReference };
 
-interface EnvironmentProviderFileReference {
-  environment: EnvironmentReference;
+interface HostedEnvironmentProviderFileReference {
+  environment: HostedEnvironmentReference;
   id: string;
   byteLength: number;
   sha256: string;
@@ -181,12 +192,13 @@ also omit the size and digest the manager needs to verify the read-out.
 
 Contract:
 
-- `exportCheckpoint` returns `CheckpointExport` instead of `void`.
+- `exportHostedCheckpoint` returns `HostedCheckpointExport`. The pending local `exportCheckpoint` and
+  `{ path, maxBytes }` output remain unchanged.
 - `host-path` writes only the requested path and returns the inspected file reference.
 - `provider-file` creates a provider-managed readable object and returns its opaque ID, size and
   digest. The ID is not a URL or credential.
-- `readProviderFile` is an `EnvironmentHandle` method and streams the named bytes under an
-  `OperationContext`. The guest-side provider channel owns the provider file namespace. The manager
+- `readHostedProviderFile` is a `HostedEnvironmentHandleExtension` method and streams the named bytes under an
+  `HostedOperationContext`. The guest-side provider channel owns the provider file namespace. The manager
   enforces `maxBytes`, byte length and SHA-256 while copying to its chosen destination.
 - The provider authorizes the read from the manager's current environment operation. It must not
   return a signed URL, provider credential or host path to the guest.
@@ -197,22 +209,22 @@ Contract:
 
 ## 5. Bearer source
 
-Decision: the environment launch request carries a discriminated `EnvironmentBearerSource`. The
+Decision: the environment launch request carries a discriminated `HostedEnvironmentBearerSource`. The
 manager fills it after selecting the deployment and before it stages the closed request.
 
 ```ts
-type EnvironmentBearerSource =
+type HostedEnvironmentBearerSource =
   | { kind: "socket"; path: string }
-  | { kind: "https"; url: string };
+  | { kind: "https"; url: HostedAuthorityHttpsUrl };
 
-interface EnvironmentLaunchAuthentication {
-  bearerSource: EnvironmentBearerSource;
+interface HostedEnvironmentLaunchAuthentication {
+  bearerSource: HostedEnvironmentBearerSource;
 }
 
-interface EnvironmentLaunchRequest {
-  // existing closed fields
-  authentication: EnvironmentLaunchAuthentication;
-  credential: MaterialDescriptor & { purpose: "agent-credential" };
+interface HostedEnvironmentLaunchRequest<Intent>
+  extends ProviderEnvironmentLaunchRequest<Intent> {
+  // every closed base field comes from ProviderEnvironmentLaunchRequest
+  authentication: HostedEnvironmentLaunchAuthentication;
 }
 ```
 
@@ -222,8 +234,8 @@ one operation: fetch a fresh bearer for the already bound agent principal.
 Contract:
 
 - A local provider uses `socket` with a guest-visible socket path.
-- A hosted provider uses `https` with the manager authority URL selected from trusted manager
-  configuration. The URL must use HTTPS and must not contain userinfo, a token or a signed query.
+- `validateHostedAuthorityHttpsUrl` is the only constructor for `HostedAuthorityHttpsUrl`. It refuses
+  non-HTTPS schemes, userinfo, queries and fragments before launch request construction.
 - The manager fills `authentication.bearerSource` after preflight and durable reservation. The
   existing top-level `credential` descriptor remains the sole admitted agent credential and is bound
   beside that source in the same canonical request. Provider configuration can select a trusted
@@ -235,10 +247,10 @@ Contract:
 
 ## 6. Credentials
 
-Decision: the launch request's existing top-level `credential` names the agent's own pre-minted,
-revocable credential material. The manager installs its bytes through the existing material staging
-path before `prepareLaunch`. `authentication.bearerSource` tells the guest how to use that credential
-to fetch a fresh bearer.
+Decision: `ProviderEnvironmentLaunchRequest` preserves every closed base launch field. Its top-level
+`credential` names the agent's own pre-minted, revocable credential material. The manager installs its
+bytes through the existing material staging path before `prepareLaunch`.
+`authentication.bearerSource` tells the guest how to use that credential to fetch a fresh bearer.
 
 Reason: `ManagerEnvironments.prepareSeat` already requires explicit credential material and installs
 it with the other declared inputs. Making it explicit under launch authentication binds the material
@@ -260,29 +272,29 @@ Contract:
 
 ## 7. Environment record
 
-Decision: the presence card's opaque `environment` value equals `EnvironmentRecord.id`. The complete
-record is durable in the manager's environment journal and is read through the manager control
-surface. It is not added to the Cotal wire specification.
+Decision: the presence card's opaque `environment` value equals `ManagedEnvironmentRecord.id`.
+The complete record is durable in the manager's environment journal and is read through the manager
+control surface. It is not added to the Cotal wire specification.
 
 ```ts
-interface EnvironmentRecord {
+interface ManagedEnvironmentRecord {
   version: "cotal-manager-environment-record/v1";
-  id: string;
-  provider: string;
-  providerRef: string;
-  space: string;
-  host: string;
-  arch: string;
-  engine: string;
-  volumeId: string;
-  image: { kind: "template" | "oci"; ref: string; digest?: string };
-  owner: string;
+  id: HostedEnvironmentRecordText;
+  provider: HostedEnvironmentRecordText;
+  providerRef: HostedEnvironmentRecordText;
+  space: HostedEnvironmentRecordText;
+  host: HostedEnvironmentRecordText;
+  arch: HostedEnvironmentRecordText;
+  engine: HostedEnvironmentRecordText;
+  volumeId: HostedEnvironmentRecordText;
+  image: HostedEnvironmentRecordImage;
+  owner: HostedEnvironmentRecordText;
   createdAt: number;
   state: "creating" | "running" | "stopped" | "failed";
   stoppedAt?: number;
   expiresAt?: number;
-  network?: string;
-  capabilities: EnvironmentCapabilities;
+  network?: HostedEnvironmentRecordText;
+  capabilities: HostedEnvironmentCapabilities;
   probedAt?: number;
 }
 ```
@@ -292,14 +304,14 @@ survive a provider reissued handle and must place the environment within its spa
 
 Contract:
 
-- The manager mints `id` before provider reservation and calls `reserve(id)`. The provider returns an
-  `EnvironmentReference` whose `id` is unchanged. The ID is globally unique across providers, has no
-  provider-prefix convention, and is never a credential.
+- The manager mints `id` before provider reservation and calls `reserveHosted(id)`. The provider
+  returns a `HostedEnvironmentReference` whose `id` is unchanged. The ID is globally unique across
+  providers, has no provider-prefix convention, and is never a credential.
 - `presence.environment === record.id` is the only join. A provider reference, host, volume or image
   reference is never an alternate join.
-- The provider exposes `facts(ref, op)` for `providerRef`, `volumeId`, resolved `network`, provider
-  deadline, state evidence, engine identity and provider observation time. `describeImage` supplies the
-  stable image digest when available.
+- The provider exposes `hostedFacts(ref, op)` for `providerRef`, `volumeId`, resolved `network`,
+  provider deadline, state evidence, engine identity and provider observation time.
+  `describeHostedImage` supplies the stable image digest when available.
 - The manager records `id`, `provider`, `space`, `host`, `owner`, `createdAt`, the selected image
   reference, normalized architecture, probe result and `probedAt`.
 - The manager maps provider observations to the closed record state. `stoppedAt` is present only after
@@ -307,14 +319,18 @@ Contract:
 - `providerRef` is opaque and may change after provider reconciliation. `id` never changes.
 - Every record update is appended or replaced through the manager's durable environment journal
   before it is served.
-- No field may contain a secret. In particular, no API key, bearer, credential path, signed URL,
-  control token or launch material ID is allowed. Dashboards may read the whole record.
+- Every record string is a `HostedEnvironmentRecordText`. Callers obtain it only through
+  `validateHostedEnvironmentRecordText`, which bounds it to 2048 UTF-8 bytes and refuses control
+  characters, bearer text, private-key or credential blocks, secret assignment text, URL userinfo
+  and secret-shaped query keys before journal storage. No API key, bearer, credential path, signed
+  URL, control token or launch material ID is allowed. Dashboards may read the whole record.
 
 ## 8. Host enrollment facts
 
-Decision: add an untargeted read command named `environment-host-facts` to the manager endpoint. It
-uses the existing `manager.read` capability class and returns one closed `EnvironmentHostFacts`
-value.
+Decision: the implementation must add an untargeted read command named `environment-host-facts` to
+both the manager contract table and `MANAGER_READ_COMMANDS`. It uses the existing `manager.read`
+capability class and returns one closed `EnvironmentHostFacts` value. This lane defines the shape but
+does not add manager implementation code.
 
 ```ts
 interface EnvironmentHostFacts {
@@ -359,7 +375,8 @@ lane does not define that behavior.
 
 ## Lifecycle and security rules
 
-- Every HTTPS provider call is bounded by the original `OperationContext` deadline and abort signal.
+- Every HTTPS provider call is bounded by the original `HostedOperationContext` deadline and abort
+  signal.
 - An accepted remote request that times out is uncertain. The manager reconciles the same logical
   operation ID before another mutation.
 - Provider references and file IDs are opaque identifiers, never authority.
