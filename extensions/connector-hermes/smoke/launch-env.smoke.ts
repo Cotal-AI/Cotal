@@ -46,7 +46,7 @@ const assert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 161;
+const EXPECTED_CELLS = 160;
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
@@ -310,35 +310,23 @@ assert.throws(
 );
 assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a refused adopt still leaves the operator's config untouched");
 
-// The MANAGED profile is the default, and it cannot see ~/.hermes. With no model resolved it writes
-// no `model:` key at all; hermes then chooses a default of its own, and a seat whose operator has no
-// key for that provider only finds out mid-turn, from a provider 401 whose advice points at their
-// own credentials. Their model usually is configured, in the profile this one never reads. The
-// launch says so while someone is still watching it.
-const captureErr = (fn: () => void): string => {
-  let out = "";
-  const real = process.stderr.write.bind(process.stderr);
-  (process.stderr as unknown as { write: (c: unknown) => boolean }).write = (c) => {
-    out += String(c);
-    return true;
-  };
-  try {
-    fn();
-  } finally {
-    (process.stderr as unknown as { write: typeof real }).write = real;
-  }
-  return out;
-};
+// The MANAGED profile is the default, and it cannot see ~/.hermes. With no model resolved it used to
+// write no `model:` key at all, and hermes then chose a default of its own; a seat whose operator
+// holds no key for that provider only found out mid-turn, from a provider refusal whose advice pointed
+// at their own credentials. A launch with no model is refused, naming what sets one, and writes no
+// profile at all, so nothing is left behind that a later spawn could take for a working one.
 const mgdNone = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-none-"));
-const noModelLog = captureErr(() => setupProfile(mgdNone, {}));
-assert.ok(!/^model:/m.test(readFileSync(join(mgdNone, "config.yaml"), "utf8")), "no resolved model writes no model: key");
-assert.match(noModelLog, /does not read ~\/\.hermes/, "and the launch says the managed profile cannot see the operator's own profile");
-assert.match(noModelLog, new RegExp(ADOPT_HOME_ENV), "naming the variable that runs the gateway on the operator's profile instead");
+assert.throws(
+  () => setupProfile(mgdNone, { model: undefined }),
+  /no model was resolved/,
+  "a managed profile with no resolved model refuses the launch",
+);
+assert.throws(() => setupProfile(mgdNone, { model: undefined }), new RegExp(ADOPT_HOME_ENV), "and names the variable that runs the gateway on the operator's own profile instead");
+assert.equal(existsSync(join(mgdNone, "config.yaml")), false, "a refused launch writes no config.yaml");
 
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
-const withModelLog = captureErr(() => setupProfile(mgdSet, { model: "vendor/some-model" }));
+setupProfile(mgdSet, { model: "vendor/some-model" });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
-assert.equal(/no model was resolved/.test(withModelLog), false, "and a resolved model has nothing to warn about");
 rmSync(mgdNone, { recursive: true, force: true });
 rmSync(mgdSet, { recursive: true, force: true });
 
