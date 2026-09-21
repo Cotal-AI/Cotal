@@ -411,10 +411,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       attachHost,
       maxSessions,
       installedExtensions: true,
-      // The root the manager owns: cwd under a service unit is the unit's WorkingDirectory, and
-      // findCotalRoot() would walk past it to the login user's ~/.cotal when that directory has no
-      // `.cotal` of its own. Pinning keeps the service manager on the install's root.
-      workspaceRoot: findCotalRoot(),
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
       remoteAuthority,

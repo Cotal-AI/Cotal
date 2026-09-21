@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { accessSync, constants, existsSync } from "node:fs";
-import { arch, cpus, homedir, hostname, totalmem } from "node:os";
+import { arch, cpus, homedir, totalmem } from "node:os";
 import { join } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
-import { DEFAULT_SERVER } from "@cotal-ai/core";
 import {
   commandIsCotalSupervisor,
   findMesh,
@@ -16,7 +15,6 @@ import {
   spaceKey,
   spaceSegment,
 } from "@cotal-ai/workspace";
-import { cotalRoot } from "../lib/paths.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -43,7 +41,9 @@ const MARKER = "installed by `cotal service install`";
 /** The directory the RUNNING user manager searches for units. Resolved from the manager's own
  *  environment (`systemctl --user show-environment`), never from this process's env: a
  *  shell-only XDG/HOME override (or a sudo/su shell) would write the unit where no manager ever
- *  looks, producing a unit that can be written but never enabled. */
+ *  looks, producing a unit that can be written but never enabled. A REACHABLE systemctl that
+ *  cannot reach the user bus is a hard refusal, not a fallback: guessing a directory in that
+ *  state would report an install status about a unit no manager could ever load. */
 function userUnitDir(): string {
   const env = systemctl(["show-environment"]);
   if (env.status === 0) {
@@ -55,8 +55,9 @@ function userUnitDir(): string {
     if (xdg) return join(xdg, "systemd", "user");
     const home = vars.get("HOME");
     if (home) return join(home, ".config", "systemd", "user");
+    throw new Error(`the systemd user manager reported no XDG_CONFIG_HOME and no HOME in its environment - cannot determine the user unit directory`);
   }
-  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd", "user");
+  throw new Error(`the systemd user session is not reachable (\`systemctl --user show-environment\` -> ${env.output || "no output"}) - cannot determine the user unit directory`);
 }
 
 const launchAgentsDir = (): string => join(process.env.HOME ?? homedir(), "Library", "LaunchAgents");
@@ -88,7 +89,10 @@ function kvmState(): HostFacts["kvm"] {
 export function hostFacts(): HostFacts {
   return {
     arch: arch(),
-    os: `${process.platform} ${hostname()}`,
+    // The operating system, not the hostname: a hostname names a network node (on cloud hosts it
+    // is infrastructure metadata), it is not OS information, and publishing it in a status feed
+    // leaks deployment details that nothing here needs.
+    os: process.platform,
     cpuCount: cpus().length,
     memoryBytes: totalmem(),
     kvm: process.platform === "linux" ? kvmState() : "absent",
@@ -175,19 +179,40 @@ function systemdUnitStatus(unit: string): { state: string; enabled: boolean | "u
 }
 
 /** Read the provenance fields a unit/plist carries. */
-function readUnitFields(path: string, meshPrefix: string, rootPrefix: string): { mesh?: string; root?: string; marked: boolean } {
-  const text = readFileSync(path, "utf8");
-  const mesh = text.split("\n").find((l) => l.startsWith(meshPrefix))?.slice(meshPrefix.length).trim();
-  const root = text.split("\n").find((l) => l.startsWith(rootPrefix))?.slice(rootPrefix.length).trim();
-  return { mesh, root, marked: text.includes(MARKER) };
+/** Read the provenance fields a unit/plist carries. The marker must be a WHOLE LINE at the
+ *  very start of the file, exactly as this command writes it: a substring anywhere else (a
+ *  Description= that quotes the phrase, a comment mid-file) is how an operator-written unit
+ *  comes to look owned, and looking owned is what uninstall keys on. */
+function readUnitFields(path: string, meshPrefix: string, rootPrefix: string, markerLine: string): { mesh?: string; root?: string; marked: boolean } {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const mesh = lines.find((l) => l.startsWith(meshPrefix))?.slice(meshPrefix.length).trim();
+  const root = lines.find((l) => l.startsWith(rootPrefix))?.slice(rootPrefix.length).trim();
+  return { mesh, root, marked: lines[0] === markerLine };
 }
 
 export async function service(args: ParsedArgs): Promise<void> {
-  const [sub] = args.positionals;
+  const [sub, ...rest] = args.positionals;
   const values = args.values as { mesh?: string; linger?: boolean; json?: boolean };
-  if (sub === "install") return install(values);
-  if (sub === "status") return status(values);
-  if (sub === "uninstall") return uninstall(values);
+  // A mesh name becomes a filename and an environment value; a newline breaks both (a split unit
+  // record, a two-line EnvironmentFile entry). Refuse rather than encode.
+  if (values.mesh !== undefined && /[\r\n]/.test(values.mesh))
+    throw new Error(`--mesh must be a single-line name (contains a line break)`);
+  if (sub === "install") {
+    if (rest.length) throw new Error("usage: cotal service install [--mesh <name>] [--linger]");
+    if (values.json) throw new Error("--json is for `service status`");
+    return install(values);
+  }
+  if (sub === "status") {
+    if (rest.length) throw new Error("usage: cotal service status [--mesh <name>] [--json]");
+    if (values.linger) throw new Error("--linger is for `service install`");
+    return status(values);
+  }
+  if (sub === "uninstall") {
+    if (rest.length) throw new Error("usage: cotal service uninstall [--mesh <name>]");
+    if (values.json) throw new Error("--json is for `service status`");
+    if (values.linger) throw new Error("--linger is for `service install`");
+    return uninstall(values);
+  }
   throw new Error("usage: cotal service <install [--mesh <name>] [--linger] | status [--mesh <name>] [--json] | uninstall [--mesh <name>]>");
 }
 
@@ -201,12 +226,14 @@ const serviceStateDir = (unitDir: string, mesh: string): string => join(unitDir,
  *  lines are a publication surface on a multi-user host). */
 const envFileName = (mesh: string): string => `cotal-manager@${spaceKey(mesh)}.env`;
 
-function writeEnvFile(mesh: string, root: string, stateDir: string): string {
+function writeEnvFile(mesh: string, server: string, stateDir: string): string {
   const path = join(stateDir, envFileName(mesh));
   const body = [
     `# ${MARKER}`,
     `COTAL_SPACE=${mesh}`,
-    `COTAL_SERVER=${DEFAULT_SERVER}`,
+    // The REGISTERED server, never a default: a mesh on a non-default port would otherwise boot
+    // its unit into a permanent crash loop on the supervise target mismatch.
+    `COTAL_SERVER=${server}`,
     `COTAL_HOME=${stateDir}`,
     `XDG_CONFIG_HOME=${join(stateDir, "config")}`,
     // Seeding ran synchronously in the installer; the unit must never start a lazy seed (a
@@ -243,7 +270,9 @@ function preseedService(stateDir: string): void {
  *  manager resolves the mesh exactly as an operator session would. Without the snapshot a
  *  private home is an empty registry, and `supervise` would refuse the space as unknown no
  *  matter what the EnvironmentFile says. Only the named mesh's entry is copied, never the
- *  whole registry (other meshes are not this unit's business). */
+ *  whole registry (other meshes are not this unit's business). VALIDATES FIRST and writes
+ *  nothing on a miss: the caller has not materialized any state yet, and an absent mesh must
+ *  refuse before a 20-second pre-seed leaves a directory uninstall cannot name. */
 function snapshotMeshEntry(mesh: string, stateDir: string): void {
   const entry = findMesh(mesh);
   if (!entry)
@@ -255,7 +284,15 @@ function snapshotMeshEntry(mesh: string, stateDir: string): void {
 
 function install(values: { mesh?: string; linger?: boolean }): void {
   const mesh = meshOf(values);
-  const root = cotalRoot();
+  // The REGISTERED mesh's root and server, not this process's cwd: `--mesh` is legal from any
+  // directory, and a unit bound to whatever folder the operator stood in would write pidfiles
+  // and logs into a root that is not the mesh's. findMesh is the validation gate; an unregistered
+  // mesh refuses HERE, before any state is materialized.
+  const entry = findMesh(mesh);
+  if (!entry)
+    throw new Error(`no mesh named "${mesh}" is registered - bring it up (\`cotal up\`) or register it (\`cotal meshes add\`) before \`cotal service install\``);
+  const root = entry.root;
+  const server = entry.server;
   // The manager is a singleton per space. Installing over a live one (typically `up --detach`'s)
   // would put the unit in a crash-restart loop against a lease it can never take, so refuse with
   // the exact remedy before anything is written.
@@ -274,10 +311,11 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     const dir = userUnitDir();
     const path = join(dir, unit);
     const stateDir = serviceStateDir(dir, mesh);
-    mkdirSync(stateDir, { recursive: true });
-    preseedService(stateDir);
+    // Validate FIRST, materialize after: an unregistered mesh (or a failed pre-seed) must not
+    // leave a state directory that no unit file names, because uninstall works from the unit.
     snapshotMeshEntry(mesh, stateDir);
-    const envFile = writeEnvFile(mesh, root, stateDir);
+    preseedService(stateDir);
+    const envFile = writeEnvFile(mesh, server, stateDir);
     const body = [
       `# ${MARKER}`,
       `# cotal-mesh: ${mesh}`,
@@ -301,7 +339,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       ``,
     ].join("\n");
     mkdirSync(dir, { recursive: true });
-    if (existsSync(path) && !readUnitFields(path, "# cotal-mesh:", "# cotal-root:").marked)
+    if (existsSync(path) && !readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`).marked)
       throw new Error(`${path} already exists and was not written by \`cotal service install\` - remove it by hand if you want this command to own it`);
     writeFileSync(path, body);
     systemctl(["daemon-reload"]);
@@ -317,10 +355,10 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     const dir = launchAgentsDir();
     const path = join(dir, `${label}.plist`);
     const stateDir = serviceStateDir(dir, mesh);
-    mkdirSync(stateDir, { recursive: true });
-    preseedService(stateDir);
+    // Same validate-first rule as the Linux arm.
     snapshotMeshEntry(mesh, stateDir);
-    const envFile = writeEnvFile(mesh, root, stateDir);
+    preseedService(stateDir);
+    const envFile = writeEnvFile(mesh, server, stateDir);
     const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const body = [
       `<!-- ${MARKER} -->`,
@@ -339,7 +377,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       `  <key>EnvironmentVariables</key>`,
       `<dict>`,
       `    <key>COTAL_SPACE</key><string>${esc(mesh)}</string>`,
-      `    <key>COTAL_SERVER</key><string>${esc(DEFAULT_SERVER)}</string>`,
+      `    <key>COTAL_SERVER</key><string>${esc(server)}</string>`,
       `    <key>COTAL_HOME</key><string>${esc(stateDir)}</string>`,
       `    <key>XDG_CONFIG_HOME</key><string>${esc(join(stateDir, "config"))}</string>`,
       `    <key>COTAL_SKIP_CONNECTOR_SEED</key><string>1</string>`,
@@ -352,7 +390,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       ``,
     ].join("\n");
     mkdirSync(dir, { recursive: true });
-    if (existsSync(path) && !readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:").marked)
+    if (existsSync(path) && !readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`).marked)
       throw new Error(`${path} already exists and was not written by \`cotal service install\` - remove it by hand if you want this command to own it`);
     writeFileSync(path, body);
     void envFile;
@@ -390,7 +428,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const unit = systemdUnitName(mesh);
     const path = join(userUnitDir(), unit);
     if (!existsSync(path)) return out;
-    const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:");
+    const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`);
     const state = systemdUnitStatus(unit);
     return {
       installed: true,
@@ -405,7 +443,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const label = launchdLabel(mesh);
     const path = join(launchAgentsDir(), `${label}.plist`);
     if (!existsSync(path)) return out;
-    const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:");
+    const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`);
     const listed = run("launchctl", ["list", label]);
     const pid = Number(listed.output.split("\t")[0]);
     return {
@@ -455,13 +493,15 @@ function uninstall(values: { mesh?: string }): void {
     const path = join(dir, unit);
     if (!existsSync(path))
       throw new Error(`no service unit for mesh "${mesh}" at ${path} - nothing installed by \`cotal service install\``);
-    const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:");
+    const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`);
     if (!fields.marked)
       throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
-    // Provenance keys on the marker PLUS the recorded mesh and root, never the unit name
-    // alone: a name-matched unit pointed at a different root is not this install.
-    if ((fields.mesh ?? mesh) !== mesh || fields.root !== cotalRoot())
-      throw new Error(`${path} was installed for mesh "${fields.mesh}" under ${fields.root} - it is not the install for mesh "${mesh}" under ${cotalRoot()}; run the uninstall from that root (or with --mesh ${fields.mesh})`);
+    // Provenance keys on the marker PLUS the recorded mesh, never the unit name alone. The MESH
+    // is the identity an explicit `--mesh` pins, so uninstall works from any directory: the
+    // unit's own records name the root it serves, and a cwd-walked root here would refuse the
+    // very remedy this command's errors hand out. A mesh mismatch is still a hard refusal.
+    if ((fields.mesh ?? mesh) !== mesh)
+      throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
     const stopped = systemctl(["disable", "--now", unit]);
     if (stopped.status !== 0) throw new Error(`disabling ${unit} failed: ${stopped.output}`);
     rmSync(path);
@@ -480,11 +520,12 @@ function uninstall(values: { mesh?: string }): void {
     const path = join(dir, `${label}.plist`);
     if (!existsSync(path))
       throw new Error(`no launchd agent for mesh "${mesh}" at ${path} - nothing installed by \`cotal service install\``);
-    const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:");
+    const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`);
     if (!fields.marked)
       throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
-    if ((fields.mesh ?? mesh) !== mesh || fields.root !== cotalRoot())
-      throw new Error(`${path} was installed for mesh "${fields.mesh}" under ${fields.root} - it is not the install for mesh "${mesh}" under ${cotalRoot()}; run the uninstall from that root (or with --mesh ${fields.mesh})`);
+    // Same mesh-pinned provenance rule as the Linux arm.
+    if ((fields.mesh ?? mesh) !== mesh)
+      throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
     const unloaded = run("launchctl", ["unload", "-w", path]);
     if (unloaded.status !== 0) throw new Error(`unloading ${path} failed: ${unloaded.output}`);
     rmSync(path);

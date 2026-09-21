@@ -1035,29 +1035,35 @@ systemd user unit (`~/.config/systemd/user/cotal-manager@<key>.service`, where `
 case-safe mesh key); on macOS a launchd agent plist under `~/Library/LaunchAgents/`. Any other
 platform, or an absent systemd/launchd user session, fails with a message naming what is missing.
 
+`install` resolves the mesh from the registry and binds the unit to that entry's root and broker
+address, so it can be run from any directory. The mesh must be registered (`cotal up` or
+`cotal meshes add`) before installing; an unregistered name refuses before anything is written.
+
 The unit's `ExecStart` is the bare `supervise` command. The mesh facts travel in a `0600`
-`EnvironmentFile` (`COTAL_SPACE`, `COTAL_SERVER`) rather than the command line, because command
-lines are readable by every user on a multi-user host. The same file gives the service a private
-`COTAL_HOME` and `XDG_CONFIG_HOME` under the unit directory, so the service manager never touches
-the login user's `~/.cotal`. First-run connector seeding runs synchronously inside `service
-install`, against that private config root; the unit itself starts with `COTAL_SKIP_CONNECTOR_SEED=1`
-so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot complete
-(network unreachable, registry error) refuses instead of deferring.
+`EnvironmentFile` (`COTAL_SPACE`, `COTAL_SERVER` pinned to the registered broker URL, whatever
+port it listens on) rather than the command line, because command lines are readable by every
+user on a multi-user host. The same file gives the service a private `COTAL_HOME` and
+`XDG_CONFIG_HOME` under the unit directory, so the service manager never touches the login
+user's `~/.cotal`. First-run connector seeding runs synchronously inside `service install`,
+against that private config root; the unit itself starts with `COTAL_SKIP_CONNECTOR_SEED=1`
+so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot
+complete (network unreachable, registry error) refuses instead of deferring.
 
 `service install` also refuses while a manager is already running for the mesh (`cotal down
-manager` first) and when the mesh is not registered. The restart policy is `Restart=always` with
-`RestartSec=20s`, chosen for manager units in production: a manager exits for reasons that are not
-failures (broker restarts, host suspend), where `on-failure` with a short interval thrashes.
+manager` first). The restart policy is `Restart=always` with `RestartSec=20s`, chosen for
+manager units in production: a manager exits for reasons that are not failures (broker
+restarts, host suspend), where `on-failure` with a short interval thrashes.
 
 `service status` reports the unit state from systemd/launchd, the manager's own health read from
 its pidfile at the unit's recorded root, and the machine facts a hosting side asks for:
-architecture, OS, whether `/dev/kvm` is present and accessible, CPU count, and total memory.
-`--json` returns the same fields as one object.
+architecture, OS (the platform, never the hostname), whether `/dev/kvm` is present and
+accessible, CPU count, and total memory. `--json` returns the same fields as one object.
 
 `service uninstall` stops and disables the unit and removes it plus the private state directory.
-It refuses any unit that was not written by `service install` (the files carry a provenance
-comment) or whose recorded mesh and root do not match the invocation, so operator-written units
-are never destroyed.
+It works from any directory: the unit's own records name the mesh and root it serves, and an
+explicit `--mesh <name>` selects it. It refuses any unit that was not written by `service
+install` (the files carry a provenance comment) or that was installed for a different mesh, so
+operator-written units are never destroyed.
 
 This command installs only the manager. The per-space auth service and the delivery daemon are
 not installed by it: on a shared broker an operator runs three units per space with `After=`
