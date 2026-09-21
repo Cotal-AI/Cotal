@@ -314,6 +314,14 @@ try {
   const noAuth = await waitFor("unauthenticated tool call", () => logEntries().find((e) => e.ev === "toolReplyNoAuth"));
   check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
 
+  await dm("APPROVAL probe");
+  await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "item/commandExecution/requestApproval"));
+  const approvalCondition = await waitFor("approval presence condition", () => {
+    const condition = operator.getRoster().find((p) => p.card.name === PEER)?.condition;
+    return condition?.source === "item/commandExecution/requestApproval" ? condition : undefined;
+  });
+  check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
+
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
   // foreign turn's `completed` must never finalize the host's own batch: the batch was never

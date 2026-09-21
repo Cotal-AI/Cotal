@@ -348,6 +348,9 @@ async function runTurn(text) {
     });
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
+  if (text.includes("APPROVAL")) {
+    await serverRequest("item/commandExecution/requestApproval", { threadId: THREAD, turnId, itemId: `cmd_${turnSeq}` });
+  }
   await waitForOutageGate(text);
   await waitForOpenWalGate(text, turnId);
   if (text.includes("SOLOTUI") && !soloUsed) {
