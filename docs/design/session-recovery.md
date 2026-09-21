@@ -1,6 +1,6 @@
 # Session recovery for a managed seat
 
-Lane L4. A design record, not a description of shipped behavior. Every claim about current behavior
+A design record, not a description of shipped behavior. Every claim about current behavior
 names the file and the function it was read from. Everything else is proposed.
 
 ## The question
