@@ -430,7 +430,16 @@ async function runTurn(text) {
       item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
     });
   activeTurn = undefined;
-  notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status } });
+  notify("turn/completed", {
+    threadId: THREAD,
+    turn: {
+      id: turnId,
+      status,
+      ...(status === "failed"
+        ? { error: { message: "fake rate limit", codexErrorInfo: "rateLimitExceeded", willRetry: false } }
+        : {}),
+    },
+  });
 }
 
 // One websocket frame is a complete unit (no partial message carries across frames), but it may

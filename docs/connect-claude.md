@@ -243,9 +243,14 @@ from delivering messages or flushing held ones.
 | `SessionStart` | `idle` (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
 | `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
-| `Notification` (permission / elicitation) | `waiting` (blocked on a human: activity leads with the pending tool, e.g. `Bash: git push …`) |
-| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). On the [event plane](#event-plane) the two differ: `StopFailure` closes the run with `RUN_ERROR`. |
+| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |
+| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
+
+`StopFailure` maps `rate_limit` and `overloaded` directly; auth and credential failures to
+`auth`; account and billing failures to `billing`; `invalid_request` to `request`;
+`model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
+`unknown` to `failed`. The native value remains in `condition.source`.
 
 Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
 socket + per-launch token, constant-time checked), so a local process that finds the path
