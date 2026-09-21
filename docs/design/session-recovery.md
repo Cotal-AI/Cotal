@@ -61,13 +61,20 @@ component, and it is proposed here in the form a self-hoster can verify by hand:
   recorded in the checkpoint by path, byte size and sha256;
 - the base commit the bundle is anchored on, by full object id, so a destination refuses a bundle that
   does not apply to the tree it holds;
-- a delta covering everything the bundle cannot carry: tracked modifications, the index, and the
+- a delta covering what the bundle cannot carry: tracked modifications against that base, and the
   untracked files the operator declares in scope. Recorded the same way, by size and digest.
 
 The delta is the part an operator gets wrong, so the checkpoint states its own completeness rather
 than implying it. The delta record carries the exact selection rule it was produced under, and a
 destination that cannot reproduce that rule refuses. An untracked path that was in scope and is
-absent from the delta is a refusal, never a silently thinner tree. This follows the shape
+absent from the delta is a refusal, never a silently thinner tree.
+
+What the delta does not carry is the staging state. A diff against the base records the difference
+between that commit and the worktree, not which parts of it were staged, and section 6 measures the
+consequence: a restored tree reproduces the source's `git status --porcelain` only when the diff is
+applied without `--index`. So a seat whose next action depends on a partially staged index is outside
+what a checkpoint reproduces, and this is stated here rather than discovered on a destination host.
+This follows the shape
 `inventoryReferenceError` already uses for dependency files: a recorded reference that cannot be
 proven is an error, not a warning.
 
@@ -121,8 +128,11 @@ own instance identity is out of scope by the same rule: `ManagerInstanceIdentity
 hardened secret file for that reason.
 
 A checkpoint does carry credential *references*: `ManagerResumeIdentity` in mode `static` carries
-`credential: { kind: "file"; path; sha256 }`, and mode `user` carries `actorToken`,
-`sentinelCredential` and `health` the same way. A reference is a path and a digest, and the file it
+`credential: { kind: "file"; path; sha256 }`, and mode `user` carries `actorToken` and
+`sentinelCredential` in the same shape. Its `health` field is the exception and carries
+`{ kind: "file"; path }` with no digest, in both the type in `manager.ts` and the schema in
+`resume.ts`, because a health file is written by the running seat rather than being a fixed input.
+A reference is a path and, for the two credential files, a digest, and the file it
 names stays on the host. Moving a seat across hosts therefore requires the destination to already
 hold that identity material, or to be on a shared path both hosts see. This design does not move
 secrets and does not propose a mechanism for it. A destination that cannot resolve a recorded
@@ -367,7 +377,11 @@ Custody transfer, in order:
 3. **Destination admits the checkpoint** through section 2's three gates.
 4. **Destination advances the generation** by exclusive create on the successor value, before it
    launches anything. A create that loses means another destination is already claiming this seat,
-   and the loser refuses rather than adopting. This mirrors `createManagerInstanceIdentity`.
+   and the loser refuses rather than adopting. The publication primitive is the one
+   `createManagerInstanceIdentity` uses, and the resolution of a lost create is deliberately not:
+   that helper adopts the winner on `EEXIST`, because two managers sharing one logical instanceId is
+   the intended outcome there. Here a lost create means two hosts are claiming one seat, which is the
+   condition this fence exists to stop, so it refuses. Same primitive, opposite disposition.
 5. **Destination launches**, recovering the recorded `lifecycleUid`, so the resumed endpoint binds
    the same lifecycle-keyed durables and passes the broker's lifecycle proof in `CotalEndpoint.start`.
 6. **Destination proves the seat is the one it meant to resume**, per section 5.
@@ -399,9 +413,10 @@ exists to prevent. The generation is monotonic, and monotonicity survives a cloc
 The manager lease in `packages/core/src/lease.ts` is the local evidence for this. `ManagerLeaseInfo`
 is documented as per-instance liveness rather than a per-space singleton, keyed by `instanceId`, with
 the note that a second manager's create no longer throws because a distinct instance id is a distinct
-key, and losing the key stops that instance only. `MANAGER_LEASE_TTL_MS` in `streams.ts` is 10000,
-and its comment is explicit that past the TTL the key expires at the broker while the holder keeps
-serving and puts it back when the broker answers again, and that nothing there ends the holder's
+key, and losing the key stops that instance only. `MANAGER_LEASE_TTL_MS` in `streams.ts` is 10000.
+The sentence that matters here sits on `MANAGER_LEASE_RENEW_MS` rather than on the TTL itself, and it
+is explicit: past the TTL the key expires at the broker while the holder keeps serving and, when the
+broker answers again, reads the key gone and puts it back, and nothing there ends the holder's
 process. A lease that does not stop its holder is liveness information, not a fence. The design uses
 it as liveness information and nothing more.
 
@@ -768,9 +783,28 @@ is proven dead:
 cd "$ROOT"
 git bundle create "$ROOT/../ckpt-repo.bundle" --all
 git rev-parse HEAD > "$ROOT/../ckpt-repo.base"
-git status --porcelain=v1 -z > "$ROOT/../ckpt-repo.delta-list"
-sha256sum "$ROOT/../ckpt-repo.bundle" "$ROOT/../ckpt-repo.delta-list"
 ```
+
+The bundle carries reachable history, so it does not carry the two things section 1.1 names beside
+it: tracked modifications against the recorded base, and the untracked files the operator declares in scope.
+Those are bytes and have to be captured as bytes. The index and tracked worktree modifications go in
+as a diff against the recorded base, and the declared untracked set goes in as an archive:
+
+```bash
+cd "$ROOT"
+git diff --binary HEAD > "$ROOT/../ckpt-repo.tracked.diff"
+git ls-files --others --exclude-standard -z \
+  | tar --null --files-from=- -cf "$ROOT/../ckpt-repo.untracked.tar"
+sha256sum "$ROOT/../ckpt-repo.bundle" "$ROOT/../ckpt-repo.tracked.diff" \
+  "$ROOT/../ckpt-repo.untracked.tar" > "$ROOT/../ckpt-repo.sha256"
+```
+
+`--exclude-standard` is the selection rule this capture was produced under, and it is the rule the
+checkpoint records, because section 1.1 requires the destination to be able to reproduce it. It
+honors `.gitignore`, so an ignored file that the seat actually needs is outside the checkpoint and has
+to be named separately or it will not travel. Digesting a `git status` listing instead would record
+that the files exist without recording what is in them, which is the defect this snippet exists to
+avoid.
 
 Then copy the pi session store, whose path is an operator input for the reason section 5.1 gives:
 this repository does not name it, and the design does not invent it. Digest whatever is copied.
@@ -797,9 +831,39 @@ job and out of this design's scope.
 
 ### Step 7 on host B. Restore the repository state
 
-Apply the bundle at the recorded base commit, then the delta, in the seat's `cwd`. A bundle that does
-not apply to the recorded base is a refusal, not a merge. This is manual for the reason given above:
-no command carries these components yet.
+Verify the three digests from step 5 first, then apply the artifacts in order, in the seat's `cwd`:
+
+```bash
+cd "$ROOT/.."
+sha256sum -c ckpt-repo.sha256
+git clone ckpt-repo.bundle "$ROOT"
+cd "$ROOT"
+git rev-parse --verify "$(cat ../ckpt-repo.base)^{commit}"
+git checkout --detach "$(cat ../ckpt-repo.base)"
+git apply --binary ../ckpt-repo.tracked.diff
+tar -xf ../ckpt-repo.untracked.tar
+```
+
+The `rev-parse --verify` is the refusal, and it is the reason the base commit is recorded separately
+from the bundle. A bundle that does not contain the recorded base does not apply to the tree this
+checkpoint describes, and the resume stops there rather than continuing against a different history.
+A failed `git apply` is the same kind of refusal, not a merge to be resolved by hand.
+
+Two details in that sequence were measured rather than assumed, because a command in a validation
+procedure is a claim like any other. `git clone` is used rather than `git fetch` into an existing
+repository: fetching the bundle's refs into a fresh `git init` fails with `refusing to fetch into
+branch 'refs/heads/master' checked out at …`, since the branch being fetched is the one HEAD is on.
+And `git apply` runs without `--index`: with it, the restored tree reports the tracked modification as
+staged (`M ` rather than ` M`), which does not reproduce the source. Without it the restored
+`git status --porcelain` is byte-identical to the source's.
+
+So the index itself does not survive this capture. `git diff --binary HEAD` records the difference
+between the base commit and the worktree, which is what the seat needs to keep working, and it does
+not record which of those changes were staged. A seat whose next action depends on a partially staged
+index is outside what this procedure reproduces, and the checkpoint should say so rather than imply a
+fidelity it does not have.
+
+This is manual for the reason given above: no command carries these components yet.
 
 This comes before the resume deliberately, and the earlier draft of this record had it after. A seat
 resumed in step 8 may take a turn as soon as it is ready, and a turn against a tree that has not been
@@ -854,7 +918,8 @@ it is enforced there rather than merely displayed: `Manager.awaitRecoveredSessio
 `replacement reported session <reported>, expected <expected>` on a mismatch. On the pi side there is
 a matching guard: the `session_start` handler in `extensions/pi/src/extension.ts` throws
 `pi connector: expected session <expected>, host opened <actual>` when the runtime's expected id does
-not match, and the startup path throws the same way against `PI_SESSION_ID`.
+not match. The startup path throws a separate message, `pi connector: expected startup session
+<expected>, host opened <actual>`, checked against `PI_SESSION_ID` before the first `session_start`.
 
 **Observation 2, the lifecycle uid is unchanged.**
 
@@ -929,3 +994,7 @@ Named so that a reader does not mistake absence for completeness.
    `packages/core/src/backup.ts`, so an acknowledgement taken out of order above that floor is
    redelivered. Nothing in this design narrows that, and section 4.2 leaves the burden with the
    seat's own ledger.
+8. **The git index does not survive a checkpoint.** The delta is a diff against the recorded base, so
+   staging state is lost; section 6 measures this as the reason the restore applies the diff without
+   `--index`. A seat mid-way through a staged commit resumes with the same bytes and a different
+   index.
