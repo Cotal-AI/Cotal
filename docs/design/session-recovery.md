@@ -170,11 +170,26 @@ Steps 7 and 8 are additions. Steps 1 through 6 are the shipped sequence, and the
 reorder them.
 
 One property of step 5 is worth stating because it is easy to lose. Suppressing the leave hooks is
-what keeps the broker footprint intact across the cut: the lifecycle-keyed durables stay, and
+what keeps the broker footprint intact across a same-host cut: the lifecycle-keyed durables stay, and
 `CotalEndpoint.ensureDmDurable` in `packages/core/src/endpoint.ts` documents that an existing
 durable for this lifecycle is kept as-is, preserving the original frontier, so the activation moment
 never moves. A cut that ran the ordinary teardown would deprovision those durables and the resumed
 seat would lose everything queued for it. This is also why the uid must be recovered and not minted.
+
+A cross-host move does not preserve that frontier, and the distinction is load-bearing enough to
+state here rather than leave to section 4. A durable consumer is not a file that can be copied. When
+the seat's state travels by the offline backup path, the durable is rebuilt from a conservative
+checkpoint: `validatePersistentConsumerInventory` in `packages/core/src/backup.ts` records each
+recognized pull durable as its contiguous `ack_floor.stream_seq` plus a creation lower bound, and
+`consumerConfigFromCheckpoint` rebuilds it at
+`max(ackFloorStreamSequence + 1, creationLowerBound, first_seq)`. `expectedConsumerConfig` in that
+file is what admits the per-seat durables to this path at all, resolving a `dm_` or `dlv_` name back
+through `principalFromDurable` to its owner, actor and lifecycle uid.
+
+The consequence is that the rebuilt consumer starts at or below where the old one stood, never above
+it. A message acknowledged out of order, above the contiguous floor, is delivered again. So a
+cross-host resume is at-least-once for inbound delivery by construction rather than by accident, and
+section 4.2's ledger requirement is what absorbs it. Nothing is lost, and some things arrive twice.
 
 ## 2. Freshness admission
 
@@ -490,7 +505,10 @@ possibly-live provider call before durable redelivery.
 
 So for a cross-host resume: an unacknowledged inbound message is redelivered, because the cut did not
 acknowledge it. That is correct and is the reason the leave hooks are suppressed at step 5 of section
-1.3, which keeps the durable consumer and its frontier intact. An outbound send that was in flight is
+1.3, which keeps the seat's durable consumer alive rather than deprovisioning it. On a cross-host
+move the redelivery window is wider, for the reason section 1.3 records: the durable is rebuilt at
+its conservative contiguous ack floor by `consumerConfigFromCheckpoint`, so anything acknowledged out
+of order above that floor returns as well. An outbound send that was in flight is
 at-least-once with no stronger claim, and this design does not manufacture one. A seat whose last
 act before the cut was a channel post may post again on resume. The mitigation is the harness's own
 ledger and nothing in Cotal.
@@ -674,7 +692,7 @@ names. The seat's workspace root is `$ROOT` on both.
 The commands below are the shipped surface: `cotal up`, `cotal spawn`, `cotal ps`,
 `cotal down --preserve-state`, `cotal backup create` and `cotal up --restore` as `docs/cli.md`
 documents them. The checkpoint components this design adds (the repository bundle, the delta and the
-harness store) have no command yet, so steps 5 and 8 name what an operator copies rather than a flag
+harness store) have no command yet, so steps 5 and 7 name what an operator copies rather than a flag
 that does not exist. Saying which steps are manual is the point of writing the procedure down.
 
 ### Step 1 on host A. Bring the mesh up
@@ -777,12 +795,34 @@ carries credential references, not credentials. In `static` mode that is
 identity file is not private (expected 0600)` if it is absent or loose. Placing it is the operator's
 job and out of this design's scope.
 
-### Step 7 on host B. Drive the resume
+### Step 7 on host B. Restore the repository state
+
+Apply the bundle at the recorded base commit, then the delta, in the seat's `cwd`. A bundle that does
+not apply to the recorded base is a refusal, not a merge. This is manual for the reason given above:
+no command carries these components yet.
+
+This comes before the resume deliberately, and the earlier draft of this record had it after. A seat
+resumed in step 8 may take a turn as soon as it is ready, and a turn against a tree that has not been
+restored yet acts on the wrong repository with full confidence. The tree is a precondition of the
+seat, not a follow-up to it, which is the same ordering rule step 5 of section 1.3 applies at the
+other end: capture after the harness is dead, restore before it is alive.
+
+### Step 8 on host B. Drive the resume
 
 ```bash
 cd "$ROOT"
 cotal up --restore "$ROOT/../ckpt-space" --detach
 ```
+
+Two preconditions hold here and neither is created by this command. `docs/cli.md` (Backups) records
+that restore requires the same space and existing trust state, and states plainly that restore never
+creates fresh auth: an authenticated restore validates the space trust bundle before staging,
+including nkeys, seed matches, JWTs, signers and space binding. So host B must already be a member of
+this space's trust chain. And the resume document has to be present, because
+`Manager.resumePreserved` is handed an inventory rather than discovering one:
+`readMaintenanceResumeDocument` in `packages/workspace/src/maintenance.ts` reads the fixed
+`.cotal/maintenance/v<N>/resume.json` path and verifies it against the descriptor in the journal.
+Both are the operator inputs section 1.2 refuses to move, for the reason given there.
 
 `docs/cli.md` (Backups) records the sequence this drives: after listener readiness the manager starts
 attempt-bound, validates retained credentials and tokens without granting or reprovisioning, and
@@ -794,12 +834,6 @@ an `active` response for the exact token releases suppression.
 In the code that is `Manager.resumePreserved`, then `Manager.opCommitResume` into
 `Manager.commitResumeActivation`, then `Manager.opFinalizeResume`, whose argument parser
 `parseResumeFinalizeArgs` in `resume.ts` requires `durableCommitToken` to match `/^[a-f0-9]{64}$/`.
-
-### Step 8 on host B. Restore the repository state
-
-Apply the bundle at the recorded base commit, then the delta, in the seat's `cwd`. A bundle that does
-not apply to the recorded base is a refusal, not a merge. This is manual for the reason given above:
-no command carries these components yet.
 
 ### Step 9 on host B. Prove continuity
 
@@ -862,7 +896,7 @@ re-adopt the incarnation.
 ### The limits of this procedure
 
 It does not prove the fence. One seat moved once, with the source stack down, exercises the happy
-path. The fence is tested by starting host A's stack again after step 7 and confirming host A's seat
+path. The fence is tested by starting host A's stack again after step 8 and confirming host A's seat
 cannot write as that identity. That is the check section 3.3 exists for, it needs the eviction
 evidence path described there, and it is a different procedure from this one.
 
@@ -874,7 +908,7 @@ procedure would detect a tool call that landed on the world and left no record.
 
 Named so that a reader does not mistake absence for completeness.
 
-1. **The repository bundle has no command.** Steps 5 and 8 are manual. The capture rule for untracked
+1. **The repository bundle has no command.** Steps 5 and 7 are manual. The capture rule for untracked
    files is declared in the checkpoint, and a destination that cannot reproduce that rule refuses,
    but nothing enforces the rule at capture time.
 2. **The per-seat generation is not implemented.** Section 3.2 names the file it belongs in and the
@@ -890,3 +924,8 @@ Named so that a reader does not mistake absence for completeness.
    `drain-only`, by their own declarations in `extensions/connector-claude-code/src/extension.ts` and
    `extensions/connector-jcode/src/extension.ts`. Cross-host seat continuity is a pi capability
    today, not a Cotal capability.
+7. **Inbound delivery is at-least-once across a cross-host move, not at the same frontier.** The
+   durable is rebuilt at its contiguous ack floor by `consumerConfigFromCheckpoint` in
+   `packages/core/src/backup.ts`, so an acknowledgement taken out of order above that floor is
+   redelivered. Nothing in this design narrows that, and section 4.2 leaves the burden with the
+   seat's own ledger.
