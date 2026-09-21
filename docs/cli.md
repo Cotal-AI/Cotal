@@ -48,6 +48,7 @@ runtimes ship this way.
 | Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
+| Agents & personas | [`service`](#service) | Run the manager as a user service (survives logout and reboot) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
@@ -1014,6 +1015,54 @@ the authority service and grant `supervise` for detached agents. If a running re
 renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
 silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
 condition.
+
+## service
+
+```bash
+cotal service install [--mesh <name>] [--linger]
+cotal service status [--mesh <name>] [--json]
+cotal service uninstall [--mesh <name>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--mesh <name>` | this folder's mesh | The mesh whose manager the service runs; one unit per mesh |
+| `--linger` | off | install: also enable user lingering so the user manager starts at boot and the service survives logout. Never enabled silently |
+| `--json` | off | status: machine-readable output |
+
+Runs the manager as a user service so it survives logout and reboot. On Linux this installs a
+systemd user unit (`~/.config/systemd/user/cotal-manager@<key>.service`, where `<key>` is the
+case-safe mesh key); on macOS a launchd agent plist under `~/Library/LaunchAgents/`. Any other
+platform, or an absent systemd/launchd user session, fails with a message naming what is missing.
+
+The unit's `ExecStart` is the bare `supervise` command. The mesh facts travel in a `0600`
+`EnvironmentFile` (`COTAL_SPACE`, `COTAL_SERVER`) rather than the command line, because command
+lines are readable by every user on a multi-user host. The same file gives the service a private
+`COTAL_HOME` and `XDG_CONFIG_HOME` under the unit directory, so the service manager never touches
+the login user's `~/.cotal`. First-run connector seeding runs synchronously inside `service
+install`, against that private config root; the unit itself starts with `COTAL_SKIP_CONNECTOR_SEED=1`
+so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot complete
+(network unreachable, registry error) refuses instead of deferring.
+
+`service install` also refuses while a manager is already running for the mesh (`cotal down
+manager` first) and when the mesh is not registered. The restart policy is `Restart=always` with
+`RestartSec=20s`, chosen for manager units in production: a manager exits for reasons that are not
+failures (broker restarts, host suspend), where `on-failure` with a short interval thrashes.
+
+`service status` reports the unit state from systemd/launchd, the manager's own health read from
+its pidfile at the unit's recorded root, and the machine facts a hosting side asks for:
+architecture, OS, whether `/dev/kvm` is present and accessible, CPU count, and total memory.
+`--json` returns the same fields as one object.
+
+`service uninstall` stops and disables the unit and removes it plus the private state directory.
+It refuses any unit that was not written by `service install` (the files carry a provenance
+comment) or whose recorded mesh and root do not match the invocation, so operator-written units
+are never destroyed.
+
+This command installs only the manager. The per-space auth service and the delivery daemon are
+not installed by it: on a shared broker an operator runs three units per space with `After=`
+edges (auth service, then manager, then delivery) and stops them in reverse. A broker-side `cotal
+up` unit is a separate unit documented in [Run a mesh](run-a-mesh.md).
 
 ## reconcile-gate
 
