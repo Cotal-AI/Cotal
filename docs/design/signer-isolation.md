@@ -74,7 +74,10 @@ sign/mint seam would be a separate capability. Isolation is that seam.
   durables then `mintCreds(..., "agent")`. `mintPublicUserJwt` is the same `fromSeed` for the
   closed remote-manager protocol.
 
-Manager call sites that pass `this.auth` (or the `runStart` closure) into `mintCreds` today:
+Every production `mintCreds` / `getSpaceAuth` on this host is a signer client after isolation.
+Smokes that mint into a fixture are not.
+
+**`Manager` (`manager.ts`) holds `this.auth` and passes it into `mintCreds`:**
 
 | Profile | Function |
 |---|---|
@@ -91,14 +94,65 @@ Manager call sites that pass `this.auth` (or the `runStart` closure) into `mintC
 | `goal-writer` | goal index |
 | `session-ledger` / `session-serving` / `session-caller` | console session plane |
 
-`remintDaemonCreds` (`packages/workspace/src/renewal.ts`) is the other standing signer user: it
+**`RunHosting` (`implementations/manager/src/run-hosting.ts`) is a second holder of the same
+object.** `Manager.runStart` constructs it with `auth: this.auth` (`manager.ts`).
+`RunHostingContext.auth` is that `SpaceAuth`. Its mint sites:
+
+| Profile | Function |
+|---|---|
+| `run-admitter` | `withAdmitter` |
+| `run-driver` | `drive` (first mint) and `renew` (same nkey) |
+| `run-mediator` | `drive` and `renew` |
+| `run-operator` | `withOperator` (one-shot read / answer) |
+
+**Barrier helpers take `opts.auth: SpaceAuth` from the manager (or from the CLI below) and mint
+in-process today:**
+
+| Profile | Function |
+|---|---|
+| `endpoint-evictor` | `makeManagerEndpointEvictionEvidence` (`endpoint-evict.ts`) |
+| `endpoint-evictor` | `makeManagerHolderLivenessProbe` (`holder-liveness.ts`) |
+
+**Operator commands in the manager package load their own bundle with `getSpaceAuth` and mint.
+They are not `this.auth`, but they are the same seed on this host:**
+
+| Profile | Function |
+|---|---|
+| `endpoint-serve-executor` | `runReconcileGate` (`commands.ts`) |
+| `control-caller-privileged` | `runDeregisterInstance` (probe) |
+| `endpoint-serve-executor` | `runDeregisterInstance` (delete) |
+
+`remintDaemonCreds` (`packages/workspace/src/renewal.ts`) is the standing renewal owner: it
 calls `getSpaceAuth` on the same store, then `mintCreds` for the `delivery` and `membership-rw`
 profiles. The manager invokes it from `runStart`'s renewal path. `cotal doctor auth --fix` is the
 offline caller.
 
-CLI `mint` (`implementations/cli/src/commands/mint.ts`) loads via `getSpaceAuth` /
-`getSoleSpaceAuth` and calls `mintCreds` or `provisionForMint`. It is an out-of-band signer
-client, not a child of the manager.
+**CLI signer clients** (each `getSpaceAuth` / `getSoleSpaceAuth` then `mintCreds`): `mint`
+(`implementations/cli/src/commands/mint.ts`); `up` (provisioner, membership-rw, control-caller-admin);
+`spawn` (operator, provisioner, deprovisioner); `join` (provisioner); `status` (observer, deployer);
+`agents` (session-caller); `down-manifest` (`teardown`); `backup` / restore; `delivery-proc`
+(`delivery`); `spawn-manifest` (`channel-writer`); attach scatter probe
+(`implementations/cli/src/lib/control.ts`, `control-caller-privileged`). They run as a uid on the
+signer allowlist after §6, never as `cotal-agent`.
+
+`connect.ts` (`packages/workspace/src/connect.ts`) mints `control-caller-privileged`,
+`control-caller-admin`, and `deployer` from `target.auth`. `preflight.ts` mints `probe` from
+`target.auth`. Both are the CLI/workspace composition, not a child of the manager.
+
+**Other production processes on this host that mint from a loaded `SpaceAuth` today:**
+
+| Profile | Function |
+|---|---|
+| `issuer` | `withIssuerSession` (`packages/core/src/issuer-session.ts`); any caller that already holds `SpaceAuth` |
+| `delivery` | `runDelivery` `--dev-mint` (`implementations/delivery/src/delivery.ts`); production delivery reads a pre-minted cred and does not load the signer |
+| `run-mediator` / `run-admitter` | local `cotal run` (`implementations/runtime/src/run-command.ts`) from `conn.auth` |
+| `channel-purger` | `web()` (`implementations/web/src/web.ts`); last use of `conn.auth` before the handler drops the seed |
+| `session-serving` / `retirement-requester` / `endpoint-serve` | `mintPublicUserJwt` in `implementations/auth/src/service.ts` (closed remote-manager protocol; same `fromSeed`) |
+
+**Auth-service process** (`implementations/auth/src/commands.ts` `getSpaceAuth` then `mintCreds`
+`supervisor`; `barrier-evict.ts` and `plane-claim.ts` mint `supervisor` from a passed `SpaceAuth`).
+It is a sibling signer client on the same host. Isolation puts it on the same socket; it does not
+keep a copy of the seed.
 
 ### 1.3 What is not the account signer
 
@@ -138,7 +192,8 @@ Production Linux goes through `CustodialPtyRuntime.spawn`
 (`packages/seat/src/launcher.ts`). `launchSeat` `spawn`s the custodian with `detached: true` and
 a scrubbed env. `runCustodian` (`packages/seat/src/custodian.ts`) then `pty.spawn`s the agent
 with `launch.env`. Neither spawn drops uid. Custodian, agent child, and manager share the
-operator uid that started `cotal up`.
+operator uid that started `cotal up`. After isolation the manager is `cotal-manager` and cannot
+`setuid`; §3.3 names the privileged launcher that performs the drop.
 
 ### 2.2 Mount namespace
 
@@ -255,9 +310,35 @@ directory is `0750` `cotal-signer:cotal-manager`. The socket is `0660` after bin
 pattern is `chmodSync(path, 0o600)` in `runCustodian`; here the group must be able to connect,
 so `0660`, then `SO_PEERCRED` allowlist).
 
-Agent spawn gains an explicit uid/gid on the Linux pty path (`CustodialPtyRuntime` /
-`runCustodian`'s `pty.spawn`). Absent that drop, isolation is not on. The manager throws at
-start rather than supervising same-uid children against a locked seed.
+The current spawn chain cannot perform that drop. `launchSeat` (`packages/seat/src/launcher.ts`)
+`spawn`s the custodian as the caller; `runCustodian` then `pty.spawn`s the agent. Neither call
+sets uid. A process already running as `cotal-manager` that calls `setuid(cotal-agent)` gets
+`EPERM`. A linger `systemctl --user` unit cannot start a unit as another uid. Isolation is not
+on until a **privileged launcher** exists; the manager throws at start if it is absent.
+
+**Named boundary: `cotal-seat-launch`, a system unit, not a user unit.** It is the only process
+that may change uid. The manager never receives `CAP_SETUID`.
+
+- Unit: `cotal-seat-launch.service`, `User=root` (or a dedicated user whose
+  `CapabilityBoundingSet` / `AmbientCapabilities` are only `CAP_SETUID` and `CAP_SETGID`).
+- Socket: `/run/cotal/seat-launch.sock`, directory `0750` `root:cotal-manager`, socket `0660`
+  after bind. Same listen / chmod / truncation check as `runCustodian`.
+- Auth: `peerCredentials` allowlist is the `cotal-manager` uid only, then a capability token
+  (the seat `hello` pattern).
+- Request: the existing custodian launch JSON plus target uid/gid, which the helper hard-codes
+  to `cotal-agent` (it refuses any other target).
+- Action: `fork`, `setgid` / `initgroups` / `setuid` to `cotal-agent`, `exec` the existing
+  custodian entry with the launch JSON on stdin. That is today's `launchSeat` minus same-uid
+  `spawn`. The PTY child then inherits `cotal-agent` without a second drop.
+- The helper never reads the account signing seed and is not on the signer allowlist.
+
+`CustodialPtyRuntime.spawn` becomes a client of this socket. If the socket is missing, or the
+peer is not the helper, spawn throws. No in-process `pty.spawn` fallback on Linux static-auth.
+
+Seat records and `seat.sock` are written by the custodian (now `cotal-agent`). Adopt still has
+to work from `cotal-manager`, so the seat directory is `0750` `cotal-agent:cotal-manager`,
+`record.json` is `0640`, and `seat.sock` is `0660`. `SO_PEERCRED` on the seat socket continues
+to require the manager uid. The agent still cannot open the signer seed or the signer socket.
 
 Optional mount namespace (operator hardening, not required for the proof in §5): the signer
 unit uses a private mount for the seed directory. The manager's namespace has only the socket
@@ -297,6 +378,8 @@ No fallback to in-process signing. Named refusals:
   `peerCredentials` when the helper is absent.
 - Non-Linux: throw at manager start for any mesh that would have loaded `SpaceAuth`. Open-mode
   meshes have no signer and are unchanged.
+- Seat-launch socket missing, peer not the helper, or helper not privileged: throw at start
+  and at spawn. No in-process `pty.spawn` fallback on Linux static-auth.
 
 `SecretStore` adapters that export the seed into the manager process do not satisfy this
 design. A KMS that signs without export is a different implementation of the same
@@ -367,23 +450,22 @@ either one is a failed proof.
 
 Do not print process argument vectors. Command lines on a shared host are a publication
 surface (a runtime can pass a persona as an argv token). This procedure therefore never uses
-`ps -o cmd`, `ps -f`, `ps -ef`, `pgrep -f`, or `/proc/<pid>/cmdline`. Identify a process by
-uid, `comm`, unit metadata, or a single named environment key.
+`ps -o cmd`, `ps -f`, `ps -ef`, `pgrep`, `pgrep -f`, `pgrep -u`, or `/proc/<pid>/cmdline`.
+Identify a process by uid, `comm`, unit metadata, a seat `record.json`, or a single named
+environment key.
 
 Positive control uses `cotal mint` (or a managed spawn) as the authorized client. The negative
 arms run as the agent uid, which is the child's uid after the spawn drop.
 
-1. Confirm the manager is running under the manager uid and the signer unit is running under
-   the signer uid. Prefer the unit, which already names the User:
+1. Confirm the three system units. Isolation is not a linger `--user` layout (that cannot
+   change uid; §3.3). Prefer the unit, which already names the User:
 
    ```bash
-   systemctl show cotal-signer@<space>  -p User -p ExecMainPID
-   systemctl show cotal-manager@<space> -p User -p ExecMainPID
-   # User=cotal-signer and User=cotal-manager. Do not pass -p Environment (it dumps every
-   # variable). Three-uid isolation is system units. If this host instead runs linger user
-   # units, the same two properties are:
-   systemctl --user show cotal-signer@<space>  -p User -p ExecMainPID
-   systemctl --user show cotal-manager@<space> -p User -p ExecMainPID
+   systemctl show cotal-signer@<space>     -p User -p ExecMainPID
+   systemctl show cotal-manager@<space>    -p User -p ExecMainPID
+   systemctl show cotal-seat-launch        -p User -p ExecMainPID
+   # User=cotal-signer, User=cotal-manager, and User=root (or the dedicated setuid helper
+   # user). Do not pass -p Environment (it dumps every variable).
    ```
 
    If the units are not installed yet, list by comm and uid only, then read one env key:
@@ -411,9 +493,9 @@ arms run as the agent uid, which is the child's uid after the spawn drop.
    only:
 
    ```bash
-   ACCOUNT_RECORD="$ROOT/.cotal/auth/account.<hex>.json" \
-   sudo -u cotal-manager --preserve-env=ACCOUNT_RECORD python3 -c \
-     'import json,os; d=json.load(open(os.environ["ACCOUNT_RECORD"])); raise SystemExit(1 if d.get("account",{}).get("signingSeed","") else 0)'; echo $?
+   sudo -u cotal-manager python3 -c \
+     'import json,sys; d=json.load(open(sys.argv[1])); raise SystemExit(1 if d.get("account",{}).get("signingSeed","") else 0)' \
+     "$ROOT/.cotal/auth/account.<hex>.json"; echo $?
    # must print 0 (non-zero means the record still carries a signingSeed)
    ```
 
@@ -428,24 +510,68 @@ arms run as the agent uid, which is the child's uid after the spawn drop.
    # principal) into a log or channel. Do not write the creds file under /tmp.
    ```
 
-5. Negative control: the agent child cannot read the seed. Spawn any managed agent, then:
+5. Negative control: the managed agent child cannot read the seed. Spawn one named agent
+   whose seat `name` is unique on this host (example name `proof`). Do not pick a pid by uid
+   or recency. The manager records the seat id on the static slot (`recordSlotCustody` in
+   `manager.ts`); the custodian writes `record.json` (`writeRecord` in
+   `packages/seat/src/record.ts`) with `name`, `childPid`, and `childStart`. Default custody
+   root is `$HOME/.cotal/seats` for the manager uid (`defaultCustodyRoot` in
+   `custodial-pty.ts`), unless `COTAL_SEAT_ROOT` is set on the manager unit. Pin the child
+   by walking those records for that name and matching `childStart`, then enter *its*
+   mount namespace:
 
    ```bash
-   pid=$(pgrep -u cotal-agent -n)
+   SEAT_ROOT=/home/cotal-manager/.cotal/seats
+   pid=$(sudo -u cotal-manager python3 -c '
+   import json, pathlib, sys
+   root, name, expect_uid = sys.argv[1], sys.argv[2], sys.argv[3]
+   hits = []
+   for rec_path in pathlib.Path(root).glob("*/record.json"):
+     rec = json.loads(rec_path.read_text())
+     if rec.get("name") != name: continue
+     pid = rec.get("childPid")
+     start = rec.get("childStart")
+     if not isinstance(pid, int) or pid <= 0: sys.exit("no childPid")
+     if not start: sys.exit("no childStart")
+     stat = pathlib.Path("/proc/%d/stat" % pid).read_text()
+     token = stat[stat.rindex(") ")+2:].split(" ")[19]
+     if token != start: sys.exit("pid reused")
+     uid = pathlib.Path("/proc/%d/status" % pid).read_text()
+     real = [ln for ln in uid.splitlines() if ln.startswith("Uid:")][0].split()[1]
+     if real != expect_uid: sys.exit("not cotal-agent")
+     hits.append(pid)
+   if len(hits) != 1: sys.exit("need one live seat named %s, got %d" % (name, len(hits)))
+   print(hits[0])
+   ' "$SEAT_ROOT" proof "$(id -u cotal-agent)")
+   ```
+
+   `SEAT_ROOT` is assigned on its own line, then passed as `sys.argv[1]`. Capture only the
+   printed pid. Do not print the record, the start token, or `/proc/<pid>/environ`. Then:
+
+   ```bash
    sudo nsenter -t "$pid" -m -- sudo -u cotal-agent test -r /var/lib/cotal/signer/<space>/signing.seed; echo $?
    # must print 1
-   ACCOUNT_RECORD="$ROOT/.cotal/auth/account.<hex>.json" \
-   sudo nsenter -t "$pid" -m -- env ACCOUNT_RECORD="$ACCOUNT_RECORD" sudo -u cotal-agent --preserve-env=ACCOUNT_RECORD python3 -c \
-     'import json,os; d=json.load(open(os.environ["ACCOUNT_RECORD"])); print("empty" if not d.get("account",{}).get("signingSeed","") else "LEAK")'
-   # must print empty, never LEAK
+   ```
+
+   The account-record check is a second failed open of a path the parent already resolved.
+   Pass that path as an argument to python, never as a shell assignment that another
+   command later expands:
+
+   ```bash
+   sudo nsenter -t "$pid" -m -- sudo -u cotal-agent python3 -c \
+     'import json,sys; p=sys.argv[1]; d=json.load(open(p)); raise SystemExit(1 if d.get("account",{}).get("signingSeed","") else 0)' \
+     "$ROOT/.cotal/auth/account.<hex>.json"; echo $?
+   # must print 1 (the agent uid cannot open the manager-owned record) or 0 with an empty
+   # signingSeed if the record is somehow readable. Non-zero from python with a non-empty
+   # signingSeed is LEAK: stop, rotate (§4.2).
    ```
 
 6. Negative control: the agent child cannot dial the signer.
 
    ```bash
-   SIGNER_SOCK=/var/run/cotal/signer/<space>.sock \
-   sudo -u cotal-agent --preserve-env=SIGNER_SOCK python3 -c \
-     'import os,socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ["SIGNER_SOCK"])'; echo $?
+   sudo -u cotal-agent python3 -c \
+     'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])' \
+     /var/run/cotal/signer/<space>.sock; echo $?
    # must be non-zero (EACCES). If connect succeeded, the proof has failed even before peercred.
    ```
 
@@ -477,10 +603,12 @@ same steps.
    empty. Keep `pub` / `jwt` / `signingPub`. `putSpaceAuth` today writes `account` whole
    (`auth-paths.ts`); the implementation of this design must persist the public half without
    the seed.
-5. Run the manager as `cotal-manager`, agents as `cotal-agent` (pty spawn uid drop), signer as
-   `cotal-signer`. Point the manager at the socket.
-6. `cotal mint`, `cotal doctor auth --fix`, and `remintDaemonCreds` use the same socket. They
-   run as a uid on the allowlist.
+5. Install `cotal-seat-launch.service` (§3.3). Run the manager as `cotal-manager`, the
+   signer as `cotal-signer`. Point the manager at the signer socket and the seat-launch
+   socket. Agents are `cotal-agent` only because that helper `setuid`s before `exec` of
+   the custodian; the manager never drops uid itself.
+6. `cotal mint`, `cotal doctor auth --fix`, and `remintDaemonCreds` use the same signer
+   socket. They run as a uid on the signer allowlist.
 
 ### 6.2 What refuses if they do not
 
@@ -489,6 +617,7 @@ same steps.
 | No signer unit / no socket | `runStart`, `cotal mint`, `remintDaemonCreds`: socket absent, named path, named unit |
 | Socket up, seed still in the account record | `runStart` / `getSpaceAuth` for signer clients: non-empty `signingSeed` in this process |
 | Socket up, seed file still `0600` as the old operator uid | isolation is not on; start refuses if that uid is the manager uid |
+| No `cotal-seat-launch` socket / helper not privileged | start refuses: cannot drop to `cotal-agent` |
 | Agents still spawned as `cotal-manager` | start refuses: spawn uid is not `cotal-agent` |
 | `cotal mint --signer` used as a mount of the seed into the manager | refused; that command's purpose (strip operator, keep signing seed) is the old co-location |
 | Non-Linux host | static-auth manager start refuses |
