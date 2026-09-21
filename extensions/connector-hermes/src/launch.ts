@@ -69,7 +69,7 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Drops the cotal plugin into the profile's plugins dir, enables it + the cotal platform, and
  * turns approvals off (an autonomous spawned gateway has no human at the TUI to approve commands).
  */
-function setupProfile(home: string, opts: { model?: string; persona?: string }): void {
+export function setupProfile(home: string, opts: { model?: string; persona?: string }): void {
   mkdirSync(home, { recursive: true });
   const pluginDst = join(home, "plugins", "cotal");
   rmSync(pluginDst, { recursive: true, force: true });
@@ -88,6 +88,17 @@ function setupProfile(home: string, opts: { model?: string; persona?: string }):
     "  mode: off",
   ];
   if (opts.model) lines.push(`model: ${yamlStr(opts.model)}`);
+  // No model anywhere means no `model:` key, and hermes then picks a default of its own over a
+  // provider this profile has no key for. The seat still joins the mesh and still accepts a turn,
+  // so the first sign of trouble is a provider 401 mid-turn whose advice points at the operator's
+  // credentials. Their model usually IS configured, in ~/.hermes/config.yaml, which a managed
+  // profile never reads. Say that here, while the operator is still watching the launch.
+  if (!opts.model)
+    log(
+      "no model was resolved, so hermes will pick its own default and may have no key for that provider. " +
+        "This managed profile does not read ~/.hermes, so a model configured there is not used. " +
+        `Set one with --model, the agent file's model:, or HERMES_MODEL, or run on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes.`,
+    );
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");
 
   // Persona → SOUL.md (Hermes' identity file) — the one place a system prompt can be set. Append the
