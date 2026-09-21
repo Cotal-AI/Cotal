@@ -799,10 +799,20 @@ git diff --binary --cached > "$ROOT/../ckpt-repo.index.diff"
 git diff --binary > "$ROOT/../ckpt-repo.worktree.diff"
 git ls-files --others --exclude-standard -z \
   | tar --null --files-from=- -cf "$ROOT/../ckpt-repo.untracked.tar"
-sha256sum "$ROOT/../ckpt-repo.bundle" "$ROOT/../ckpt-repo.index.diff" \
-  "$ROOT/../ckpt-repo.worktree.diff" \
-  "$ROOT/../ckpt-repo.untracked.tar" > "$ROOT/../ckpt-repo.sha256"
+cd "$(dirname "$ROOT")"
+sha256sum ckpt-repo.bundle ckpt-repo.index.diff ckpt-repo.worktree.diff \
+  ckpt-repo.untracked.tar > ckpt-repo.sha256
 ```
+
+The digests are taken from the artifact directory, so `ckpt-repo.sha256` records basenames. An
+earlier version of this record hashed the capture-host paths `$ROOT/../ckpt-repo.*` and was wrong in
+two ways at once. On a destination where the seat's `cwd` does not exist yet, `sha256sum -c` cannot
+resolve a path that runs through `$ROOT`, so the first verification command of the restore fails on
+the ordinary fresh host. On a destination where some `$ROOT` does exist, the check resolves and
+passes against whatever sits at those absolute paths, which is not the copied set the next commands
+are about to apply. A digest file that verifies files other than the ones being used is worse than
+no digest file. Basenames bind the check to the artifacts in the directory the restore is standing
+in.
 
 `--exclude-standard` is the selection rule this capture was produced under, and it is the rule the
 checkpoint records, because section 1.1 requires the destination to be able to reproduce it. It
@@ -841,9 +851,13 @@ staging directory beside the seat's `cwd` and moves it into place only after eve
 succeeded:
 
 ```bash
+set -e
 cd "$(dirname "$ROOT")"
 sha256sum -c ckpt-repo.sha256
-test ! -e "$ROOT.incoming"
+if [ -e "$ROOT.incoming" ]; then
+  echo "refusing: $ROOT.incoming already exists" >&2
+  exit 1
+fi
 git clone ckpt-repo.bundle "$ROOT.incoming"
 cd "$ROOT.incoming"
 git rev-parse --verify "$(cat ../ckpt-repo.base)^{commit}"
@@ -856,14 +870,34 @@ test ! -e "$ROOT" || mv "$ROOT" "$ROOT.superseded.$(date -u +%Y%m%dT%H%M%SZ)"
 mv "$ROOT.incoming" "$ROOT"
 ```
 
-The `rev-parse --verify` is the refusal, and it is the reason the base commit is recorded separately
-from the bundle. A bundle that does not contain the recorded base does not apply to the tree this
-checkpoint describes, and the resume stops there rather than continuing against a different history.
-A failed `git apply` is the same kind of refusal, not a merge to be resolved by hand.
+The block opens with `set -e` and that line is load-bearing, not habit. Without it every command in
+the sequence runs whatever the one before it returned, and the last two lines promote the staging
+directory unconditionally. An earlier version of this record left it out and used a bare
+`test ! -e "$ROOT.incoming"` as the guard. A bare `test` in a sequence with no abort reports and
+continues: with `$ROOT` absent and a leftover nonempty `$ROOT.incoming` from a failed earlier run,
+the test returned 1, the clone refused the occupied directory, both applies failed, and the final
+`mv` promoted the leftover directory to `$ROOT` with an overall exit status of 0. The seat's `cwd`
+then held a tree that was never restored and had no `.git` at all, and nothing in the run said so.
+The refusal is now an explicit `if` that exits 1, and `set -e` is what makes every later failure stop
+the sequence instead of falling through to the promotion.
 
-Every command in that sequence was run before it was written here, because a command in a validation
-procedure is a claim like any other, and five of them came back different from what this record first
-said.
+The two `mv` lines are reachable only when the digest check, the clone, the base verification, the
+checkout, both applies and the extraction have each returned 0. That is the rule the staging
+directory exists to enforce: a failed restore leaves `$ROOT` as it was, and a partial
+`$ROOT.incoming` is evidence to look at rather than a tree to promote. Nothing in the block removes a
+stale `$ROOT.incoming` automatically, because a staging directory from a failed run is the only
+record of what failed. An operator inspects it and removes it by hand.
+
+The `rev-parse --verify` is the refusal for the history, and it is the reason the base commit is
+recorded separately from the bundle. A bundle that does not contain the recorded base does not apply
+to the tree this checkpoint describes, and the resume stops there rather than continuing against a
+different history. A failed `git apply` is the same kind of refusal, not a merge to be resolved by
+hand.
+
+Every command in the capture and the restore was extracted from this file by line number and run as
+written before it was published here, because a command in a validation procedure is a claim like any
+other. Each round of that measurement returned something different from what this record said, which
+is why the sequence carries the flags, the guard and the abort that it does.
 
 The sequence navigates with `dirname "$ROOT"` rather than `"$ROOT/.."`, which is not a style
 preference. `cd "$ROOT/.."` resolves the path through `$ROOT` itself, so on a host where the seat's
@@ -1036,3 +1070,11 @@ Named so that a reader does not mistake absence for completeness.
    outside the checkpoint and does not travel. Staging state does survive, by the two-diff capture
    section 6 measures, but an ignored path has to be named separately by the operator or the
    destination tree will be missing it.
+9. **A submodule restores as a gitlink with no inner checkout.** The bundle carries the superproject's
+   commits, so the recorded gitlink comes back at the same sha, and neither diff nor the untracked
+   archive carries the submodule's own objects or working tree. The restored `$ROOT` holds an empty
+   directory at that path, and `git status --porcelain` reports nothing there, so the gap does not
+   show up in the observation section 6 uses to compare source and destination. An operator who needs
+   the inner checkout has to supply it on the destination, and the checkpoint does not record that it
+   was needed. A seat whose work depends on a submodule is outside what this procedure has been
+   measured against.
