@@ -69,11 +69,13 @@ than implying it. The delta record carries the exact selection rule it was produ
 destination that cannot reproduce that rule refuses. An untracked path that was in scope and is
 absent from the delta is a refusal, never a silently thinner tree.
 
-What the delta does not carry is the staging state. A diff against the base records the difference
-between that commit and the worktree, not which parts of it were staged, and section 6 measures the
-consequence: a restored tree reproduces the source's `git status --porcelain` only when the diff is
-applied without `--index`. So a seat whose next action depends on a partially staged index is outside
-what a checkpoint reproduces, and this is stated here rather than discovered on a destination host.
+The delta carries the staging state, and it takes two diffs to do it. A single diff against the base
+records the difference between that commit and the worktree without recording which parts of it were
+staged, so a restore from it reports every change as unstaged. Section 6 captures the base-to-index
+and index-to-worktree differences separately and applies them in that order, which reproduces the
+source's `git status --porcelain`, worktree bytes, and staged content together. A checkpoint that
+recorded only the combined diff would hand a seat mid-way through a staged commit the same bytes and
+a different index.
 This follows the shape
 `inventoryReferenceError` already uses for dependency files: a recorded reference that cannot be
 proven is an error, not a warning.
@@ -787,15 +789,18 @@ git rev-parse HEAD > "$ROOT/../ckpt-repo.base"
 
 The bundle carries reachable history, so it does not carry the two things section 1.1 names beside
 it: tracked modifications against the recorded base, and the untracked files the operator declares in scope.
-Those are bytes and have to be captured as bytes. The index and tracked worktree modifications go in
-as a diff against the recorded base, and the declared untracked set goes in as an archive:
+Those are bytes and have to be captured as bytes. Staging state is part of what has to survive, so the
+tracked side is two diffs rather than one: base to index, and index to worktree. The declared
+untracked set goes in as an archive:
 
 ```bash
 cd "$ROOT"
-git diff --binary HEAD > "$ROOT/../ckpt-repo.tracked.diff"
+git diff --binary --cached > "$ROOT/../ckpt-repo.index.diff"
+git diff --binary > "$ROOT/../ckpt-repo.worktree.diff"
 git ls-files --others --exclude-standard -z \
   | tar --null --files-from=- -cf "$ROOT/../ckpt-repo.untracked.tar"
-sha256sum "$ROOT/../ckpt-repo.bundle" "$ROOT/../ckpt-repo.tracked.diff" \
+sha256sum "$ROOT/../ckpt-repo.bundle" "$ROOT/../ckpt-repo.index.diff" \
+  "$ROOT/../ckpt-repo.worktree.diff" \
   "$ROOT/../ckpt-repo.untracked.tar" > "$ROOT/../ckpt-repo.sha256"
 ```
 
@@ -831,17 +836,24 @@ job and out of this design's scope.
 
 ### Step 7 on host B. Restore the repository state
 
-Verify the three digests from step 5 first, then apply the artifacts in order, in the seat's `cwd`:
+Verify the four digests from step 5 first, then apply the artifacts in order. The restore builds a
+staging directory beside the seat's `cwd` and moves it into place only after every step has
+succeeded:
 
 ```bash
-cd "$ROOT/.."
+cd "$(dirname "$ROOT")"
 sha256sum -c ckpt-repo.sha256
-git clone ckpt-repo.bundle "$ROOT"
-cd "$ROOT"
+test ! -e "$ROOT.incoming"
+git clone ckpt-repo.bundle "$ROOT.incoming"
+cd "$ROOT.incoming"
 git rev-parse --verify "$(cat ../ckpt-repo.base)^{commit}"
 git checkout --detach "$(cat ../ckpt-repo.base)"
-git apply --binary ../ckpt-repo.tracked.diff
+git apply --binary --allow-empty --index ../ckpt-repo.index.diff
+git apply --binary --allow-empty ../ckpt-repo.worktree.diff
 tar -xf ../ckpt-repo.untracked.tar
+cd "$(dirname "$ROOT")"
+test ! -e "$ROOT" || mv "$ROOT" "$ROOT.superseded.$(date -u +%Y%m%dT%H%M%SZ)"
+mv "$ROOT.incoming" "$ROOT"
 ```
 
 The `rev-parse --verify` is the refusal, and it is the reason the base commit is recorded separately
@@ -849,19 +861,43 @@ from the bundle. A bundle that does not contain the recorded base does not apply
 checkpoint describes, and the resume stops there rather than continuing against a different history.
 A failed `git apply` is the same kind of refusal, not a merge to be resolved by hand.
 
-Two details in that sequence were measured rather than assumed, because a command in a validation
-procedure is a claim like any other. `git clone` is used rather than `git fetch` into an existing
-repository: fetching the bundle's refs into a fresh `git init` fails with `refusing to fetch into
-branch 'refs/heads/master' checked out at …`, since the branch being fetched is the one HEAD is on.
-And `git apply` runs without `--index`: with it, the restored tree reports the tracked modification as
-staged (`M ` rather than ` M`), which does not reproduce the source. Without it the restored
-`git status --porcelain` is byte-identical to the source's.
+Every command in that sequence was run before it was written here, because a command in a validation
+procedure is a claim like any other, and five of them came back different from what this record first
+said.
 
-So the index itself does not survive this capture. `git diff --binary HEAD` records the difference
-between the base commit and the worktree, which is what the seat needs to keep working, and it does
-not record which of those changes were staged. A seat whose next action depends on a partially staged
-index is outside what this procedure reproduces, and the checkpoint should say so rather than imply a
-fidelity it does not have.
+The sequence navigates with `dirname "$ROOT"` rather than `"$ROOT/.."`, which is not a style
+preference. `cd "$ROOT/.."` resolves the path through `$ROOT` itself, so on a host where the seat's
+`cwd` does not exist yet, the ordinary fresh-destination case, the first line of the restore exits 1
+before anything is verified. `dirname` is a string operation and does not require the directory to
+exist.
+
+`git clone` is used rather than `git fetch` into an existing repository, but the reason is narrower
+than an earlier draft of this record claimed. A bare `git fetch <bundle>` into a fresh `git init`
+returns 0; it is the refspec form `+refs/*:refs/*` that fails with `refusing to fetch into branch
+'refs/heads/master' checked out at …`, because that refspec updates the branch HEAD is on. Clone
+avoids the question.
+
+Both applies carry `--allow-empty`. A seat with a clean tree produces a zero-byte diff, and without
+that flag `git apply` exits 128 with `No valid patches in input`, so the cleanest possible seat would
+be the one that could not be restored.
+
+The index diff is applied with `--index` and the worktree diff without it, and the order matters.
+`--index` on the first apply is what puts the staged content back in the index rather than only in
+the worktree; the second apply then lays the unstaged remainder on top. Applied this way a mixed
+tree restores byte-identically: a source reporting `MM README` and ` M tracked.txt` restores to the
+same two lines, with the same worktree bytes and the same `git diff --cached` output. Applied as a
+single combined diff, the same source restores as ` M README`, which is a different repository state
+wearing the same file contents.
+
+The restore refuses a `$ROOT` it would have to clobber, and that is why it stages. `git clone` onto
+an existing nonempty directory exits 128, and on host B `$ROOT` is the seat's `cwd`, which may
+already exist from an earlier attempt or a provisioning step. Cloning into `$ROOT.incoming` keeps
+every failure above confined to a directory nothing is running in, and the two `mv` calls are the
+only steps that touch the path the seat will use. A pre-existing `$ROOT` is moved aside rather than
+deleted, so a wrong checkpoint costs a rename instead of a tree.
+
+This capture reproduces tracked content, staging state, and the declared untracked set. It does not
+reproduce anything `--exclude-standard` excludes, which is the limitation named in step 5 above.
 
 This is manual for the reason given above: no command carries these components yet.
 
@@ -994,7 +1030,9 @@ Named so that a reader does not mistake absence for completeness.
    `packages/core/src/backup.ts`, so an acknowledgement taken out of order above that floor is
    redelivered. Nothing in this design narrows that, and section 4.2 leaves the burden with the
    seat's own ledger.
-8. **The git index does not survive a checkpoint.** The delta is a diff against the recorded base, so
-   staging state is lost; section 6 measures this as the reason the restore applies the diff without
-   `--index`. A seat mid-way through a staged commit resumes with the same bytes and a different
-   index.
+8. **The checkpoint carries no file outside git's tracked and declared-untracked sets.** The capture
+   in section 6 selects untracked files with `git ls-files --others --exclude-standard`, which honors
+   `.gitignore`. An ignored file the seat depends on, such as a local `.env` or a build cache, is
+   outside the checkpoint and does not travel. Staging state does survive, by the two-diff capture
+   section 6 measures, but an ignored path has to be named separately by the operator or the
+   destination tree will be missing it.
