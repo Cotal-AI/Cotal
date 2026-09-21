@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { ADOPT_HOME_ENV, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -46,7 +46,7 @@ const assert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 160;
+const EXPECTED_CELLS = 164;
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
@@ -322,7 +322,13 @@ assert.throws(
   "a managed profile with no resolved model refuses the launch",
 );
 assert.throws(() => setupProfile(mgdNone, { model: undefined }), new RegExp(ADOPT_HOME_ENV), "and names the variable that runs the gateway on the operator's own profile instead");
-assert.equal(existsSync(join(mgdNone, "config.yaml")), false, "a refused launch writes no config.yaml");
+assert.equal(existsSync(mgdNone), true, "the probe's own directory is still there");
+assert.equal(existsSync(join(mgdNone, "plugins")), false, "a refused launch installs no plugin, so nothing under the profile says a gateway was ever set up here");
+assert.equal(existsSync(join(mgdNone, "config.yaml")), false, "and writes no config.yaml");
+const mgdFresh = join(tmpdir(), `cotal-hermes-managed-fresh-${process.pid}`);
+rmSync(mgdFresh, { recursive: true, force: true });
+assert.throws(() => setupProfile(mgdFresh, { model: undefined }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
+assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exist before the refusal does not exist after it");
 
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
 setupProfile(mgdSet, { model: "vendor/some-model" });

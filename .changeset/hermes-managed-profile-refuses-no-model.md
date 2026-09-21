@@ -11,7 +11,7 @@ turn, so the first sign of it was a provider authentication error partway throug
 advice pointed at the operator's own credentials.
 
 The refusal names the three inputs that set a model and `COTAL_HERMES_ADOPT_HOME` for running on
-the operator's own profile instead, and writes no profile, so nothing is left behind that a later
-spawn could take for a working one. A launch with a model is unchanged.
+the operator's own profile instead. It fires before the profile directory or the plugin is written, so a refused launch
+leaves nothing on disk, and it prints as one line rather than a stack. A launch with a model is unchanged.
 
 Refs #1715
