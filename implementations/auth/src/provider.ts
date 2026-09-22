@@ -391,18 +391,25 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
     if (idpUrl && loadIdpSession(homeCotalDir(), idpUrl))
       throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
+    // WHATWG parsing erases empty userinfo (`http://@host/`) and a bare query marker (`…/token?`).
+    // Reject the forbidden syntax from the raw credential before parsing can normalize it away.
+    const authorityStart = url.indexOf("://");
+    if (authorityStart >= 0) {
+      const start = authorityStart + 3;
+      const slash = url.indexOf("/", start);
+      const authority = url.slice(start, slash < 0 ? url.length : slash);
+      if (authority.includes("@")) throw new Error("the enrollment URL must not contain userinfo");
+    }
+    if (url.includes("?"))
+      throw new Error("the enrollment URL must not contain a query; its last path segment is the one-time secret");
+    if (url.includes("#"))
+      throw new Error("the enrollment URL must not contain a fragment");
     let enrollment: URL;
     try {
       enrollment = new URL(url);
     } catch {
       throw new Error("the enrollment URL is not a valid URL");
     }
-    if (enrollment.username || enrollment.password)
-      throw new Error("the enrollment URL must not contain userinfo");
-    if (enrollment.search)
-      throw new Error("the enrollment URL must not contain a query; its last path segment is the one-time secret");
-    if (enrollment.hash)
-      throw new Error("the enrollment URL must not contain a fragment");
     if (!enrollment.pathname.split("/").filter(Boolean).at(-1))
       throw new Error("the enrollment URL must end with the one-time secret path segment");
     if (enrollment.protocol !== "https:" && !(enrollment.protocol === "http:" && isLoopbackLiteral(enrollment.hostname)))

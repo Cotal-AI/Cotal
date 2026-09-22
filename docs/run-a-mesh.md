@@ -124,7 +124,7 @@ The URL is redeemed once with an unauthenticated GET. Redirects, off-machine pla
 and login fallback are refused. If the seat has no mesh record yet, the enrollment response's stock
 user-bundle fields register it before the launch. The returned actor token then uses the same remote
 auth-service exchange as a login-provisioned agent. The enrollment URL and file path do not enter the
-harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
+preflight or harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
 for a fresh enrollment. The exact server contract is in
 [Enrollment redeem](identity-and-auth.md#enrollment-redeem).
 

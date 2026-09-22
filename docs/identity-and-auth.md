@@ -185,7 +185,8 @@ GET <enrollment URL>
 ```
 
 It sends no `Authorization` header and no request body. The URL must be HTTPS, except for plain HTTP
-to a loopback IP literal. Redirects are refused. The client never retries because a successful claim
+to a loopback IP literal. Raw userinfo, query markers, and fragments are refused before URL parsing,
+including empty forms such as `http://@127.0.0.1/…` and a trailing `?`. Redirects are refused. The client never retries because a successful claim
 deletes the server-side token row. The token expires five minutes after mint.
 
 Success is `200` with this JSON object:
@@ -208,7 +209,10 @@ allowPublish[]
 The grant arrays are informational; the broker row remains authoritative. A stock-dialable
 deployment also includes `server`, `tlsRequired`, and `userAuth`, forming the same user-bundle
 superset that `cotal meshes add --user-auth-file` accepts. That lets a bare seat register the mesh
-from the enrollment response before launch.
+from the enrollment response before launch. For `brokerAccess.kind: "direct"`, the stock `server`
+must equal `brokerAccess.url` byte for byte or the client refuses the bundle before registration. A
+tunnel kind carries no dial address, so its `brokerAccess` is not compared to the operator-asserted
+stock `server` face.
 
 Unknown, expired, revoked, and already-used enrollments are intentionally indistinguishable. They
 all return `404 {"error":"unknown, expired, or already-used enrollment"}`. The client reports only
@@ -217,7 +221,8 @@ guess which case occurred.
 
 After redeem, the seat stores only the normal remote user-mesh and agent material. The actor token
 is exchanged at `authServiceUrl` through the existing `agent-bearer --exchange-url` path. The
-enrollment URL is not logged, persisted, or forwarded into the harness environment.
+enrollment URL is not logged, persisted, or forwarded into any child process, including the bearer
+preflight and harness.
 
 The service starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for

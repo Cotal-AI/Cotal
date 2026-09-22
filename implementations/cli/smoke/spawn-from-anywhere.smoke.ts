@@ -55,6 +55,8 @@ let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let spawnPersonaRef!: typeof import("../src/commands/spawn.js").spawnPersonaRef;
 let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
 let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
+let checkEnrollmentBundle!: typeof import("../src/commands/spawn.js").checkEnrollmentBundle;
+let runBearerPreflight!: typeof import("../src/commands/spawn.js").runBearerPreflight;
 let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let pruneStaleMeshes!: typeof import("../src/lib/meshes.js").pruneStaleMeshes;
 try {
@@ -72,7 +74,7 @@ try {
     saveSpaceAuth,
     setCurrent,
   } = await import("@cotal-ai/workspace"));
-  ({ enrollmentInput, scrubEnrollmentEnv, spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
+  ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
 } catch (e) { cleanScratch(e); }
@@ -145,6 +147,31 @@ try {
   const childEnv = { PATH: "/bin", COTAL_ENROLLMENT_URL: "secret", cotal_enrollment_file: "/secret", KEEP: "yes" };
   scrubEnrollmentEnv(childEnv);
   check("enrollment inputs are removed case-insensitively from the child environment", childEnv.KEEP === "yes" && !("COTAL_ENROLLMENT_URL" in childEnv) && !("cotal_enrollment_file" in childEnv));
+  await runBearerPreflight(
+    [process.execPath, "-e", "if (process.env.COTAL_ENROLLMENT_URL || process.env.COTAL_ENROLLMENT_FILE) process.exit(9)"],
+    { PATH: process.env.PATH, COTAL_ENROLLMENT_URL: "secret", COTAL_ENROLLMENT_FILE: "/secret" },
+  );
+  check("bearer preflight starts its real child with enrollment inputs scrubbed", true);
+  const enrollmentBundle = {
+    space: "teamA",
+    brokerAccess: { kind: "direct", url: DEAD },
+    owner: `u_${"a".repeat(26)}`,
+    actor: "reviewer",
+    lifecycleUid: "11111111-1111-4111-8111-111111111111",
+    actorToken: "actor-token",
+    sentinelCreds: "sentinel-creds",
+    authServiceUrl: "http://127.0.0.1:9000",
+    idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "cotal" },
+    server: SERVER,
+    tlsRequired: false,
+    userAuth: {
+      provider: "cotal",
+      idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "cotal" },
+      endpoints: { url: "http://127.0.0.1:9000" },
+    },
+  };
+  assert.throws(() => checkEnrollmentBundle(enrollmentBundle, "reviewer"), /direct brokerAccess url does not match its stock server/);
+  check("enrollment stock bundle refuses a direct brokerAccess url that conflicts with server", true);
   // Hardening: the registry dir is 0700 — its filenames are space names, so it must not be
   // world-traversable even though the file contents are already 0600.
   check(

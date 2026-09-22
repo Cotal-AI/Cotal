@@ -103,7 +103,7 @@ export function enrollmentInput(env: NodeJS.ProcessEnv = process.env): string | 
   return value;
 }
 
-export function scrubEnrollmentEnv(env: Record<string, string> | undefined): void {
+export function scrubEnrollmentEnv(env: Record<string, string | undefined> | undefined): void {
   if (!env) return;
   for (const key of Object.keys(env)) {
     const normalized = key.toUpperCase();
@@ -111,7 +111,7 @@ export function scrubEnrollmentEnv(env: Record<string, string> | undefined): voi
   }
 }
 
-interface EnrollmentBundle extends RemoteAgentMaterial {
+export interface EnrollmentBundle extends RemoteAgentMaterial {
   space: string;
   brokerAccess: { kind: string; [key: string]: unknown };
   authServiceUrl: string;
@@ -121,7 +121,7 @@ interface EnrollmentBundle extends RemoteAgentMaterial {
   userAuth?: unknown;
 }
 
-function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: EnrollmentBundle; stock?: UserBundle } {
+export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: EnrollmentBundle; stock?: UserBundle } {
   const material = checkRemoteAgentMaterial(raw, actor);
   if (!material.ok) throw new Error(material.message.replaceAll("agent-provisioning endpoint", "enrollment endpoint"));
   const o = raw as Partial<EnrollmentBundle>;
@@ -152,6 +152,11 @@ function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: Enrollmen
       throw new Error("the enrollment bundle's stock userAuth IdP pins do not match its top-level idp pins");
     if (stock.userAuth.endpoints?.url !== o.authServiceUrl)
       throw new Error("the enrollment bundle's stock userAuth exchange URL does not match authServiceUrl");
+    const access = o.brokerAccess as Record<string, unknown>;
+    if (access.kind === "direct" && (typeof access.url !== "string" || !access.url))
+      throw new Error("the enrollment bundle's direct brokerAccess carries no url");
+    if (access.kind === "direct" && access.url !== stock.server)
+      throw new Error("the enrollment bundle's direct brokerAccess url does not match its stock server");
   }
   return { bundle: { ...o, ...material.material, idp } as EnrollmentBundle, ...(stock ? { stock } : {}) };
 }
@@ -418,6 +423,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
+  } finally {
+    // The URL is the credential. Keep the local value, but remove both input forms before this
+    // command can start extension, bearer-preflight, or harness children.
+    scrubEnrollmentEnv(process.env);
   }
   if (enrollmentUrl && (values.detach || values.file)) {
     console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
@@ -1032,12 +1041,7 @@ async function provisionRemoteUserForeground(
       "--token-file", tokenPath,
       "--health-file", healthPath,
     ];
-    await new Promise<void>((res2, rej) => {
-      execFile(bearerCmd[0], bearerCmd.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
-        if (err) return rej(new Error(stderr.trim() || err.message));
-        res2();
-      });
-    });
+    await runBearerPreflight(bearerCmd);
     return {
       userAuth: { owner: material.owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
       material,
@@ -1167,12 +1171,7 @@ async function provisionUserForeground(
       "--token-file", tokenPath,
       "--health-file", healthPath,
     ];
-    await new Promise<void>((res, rej) => {
-      execFile(bearerCmd[0], bearerCmd.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
-        if (err) return rej(new Error(stderr.trim() || err.message));
-        res();
-      });
-    });
+    await runBearerPreflight(bearerCmd);
     return {
       userAuth: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
       ...(eventGrant ? { eventChannel: eventGrant } : {}),
@@ -1208,4 +1207,20 @@ async function provisionUserForeground(
       .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
     return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
   }
+}
+
+/** Run the one-shot bearer proof with an explicit credential-scrubbed environment. The enrollment
+ * path removes the variables from the parent before any child, and this boundary independently
+ * refuses to inherit them if another caller reaches it with ambient enrollment input. */
+export async function runBearerPreflight(bearerCmd: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const childEnv = { ...env };
+  scrubEnrollmentEnv(childEnv);
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      bearerCmd[0],
+      bearerCmd.slice(1),
+      { timeout: 30_000, maxBuffer: 64 * 1024, env: childEnv },
+      (err, _stdout, stderr) => err ? reject(new Error(stderr.trim() || err.message)) : resolve(),
+    );
+  });
 }
