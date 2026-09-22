@@ -1210,8 +1210,16 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
   // Public face: only channel-writer / channel-purger ride this listener (still ledger-gated).
   // admin, purger, deployer, and manager-service stay loopback-only, whatever the credential.
-  if (policy.refuseViews && view !== undefined && !(PUBLIC_EXCHANGE_VIEWS as readonly string[]).includes(view))
-    return send(res, 403, { error: "elevated views are a loopback operator surface - the public exchange never serves them" });
+  // A refused view is a refused exchange: record, audit, then 429 when the peer is already
+  // throttled, same order as the neighbouring denial sites. A served view stays unthrottled.
+  if (policy.refuseViews && view !== undefined && !(PUBLIC_EXCHANGE_VIEWS as readonly string[]).includes(view)) {
+    policy.recordFailure(ctx, peer);
+    const reason = "elevated views are a loopback operator surface - the public exchange never serves them";
+    console.error(`auth-service: refused an exchange: ${reason}`);
+    if (peerThrottled)
+      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+    return send(res, 403, { error: reason });
+  }
   // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
   // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
   // A request presenting both is malformed — refuse rather than pick.
