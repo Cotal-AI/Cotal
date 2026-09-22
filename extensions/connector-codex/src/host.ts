@@ -72,6 +72,7 @@ import {
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
+import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
@@ -458,25 +459,34 @@ export async function runCodexHost(): Promise<void> {
   // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
   type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string };
   let desired: Presence | undefined;
+  let desiredCondition: PresenceCondition | null | undefined;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
   function armStatusFlush(): void {
     if (flushTimer) return;
     flushTimer = setInterval(() => {
-      if (!desired || !agent.connected) {
-        if (!desired) {
+      if ((!desired && desiredCondition === undefined) || !agent.connected) {
+        if (!desired && desiredCondition === undefined) {
           clearInterval(flushTimer);
           flushTimer = undefined;
         }
         return;
       }
       const want = desired;
+      const wantCondition = desiredCondition;
       desired = undefined;
+      desiredCondition = undefined;
       clearInterval(flushTimer);
       flushTimer = undefined;
-      agent.setStatus(want.status, want.activity).catch(() => {
-        if (!desired) desired = want; // nothing newer intervened — keep trying
-        armStatusFlush();
-      });
+      Promise.resolve()
+        .then(async () => {
+          if (wantCondition !== undefined) await agent.setCondition(wantCondition);
+          if (want) await agent.setStatus(want.status, want.activity);
+        })
+        .catch(() => {
+          if (!desired) desired = want;
+          if (desiredCondition === undefined) desiredCondition = wantCondition;
+          armStatusFlush();
+        });
     }, STATUS_FLUSH_MS);
     flushTimer.unref?.();
   }
@@ -493,7 +503,19 @@ export async function runCodexHost(): Promise<void> {
     }
   };
 
-  // ---- the turn loop -------------------------------------------------------
+  const safeCondition = async (condition: PresenceCondition | null): Promise<void> => {
+    desiredCondition = condition;
+    if (!agent.connected) return armStatusFlush();
+    const want = desiredCondition;
+    desiredCondition = undefined;
+    try {
+      await agent.setCondition(condition);
+    } catch {
+      if (desiredCondition === undefined) desiredCondition = want;
+      armStatusFlush();
+    }
+  };
+
   let ready = false; // thread up — never drive before then
   /** Shared across app-server incarnations: a crash during launch must make the replacement await
    * the SAME mesh-readiness gate, not see a boolean and race ahead to a false `ready`. */
@@ -816,10 +838,14 @@ export async function runCodexHost(): Promise<void> {
     void safeStatus("working");
     void steerPending(); // anything directed that landed while the turn spun up
   });
-  driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
-  driver.on("turnCompleted", ({ status, owned }: { status: string; owned: boolean }) => {
+  driver.on("waiting", (detail: string, condition?: PresenceCondition) => {
+    if (condition) void safeCondition(condition);
+    void safeStatus("waiting", detail);
+  });
+  driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);
+    if (status === "failed" && condition) void safeCondition(condition);
     completeTurn(status, owned);
   });
   driver.on("itemStarted", (item: ThreadItem) => {

@@ -22,6 +22,7 @@ import {
   partsToText,
   type MessageMeta,
   type Presence,
+  type PresenceCondition,
   type PresenceStatus,
   type TransportState,
   type AttentionMode,
@@ -1831,6 +1832,7 @@ export class MeshAgent extends EventEmitter {
     await this.requireConnected();
     const prev = this._status;
     try {
+      if (prev !== "working" && status === "working") await this.ep.setCondition(null);
       await this.publishStatus(status, activity);
     } finally {
       // The transition is a fact about the SEAT, not about whether its presence row was written:
@@ -1867,6 +1869,11 @@ export class MeshAgent extends EventEmitter {
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
+  }
+
+  /** Relay a harness-reported condition into presence, or clear it. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    await this.ep.setCondition(condition);
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the

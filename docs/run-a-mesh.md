@@ -158,10 +158,12 @@ reconciliation sweep, then clears. This component reports reconciliation outcome
 whether footprint cleanup completed independently of the terminal result; that separate durable
 projection remains tracked by #1274.
 
-There is no supported `cotal service install` command yet. Running the manager as a launchd agent or
-systemd user service remains operator-managed; service installation is separate from this boot-time
-detection behavior. The units below are **examples of process models**, not a shipped installer:
-copy them only after you decide which processes the unit should own.
+`cotal service install` is the supported way to run the manager as a user service
+([CLI reference](cli.md#service)): a systemd user unit on Linux, a launchd agent on macOS, one
+per mesh, surviving logout and reboot when lingering is enabled with `--linger`. It installs only
+the manager; the units below remain the process models for every other component, and they are
+still **examples of process models** for those: copy them only after you decide which processes
+the unit should own.
 
 ### Supervising the detached stack
 
@@ -199,8 +201,9 @@ restart, including the nats PID. Escaping that cgroup needs an explicit unit set
 `KillMode=process`, or a separate nats unit; this CLI does not ship that escape. The
 `Type=oneshot` unit below is a `cotal status --components` liveness check, not a
 `--detach` launcher. Neither trade is universal from
-`Type=simple` alone; it follows from which processes the unit actually owns. There is still no
-supported installer, so pick the example that matches the ownership you want, and treat
+`Type=simple` alone; it follows from which processes the unit actually owns. `cotal service
+install` covers only the manager, so for the broker and its siblings pick the example that
+matches the ownership you want, and treat
 `systemctl is-active` as unit health, not mesh health.
 
 If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state

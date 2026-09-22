@@ -32,6 +32,7 @@ import { endpoints } from "./commands/endpoints.js";
 import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } from "./commands/describe.js";
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
+import { service, serviceComplete } from "./commands/service.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -107,6 +108,21 @@ const baseCommands: Command[] = [
     group: "Manager",
     summary: "list the agent runtimes the manager can spawn through (pty built in; others via `cotal ext add`) and whether each is reachable",
     run: runtimes,
+  },
+  {
+    kind: "command",
+    name: "service",
+    group: "Manager",
+    summary: "run the manager as a user service (survives logout/reboot) - install/status/uninstall",
+    usage: "service <install [--mesh <name>] [--linger] | status [--mesh <name>] [--json] | uninstall [--mesh <name>]>",
+    positionals: "<install | status | uninstall>",
+    flags: [
+      { name: "mesh", type: "string", value: "<name>", description: "the mesh whose manager the service runs (default: this folder's)" },
+      { name: "linger", type: "boolean", description: "install: also enable user lingering so the service starts at boot and survives logout (never enabled silently)" },
+      { name: "json", type: "boolean", description: "status: machine-readable output" },
+    ],
+    run: service,
+    complete: serviceComplete,
   },
   {
     kind: "command",

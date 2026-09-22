@@ -335,6 +335,8 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | --- | --- | --- | --- |
 | `card` | `AgentCard` | MUST | identity record |
 | `status` | `PresenceStatus` | MUST | `idle`, `waiting`, `working`, or `offline` |
+| `condition` | `PresenceCondition` | MAY | harness-reported structured condition. Missing means nothing was reported. A connector relays the harness signal and MUST NOT infer a condition itself |
+| `environment` | string | MAY | opaque reference whose meaning belongs to the provider that issued it. Core MUST NOT parse it |
 | `activity` | string | MAY | freeform current activity |
 | `attention` | `AttentionMode` | MAY | global attention mode: `open` \| `dnd` \| `focus`. Advisory observability; `open`/absent ⇒ receives everything. Reset: `open` published on `SessionStart`, removed on the offline sweep |
 | `lifecycleUid` | string | MUST in auth mode from v0.4 | the current managed-lifecycle UID (§13.1); distinguishes a live instance from a same-name successor. Advisory for display; authority checks use the trusted lifecycle mapping, not presence |
@@ -352,7 +354,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata; reserved keys include `connector` (host harness name), `model` (pinned model), and `host` (the machine the session runs on, self-reported by that machine), all advisory only |
+| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -363,6 +365,17 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 `offline` presence record. Observers MUST also derive `offline` from stale timestamps and
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
+Readers MUST drop a record whose `card.id` differs from its KV key and SHOULD report the
+rejection on their recoverable diagnostic path.
+
+`PresenceCondition`:
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `code` | `PresenceConditionCode` | MUST | `rate_limit` \| `overloaded` \| `auth` \| `billing` \| `budget` \| `context` \| `model` \| `request` \| `server` \| `retrying` \| `approval` \| `input` \| `failed` |
+| `source` | string | MAY | harness-native value, relayed verbatim |
+| `message` | string | MAY | free text from the harness |
+| `since` | number | MAY | epoch ms when the condition began |
 
 ---
 
