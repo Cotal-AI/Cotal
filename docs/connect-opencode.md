@@ -92,13 +92,14 @@ The generic tool surface and the inbound-message model are shared across connect
 
 ## Event plane
 
-A session launched with `cotal spawn --events` publishes a structured account of what it did: run
+A spawned session publishes a structured account of what it did: run
 boundaries per turn, assistant text, and each tool call with its start and its end. Tool
 arguments and tool results are not republished onto this channel.
 The channel is `events.<owner>.<actor>`, named after the session's principal, and the rules for it
 are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for the
-channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
-`--events` spawns; a personal `opencode` with the plugin installed publishes nothing.
+channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by default; pass
+`--no-events` to opt out. A personal `opencode` with the plugin installed publishes nothing unless
+its environment arms the plane.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 

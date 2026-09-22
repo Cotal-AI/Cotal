@@ -16,6 +16,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+const launch = (opts: import("@cotal-ai/core").LaunchOpts) => codexConnector.buildLaunch({ events: false, ...opts });
 const throws = (name: string, fn: () => unknown, match: RegExp) => {
   try {
     fn();
@@ -34,7 +35,7 @@ try {
   check("self-registers as connector codex", registry.resolve("connector", "codex") === codexConnector);
 
   // Base launch.
-  const base = codexConnector.buildLaunch({ space: "s", name: "n" });
+  const base = launch({ space: "s", name: "n" });
   check("host entry launched", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("identity env", base.env?.COTAL_SPACE === "s" && base.env?.COTAL_NAME === "n");
   check("control endpoint minted", Boolean(base.control?.path && base.control?.token));
@@ -56,7 +57,7 @@ try {
 
   process.env.COTAL_CODEX_BIN = "/operator/pinned-codex";
   try {
-    const pinned = codexConnector.buildLaunch({ space: "s", name: "n", resolvedBinaries: { codex: "/boot/resolved-codex" } });
+    const pinned = launch({ space: "s", name: "n", resolvedBinaries: { codex: "/boot/resolved-codex" } });
     check(
       "operator COTAL_CODEX_BIN wins over the manager boot fallback",
       pinned.env?.COTAL_CODEX_BIN === "/operator/pinned-codex" && pinned.env?.COTAL_CODEX_RESOLVED_BIN === "/boot/resolved-codex",
@@ -67,26 +68,26 @@ try {
   }
 
   // Workspace root pins the data root.
-  const rooted = codexConnector.buildLaunch({ space: "s", name: "n", workspaceRoot: dir });
+  const rooted = launch({ space: "s", name: "n", workspaceRoot: dir });
   check("workspaceRoot pins the codex data root", rooted.env?.COTAL_CODEX_HOME === dir);
 
   // Model + variant flags.
-  const modeled = codexConnector.buildLaunch({ space: "s", name: "n", model: "gpt-5.6-sol", variant: "high" });
+  const modeled = launch({ space: "s", name: "n", model: "gpt-5.6-sol", variant: "high" });
   check("model/variant ride env", modeled.env?.COTAL_MODEL === "gpt-5.6-sol" && modeled.env?.COTAL_VARIANT === "high");
 
   // Agent file: model/variant defaults, flags win.
   const agentFile = join(dir, "peer.md");
   writeFileSync(agentFile, `---\nname: peer\nmodel: gpt-5.5\nvariant: medium\n---\nYou are peer.\n`);
-  const fromFile = codexConnector.buildLaunch({ space: "s", name: "peer", configPath: agentFile });
+  const fromFile = launch({ space: "s", name: "peer", configPath: agentFile });
   check(
     "agent file supplies model/variant defaults",
     fromFile.env?.COTAL_MODEL === "gpt-5.5" && fromFile.env?.COTAL_VARIANT === "medium" && fromFile.env?.COTAL_AGENT_FILE === agentFile,
   );
-  const flagWins = codexConnector.buildLaunch({ space: "s", name: "peer", configPath: agentFile, model: "gpt-5.6-sol" });
+  const flagWins = launch({ space: "s", name: "peer", configPath: agentFile, model: "gpt-5.6-sol" });
   check("the --model flag wins over the agent file", flagWins.env?.COTAL_MODEL === "gpt-5.6-sol");
 
   // Launch options → -c override bag (rendered by the host); key-shape guard.
-  const opted = codexConnector.buildLaunch({
+  const opted = launch({
     space: "s",
     name: "n",
     launchOptions: { approval_policy: '"untrusted"', model_verbosity: '"low"' },
@@ -98,13 +99,13 @@ try {
   );
   throws(
     "an =-embedding launch-option key is refused",
-    () => codexConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "1" } }),
+    () => launch({ space: "s", name: "n", launchOptions: { "a=b": "1" } }),
     /not a valid flag name/,
   );
   throws(
     "a prototype-polluting launch-option key is refused",
     () =>
-      codexConnector.buildLaunch({
+      launch({
         space: "s",
         name: "n",
         launchOptions: JSON.parse('{"__proto__":"x"}') as Record<string, unknown>,
@@ -113,7 +114,7 @@ try {
   );
 
   // ACL + capabilities env rail.
-  const acl = codexConnector.buildLaunch({
+  const acl = launch({
     space: "s",
     name: "n",
     subscribe: ["team"],
@@ -130,7 +131,7 @@ try {
   );
 
   // Identity extras.
-  const full = codexConnector.buildLaunch({
+  const full = launch({
     space: "s",
     name: "n",
     role: "coder",
@@ -156,18 +157,18 @@ try {
   // A prompt is trimmed on the way in, and a prompt with no text refuses the launch (never dropped).
   check(
     "prompt is trimmed",
-    codexConnector.buildLaunch({ space: "s", name: "n", prompt: "  greet  " }).env?.COTAL_CODEX_PROMPT === "greet",
+    launch({ space: "s", name: "n", prompt: "  greet  " }).env?.COTAL_CODEX_PROMPT === "greet",
   );
   let emptyPromptRefused = false;
   try {
-    codexConnector.buildLaunch({ space: "s", name: "n", prompt: "   " });
+    launch({ space: "s", name: "n", prompt: "   " });
   } catch (e) {
     emptyPromptRefused = /empty/.test(String((e as Error).message));
   }
   check("an empty prompt refuses the launch", emptyPromptRefused);
 
   // User-mode auth rail + the one-identity-plane rule.
-  const user = codexConnector.buildLaunch({
+  const user = launch({
     space: "s",
     name: "n",
     userAuth: { owner: "o", actor: "a", sentinelCredsPath: "/tmp/sc", bearerCmd: ["cmd", "arg"] },
@@ -191,7 +192,7 @@ try {
   throws(
     "creds + userAuth is refused (one identity plane)",
     () =>
-      codexConnector.buildLaunch({
+      launch({
         space: "s",
         name: "n",
         creds: "/tmp/creds",
@@ -203,27 +204,27 @@ try {
   // Declared-unsupported features fail loud.
   throws(
     "resume is refused (a resumed thread has no cotal_* MCP tools)",
-    () => codexConnector.buildLaunch({ space: "s", name: "n", resume: "0199-abc" }),
+    () => launch({ space: "s", name: "n", resume: "0199-abc" }),
     /resum/i,
   );
   throws(
     "the whole mcp_servers namespace is reserved (top-level table, the reachable shape)",
-    () => codexConnector.buildLaunch({ space: "s", name: "n", launchOptions: { mcp_servers: '{ evil = { url = "http://x" } }' } }),
+    () => launch({ space: "s", name: "n", launchOptions: { mcp_servers: '{ evil = { url = "http://x" } }' } }),
     /reserved/i,
   );
   throws(
     "tool-sharing is refused",
-    () => codexConnector.buildLaunch({ space: "s", name: "n", mcpServers: { srv: { command: "x" } } }),
+    () => launch({ space: "s", name: "n", mcpServers: { srv: { command: "x" } } }),
     /tool-sharing/,
   );
   // The TUI/headless choice is derived from the host's own stdout, and COTAL_CODEX_TUI overrides
   // it. The child's env is an ALLOW-LIST, so an override that is not forwarded BY NAME is
   // advertised and unreachable through the one path operators actually use.
-  const noTui = codexConnector.buildLaunch({ space: "s", name: "n" });
+  const noTui = launch({ space: "s", name: "n" });
   check("COTAL_CODEX_TUI is absent when the operator did not set it", noTui.env?.COTAL_CODEX_TUI === undefined);
   process.env.COTAL_CODEX_TUI = "0";
   try {
-    const forced = codexConnector.buildLaunch({ space: "s", name: "n" });
+    const forced = launch({ space: "s", name: "n" });
     check("COTAL_CODEX_TUI reaches the host through the env allow-list", forced.env?.COTAL_CODEX_TUI === "0");
   } finally {
     delete process.env.COTAL_CODEX_TUI;

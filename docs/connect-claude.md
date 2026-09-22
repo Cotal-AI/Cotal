@@ -260,11 +260,11 @@ with the adapter:
 
 ## Event plane
 
-A session launched with `cotal spawn --events` publishes a **structured** account of what it
+A spawned session publishes a **structured** account of what it
 did: run boundaries per turn, assistant text, reasoning, and each tool call with its start
 and its end. Not prose about the work, the work itself, in a vocabulary a program can
-read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
-with the plugin installed publishes nothing.
+read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out. A personal session
+started outside the Cotal launcher publishes nothing unless its environment arms the plane.
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
@@ -399,12 +399,12 @@ then remove the directory.
 Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
 part by design, so a surface that renders a message as flat text shows a marker instead of prose.
 
-**On a per-user-auth mesh, arming needs the spawner's grant to cover the channel.** The event
+**On a per-user-auth mesh, the default event plane needs the spawner's grant to cover the channel.** The event
 channel is added to the child's publish set, and delegation only narrows: an agent may hand down
-a subset of what it holds and no more. So a peer-initiated `--events` spawn is refused unless the
+a subset of what it holds and no more. So a peer-initiated spawn is refused unless the
 spawning identity's own grant already covers the child's event channel. The refusal prints the
 exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
-admin-scoped or roster row, is unaffected.
+admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
 
 ## Resume a session
 

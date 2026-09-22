@@ -186,7 +186,7 @@ steering and a turn deferred because native state changed during that wait.
 
 ## Event plane
 
-A seat launched with `cotal spawn --events` publishes run boundaries, assistant text, reasoning,
+A spawned seat publishes run boundaries, assistant text, reasoning,
 and tool starts and ends on `events.<owner>.<actor>`. Tool arguments and results are not published.
 The channel and grant rules are the same as the other connectors; see
 [Connect Claude Code](connect-claude.md#event-plane) for how to grant and read one.
@@ -199,10 +199,10 @@ stored in its event write-ahead log and does not republish records already ackno
 
 The journal records settled message blocks rather than live deltas. Text and reasoning therefore
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
-blocks. User prompt text is not republished onto the event channel. Arming is `COTAL_EVENTS`, which
-the launcher sets only for `--events`; an ordinary Jcode seat publishes nothing.
-On an open mesh, an event-enabled Jcode seat uses its managed seat name as the stable actor token;
-without `--events`, open-mode identity keeps its ordinary self-minted behavior.
+blocks. User prompt text is not republished onto the event channel. The launcher sets
+`COTAL_EVENTS` by default; pass `--no-events` to opt out.
+On an open mesh, a default event-enabled Jcode seat uses its managed seat name as the stable actor
+token; with `--no-events`, open-mode identity keeps its ordinary self-minted behavior.
 
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,

@@ -1108,15 +1108,19 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .describe(
             "Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted.",
           ),
+        events: z
+          .boolean()
+          .optional()
+          .describe("Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default."),
         // NOTE: session `resume` is deliberately NOT exposed here. Forking a host-local `~/.claude`
         // transcript is an operator-local intent; letting a spawn-capable mesh PEER name a host
         // session id would expand `spawn` into host-transcript disclosure with no broker-enforced
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }) {
+      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as { name?: string; mode?: string; model?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned

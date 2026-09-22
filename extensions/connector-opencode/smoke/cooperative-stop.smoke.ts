@@ -44,6 +44,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 // An OS-assigned free port (see _free-port.ts): a Windows-reserved port makes nats-server fail to bind.
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
+const launch = (opts: import("@cotal-ai/core").LaunchOpts) => opencodeConnector.buildLaunch({ events: false, ...opts });
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {
@@ -197,7 +198,7 @@ try {
   // (a regression dropping that wiring fails here instead of passing green on a hand-built env).
   const credsFile = join(dir, "otto.creds");
   writeFileSync(credsFile, ottoCreds);
-  const spec = opencodeConnector.buildLaunch({
+  const spec = launch({
     space,
     name: "Otto",
     role: "worker",
@@ -437,7 +438,7 @@ try {
   const tillyCreds = await provisionAgent(mgr, auth, tillyId, { ...acl, role: "worker", lifecycleUid: tillyUid });
   const tillyCredsFile = join(dir, "tilly.creds");
   writeFileSync(tillyCredsFile, tillyCreds);
-  const toolSpec = opencodeConnector.buildLaunch({
+  const toolSpec = launch({
     space, name: "Tilly", role: "worker", id: tillyId.id, lifecycleUid: tillyUid, creds: tillyCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -498,7 +499,7 @@ try {
   const miloCreds = await provisionAgent(mgr, auth, miloId, { ...acl, role: "worker", lifecycleUid: miloUid });
   const miloCredsFile = join(dir, "milo.creds");
   writeFileSync(miloCredsFile, miloCreds);
-  const modelSpec = opencodeConnector.buildLaunch({
+  const modelSpec = launch({
     space, name: "Milo", role: "worker", id: miloId.id, lifecycleUid: miloUid, creds: miloCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -557,7 +558,7 @@ try {
   const nellCreds = await provisionAgent(mgr, auth, nellId, { ...acl, role: "worker", lifecycleUid: nellUid });
   const nellCredsFile = join(dir, "nell.creds");
   writeFileSync(nellCredsFile, nellCreds);
-  const mirrorSpec = opencodeConnector.buildLaunch({
+  const mirrorSpec = launch({
     space, name: "Nell", role: "worker", id: nellId.id, lifecycleUid: nellUid, creds: nellCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -623,7 +624,7 @@ try {
   const ivyCreds = await provisionAgent(mgr, auth, ivyId, { ...acl, role: "worker", lifecycleUid: ivyUid });
   const ivyCredsFile = join(dir, "ivy.creds");
   writeFileSync(ivyCredsFile, ivyCreds);
-  const interiorSpec = opencodeConnector.buildLaunch({
+  const interiorSpec = launch({
     space, name: "Ivy", role: "worker", id: ivyId.id, lifecycleUid: ivyUid, creds: ivyCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -708,7 +709,7 @@ try {
   const rheaCreds = await provisionAgent(mgr, auth, rheaId, { ...acl, role: "worker", lifecycleUid: rheaUid });
   const rheaCredsFile = join(dir, "rhea.creds");
   writeFileSync(rheaCredsFile, rheaCreds);
-  const resumeSpec = opencodeConnector.buildLaunch({
+  const resumeSpec = launch({
     space, name: "Rhea", role: "worker", id: rheaId.id, lifecycleUid: rheaUid, creds: rheaCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -805,7 +806,7 @@ try {
   const cyCreds = await provisionAgent(mgr, auth, cyId, { ...acl, role: "worker", lifecycleUid: cyUid });
   const cyCredsFile = join(dir, "carry.creds");
   writeFileSync(cyCredsFile, cyCreds);
-  const carrySpec = opencodeConnector.buildLaunch({
+  const carrySpec = launch({
     space, name: "Carrie", role: "worker", id: cyId.id, lifecycleUid: cyUid, creds: cyCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -905,7 +906,7 @@ try {
   const thCreds = await provisionAgent(mgr, auth, thId, { ...acl, role: "worker", lifecycleUid: thUid });
   const thCredsFile = join(dir, "throw.creds");
   writeFileSync(thCredsFile, thCreds);
-  const throwSpec = opencodeConnector.buildLaunch({
+  const throwSpec = launch({
     space, name: "Thea", role: "worker", id: thId.id, lifecycleUid: thUid, creds: thCredsFile,
     servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
@@ -996,7 +997,7 @@ try {
   });
   const coCredsFile = join(dir, "collide.creds");
   writeFileSync(coCredsFile, coCreds);
-  const collideSpec = opencodeConnector.buildLaunch({
+  const collideSpec = launch({
     space, name: "Cleo", role: "worker", id: coId.id, lifecycleUid: coUid, creds: coCredsFile,
     servers: SERVERS, subscribe: ["collide"], allowSubscribe: ["collide"], allowPublish: ["collide"],
   });
@@ -1131,7 +1132,7 @@ try {
   });
   const bwCredsFile = join(dir, "busywake.creds");
   writeFileSync(bwCredsFile, bwCreds);
-  const busySpec = opencodeConnector.buildLaunch({
+  const busySpec = launch({
     space, name: "Bram", role: "worker", id: bwId.id, lifecycleUid: bwUid, creds: bwCredsFile,
     servers: SERVERS, subscribe: ["busywake"], allowSubscribe: ["busywake"], allowPublish: ["busywake"],
   });

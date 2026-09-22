@@ -1426,13 +1426,13 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }): Promise<ControlReply> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });

@@ -591,8 +591,7 @@ export interface StartAgentOpts {
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
-   *  off; `true` (the `--events` flag) opts in. It is the only structured view of what a session
-   *  did: the prose mirror this replaced is gone. */
+   *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
@@ -4384,19 +4383,19 @@ export class Manager {
       name = this.uniqueName(identityName);
     }
     this.reserved.add(name);
-    // The AG-UI event plane (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1). Refused HERE, before
+    // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
     // anything is minted: a connector that cannot
     // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
     // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
     // the principal's owner is resolved further down, so deriving it from anything in scope here
     // would mean guessing at the identity the child will actually connect as. It is added at the
     // accept seam below, where the allocated triple exists.
-    const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
+    const events = opts.events !== false;
     if (events && !connector.eventChannel) {
       // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
       // the next spawn of this persona its un-suffixed name and nothing reports why.
       this.reserved.delete(name);
-      return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane, but events was requested` };
+      return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-

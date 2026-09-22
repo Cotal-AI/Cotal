@@ -22,6 +22,7 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
     console.error(`  ✗ ${name}: ${(error as Error).message}`);
   }
 };
+const launch = (opts: import("@cotal-ai/core").LaunchOpts) => jcodeConnector.buildLaunch({ events: false, ...opts });
 const throws = (name: string, fn: () => unknown, match: RegExp): void => {
   try {
     assert.throws(fn, match, name);
@@ -56,11 +57,11 @@ try {
   if (process.platform === "win32") {
     // The refusal below is the FIRST buildLaunch on this platform: every later probe in this file
     // assumes a Unix host, so the Windows arm must run before any of them can throw unlabelled.
-    throws("refuses unsupported Windows host", () => jcodeConnector.buildLaunch({ space: "s", name: "n" }), /not supported on Windows/);
+    throws("refuses unsupported Windows host", () => launch({ space: "s", name: "n" }), /not supported on Windows/);
     console.log(`\nJCODE ARGS SMOKE PASSED (${pass} checks)`);
     process.exit(0);
   }
-  const base = jcodeConnector.buildLaunch({ space: "space", name: "seat" });
+  const base = launch({ space: "space", name: "seat", events: false });
   check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
   check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === JCODE_READINESS_TIMEOUT_MS && JCODE_READINESS_TIMEOUT_MS === 180_000, jcodeConnector.readinessTimeoutMs);
@@ -118,18 +119,20 @@ try {
   check("forwards mesh identity", base.env?.COTAL_SPACE === "space" && base.env?.COTAL_NAME === "seat");
   check("pins private state to the launch directory", base.env?.COTAL_JCODE_HOME === process.cwd());
   check("drops ordinary operator env unless explicitly allowed", base.env?.UNRELATED_JCODE_ENV_CANARY === undefined);
-  const allowed = jcodeConnector.buildLaunch({ space: "space", name: "seat", envAllow: ["UNRELATED_JCODE_ENV_CANARY"] });
+  const allowed = launch({ space: "space", name: "seat", envAllow: ["UNRELATED_JCODE_ENV_CANARY"], events: false });
   check("inherits explicitly allowed operator env", allowed.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");
   check("resets inherited Cotal material", base.env?.COTAL_CREDS === undefined && base.env?.COTAL_LIFECYCLE_UID === undefined);
   check("mints a manager control endpoint", Boolean(base.control?.path && base.control?.token));
   check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_TOKEN === undefined);
   check("control token round-trips through launch material", controlFromEnv(base.env)?.token === base.control?.token);
 
-  const rooted = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir });
+  const rooted = launch({ space: "space", name: "seat", workspaceRoot: dir, events: undefined });
   check("workspaceRoot pins private state", rooted.env?.COTAL_JCODE_HOME === dir);
   check("declares the shared AG-UI event channel", jcodeConnector.eventChannel?.({ owner: "owner", actor: "actor" }) === "events.owner.actor");
-  check("ordinary launches do not arm the event plane", rooted.env?.COTAL_EVENTS === undefined && rooted.env?.COTAL_WORKSPACE_ROOT === undefined);
-  const evented = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir, events: true });
+  check("ordinary launches arm the event plane", rooted.env?.COTAL_EVENTS === "1" && rooted.env?.COTAL_WORKSPACE_ROOT === dir);
+  const optedOut = launch({ space: "space", name: "seat", workspaceRoot: dir, events: false });
+  check("--no-events leaves the event plane off", optedOut.env?.COTAL_EVENTS === undefined && optedOut.env?.COTAL_WORKSPACE_ROOT === undefined);
+  const evented = launch({ space: "space", name: "seat", workspaceRoot: dir, events: true });
   check(
     "event launches arm the plane, pin its durable root, and stabilize open-mode identity",
     evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir && evented.env?.COTAL_ID === "seat",
@@ -137,18 +140,18 @@ try {
   );
   check(
     "an allocated event identity wins over the open-mode name",
-    jcodeConnector.buildLaunch({ space: "space", name: "seat", id: "allocated", workspaceRoot: dir, events: true }).env?.COTAL_ID === "allocated",
+    launch({ space: "space", name: "seat", id: "allocated", workspaceRoot: dir, events: true }).env?.COTAL_ID === "allocated",
   );
-  throws("events require a durable workspace root", () => jcodeConnector.buildLaunch({ space: "s", name: "n", events: true }), /workspace root/);
+  throws("events require a durable workspace root", () => launch({ space: "s", name: "n", events: true }), /workspace root/);
   check("Jcode TUI override is absent when unset", base.env?.COTAL_JCODE_TUI === undefined);
   process.env.COTAL_JCODE_TUI = "0";
   try {
-    check("Jcode TUI override crosses the launch boundary", jcodeConnector.buildLaunch({ space: "s", name: "n" }).env?.COTAL_JCODE_TUI === "0");
+    check("Jcode TUI override crosses the launch boundary", launch({ space: "s", name: "n", events: false }).env?.COTAL_JCODE_TUI === "0");
   } finally {
     delete process.env.COTAL_JCODE_TUI;
   }
 
-  const full = jcodeConnector.buildLaunch({
+  const full = launch({
     space: "space",
     name: "seat",
     role: "worker",
@@ -157,6 +160,7 @@ try {
     servers: "nats://bridge.test:4222",
     model: "gpt-5.6-sol",
     prompt: "  do the thing  ",
+    events: false,
   });
   check(
     "forwards identity/model/prompt",
@@ -170,25 +174,25 @@ try {
   check("keeps broker URL out of env", full.env?.COTAL_SERVERS === undefined);
   check("broker URL resolves from material", configFromEnv(full.env).servers === "nats://bridge.test:4222");
   check("material preserves static creds when supplied", (() => {
-    const withCreds = jcodeConnector.buildLaunch({ space: "s", name: "n", creds: "/tmp/seat.creds" });
+    const withCreds = launch({ space: "s", name: "n", creds: "/tmp/seat.creds", events: false });
     return readLaunchMaterial(withCreds.env?.[LAUNCH_MATERIAL_ENV] ?? "").creds === "/tmp/seat.creds";
   })());
 
   const persona = join(dir, "agent.md");
   writeFileSync(persona, "---\nname: seat\nmodel: from-file\nvariant: medium\n---\nPersona\n");
-  check("uses agent-file model as a default", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona }).env?.COTAL_MODEL === "from-file");
-  check("explicit model wins over agent file", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona, model: "flag" }).env?.COTAL_MODEL === "flag");
+  check("uses agent-file model as a default", launch({ space: "s", name: "seat", configPath: persona, events: false }).env?.COTAL_MODEL === "from-file");
+  check("explicit model wins over agent file", launch({ space: "s", name: "seat", configPath: persona, model: "flag", events: false }).env?.COTAL_MODEL === "flag");
 
   // The variant IS Jcode's per-session reasoning effort. The connector carries the requested tier
   // verbatim; the tier is validated at launch by the provider that owns the ladder (the host calls
   // set_reasoning_effort and lets Jcode refuse), so nothing here re-implements that catalog.
   check("variant support is declared", jcodeConnector.supportsModelVariant === true);
-  const tiered = jcodeConnector.buildLaunch({ space: "space", name: "seat", model: "gpt-5.6-sol", variant: "xhigh" });
+  const tiered = launch({ space: "space", name: "seat", model: "gpt-5.6-sol", variant: "xhigh", events: false });
   check("variant rides env as the reasoning effort", tiered.env?.COTAL_VARIANT === "xhigh", tiered.env);
   check("variant reaches the host config seam", configFromEnv(tiered.env).variant === "xhigh");
   check("variant is absent when unrequested", base.env?.COTAL_VARIANT === undefined);
-  check("uses agent-file variant as a default", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona }).env?.COTAL_VARIANT === "medium");
-  check("explicit variant wins over agent file", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona, variant: "max" }).env?.COTAL_VARIANT === "max");
+  check("uses agent-file variant as a default", launch({ space: "s", name: "seat", configPath: persona, events: false }).env?.COTAL_VARIANT === "medium");
+  check("explicit variant wins over agent file", launch({ space: "s", name: "seat", configPath: persona, variant: "max", events: false }).env?.COTAL_VARIANT === "max");
 
   // Jcode decorates its MCP calls with these two harness fields. The bridge extends only the
   // advertised host schema and strips them before relaying; arbitrary Cotal inputs remain closed.
@@ -197,13 +201,13 @@ try {
   check("Jcode MCP decoration is accepted by the host-facing schema", hostSchema.safeParse({ to: "operator", text: "PONG", accept_large_output: false, intent: "reply" }).success);
   check("Jcode MCP schema still refuses non-harness extras", !hostSchema.safeParse({ to: "operator", text: "PONG", owner: "forged" }).success);
 
-  throws("refuses empty prompt", () => jcodeConnector.buildLaunch({ space: "s", name: "n", prompt: "  " }), /empty/);
-  throws("refuses resume", () => jcodeConnector.buildLaunch({ space: "s", name: "n", resume: "old" }), /resum/i);
-  throws("refuses exact-session continuation", () => jcodeConnector.buildLaunch({ space: "s", name: "n", continueSession: "old" }), /continuation/);
-  throws("refuses an empty variant", () => jcodeConnector.buildLaunch({ space: "s", name: "n", variant: "  " }), /empty/);
-  throws("refuses tool sharing", () => jcodeConnector.buildLaunch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);
-  throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
-  throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
+  throws("refuses empty prompt", () => launch({ space: "s", name: "n", prompt: "  " }), /empty/);
+  throws("refuses resume", () => launch({ space: "s", name: "n", resume: "old" }), /resum/i);
+  throws("refuses exact-session continuation", () => launch({ space: "s", name: "n", continueSession: "old" }), /continuation/);
+  throws("refuses an empty variant", () => launch({ space: "s", name: "n", variant: "  " }), /empty/);
+  throws("refuses tool sharing", () => launch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);
+  throws("refuses unsupported launch options", () => launch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
+  throws("still validates malformed launch option keys", () => launch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
 
   const mapperRecord = {
     cursor: "journal:cursor:1",

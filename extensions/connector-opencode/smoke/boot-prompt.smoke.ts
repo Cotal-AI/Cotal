@@ -51,7 +51,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 // ── 1. the launch spec: does the connector hand the prompt over at all? ──────────────────────────
 const BOOT_TEXT = "Introduce yourself in #general, then wait.";
 {
-  const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT });
+  const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT, events: false });
   check(
     "the launch spec carries the initial prompt to the plugin",
     withPrompt.env?.COTAL_OPENCODE_PROMPT === BOOT_TEXT,
@@ -70,7 +70,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     withPrompt.env?.OPENCODE_CONFIG_CONTENT,
   );
 
-  const noPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-2" });
+  const noPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-2", events: false });
   check(
     "no initial prompt means no carrier in the launch spec",
     !("COTAL_OPENCODE_PROMPT" in (noPrompt.env ?? {})),
@@ -80,7 +80,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
   // A prompt the connector cannot turn into a turn is refused at launch — never accepted and dropped.
   let refused = "";
   try {
-    opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-3", prompt: "   " });
+    opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-3", prompt: "   ", events: false });
   } catch (e) {
     refused = (e as Error).message;
   }
@@ -91,6 +91,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     const pinned = opencodeConnector.buildLaunch({
       space: "bootspace",
       name: "boot-pinned",
+      events: false,
       resolvedBinaries: { opencode: "/boot/resolved-opencode" },
     });
     check(
