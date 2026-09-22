@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, cotalToolSpecs, JsonlFileSource } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, cotalToolSpecs, EventWal } from "@cotal-ai/connector-core";
 import { z } from "zod";
 import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
 import { createJcodeMapper } from "../src/agui-map.js";
-import { JcodeJournalSource } from "../src/agui-source.js";
+import { initializeJcodeEventBoundary, JcodeJournalSource } from "../src/agui-source.js";
 
 let pass = 0;
 let fail = 0;
@@ -242,19 +242,30 @@ try {
     { first: messageIds(mapped), restarted: messageIds(restartedMapped) },
   );
 
-  const journal = join(dir, "restart.journal.jsonl");
-  writeFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "before" }] }] })}\n`);
-  const acknowledged = (await new JsonlFileSource(journal).read(undefined)).cursor;
-  appendFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "after" }] }] })}\n`);
+  const journal = join(dir, "restart.journal.jsonl"), walPath = join(dir, "restart.wal.json");
+  writeFileSync(journal, `${JSON.stringify({ append_messages: [
+    { role: "assistant", content: [{ type: "tool_use", id: "orientation-1", name: "cotal_orientation" }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "orientation-1", content: "ready" }] },
+  ] })}\n`);
+  const wal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
+  const boundary = await initializeJcodeEventBoundary(journal, wal);
+  appendFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "requested answer" }] }] })}\n`);
+  const restartedWal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
+  const acknowledged = await initializeJcodeEventBoundary(journal, restartedWal);
   const source = new JcodeJournalSource(journal);
   const recovered = await source.read(acknowledged);
-  const virgin = await source.read(undefined);
+  const restartFrames = recovered.records.flatMap((record) =>
+    createJcodeMapper({ threadId: "session-restart", mintRunId: () => "run-requested", now: () => 9 })
+      .map({ cursor: record.cursor, record: record.value })?.events.map((event) => event.type) ?? []
+  );
   check(
-    "a restarted Jcode source follows the WAL cursor, including virgin byte zero",
-    recovered.records.length === 1 &&
-      recovered.records[0]?.value.append_messages?.[0]?.content?.[0]?.text === "after" &&
-      virgin.records.length === 2,
-    { recovered, virgin },
+    "the persisted Jcode boundary excludes readiness and replays a post-boundary record after restart",
+    acknowledged === boundary &&
+      recovered.records.length === 1 &&
+      recovered.records[0]?.value.append_messages?.[0]?.content?.[0]?.text === "requested answer" &&
+      restartFrames.join(",") === "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END" &&
+      hostSrc.includes("if (!readinessTurnOpen) await ensureEventsBound();"),
+    { boundary, acknowledged, recovered, restartFrames },
   );
 
   console.log(`\nJCODE ARGS SMOKE PASSED: ${pass} passed, ${fail} failed`);

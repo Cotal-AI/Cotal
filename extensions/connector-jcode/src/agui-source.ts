@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
-import { JsonlFileSource, type DurableSource, type SourceRead } from "@cotal-ai/connector-core";
+import { JsonlFileSource, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
 import type { JcodeJournalRecord, PositionedJcodeJournalRecord } from "./agui-map.js";
 
 const JOURNAL_WAIT_MS = 5_000;
@@ -14,6 +14,37 @@ const isMissing = (error: unknown): error is NodeJS.ErrnoException =>
 
 export function jcodeJournalPath(jcodeHome: string, sessionId: string): string {
   return join(jcodeHome, "sessions", `${sessionId}.journal.jsonl`);
+}
+
+async function captureJcodeJournalCursor(path: string, waitMs = JOURNAL_WAIT_MS): Promise<string> {
+  const file = new JsonlFileSource<JcodeJournalRecord>(path);
+  const deadline = performance.now() + waitMs;
+  let retryMs = RETRY_INITIAL_MS;
+  for (;;) {
+    try {
+      return (await file.read(undefined)).cursor;
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0)
+        throw new Error(`Jcode AG-UI source: session journal did not appear within ${waitMs}ms`, { cause: error });
+      await delay(Math.min(retryMs, remaining));
+      retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
+    }
+  }
+}
+
+/**
+ * Persist where the public event stream begins before its first turn can start. A restart always
+ * trusts the WAL's acknowledged cursor and never captures a later end, so output appended after this
+ * boundary remains replayable even if the process dies before its first pump.
+ */
+export async function initializeJcodeEventBoundary(path: string, wal: EventWal): Promise<string> {
+  const acknowledged = wal.frontier.sourceCursor;
+  if (acknowledged !== undefined) return acknowledged;
+  const boundary = await captureJcodeJournalCursor(path);
+  await wal.advanceCursorOnly(boundary);
+  return boundary;
 }
 
 /**

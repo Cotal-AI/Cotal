@@ -64,7 +64,7 @@ import {
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { createJcodeMapper, type JcodeMapper, type PositionedJcodeJournalRecord } from "./agui-map.js";
-import { JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
+import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
@@ -442,9 +442,10 @@ export async function runJcodeHost(): Promise<void> {
           eventLock = lock;
           const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
           const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-          // The WAL is the only acknowledged source position. A virgin WAL means byte zero of this
-          // session journal, not "where the journal happens to end now": a prior process may have
-          // died after observing the file but before its first pump persisted a cursor.
+          // Persist the pre-public boundary before start returns. drive() waits for this factory, so
+          // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
+          // wins over the current journal end and replays everything appended after that cursor.
+          await initializeJcodeEventBoundary(journalPath, wal);
           const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
           mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
           return AguiEmitter.start<PositionedJcodeJournalRecord>({
@@ -1951,7 +1952,10 @@ export async function runJcodeHost(): Promise<void> {
     watchClient(client);
     turnActive = readinessTurnOpen;
     await agent.start();
-    await ensureEventsBound();
+    // A readiness proof may join on tool_done while its native turn is still open. Binding there
+    // would publish the pre-join orientation tool records and merge the next requested turn into the
+    // same AG-UI run. A completed proof can bind now; an open one binds in drive() after turn_done.
+    if (!readinessTurnOpen) await ensureEventsBound();
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).
