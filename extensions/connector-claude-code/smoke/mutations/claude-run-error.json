@@ -39,11 +39,11 @@
     {
       "name": "C2 every turn end becomes a failure, so a normal Stop is published as one",
       "file": "extensions/connector-claude-code/src/hooks.ts",
-      "find": "  if (ev.hook_event_name !== \"StopFailure\") return undefined;",
-      "replace": "  if (false) return undefined;",
+      "find": "function stopFailure(ev: HookEvent): { message: string; code?: string } | undefined {\n  if (ev.hook_event_name !== \"StopFailure\") return undefined;",
+      "replace": "function stopFailure(ev: HookEvent): { message: string; code?: string } | undefined {\n  if (false) return undefined;",
       "expectRed": "stop:and THAT close is RUN_FINISHED",
       "cell": "stop:and THAT close is RUN_FINISHED — `Stop` is not a failure, and a blanket mapping would fail here",
-      "note": "Both hooks land in one arm, so the predicate is the only thing separating them. This is the regression that arm invites."
+      "note": "Both hooks land in one arm, so the predicate is the only thing separating them. This is the regression that arm invites. Anchored on the enclosing signature because failureCondition opens with the identical guard line, which made the bare predicate match twice."
     },
     {
       "name": "C3 the failure loses the harness's own error kind, so the wire says a turn failed and not how",
