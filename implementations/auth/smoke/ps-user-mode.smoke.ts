@@ -321,6 +321,7 @@ try {
   let includeJoining = false;
   let includeListed = false;
   let includeWorkflow = false;
+  let includeSupervise = false;
   const originalHandler = handler!;
   handler = (async (req, res) => {
     const url = new URL(req.url!, origin);
@@ -360,6 +361,7 @@ try {
         ...(includeJoining ? [{ id: "joining-space", slug: "joining", name: "Joining project", kind: "local-test", role: "admin", registration: registration("joining") }] : []),
         ...(includeListed ? [{ id: "listed-space", slug: "listed", name: "Listed project", kind: "local-test", role: "admin", registration: registration("listed") }] : []),
         ...(includeWorkflow ? [{ id: "workflow-space", slug: "workflow_new", name: "Workflow new", kind: "local-test", role: "admin", registration: registration("workflow_new") }] : []),
+        ...(includeSupervise ? [{ id: "supervise-space", slug: "supervise_new", name: "Supervise new", kind: "local-test", role: "admin", registration: registration("supervise_new") }] : []),
         ],
       }));
     }
@@ -400,6 +402,13 @@ try {
   check("a self-registered target-bearing command receives dispatcher catalog preparation",
     catalogRequests === beforeRunRefresh + 1 && findMesh("workflow_new")?.origin === "catalog" && !discoveredRun.out.includes('no mesh named "workflow_new"'),
     { status: discoveredRun.status, out: discoveredRun.out.slice(-400), catalogRequests, beforeRunRefresh });
+  includeSupervise = true;
+  const beforeSuperviseRefresh = catalogRequests;
+  const discoveredSupervise = await cotal(["supervise", "--space", "supervise_new", "--server", "nats://127.0.0.1:1"], 20_000);
+  check("a copied target-flag command receives dispatcher catalog preparation",
+    catalogRequests === beforeSuperviseRefresh + 1 && findMesh("supervise_new")?.origin === "catalog" &&
+      discoveredSupervise.out.includes('does not match registered space "supervise_new"') && !discoveredSupervise.out.includes("neither hosting"),
+    { status: discoveredSupervise.status, out: discoveredSupervise.out.slice(-400), catalogRequests, beforeSuperviseRefresh });
   const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
   recordMesh({ space: "manual-current", server: original.server, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
   setCurrent("manual-current");

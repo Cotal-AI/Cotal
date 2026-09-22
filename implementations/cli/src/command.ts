@@ -1,5 +1,5 @@
 import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
-import { isWorkspaceTargetError, renderWorkspaceError, serverFlag, spaceFlag } from "@cotal-ai/workspace";
+import { hasMeshTargetFlags, isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
   isExtensionStub,
@@ -131,8 +131,7 @@ async function prepareCatalogForCommand(cmd: Command, args: ReturnType<typeof pa
   if (cmd.name === "use") return prepareCatalogCommand(args, false, "use");
   if (cmd.name === "status") return prepareCatalogCommand(args, true);
   if (cmd.name === "personas" && args.values.running !== true) return;
-  const flags = cmd.flags ?? [];
-  if (flags.includes(spaceFlag) && flags.includes(serverFlag)) await prepareCatalogCommand(args);
+  if (cmd.prepareMeshTarget !== false && hasMeshTargetFlags(cmd.flags)) await prepareCatalogCommand(args);
 }
 
 /** Options a composition root passes to {@link runCli}. */

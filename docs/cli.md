@@ -683,6 +683,11 @@ conditional refresh before target resolution. A failed refresh refuses the opera
 bypasses freshness and reports added, changed, removed, unchanged, and name collisions. `--idp`
 limits it to one signed-in account. It never connects to a broker.
 
+The shared dispatcher applies this preparation to every command that declares both `--space` and
+`--server` as mesh-target flags, including commands registered by other packages and commands that
+declare their own equivalent flag objects. Daemon and startup commands that use those names only as
+configuration explicitly opt out. Registry-local `meshes add` and `meshes rm` never refresh a catalog.
+
 Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
 one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
 requiring credentials. It then offers the spaces your `--root` already holds credentials for, states

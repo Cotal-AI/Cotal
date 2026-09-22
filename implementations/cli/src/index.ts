@@ -100,6 +100,7 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "start a local mesh (nats-server + JetStream, JWT auth by default) - or `-f <cotal.yaml>` for a whole manifest",
     flags: upFlags,
+    prepareMeshTarget: false,
     run: up,
     complete: upComplete,
   },

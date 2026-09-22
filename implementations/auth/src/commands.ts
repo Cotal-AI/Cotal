@@ -424,6 +424,7 @@ const authCommands: Command[] = [
       { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
       { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises (spawn POSTs it with the login bearer)" },
     ],
+    prepareMeshTarget: false,
     run: (args) => legibly(() => runAuthService(args)),
   },
   {
