@@ -22,7 +22,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -51,6 +51,7 @@ let root!: string;
 let configDir!: string;
 let sandbox!: SmokeSandboxAnchor;
 let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
+let prepareIdpSpaceCatalogs!: typeof import("../src/index.js").prepareIdpSpaceCatalogs;
 
 // Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
 // have launched detached processes, and those are exactly the ones whose pidfiles must survive.
@@ -65,6 +66,7 @@ const check = (n: string, v: boolean, x?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let SERVER!: string;
+let PUBLIC_EXCHANGE_PORT!: number;
 const SPACE = `psuser-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
@@ -202,8 +204,9 @@ try {
   // above it in between. Ownership then does not depend on the timing of any check, which is the
   // only way to close a race against a child that re-resolves cwd for itself.
   sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-  ({ establishIdpSession } = await import("../src/index.js"));
+  ({ establishIdpSession, prepareIdpSpaceCatalogs } = await import("../src/index.js"));
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
+  PUBLIC_EXCHANGE_PORT = await pickFreePort();
 
   idpSrv = createServer((req, res) => handler!(req, res));
   // The listen-failure listener is REMOVED on success. Left installed, it outlives the Promise it
@@ -281,7 +284,8 @@ try {
   check("...and therefore outranks any ancestor", captor === null, captor);
   if (captor) { process.exitCode = 1; throw new Error(`anchor missing: ${root} resolves to ${captor}`); }
   upAttempted = true;
-  const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
+  const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE,
+    "--exchange-public-port", String(PUBLIC_EXCHANGE_PORT)]);
   // Attribute HOW `up` ended before reading its status: a signalled or timed-out `up` reports
   // `status: null`, which reads only as "non-zero" and loses why.
   mustHaveRun(up, "`cotal up`");
@@ -303,6 +307,73 @@ try {
   check("user-mode ps exits 0 (C: ep.one path)", ps.status === 0, ps.status);
   check("user-mode ps does not die on STREAM.INFO (would mean it still scattered)",
     !/STREAM\.INFO/.test(ps.out), ps.out.slice(-200));
+
+  console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
+  const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
+  const { findMesh, removeMesh, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { loadCalloutAuth } = await import("../src/index.js");
+  const original = findMesh(SPACE);
+  if (!original?.userAuth) throw new Error("fixture has no user-auth registry entry to advertise");
+  const callout = await loadCalloutAuth(workspaceSecretStore(root), SPACE);
+  if (!callout) throw new Error("fixture has no callout sentinel credential");
+  let catalogFails = false;
+  let catalogRequests = 0;
+  const originalHandler = handler!;
+  handler = ((req, res) => {
+    const url = new URL(req.url!, origin);
+    if (url.pathname === "/catalog") {
+      catalogRequests++;
+      if (catalogFails) return void res.writeHead(503).end();
+      res.writeHead(200, { "content-type": "application/json", etag: '"ps-catalog-v1"' });
+      return void res.end(JSON.stringify({
+        v: 1,
+        account: { idpUrl: base, issuer: origin, sub },
+        spaces: [{
+          id: "catalog-space",
+          slug: SPACE,
+          name: SPACE,
+          kind: "local-test",
+          role: "admin",
+          registration: {
+            space: SPACE,
+            server: original.server,
+            tlsRequired: false,
+            userAuth: { ...original.userAuth, endpoints: { url: `http://127.0.0.1:${PUBLIC_EXCHANGE_PORT}` }, sentinelCredsPath: undefined },
+            sentinelCreds: callout.sentinelCreds,
+          },
+        }],
+      }));
+    }
+    if (url.pathname === "/api/auth/token") {
+      const capture = { writeHead: res.writeHead.bind(res) };
+      const old = res.writeHead.bind(res);
+      res.writeHead = ((status: number, headers?: Record<string, string>) => old(status, {
+        ...headers,
+        link: `<${origin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`,
+      })) as typeof res.writeHead;
+      void capture;
+    }
+    return originalHandler(req, res);
+  }) as typeof handler;
+  removeMesh(SPACE);
+  const catalogCache = join(home, "space-catalogs.json");
+  rmSync(catalogCache, { force: true });
+  await prepareIdpSpaceCatalogs({ dir: home, idpUrl: base, force: true, validate: validateCatalogSnapshot });
+  await prepareCatalogTargets({ idpUrl: base, force: true });
+  check("the empty registry was repopulated as a discovered user-mode target", findMesh(SPACE)?.origin === "catalog", findMesh(SPACE));
+  check("the discovered entry resolves through the ordinary synchronous target path", targetFromEntry(findMesh(SPACE)!, original.server, "registry").mode === "user");
+  const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
+  const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
+  check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
+  check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
+  const cacheFile = join(home, "space-catalogs.json");
+  const stale = JSON.parse(readFileSync(cacheFile, "utf8"));
+  Object.values(stale.accounts as Record<string, { fetchedAt?: string }>)[0].fetchedAt = new Date(0).toISOString();
+  writeFileSync(cacheFile, JSON.stringify(stale));
+  catalogFails = true;
+  const expired = await cotal(["ps", "--space", SPACE], 20_000);
+  check("an expired discovered target refuses ps when its required refresh fails",
+    expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, expired.out.slice(-400));
 
   console.log("4) kill manager — ps must fail loud, not empty-success");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness
