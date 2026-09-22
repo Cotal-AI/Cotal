@@ -45,6 +45,7 @@ export {
   type IdpBridge,
 } from "./idp.js";
 export {
+  CATALOG_FRESH_MS,
   deviceLogin,
   establishIdpSession,
   fetchIdpJwt,

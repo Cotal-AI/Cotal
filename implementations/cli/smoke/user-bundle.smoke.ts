@@ -7,8 +7,9 @@
  * own suite notices when they disagree — this smoke pins the round trip: what the daemon serves is
  * what registration accepts, field for field, including the pins registration goes on to record.
  */
-import { checkAdvertisedServer, checkAgentProvisioningUrl, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
+import { CATALOG_FRESH_MS, checkAdvertisedServer, checkAgentProvisioningUrl, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
 import { checkServer, checkUserBundle, userExchangeIssuer } from "../src/commands/meshes-add.js";
+import { POLICY_FRESH_MS } from "../src/commands/sync.js";
 
 let ran = 0;
 let failed = 0;
@@ -72,6 +73,12 @@ cell("policy.events rejects every value except required and names the field",
 const extraPolicy = checkUserBundle(JSON.stringify({ ...bundle, policy: { events: "required", other: true } }));
 cell("policy is closed and an extra key is refused by name",
   !extraPolicy.ok && extraPolicy.message.includes("policy.other"), extraPolicy.ok ? "accepted" : extraPolicy.message);
+
+cell(
+  "the manual policy refresh window stays pinned to the catalog freshness window",
+  POLICY_FRESH_MS === CATALOG_FRESH_MS,
+  `policy ${POLICY_FRESH_MS}ms, catalog ${CATALOG_FRESH_MS}ms`,
+);
 
 // --advertised-server takes the same scheme family `cotal meshes add` dials.
 cell("advertised-server accepts wss", checkAdvertisedServer("wss://hosted.example/mesh-ws") === undefined);
@@ -146,7 +153,7 @@ cell(
   `cli derives ${JSON.stringify(userExchangeIssuer("hosted"))}, auth derives ${JSON.stringify(spaceIssuer("hosted"))}`,
 );
 
-const EXPECTED_CELLS = 24;
+const EXPECTED_CELLS = 25;
 if (ran !== EXPECTED_CELLS) {
   console.error(`ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}`);
   process.exit(1);

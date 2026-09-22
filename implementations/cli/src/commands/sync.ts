@@ -24,7 +24,7 @@ function sameRegistrationTrust(entry: MeshEntry, bundle: UserBundle): boolean {
     ua.idp.audience === bundle.userAuth.idp.audience && ua.endpoints?.url === bundle.userAuth.endpoints?.url;
 }
 
-const POLICY_FRESH_MS = 5_000;
+export const POLICY_FRESH_MS = 5_000;
 
 async function refreshManualPolicy(entry: MeshEntry): Promise<void> {
   if (entry.origin !== "manual" || entry.mode !== "user" || entry.policy || !entry.userAuth?.endpoints?.url) return;
