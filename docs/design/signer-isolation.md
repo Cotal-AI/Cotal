@@ -368,20 +368,65 @@ that may change uid. The manager never receives `CAP_SETUID`.
 - Request: the existing custodian launch JSON plus target uid/gid, which the helper hard-codes
   to `cotal-agent` (it refuses any other target).
 - Action, **before** `setuid`:
-  1. Resolve the custody root from the launch JSON (`root` in `launchSeat`). Default is
-     `join(homedir(), ".cotal", "seats")` (`defaultCustodyRoot` in
-     `implementations/manager/src/runtime/custodial-pty.ts`). A manager started as
-     `cotal-manager` with the usual home therefore uses `/home/cotal-manager/.cotal/seats`
-     unless `COTAL_SEAT_ROOT` is set. That is the shipped default this design must keep
-     working; an agent-owned root is an operator override, not a requirement.
-  2. `mkdir` the root and the per-seat directory (`join(root, id)`) as root, then
-     `chown` both to `cotal-agent:cotal-manager` and `chmod` them `0750`. Today's
-     `CustodialPtyRuntime` constructor (`mkdirSync(this.root, { recursive: true, mode: 0o700 })`)
-     and `launchSeat` (`mkdirSync(opts.root, … 0o700)` then `mkdirSync(dirname(recPath), … 0o700)`)
-     create those paths as the caller. After isolation the manager is `cotal-manager` and
-     cannot chown to `cotal-agent`. If those calls still run as the manager, the root stays
-     `0700` `cotal-manager` and the dropped custodian cannot traverse it.
-  3. Then `fork`, `setgid` / `initgroups` / `setuid` to `cotal-agent`, `exec` the existing
+  1. Resolve the custody root from the launch JSON (`root` in `launchSeat`). Isolation
+     **changes the shipped default.** Today's `defaultCustodyRoot`
+     (`implementations/manager/src/runtime/custodial-pty.ts`) is
+     `join(homedir(), ".cotal", "seats")`, so a manager started as `cotal-manager` lands
+     at `/home/cotal-manager/.cotal/seats`. That path is not traversable by `cotal-agent`
+     after the drop. `mkSecretDir` (`packages/core/src/secret-fs.ts`) creates
+     `~/.cotal` at `0700` (then `hardenPrivate` reasserts `0700` on POSIX). `FsSecretStore.put`
+     (`packages/workspace/src/secret-store-fs.ts`) calls `mkSecretDir(dirname(p))` for every
+     secret under that tree, including `auth/`. A Node `mkdirSync(..., { recursive: true,
+     mode: 0o700 })` of the seats path (the `CustodialPtyRuntime` constructor and
+     `launchSeat`) creates the same `0700` ancestor chain: measured, `home`, `.cotal`, and
+     `seats` all come out `0700`. Chowning only the custody root and the per-seat directory
+     does not grant traverse of `/home/cotal-manager/.cotal`. Measured: opening
+     `seat.sock` through an ancestor with execute stripped fails `EACCES` even when the
+     children are `0777`; the same open succeeds after that ancestor is `0711`. Widening
+     `~/.cotal` to `0711` is refused: that directory holds every credential
+     (`auth/account.<hex>.json`, launch material, daemon creds) and `mkSecretDir` /
+     `hardenPrivate` would put it back to `0700` on the next secret write. The helper
+     therefore does not chmod `.cotal`. The shipped default after isolation is
+     `/var/lib/cotal/seats`. `CustodialPtyRuntime` on Linux static-auth uses that path
+     unless `COTAL_SEAT_ROOT` names another **agent-traversable** root. `$HOME/.cotal/seats`
+     is no longer a valid default.
+  2. Walk every ancestor of the resolved root from `/` to the seat directory. Required
+     layout for the shipped default (install asserts this; the helper refuses a mismatch
+     and never widens a mode it did not create):
+
+     | Path | Mode | Owner |
+     |---|---|---|
+     | `/` | kernel | root |
+     | `/var` | `0755` | `root:root` |
+     | `/var/lib` | `0755` | `root:root` |
+     | `/var/lib/cotal` | `0711` | `root:root` |
+     | `/var/lib/cotal/seats` (custody root) | `0750` | `cotal-agent:cotal-manager` |
+     | `/var/lib/cotal/seats/<id>` (per-seat) | `0750` | `cotal-agent:cotal-manager` |
+
+     `/var/lib/cotal` is `0711` so `cotal-agent` and `cotal-manager` can traverse to
+     `seats/` without listing siblings (`signer/` lives under the same parent as
+     `0700 cotal-signer`; execute-without-read is the same pattern as a private home).
+     `0711` does not let `cotal-agent` open a sibling it cannot name. An operator
+     override via `COTAL_SEAT_ROOT` must match the same rule: every ancestor from `/`
+     down to the parent of the custody root is traversable by `cotal-agent` (`o+x` or
+     an ACL that uid holds), the custody root and per-seat directory are `0750`
+     `cotal-agent:cotal-manager`, and no ancestor is a `0700` directory owned by
+     `cotal-manager` (so not `~/.cotal`). If any ancestor is missing, not a directory,
+     owned by the wrong uid, or has a mode that denies `cotal-agent` execute, the helper
+     throws, names the path, and does not `chmod` it. It never grants traverse on
+     `/home/cotal-manager`, `/home/cotal-manager/.cotal`, or `.cotal/auth`.
+  3. `mkdir` only the custody root and the per-seat directory (`join(root, id)`) as
+     root, then `chown` both to `cotal-agent:cotal-manager` and `chmod` them `0750`.
+     Today's `CustodialPtyRuntime` constructor
+     (`mkdirSync(this.root, { recursive: true, mode: 0o700 })`) and `launchSeat`
+     (`mkdirSync(opts.root, … 0o700)` then `mkdirSync(dirname(recPath), … 0o700)`)
+     create those paths as the caller. After isolation the manager is `cotal-manager`
+     and cannot chown to `cotal-agent`. If those calls still run as the manager, the
+     root stays `0700` `cotal-manager` and the dropped custodian cannot write
+     `seat.sock`. The helper creates only those two directories. It does not
+     `mkdir -p` through `/var/lib/cotal` on a missing spine; install creates the
+     `0711` parent, and a missing parent is the refusal in (2).
+  4. Then `fork`, `setgid` / `initgroups` / `setuid` to `cotal-agent`, `exec` the existing
      custodian entry with the launch JSON on stdin. That is today's `launchSeat` minus
      same-uid `spawn`. The PTY child then inherits `cotal-agent` without a second drop.
 - After the drop, `runCustodian` (`packages/seat/src/custodian.ts`) `mkdirSync`s
@@ -391,9 +436,15 @@ that may change uid. The manager never receives `CAP_SETUID`.
   `cotal-manager`. The helper therefore `chmod`s the seat directory `0750` `cotal-agent:cotal-manager`
   **after** `exec` returns the ready line (or the custodian, once it knows it is
   `cotal-agent` with a manager-group gid, writes `record.json` `0640`, `seat.sock` `0660`,
-  and the directory `0750`). Either way, adopt from `cotal-manager` can open `seat.sock`.
-  `SO_PEERCRED` on that socket continues to require the manager uid.
-- The helper never reads the account signing seed and is not on the signer allowlist.
+  and the directory `0750`). Either way, adopt from `cotal-manager` can open `seat.sock`
+  because `/var/lib/cotal` is `0711` and the seat directory is `0750` group-readable.
+  `SO_PEERCRED` on that socket continues to require the manager uid. If the ready line
+  never arrives (custodian `EACCES` on a non-traversable ancestor), this post-ready
+  chmod does not run; that is why the ancestor walk is before `setuid`.
+- The helper never reads the account signing seed and is not on the signer allowlist. It
+  never chmods a path it did not create in this request except the per-seat directory
+  after ready (the `0750` restore above). A `COTAL_SEAT_ROOT` under `~/.cotal` is a
+  mismatch of (2) and is refused.
 
 `CustodialPtyRuntime.spawn` becomes a client of this socket. It no longer `mkdirSync`s the
 root itself on Linux static-auth: that create is the helper's privileged step. If the
@@ -601,14 +652,15 @@ raise SystemExit(0)' \
    whose seat `name` is unique on this host (example name `proof`). Do not pick a pid by uid
    or recency. The manager records the seat id on the static slot (`recordSlotCustody` in
    `manager.ts`); the custodian writes `record.json` (`writeRecord` in
-   `packages/seat/src/record.ts`) with `name`, `childPid`, and `childStart`. Default custody
-   root is `$HOME/.cotal/seats` for the manager uid (`defaultCustodyRoot` in
-   `custodial-pty.ts`), unless `COTAL_SEAT_ROOT` is set on the manager unit. Pin the child
+   `packages/seat/src/record.ts`) with `name`, `childPid`, and `childStart`. After
+   isolation the shipped custody root is `/var/lib/cotal/seats` (§3.3), not
+   `$HOME/.cotal/seats` (`defaultCustodyRoot` in `custodial-pty.ts` today).
+   `COTAL_SEAT_ROOT` may name another agent-traversable root. Pin the child
    by walking those records for that name and matching `childStart`, then enter *its*
    mount namespace:
 
    ```bash
-   SEAT_ROOT=/home/cotal-manager/.cotal/seats
+   SEAT_ROOT=/var/lib/cotal/seats
    AGENT_NAME=proof
    AGENT_UID=$(id -u cotal-agent)
    pid=$(sudo -u cotal-manager python3 -c '
@@ -700,9 +752,12 @@ same steps.
 1. Create uids `cotal-signer`, `cotal-manager`, `cotal-agent` and group `cotal-manager`.
    The operator user that currently runs `cotal up` is typically added to `cotal-manager` for
    CLI mint.
-2. Install the signer unit: seed directory `/var/lib/cotal/signer/<space>/` mode `0700` owner
-   `cotal-signer`; socket `/var/run/cotal/signer/<space>.sock`; token file
-   `/etc/cotal/signer/<space>.token` mode `0640` `cotal-signer:cotal-manager`.
+2. Install the signer unit. Create `/var/lib/cotal` first as `0711` `root:root` (the
+   traverse spine in §3.3; do not leave this parent `0700`). Seed directory
+   `/var/lib/cotal/signer/<space>/` mode `0700` owner `cotal-signer`; socket
+   `/var/run/cotal/signer/<space>.sock`; token file
+   `/etc/cotal/signer/<space>.token` mode `0640` `cotal-signer:cotal-manager`. The
+   signer leaf stays `0700`; only the parent is traversable.
 3. Copy `account.signingSeed` from the current account record into
    `/var/lib/cotal/signer/<space>/signing.seed` as `cotal-signer` mode `0600`. Do not leave a
    second copy in the journal, in a backup that the manager uid can read, or in the shell
@@ -713,11 +768,16 @@ same steps.
    implementation of this design must persist `pub` / `signingPub` without the seed, or
    `runAuthService` refuses. `putSpaceAuth` today writes `account` whole (`auth-paths.ts`);
    the implementation of this design must persist the public half without the seed.
-5. Install `cotal-seat-launch.service` (§3.3). Run the manager as `cotal-manager`, the
-   signer as `cotal-signer`. Point the manager at the signer socket and the seat-launch
-   socket. Agents are `cotal-agent` only because that helper creates and chowns the
-   custody root, then `setuid`s before `exec` of the custodian; the manager never drops
-   uid itself and never `mkdir`s `/home/cotal-manager/.cotal/seats` as `0700`.
+5. Install `cotal-seat-launch.service` (§3.3). Create `/var/lib/cotal` `0711` `root:root`
+   and `/var/lib/cotal/seats` `0750` `cotal-agent:cotal-manager` (the helper will chown
+   the latter again at spawn; install must already make the `0711` spine). Run the
+   manager as `cotal-manager`, the signer as `cotal-signer`. Point the manager at the
+   signer socket and the seat-launch socket. Do not set `COTAL_SEAT_ROOT` to
+   `$HOME/.cotal/seats`: that ancestor is `0700` `cotal-manager` (`mkSecretDir`) and the
+   helper refuses it. Agents are `cotal-agent` only because that helper creates and
+   chowns `/var/lib/cotal/seats` and the per-seat directory, then `setuid`s before
+   `exec` of the custodian; the manager never drops uid itself and never `mkdir`s a
+   `0700` seats tree under `~/.cotal`.
 6. `cotal mint`, `cotal doctor auth --fix`, and `remintDaemonCreds` use the same signer
    socket. They run as a uid on the signer allowlist.
 
@@ -732,6 +792,7 @@ same steps.
 | Socket up, seed file still `0600` as the old operator uid | isolation is not on; start refuses if that uid is the manager uid |
 | No `cotal-seat-launch` socket / helper not privileged | start refuses: cannot drop to `cotal-agent` |
 | Helper drops uid without chown of the custody root | spawn never becomes ready: `runCustodian` cannot write `seat.sock` under a `0700` manager-owned root (`custodial-pty.ts` constructor, `launchSeat`, `writeRecord`) |
+| Custody root still `$HOME/.cotal/seats`, or any ancestor `0700` `cotal-manager` | helper refuses before `setuid`: `cotal-agent` cannot traverse `mkSecretDir`'s `0700` `~/.cotal`; post-ready chmod never runs |
 | Agents still spawned as `cotal-manager` | start refuses: spawn uid is not `cotal-agent` |
 | `cotal mint --signer` used as a mount of the seed into the manager | refused; that command's purpose (strip operator, keep signing seed) is the old co-location |
 | Non-Linux host | static-auth manager start refuses |
