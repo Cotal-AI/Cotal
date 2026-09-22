@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createConnection, createServer } from "node:net";
 import { hostname } from "node:os";
 import {
@@ -89,6 +89,7 @@ import {
   localProcessOwnerStatus,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
+  seatCheckpointDir,
   readStoreIdentity,
   recordOrdinaryResumeManagerCommit,
   releaseMaintenanceLock,
@@ -108,6 +109,7 @@ import {
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
+import { admitSeatCheckpoints } from "../lib/seat-admission.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
@@ -170,6 +172,7 @@ export const upFlags: FlagSpec[] = [
   { name: "restore", type: "string", value: "<dir>", description: "restore an offline backup before exposing the normal listener" },
   { name: "restore-only", type: "string", value: "<registry>", description: "restore only the registry component" },
   { name: "accept-missing-source", type: "boolean", description: "explicit disaster consent when the inode-bound preserved source is absent" },
+  { name: "accept-stale-checkpoint", type: "boolean", description: "explicit consent to resume a seat checkpoint captured outside its recorded recency horizon" },
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
@@ -222,6 +225,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
+    "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
     __restoreAttempt?: string;
@@ -340,6 +344,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
+        // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
+        // journalled and long before a manager starts. A refusal here costs nothing because
+        // nothing has been started; the same refusal after a launch would be a second writer.
+        const staleConsent = admitSeatCheckpointsForResume(root, journal.space, journal.cut.attemptId, values, resume.inventory);
         const serverNonce = randomUUID().replaceAll("-", "");
         const serverName = `${attemptId}-${serverNonce}`;
         beginOrdinaryResume(lock, {
@@ -351,6 +359,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             detached: Boolean(values.detach),
             serverName,
             serverNonce,
+            // Durable evidence of consent, not a print. An operator asking later why a seat resumed
+            // from a checkpoint past its horizon must be able to read that it was admitted, for
+            // which seat, and by how far, from the journal rather than from a lost terminal.
+            ...(staleConsent.length
+              ? { acceptedStaleCheckpoints: staleConsent.map((seat) => ({ ...seat })) }
+              : {}),
           },
         });
         pending = {
@@ -1171,6 +1185,103 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   } finally {
     releaseStartupLock();
   }
+}
+
+/**
+ * Run section 2.2's gates over every seat checkpoint the cut wrote, then take custody of each seat.
+ *
+ * Gate 2 is told which lifecycle uids are live. On this path that set is empty and the reason is
+ * structural rather than an omission: an ordinary resume only reaches here from a `ready` journal,
+ * which `down --preserve-state` publishes after it has proven every recorded process stopped and
+ * the exact recorded endpoint unreachable. There is no roster to consult because there is no
+ * broker. A destination that resumes against a live space supplies the roster instead.
+ */
+/** The fields this resume path reads off one retained inventory entry. The manager owns
+ *  `ManagerResumeAgent`; implementations never depend on each other, so the coordinator states the
+ *  shape it actually reads. */
+interface RetainedSeat {
+  name?: string;
+  identity?: { lifecycleUid?: string };
+  launch?: { source?: { configPath: string } };
+}
+
+/** One stale checkpoint the operator deliberately admitted, for the resume journal. */
+interface StaleCheckpointConsent {
+  readonly name: string;
+  readonly capturedAt: string;
+  readonly ageMs: number;
+  readonly horizonMs: number;
+}
+
+/** This host's current revision for a seat's launch config, or undefined when the file is gone.
+ *  A missing profile is not a mismatch: the manager's own relaunch check reports that separately,
+ *  and inventing a digest here would turn an absent file into a false profile refusal. */
+function digestFileOrUndefined(path: string): string | undefined {
+  try { return createHash("sha256").update(readFileSync(path)).digest("hex"); } catch { return undefined; }
+}
+
+function admitSeatCheckpointsForResume(
+  root: string,
+  space: string,
+  attemptId: string,
+  values: { "accept-stale-checkpoint"?: boolean },
+  inventory: unknown,
+): StaleCheckpointConsent[] {
+  // The checkpoints of the CUT this resume is consuming, named by that cut's attempt id. A resume
+  // must not admit an older cut's artifacts: they describe a tree and a transcript this inventory
+  // is not about to restore.
+  const checkpointDir = seatCheckpointDir(root, attemptId);
+  // The seats this resume is about to hand the manager. Admission is reconciled against this set,
+  // because "no checkpoint" and "no seat" look identical to a reader of the checkpoint directory
+  // alone, and only one of them is safe.
+  const retainedAgents = ((inventory as { agents?: RetainedSeat[] }).agents ?? []);
+  const retained = new Map(retainedAgents.map((agent) => [agent.name ?? "", agent]));
+  const admitted = admitSeatCheckpoints({
+    root,
+    checkpointDir,
+    space,
+    // This host's current revision for each seat's launch source, digested from the same file the
+    // manager re-digests before it relaunches. Passing it is what makes gate 2's profile half a
+    // decision: without it the gate has nothing to compare and the override decides nothing.
+    currentProfileConfigSha256: (name) => {
+      const source = retained.get(name)?.launch?.source;
+      return source ? digestFileOrUndefined(source.configPath) : undefined;
+    },
+    // An ordinary resume runs with the whole stack proven down and no broker to ask, so no
+    // lifecycle uid can be live. A destination that resumes against a LIVE space supplies the
+    // roster here instead; this path deliberately has none to supply.
+    liveLifecycleUids: new Set<string>(),
+    // Reconcile inside the admission, after the gates and BEFORE any generation is claimed. A
+    // retained seat with no checkpoint would otherwise resume with no gate run and no custody
+    // claimed, and checking after the claims had landed would leave the earlier seats' exclusive
+    // creates behind, so the retry over a repaired checkpoint set could never make them again.
+    requireCovered: (admittedNames) => {
+      const covered = new Set(admittedNames);
+      const uncovered = retainedAgents.map((agent) => agent.name ?? "").filter((name) => !covered.has(name));
+      if (uncovered.length)
+        throw new Error(`preserved resume is refused: retained seat(s) ${uncovered.map((name) => JSON.stringify(name)).join(", ")} have no admitted checkpoint under ${checkpointDir}; a seat cannot resume without passing the admission gates and claiming its writer generation`);
+    },
+    ...(values["accept-stale-checkpoint"] ? { acceptStale: true } : {}),
+  });
+
+  for (const seat of admitted) {
+    // The uid is RECOVERED, never minted. A checkpoint that names a different incarnation than the
+    // inventory this resume is about to hand the manager is not this seat's checkpoint.
+    const expected = retained.get(seat.checkpoint.name)?.identity?.lifecycleUid ?? "";
+    if (expected && expected !== seat.checkpoint.lifecycleUid)
+      throw new Error(`seat ${seat.checkpoint.name}: checkpoint records lifecycle ${seat.checkpoint.lifecycleUid}, the retained inventory says ${expected}`);
+    console.log(c.dim(`  admitted checkpoint: ${seat.checkpoint.name} (${seat.checkpoint.session.continuity}) at generation ${seat.generation}`));
+    if (seat.staleOverrideAgeMs !== undefined)
+      console.log(c.yellow(`  stale checkpoint admitted by --accept-stale-checkpoint: ${seat.checkpoint.name} is ${seat.staleOverrideAgeMs}ms past capture, horizon ${seat.checkpoint.recencyHorizonMs}ms`));
+  }
+  return admitted
+    .filter((seat) => seat.staleOverrideAgeMs !== undefined)
+    .map((seat) => ({
+      name: seat.checkpoint.name,
+      capturedAt: seat.checkpoint.capturedAt,
+      ageMs: seat.staleOverrideAgeMs as number,
+      horizonMs: seat.checkpoint.recencyHorizonMs,
+    }));
 }
 
 function assertOrdinaryUpAllowed(root: string, storeDir?: string): void {

@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,7 +18,12 @@ import {
   type LaunchOpts,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
+import { advanceSeatWriterGeneration, agentCredsDir, agentLifecycleSecretFilePaths, loadSeatWriterGeneration, seatCheckpointDir } from "@cotal-ai/workspace";
+// The two shipped entry points the cut and the resume call, so these checks run the operator's
+// path rather than the gates underneath it. Implementations do not depend on each other, so this
+// is a dev-only smoke import from source, the same way attach.smoke.ts reads the CLI's ws client.
+import { captureSeatCheckpoint } from "../../cli/src/lib/seat-capture.js";
+import { admitSeatCheckpoints } from "../../cli/src/lib/seat-admission.js";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
@@ -1207,6 +1213,233 @@ let openInventory: ManagerResumeAgent;
   const result = await manager.preserveState({ attemptId: "late-observer", persistInventory: async () => {} });
   check("late observer still invokes waitForExit after the child already reports exited", waitCalls === 1, waitCalls);
   check("late observer cut still completes on a non-seat runtime", result.ok && result.state === "preserved", result);
+}
+
+// A seat checkpoint, driven the way an operator drives it: the cut seals one over a real git
+// working tree, then a destination admits it. Nothing below calls a gate directly. The refusals
+// are produced by running the admission the resume runs, over artifacts on disk, so a check that
+// passes says the shipped path reached the gate.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-seat-checkpoint-"));
+  const cwd = join(root, "seat");
+  mkdirSync(cwd, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+  execFileSync("git", ["init", "-q", "-b", "main", cwd]);
+  git("config", "user.email", "seat@example.invalid");
+  git("config", "user.name", "seat");
+  writeFileSync(join(cwd, "tracked.txt"), "committed\n");
+  git("add", "tracked.txt");
+  git("commit", "-q", "-m", "base");
+  writeFileSync(join(cwd, "tracked.txt"), "staged\n");
+  git("add", "tracked.txt");
+  writeFileSync(join(cwd, "tracked.txt"), "staged then dirtied\n");
+  writeFileSync(join(cwd, "untracked.txt"), "never committed\n");
+  // The seat's cwd is also the mesh root here, which is the case where --exclude-standard does
+  // not exclude the control directory. A checkpoint that carries it carries the seat's creds.
+  mkdirSync(join(cwd, ".cotal", "auth"), { recursive: true });
+  writeFileSync(join(cwd, ".cotal", "auth", "broker.json"), "SEAT SECRET\n");
+
+  const uid = mintLifecycleUid();
+  const cut = (attemptId: string, generation: number) =>
+    captureSeatCheckpoint(join(seatCheckpointDir(root, attemptId), "seat"), { name: "seat" }, {
+      cwd,
+      space: "checkpoint-space",
+      name: "seat",
+      lifecycleUid: uid,
+      generation,
+      profile: { configSha256: "a".repeat(64) },
+      // No connector resolves in this suite, which is the drain-only default: a continuity promise
+      // is never inferred from a name.
+      connector: undefined,
+    });
+
+  const sealed = cut("cut-1", 0);
+  check(
+    "the cut leaves the seat's control directory out of the capture",
+    !execFileSync("tar", ["-tf", join(seatCheckpointDir(root, "cut-1"), "seat", "repo.untracked.tar")], { encoding: "utf8" })
+      .split("\n").some((entry) => entry.startsWith(".cotal")),
+  );
+  check("an unresolvable connector is sealed as drain-only", sealed.session.continuity === "drain-only", sealed.session);
+  // A class is a promise about bytes. A connector declaring continuation still gets no better than
+  // its fresh-start capability when the cut carried no pointer and no store to reopen from.
+  const declaredExact = captureSeatCheckpoint(join(seatCheckpointDir(root, "cut-exact"), "seat"), { name: "seat" }, {
+    cwd, space: "checkpoint-space", name: "seat", lifecycleUid: uid, generation: 0,
+    profile: { configSha256: "a".repeat(64) },
+    connector: { supportsResume: true, supportsSessionContinuation: true, supportsFreshStart: true },
+    sessionId: "session-that-has-no-bytes-here",
+  });
+  check(
+    "a continuation-capable connector is not sealed as exact when no session bytes were captured",
+    declaredExact.session.continuity === "fresh" && declaredExact.session.pointer === undefined && declaredExact.session.store.length === 0,
+    declaredExact.session,
+  );
+
+  const admit = (attemptId: string, opts: Partial<Parameters<typeof admitSeatCheckpoints>[0]> = {}) =>
+    admitSeatCheckpoints({
+      root, space: "checkpoint-space",
+      checkpointDir: seatCheckpointDir(root, attemptId),
+      liveLifecycleUids: new Set<string>(),
+      ...opts,
+    });
+
+  const admitted = admit("cut-1");
+  check(
+    "admission takes custody at the successor generation and reuses the recorded lifecycle uid",
+    admitted.length === 1 && admitted[0]!.generation === 1 && admitted[0]!.checkpoint.lifecycleUid === uid,
+    admitted,
+  );
+  check(
+    "custody is durable on the destination, so the next cut reads the generation it advanced to",
+    loadSeatWriterGeneration(root, "checkpoint-space", "seat")?.generation === 1,
+  );
+  check("a second destination claiming the same generation is refused", (() => {
+    try { admit("cut-1"); return false; }
+    catch (e) { return /seat-writer-generation-create-lost/.test((e as Error).message); }
+  })());
+
+  // One byte, in place, same size. Size and mtime cannot see this; only the recorded digest can.
+  cut("cut-2", 1);
+  const bundlePath = join(seatCheckpointDir(root, "cut-2"), "seat", "repo.bundle");
+  const bytes = Buffer.from(readFileSync(bundlePath));
+  bytes[bytes.length - 1] ^= 0x01;
+  writeFileSync(bundlePath, bytes);
+  check("a tampered capture is refused by name before custody moves", (() => {
+    try { admit("cut-2"); return false; }
+    catch (e) { return /checkpoint integrity: repo\.bundle hashes to/.test((e as Error).message); }
+  })());
+  check(
+    "the refused checkpoint left custody where it was",
+    loadSeatWriterGeneration(root, "checkpoint-space", "seat")?.generation === 1,
+  );
+
+  // Gate 3 is the one gate with an override, and an override has to report what it admitted.
+  const stale = cut("cut-3", 1);
+  const past = Date.parse(stale.capturedAt) + stale.recencyHorizonMs + 1_000;
+  check("a checkpoint past its horizon is refused with the age, the capture and the horizon", (() => {
+    try { admit("cut-3", { now: past }); return false; }
+    catch (e) {
+      const m = (e as Error).message;
+      return m.includes(stale.capturedAt) && m.includes(`horizon is ${stale.recencyHorizonMs}ms`);
+    }
+  })());
+  const forced = admit("cut-3", { now: past, acceptStale: true });
+  check(
+    "--accept-stale-checkpoint admits it and reports the age it actually admitted",
+    forced[0]!.staleOverrideAgeMs === stale.recencyHorizonMs + 1_000,
+    forced[0],
+  );
+
+  // Gate 2 has no override for authority, and a destination in another space is not this seat's.
+  cut("cut-4", 2);
+  check("a checkpoint from another space is refused", (() => {
+    try { admit("cut-4", { space: "elsewhere" }); return false; }
+    catch (e) { return /record is for space/.test((e as Error).message); }
+  })());
+  check("adopting a lifecycle uid this host believes is live is refused", (() => {
+    try { admit("cut-4", { liveLifecycleUids: new Set([uid]) }); return false; }
+    catch (e) { return /already live and this runtime cannot authoritatively adopt it/.test((e as Error).message); }
+  })());
+  // The profile half of gate 2 only decides anything when the destination supplies its own
+  // revision, and it has no override: the record carries a digest, not the config bytes.
+  check("a destination on a different profile revision is refused naming both digests", (() => {
+    try { admit("cut-4", { currentProfileConfigSha256: () => "c".repeat(64) }); return false; }
+    catch (e) {
+      const m = (e as Error).message;
+      return m.includes("c".repeat(64)) && m.includes("a".repeat(64)) && /restore the launch config/.test(m);
+    }
+  })());
+
+  // All or nothing. A refusal must leave every generation unclaimed, or the retry over a repaired
+  // checkpoint set loses an exclusive create it can never make again.
+  {
+    const pairRoot = mkdtempSync(join(tmpdir(), "cotal-seat-pair-"));
+    const pairCut = (attempt: string, seat: string, dest = pairRoot) =>
+      captureSeatCheckpoint(join(seatCheckpointDir(dest, attempt), seat), { name: seat }, {
+        cwd, space: "pair-space", name: seat, lifecycleUid: uid, generation: 0,
+        profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+    const admitPair = (attempt: string, retained: string[], opts: Partial<Parameters<typeof admitSeatCheckpoints>[0]> = {}) =>
+      admitSeatCheckpoints({
+        root: pairRoot, space: "pair-space",
+        checkpointDir: seatCheckpointDir(pairRoot, attempt),
+        liveLifecycleUids: new Set<string>(),
+        requireCovered: (names) => {
+          const covered = new Set(names);
+          const missing = retained.filter((seat) => !covered.has(seat));
+          if (missing.length) throw new Error(`retained seat(s) ${missing.join(", ")} have no admitted checkpoint`);
+        },
+        ...opts,
+      });
+    const claimed = (seat: string) => loadSeatWriterGeneration(pairRoot, "pair-space", seat)?.generation;
+
+    // Two retained seats, one checkpoint.
+    pairCut("pair-1", "a");
+    check("a retained seat with no checkpoint refuses the whole set", (() => {
+      try { admitPair("pair-1", ["a", "b"]); return false; }
+      catch (e) { return /retained seat\(s\) b have no admitted checkpoint/.test((e as Error).message); }
+    })());
+    check("the refused set left the present seat's generation unclaimed", claimed("a") === undefined, claimed("a"));
+
+    // Two checkpoints, the second tampered: a gate failure must not keep the first seat's claim.
+    pairCut("pair-2", "a");
+    pairCut("pair-2", "b");
+    const victim = join(seatCheckpointDir(pairRoot, "pair-2"), "b", "repo.bundle");
+    const bytes2 = Buffer.from(readFileSync(victim));
+    bytes2[bytes2.length - 1] ^= 0x01;
+    writeFileSync(victim, bytes2);
+    check("a gate failure on the second seat refuses the whole set", (() => {
+      try { admitPair("pair-2", ["a", "b"]); return false; }
+      catch (e) { return /checkpoint integrity: repo\.bundle hashes to/.test((e as Error).message); }
+    })());
+    check("neither seat claimed a generation when one failed a gate", claimed("a") === undefined && claimed("b") === undefined);
+
+    // Both present and intact: both claim, so the refusals above are not simply a dead path.
+    pairCut("pair-3", "a");
+    pairCut("pair-3", "b");
+    const both = admitPair("pair-3", ["a", "b"]);
+    check("a complete, intact set admits and claims every seat", both.length === 2 && claimed("a") === 1 && claimed("b") === 1, both.map((s) => s.name));
+
+    // A failure INSIDE the claim phase. Every gate passes, then the later seat's exclusive create
+    // loses to a generation another destination already holds. The earlier seat's claim must not
+    // survive, or the retry over this same admissible set can never make it again.
+    const collideRoot = mkdtempSync(join(tmpdir(), "cotal-seat-collide-"));
+    const collideCut = (seat: string) =>
+      captureSeatCheckpoint(join(seatCheckpointDir(collideRoot, "collide"), seat), { name: seat }, {
+        cwd, space: "pair-space", name: seat, lifecycleUid: uid, generation: 0,
+        profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+    collideCut("a");
+    collideCut("b");
+    // The later seat's successor, already claimed. `b` sorts after `a`, so `a` is claimed first.
+    advanceSeatWriterGeneration(collideRoot, { space: "pair-space", name: "b", lifecycleUid: uid, generation: 1 });
+    check("a lost create in the claim phase refuses naming that seat", (() => {
+      try {
+        admitSeatCheckpoints({
+          root: collideRoot, space: "pair-space",
+          checkpointDir: seatCheckpointDir(collideRoot, "collide"),
+          liveLifecycleUids: new Set<string>(),
+        });
+        return false;
+      } catch (e) {
+        const m = (e as Error).message;
+        return /seat-writer-generation-create-lost/.test(m) && m.includes('"b"');
+      }
+    })());
+    check(
+      "the earlier seat's generation was released when the later create lost",
+      loadSeatWriterGeneration(collideRoot, "pair-space", "a") === undefined,
+      loadSeatWriterGeneration(collideRoot, "pair-space", "a"),
+    );
+    check(
+      "the generation that was already held is untouched",
+      loadSeatWriterGeneration(collideRoot, "pair-space", "b")?.generation === 1,
+    );
+    rmSync(collideRoot, { recursive: true, force: true });
+
+    rmSync(pairRoot, { recursive: true, force: true });
+  }
+
+  rmSync(root, { recursive: true, force: true });
 }
 
 console.log(`\nPRESERVE-STATE SMOKE ${failures === 0 ? "OK" : "FAILED"} (${failures} failures)`);

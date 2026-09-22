@@ -3,6 +3,71 @@
 A design record, not a description of shipped behavior. Every claim about current behavior
 names the file and the function it was read from. Everything else is proposed.
 
+## Status
+
+Part of this record now ships. The design below is left as written; this note says which sections
+are implemented, where, and what changed against what they propose.
+
+Shipped:
+
+- **1.3 steps 7 and 8, capture and seal.** `captureSeatCheckpoint` in
+  `implementations/cli/src/lib/seat-capture.ts`, called from `preserveStateDown` in
+  `implementations/cli/src/commands/down.ts` after the cut has proven the stack down.
+- **2.2, the three admission gates.** `assertSeatCheckpointIntegrity`,
+  `assertSeatCheckpointIdentity` and `admitSeatCheckpointRecency` in
+  `packages/workspace/src/seat-checkpoint.ts`, driven from the ordinary resume path in
+  `implementations/cli/src/commands/up.ts` through `admitSeatCheckpoints` in
+  `implementations/cli/src/lib/seat-admission.ts`. The only override is `--accept-stale-checkpoint`.
+  The profile half of identity has no override: a checkpoint carries the recorded digest, not the
+  config bytes, so no destination could run the seat under the recorded revision, and the manager
+  re-digests the same file at relaunch and refuses drift anyway.
+- **3.2 and 3.3, the per-seat writer generation and its handover.**
+  `loadSeatWriterGeneration` and `advanceSeatWriterGeneration` in
+  `packages/workspace/src/auth-paths.ts`, claimed by the destination before it launches anything.
+- **5.4, the continuity class.** Recorded in every checkpoint from `sessionContinuityClass` over
+  the connector's declared capabilities.
+
+The record shape, its reader and the gates live in `packages/workspace` rather than in either
+implementation, because `implementations/*` never depend on each other and both the CLI and the
+manager can reach the workspace layer.
+
+Two changes against what the sections below propose, both found by running the code:
+
+- **The untracked selection rule excludes `.cotal/`.** Section 6's capture uses
+  `git ls-files --others --exclude-standard` alone. When a seat's `cwd` is also the mesh root,
+  which is the ordinary single-root case, the control directory is untracked and that selection
+  pulls `auth/broker.json`, the space account, the manager instance identity's private seed and the
+  seat's own credentials into the artifact, contradicting 1.2. The shipped rule excludes the
+  control directory and records that it does.
+- **Checkpoints are scoped by the preservation attempt.** A shared per-seat directory makes the
+  second cut in a root impossible, because the writer refuses a destination that already exists and
+  deleting the previous one would destroy an artifact a rollback still needs. The path is
+  `.cotal/maintenance/v<N>/checkpoints/<attemptId>/<seat>/`, from `seatCheckpointDir`.
+
+Not shipped, and still open as the sections describe them: the eviction evidence a destination
+needs for the residual case in 3.3, the harness store paths for pi (4 in Open points, still an
+operator input), and everything in section 4.
+
+Two shipped pieces are narrower than the sections they implement, and the difference matters:
+
+- **The writer generation fences one workspace root, not one seat across hosts.** 3.2 describes a
+  coordinate that makes a seat single-writer everywhere. `advanceSeatWriterGeneration` claims the
+  successor by exclusive create inside the destination's own `.cotal`, so two resumes in one root
+  are fenced and two independent destination roots both claim the same successor. Verified by a
+  reviewer, who copied one generation-0 checkpoint to two roots and admitted both. A real
+  cross-host fence needs a coordinate neither root owns, which is not in this cut.
+- **Nothing consumes the captured bytes.** 1.3 steps 7 and 8 capture and seal, and 2.2 admits, but
+  no shipped command applies the bundle, either diff, or the untracked archive, and none restores a
+  session pointer or store. An ordinary resume still requires the preserved source store on the
+  same host. The artifact is verifiable and admissible; restoring from it is manual today.
+
+Two more properties are shipped and worth naming because they were wrong first and fixed after
+review. A retained seat with no admitted checkpoint now refuses the resume by name, instead of
+resuming ungated with no generation claimed. And the continuity class is capped by what the
+checkpoint carries: the manager's resume inventory records no session pointer path, so a
+continuation-capable connector is recorded as `fresh` or `drain-only` rather than `exact`, because
+a class is a promise about bytes the artifact has to contain.
+
 ## The question
 
 A managed seat is a harness process (pi, Claude Code, jcode) that a Cotal manager spawned and owns.
