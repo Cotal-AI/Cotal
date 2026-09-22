@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, cotalToolSpecs, JsonlFileSource } from "@cotal-ai/connector-core";
 import { z } from "zod";
 import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
 import { createJcodeMapper } from "../src/agui-map.js";
+import { JcodeJournalSource } from "../src/agui-source.js";
 
 let pass = 0;
 let fail = 0;
@@ -204,9 +205,9 @@ try {
   throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
 
-  const mapper = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-1", now: () => 7 });
-  const mapped = mapper.map({
-    append_messages: [
+  const mapperRecord = {
+    cursor: "journal:cursor:1",
+    record: { append_messages: [
       {
         role: "assistant",
         timestamp: "2026-09-22T00:00:00.000Z",
@@ -217,8 +218,10 @@ try {
         ],
       },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "ok" }] },
-    ],
-  });
+    ] },
+  };
+  const mapper = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-1", now: () => 7 });
+  const mapped = mapper.map(mapperRecord);
   check(
     "maps durable Jcode message blocks into one native AG-UI run",
     mapped?.runId === "run-1" &&
@@ -229,7 +232,29 @@ try {
   mapper.forgetOpenRun("run-1");
   check(
     "a closed Jcode run opens a fresh run for later durable output",
-    mapper.map({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] })?.events[0]?.type === "RUN_STARTED",
+    mapper.map({ cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } })?.events[0]?.type === "RUN_STARTED",
+  );
+  const restartedMapped = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map(mapperRecord);
+  const messageIds = (result: typeof mapped) => result?.events.flatMap((event) => "messageId" in event ? [event.messageId] : []) ?? [];
+  check(
+    "durable Jcode record positions keep message ids stable across mapper restarts",
+    JSON.stringify(messageIds(restartedMapped)) === JSON.stringify(messageIds(mapped)),
+    { first: messageIds(mapped), restarted: messageIds(restartedMapped) },
+  );
+
+  const journal = join(dir, "restart.journal.jsonl");
+  writeFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "before" }] }] })}\n`);
+  const acknowledged = (await new JsonlFileSource(journal).read(undefined)).cursor;
+  appendFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "after" }] }] })}\n`);
+  const source = new JcodeJournalSource(journal);
+  const recovered = await source.read(acknowledged);
+  const virgin = await source.read(undefined);
+  check(
+    "a restarted Jcode source follows the WAL cursor, including virgin byte zero",
+    recovered.records.length === 1 &&
+      recovered.records[0]?.value.append_messages?.[0]?.content?.[0]?.text === "after" &&
+      virgin.records.length === 2,
+    { recovered, virgin },
   );
 
   console.log(`\nJCODE ARGS SMOKE PASSED: ${pass} passed, ${fail} failed`);

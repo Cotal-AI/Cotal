@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   reasoningMessageContent,
   reasoningMessageEnd,
@@ -33,14 +34,27 @@ export interface JcodeJournalRecord {
   append_messages?: JcodeMessage[];
 }
 
+export interface PositionedJcodeJournalRecord {
+  cursor: string;
+  record: JcodeJournalRecord;
+}
+
 export interface JcodeMapper {
-  map: RecordMapper<JcodeJournalRecord>;
+  map: RecordMapper<PositionedJcodeJournalRecord>;
   forgetOpenRun: (runId: string) => void;
 }
 
 function stamp(message: JcodeMessage, now: () => number): { value: number; arrival: boolean } {
   const parsed = message.timestamp ? Date.parse(message.timestamp) : Number.NaN;
   return Number.isFinite(parsed) ? { value: parsed, arrival: false } : { value: now(), arrival: true };
+}
+
+function messageId(threadId: string, cursor: string, messageIndex: number, partIndex: number): string {
+  const position = createHash("sha256")
+    .update(`${cursor}\0${messageIndex}\0${partIndex}`)
+    .digest("base64url")
+    .slice(0, 22);
+  return `${threadId}:${position}`;
 }
 
 export function createJcodeMapper(opts: {
@@ -51,14 +65,12 @@ export function createJcodeMapper(opts: {
 }): JcodeMapper {
   const now = opts.now ?? (() => Date.now());
   let open: string | null = opts.resumeRunId ?? null;
-  let nextMessage = 0;
-
-  const map: RecordMapper<JcodeJournalRecord> = (record) => {
+  const map: RecordMapper<PositionedJcodeJournalRecord> = ({ cursor, record }) => {
     if (record === null || typeof record !== "object" || !Array.isArray(record.append_messages)) return null;
     const events: AguiEvent[] = [];
     let runId = open;
 
-    for (const message of record.append_messages) {
+    for (const [messageIndex, message] of record.append_messages.entries()) {
       if (message === null || typeof message !== "object" || !Array.isArray(message.content)) continue;
       const { value: timestamp, arrival } = stamp(message, now);
       const timeMeta = arrival ? { cotal: { tsSource: "arrival" as const } } : {};
@@ -89,22 +101,22 @@ export function createJcodeMapper(opts: {
       if (open === null) continue;
       runId = open;
 
-      parts.forEach((part) => {
+      parts.forEach((part, partIndex) => {
         if (part === null || typeof part !== "object") return;
-        const messageId = `${opts.threadId}:${nextMessage++}`;
+        const observationId = messageId(opts.threadId, cursor, messageIndex, partIndex);
         if (message.role === "assistant" && part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
           events.push(
-            textMessageStart({ messageId, role: "assistant", timestamp, ...timeMeta }),
-            textMessageContent({ messageId, delta: part.text, timestamp }),
-            textMessageEnd({ messageId, timestamp }),
+            textMessageStart({ messageId: observationId, role: "assistant", timestamp, ...timeMeta }),
+            textMessageContent({ messageId: observationId, delta: part.text, timestamp }),
+            textMessageEnd({ messageId: observationId, timestamp }),
           );
           return;
         }
         if (message.role === "assistant" && (part.type === "reasoning" || part.type === "reasoning_trace") && typeof part.text === "string" && part.text.length > 0) {
           events.push(
-            reasoningMessageStart({ messageId, timestamp, ...timeMeta }),
-            reasoningMessageContent({ messageId, delta: part.text, timestamp }),
-            reasoningMessageEnd({ messageId, timestamp }),
+            reasoningMessageStart({ messageId: observationId, timestamp, ...timeMeta }),
+            reasoningMessageContent({ messageId: observationId, delta: part.text, timestamp }),
+            reasoningMessageEnd({ messageId: observationId, timestamp }),
           );
           return;
         }
@@ -113,7 +125,7 @@ export function createJcodeMapper(opts: {
             toolCallStart({
               toolCallId: part.id,
               toolCallName: typeof part.name === "string" ? part.name : "",
-              parentMessageId: messageId,
+              parentMessageId: observationId,
               timestamp,
               ...timeMeta,
             }),

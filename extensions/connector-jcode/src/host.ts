@@ -63,8 +63,8 @@ import {
   type ToolResult,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
-import { createJcodeMapper, type JcodeJournalRecord, type JcodeMapper } from "./agui-map.js";
-import { captureJcodeJournalCursor, JcodeJournalSource, jcodeJournalPath } from "./agui-source.js";
+import { createJcodeMapper, type JcodeMapper, type PositionedJcodeJournalRecord } from "./agui-map.js";
+import { JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
@@ -429,28 +429,29 @@ export async function runJcodeHost(): Promise<void> {
   let eventLock: PrincipalLock | undefined;
   let mapper: JcodeMapper | undefined;
   const events = eventsArmed
-    ? new AguiEmitterHolder<JcodeJournalRecord, string>(
-        async (journalPath: string, startCursor) => {
+    ? new AguiEmitterHolder<PositionedJcodeJournalRecord>(
+        async (journalPath: string) => {
           const workspaceRoot = eventsWorkspaceRoot!;
           if (!sessionId) throw new Error("jcode connector: cannot start AG-UI without a Harness session id");
           const threadId = sessionId;
           const expectedPath = jcodeJournalPath(socketHome.jcodeHome, threadId);
           if (resolve(journalPath) !== resolve(expectedPath))
             throw new Error(`jcode connector: event source ${journalPath} does not belong to session ${threadId}`);
-          if (typeof startCursor !== "string")
-            throw new Error("jcode connector: event source started without its captured journal cursor");
           const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
           const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
           eventLock = lock;
           const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
           const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+          // The WAL is the only acknowledged source position. A virgin WAL means byte zero of this
+          // session journal, not "where the journal happens to end now": a prior process may have
+          // died after observing the file but before its first pump persisted a cursor.
           const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
           mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-          return AguiEmitter.start<JcodeJournalRecord>({
+          return AguiEmitter.start<PositionedJcodeJournalRecord>({
             endpoint: agent.ep,
             wal,
             subjectFrontier,
-            source: new JcodeJournalSource(journalPath, startCursor),
+            source: positionedJcodeJournalSource(new JcodeJournalSource(journalPath)),
             map: mapper.map,
           });
         },
@@ -471,8 +472,7 @@ export async function runJcodeHost(): Promise<void> {
 
   const ensureEventsBound = async (): Promise<void> => {
     if (!events || !eventJournal || events.running) return;
-    const startCursor = await captureJcodeJournalCursor(eventJournal);
-    events.adopt(eventJournal, startCursor);
+    events.adopt(eventJournal);
     await events.settled();
     if (events.failure) throw events.failure;
   };
