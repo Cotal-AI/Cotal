@@ -598,8 +598,10 @@ COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
   cotal spawn --config ./seat.md --space main
 ```
 
-The file contains only the enrollment URL and must be mode `0600` on POSIX. An orchestrator that
-cannot mount a file may set `COTAL_ENROLLMENT_URL` instead. Setting both is refused. Enrollment input
+The file contains only the enrollment URL, ending with at most one line terminator, and must be
+mode `0600` on POSIX. An orchestrator that cannot mount a file may set `COTAL_ENROLLMENT_URL`
+instead; that value is redeemed byte for byte, so a trailing newline in it is refused. Setting both
+is refused. Enrollment input
 requires `--space` and applies only to a foreground persona spawn. If the mesh is not registered yet,
 the enrollment response must carry the stock user-bundle fields and the command needs
 `--config <persona-file>` because there is no local remote-mesh persona catalog to read. The client

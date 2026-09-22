@@ -82,15 +82,16 @@ import {
 const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
 const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
 
-/** Remove the one line terminator a platform writes when it drops the enrollment into a file, and
- *  nothing else: any other surrounding whitespace belongs to the credential the owner minted and
- *  must reach the URL grammar, which refuses it rather than silently redeeming a repaired URL. */
-function stripTrailingNewline(value: string | undefined): string | undefined {
-  return value?.replace(/\r?\n$/, "");
+/** Remove the one line terminator a text file ends with, and nothing else: the file holds the URL
+ *  and at most that terminator. Any other whitespace belongs to the credential the owner minted and
+ *  must reach the URL grammar, which refuses it rather than silently redeeming a repaired URL. The
+ *  environment value is taken byte for byte; nothing is stripped from it. */
+function stripTrailingNewline(value: string): string {
+  return value.replace(/\r?\n$/, "");
 }
 
 export function enrollmentInput(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const rawUrl = stripTrailingNewline(env[ENROLLMENT_URL_ENV]);
+  const rawUrl = env[ENROLLMENT_URL_ENV];
   const file = env[ENROLLMENT_FILE_ENV]?.trim();
   if (rawUrl && file)
     throw new Error(`both ${ENROLLMENT_URL_ENV} and ${ENROLLMENT_FILE_ENV} are set - pass one enrollment source, not both`);
