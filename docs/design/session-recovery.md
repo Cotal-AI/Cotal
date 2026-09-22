@@ -25,7 +25,20 @@ Shipped:
   `loadSeatWriterGeneration` and `advanceSeatWriterGeneration` in
   `packages/workspace/src/auth-paths.ts`, claimed by the destination before it launches anything.
 - **5.4, the continuity class.** Recorded in every checkpoint from `sessionContinuityClass` over
-  the connector's declared capabilities.
+  the connector's declared capabilities, capped by what the checkpoint actually carries.
+- **6 step 7, the restore.** `restoreSeatCheckpoints` in
+  `implementations/cli/src/lib/seat-restore.ts`, run from `admitAndRestoreSeatCheckpoints` in
+  `implementations/cli/src/lib/seat-resume.ts` between the gates and the generation claim. Both
+  destination paths call that one helper: the ordinary resume in
+  `implementations/cli/src/commands/up.ts` and `prepareRestore` in
+  `implementations/cli/src/lib/restore.ts`, so `up --restore <dir>` no longer hands a retained
+  inventory to the manager ungated and unrestored. The sequence, the staging directory, the leftover
+  refusal, the base verification, the two applies and the rename-aside promotion are as step 7
+  states them, with `git` and `tar` as child processes rather than a shell string.
+- **The session files travel.** `resumeEntry` records the connector's `sessionStatePath`, and
+  `down --preserve-state --session-store <path>` takes the transcript store as an operator input.
+  Each captured session file records its destination as an anchor plus a relative path, and the
+  restore puts it back before the seat launches, so a pi seat is sealed and resumed as `exact`.
 
 The record shape, its reader and the gates live in `packages/workspace` rather than in either
 implementation, because `implementations/*` never depend on each other and both the CLI and the
@@ -45,8 +58,9 @@ Two changes against what the sections below propose, both found by running the c
   `.cotal/maintenance/v<N>/checkpoints/<attemptId>/<seat>/`, from `seatCheckpointDir`.
 
 Not shipped, and still open as the sections describe them: the eviction evidence a destination
-needs for the residual case in 3.3, the harness store paths for pi (4 in Open points, still an
-operator input), and everything in section 4.
+needs for the residual case in 3.3, and everything in section 4. The harness store paths for pi (4
+in Open points) remain an operator input by decision rather than by omission: this repository does
+not know where a harness keeps its transcript, and `--session-store` is where the operator says so.
 
 Two shipped pieces are narrower than the sections they implement, and the difference matters:
 
@@ -56,17 +70,23 @@ Two shipped pieces are narrower than the sections they implement, and the differ
   are fenced and two independent destination roots both claim the same successor. Verified by a
   reviewer, who copied one generation-0 checkpoint to two roots and admitted both. A real
   cross-host fence needs a coordinate neither root owns, which is not in this cut.
-- **Nothing consumes the captured bytes.** 1.3 steps 7 and 8 capture and seal, and 2.2 admits, but
-  no shipped command applies the bundle, either diff, or the untracked archive, and none restores a
-  session pointer or store. An ordinary resume still requires the preserved source store on the
-  same host. The artifact is verifiable and admissible; restoring from it is manual today.
+- **Restoring the identity material is still the operator's.** Step 6 already says so, and it is
+  what bounds a move between roots: the retained inventory carries absolute references for the
+  credential, the launch config and the pointer, so a destination that has not been given that
+  material fails the manager's own retained-reference preflight after the restore has completed.
 
 Two more properties are shipped and worth naming because they were wrong first and fixed after
 review. A retained seat with no admitted checkpoint now refuses the resume by name, instead of
 resuming ungated with no generation claimed. And the continuity class is capped by what the
-checkpoint carries: the manager's resume inventory records no session pointer path, so a
-continuation-capable connector is recorded as `fresh` or `drain-only` rather than `exact`, because
-a class is a promise about bytes the artifact has to contain.
+checkpoint carries, because a class is a promise about bytes the artifact has to contain: a
+continuation-capable connector is recorded as `exact` only when the cut carried both a pointer and
+a store, and as `fresh` or `drain-only` otherwise.
+
+One addition against what step 7 proposes, found the same way the rest of that section was. The
+record carries the seat's `git status --porcelain` as the cut read it, under the same selection
+rule as the untracked set, and the restore re-reads it in the promoted tree. The applies can each
+return 0 and still leave an index the source did not have, and nothing in the shell sequence would
+see that.
 
 ## The question
 

@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   DEV_OWNER,
   createSpaceAuth,
@@ -18,12 +18,14 @@ import {
   type LaunchOpts,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { advanceSeatWriterGeneration, agentCredsDir, agentLifecycleSecretFilePaths, loadSeatWriterGeneration, seatCheckpointDir } from "@cotal-ai/workspace";
+import { advanceSeatWriterGeneration, agentCredsDir, agentLifecycleSecretFilePaths, loadSeatWriterGeneration, readSeatCheckpoint, seatCheckpointDir } from "@cotal-ai/workspace";
 // The two shipped entry points the cut and the resume call, so these checks run the operator's
 // path rather than the gates underneath it. Implementations do not depend on each other, so this
 // is a dev-only smoke import from source, the same way attach.smoke.ts reads the CLI's ws client.
 import { captureSeatCheckpoint } from "../../cli/src/lib/seat-capture.js";
 import { admitSeatCheckpoints } from "../../cli/src/lib/seat-admission.js";
+import { restoreSeatCheckpoints } from "../../cli/src/lib/seat-restore.js";
+import { admitAndRestoreSeatCheckpoints } from "../../cli/src/lib/seat-resume.js";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
@@ -1437,6 +1439,299 @@ let openInventory: ManagerResumeAgent;
     rmSync(collideRoot, { recursive: true, force: true });
 
     rmSync(pairRoot, { recursive: true, force: true });
+  }
+
+
+  // THE RESTORE, driven the way the resume drives it: `admitSeatCheckpoints` runs the gates, then
+  // the same `restoreSeatCheckpoints` the CLI passes as `beforeCustody`, over artifacts on disk.
+  // The operator steps these mirror are the ones in the lane brief: a destination whose seat cwd is
+  // absent, one where it is present, and one holding a leftover staging directory.
+  {
+    const destRoot = mkdtempSync(join(tmpdir(), "cotal-seat-restore-"));
+    const seatCwd = join(destRoot, "seat-tree");
+    const staging = `${seatCwd}.incoming`;
+    // A destination store path, so the session files have somewhere anchored to land.
+    const storeDir = join(root, "store");
+    mkdirSync(storeDir, { recursive: true });
+    const storeFile = join(storeDir, "transcript.jsonl");
+    writeFileSync(storeFile, '{"probe":"restored transcript"}\n');
+    const pointerPath = join(root, ".cotal", "pi-sessions", "probe.json");
+    mkdirSync(dirname(pointerPath), { recursive: true });
+    writeFileSync(pointerPath, JSON.stringify({ version: 1, sessionId: "session-1", status: "running" }));
+
+    const sealedRestore = captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "restore-1"), "seat"), { name: "seat" }, {
+      cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+      workspaceRoot: root,
+      profile: { configSha256: "a".repeat(64) },
+      connector: { supportsResume: true, supportsSessionContinuation: true, supportsFreshStart: true },
+      sessionId: "session-1",
+      sessionStatePath: pointerPath,
+      sessionStorePaths: [storeDir],
+    });
+    // `exact` takes BOTH halves: the pointer names the session, the store holds the transcript it
+    // reopens. A pointer alone names a session whose bytes the artifact does not contain.
+    const pointerOnly = captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "pointer-only"), "seat"), { name: "seat" }, {
+      cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+      workspaceRoot: root, profile: { configSha256: "a".repeat(64) },
+      connector: { supportsResume: true, supportsSessionContinuation: true, supportsFreshStart: true },
+      sessionId: "session-1", sessionStatePath: pointerPath,
+    });
+    check(
+      "a pointer with no store does not seal as exact",
+      pointerOnly.session.continuity === "fresh" && pointerOnly.session.store.length === 0,
+      pointerOnly.session,
+    );
+    check(
+      "a cut carrying a pointer and a store seals the class the connector declares",
+      sealedRestore.session.continuity === "exact" && sealedRestore.session.pointer !== undefined && sealedRestore.session.store.length === 1,
+      sealedRestore.session,
+    );
+    check(
+      "each session file records where the destination puts it back, anchored and relative",
+      sealedRestore.session.pointer?.restore?.anchor === "workspace-root" &&
+        sealedRestore.session.store[0]!.restore?.anchor === "workspace-root" &&
+        !sealedRestore.session.pointer!.restore!.path.startsWith("/"),
+      [sealedRestore.session.pointer?.restore, sealedRestore.session.store[0]?.restore],
+    );
+    // The status travels under the SAME selection rule the untracked set was produced under, or
+    // every restore of a seat whose cwd is a mesh root would refuse on the control directory.
+    check(
+      "the recorded status excludes the control directory the capture excludes",
+      sealedRestore.repository.status === "MM tracked.txt\n?? untracked.txt\n",
+      JSON.stringify(sealedRestore.repository.status),
+    );
+
+    const restoreAt = (attempt: string, seatName = "seat") => {
+      const directory = join(seatCheckpointDir(destRoot, attempt), seatName);
+      restoreSeatCheckpoints({
+        root,
+        seats: [{ name: seatName, directory, checkpoint: readSeatCheckpoint(directory), cwd: seatCwd, inventorySessionId: "session-1" }],
+      });
+    };
+
+    // A destination with no cwd at all: the ordinary fresh-destination case.
+    restoreAt("restore-1");
+    const restoredStatus = execFileSync("git", ["status", "--porcelain"], { cwd: seatCwd, encoding: "utf8" });
+    check(
+      "the restored tree reproduces the source's staging state, not just its file contents",
+      restoredStatus === sealedRestore.repository.status, JSON.stringify(restoredStatus),
+    );
+    check(
+      "the staged content is restored to the index, not only to the worktree",
+      execFileSync("git", ["diff", "--cached"], { cwd: seatCwd, encoding: "utf8" })
+        === execFileSync("git", ["diff", "--cached"], { cwd, encoding: "utf8" }),
+    );
+    check(
+      "the untracked file travels as bytes",
+      readFileSync(join(seatCwd, "untracked.txt"), "utf8") === "never committed\n",
+    );
+    check(
+      "the control directory the capture excluded is not in the restored tree",
+      !existsSync(join(seatCwd, ".cotal")),
+    );
+    check(
+      "the session pointer and the store land where the destination's connector reads them",
+      JSON.parse(readFileSync(pointerPath, "utf8")).sessionId === "session-1" &&
+        readFileSync(storeFile, "utf8") === '{"probe":"restored transcript"}\n',
+    );
+
+    // A destination whose cwd is already there: moved aside under a timestamped name, never deleted.
+    cut2: {
+      captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "restore-2"), "seat"), { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+      captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "restore-2b"), "seat"), { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+      writeFileSync(join(seatCwd, "decoy.txt"), "provisioned, not preserved\n");
+      restoreAt("restore-2");
+      const superseded = readdirSync(destRoot).filter((entry) => entry.startsWith("seat-tree.superseded."));
+      check("a pre-existing cwd is moved aside under a timestamped superseded name", superseded.length === 1, superseded);
+      check(
+        "the superseded tree keeps what was there, so a wrong checkpoint costs a rename",
+        existsSync(join(destRoot, superseded[0]!, "decoy.txt")),
+      );
+      check("the promoted tree is the checkpoint's, not the one moved aside", !existsSync(join(seatCwd, "decoy.txt")));
+
+      // A SECOND promotion in the same second. A whole-second timestamp alone computes the name the
+      // first one already took, and renaming onto it either loses that tree or fails ENOTEMPTY
+      // naming a rename instead of the real cause. Both superseded trees must survive, distinctly.
+      writeFileSync(join(seatCwd, "second-decoy.txt"), "the second tree moved aside\n");
+      restoreAt("restore-2b");
+      const bothAside = readdirSync(destRoot).filter((entry) => entry.startsWith("seat-tree.superseded."));
+      check(
+        "two promotions in the same second keep both superseded trees under distinct names",
+        bothAside.length === 2 &&
+          bothAside.some((entry) => existsSync(join(destRoot, entry, "decoy.txt"))) &&
+          bothAside.some((entry) => existsSync(join(destRoot, entry, "second-decoy.txt"))),
+        bothAside,
+      );
+      break cut2;
+    }
+
+    // A leftover staging directory is evidence of a failed run: refused, never promoted, never
+    // removed. The shell sequence this replaces promoted exactly such a directory with exit 0.
+    captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "restore-3"), "seat"), { name: "seat" }, {
+      cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+      workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+    });
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(join(staging, "partial.txt"), "half-restored, no .git\n");
+    check("a leftover staging directory refuses the restore by name", (() => {
+      try { restoreAt("restore-3"); return false; }
+      catch (e) { return /already exists; a staging directory from a failed restore is evidence/.test((e as Error).message); }
+    })());
+    check(
+      "the refused restore removed neither the leftover nor the live tree",
+      existsSync(join(staging, "partial.txt")) && existsSync(join(seatCwd, "tracked.txt")),
+    );
+    rmSync(staging, { recursive: true, force: true });
+
+    // A restore that applies without error can still land a different index, and only the recorded
+    // status sees it. Tamper with the status the record carries and the promotion must refuse.
+    {
+      const directory = join(seatCheckpointDir(destRoot, "restore-4"), "seat");
+      captureSeatCheckpoint(directory, { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+      const record = JSON.parse(readFileSync(join(directory, "checkpoint.json"), "utf8")) as
+        { repository: { status: string } };
+      record.repository.status = " M tracked.txt\n";
+      writeFileSync(join(directory, "checkpoint.json"), `${JSON.stringify(record, null, 2)}\n`);
+      check("a restored tree whose status differs from the record is a refusal, not a warning", (() => {
+        try {
+          restoreSeatCheckpoints({
+            root,
+            seats: [{ name: "seat", directory, checkpoint: readSeatCheckpoint(directory), cwd: seatCwd }],
+          });
+          return false;
+        } catch (e) { return /reports a different status than the checkpoint recorded/.test((e as Error).message); }
+      })());
+      // The brief's disposition for a failed restore, and the staging directory is the evidence
+      // half of it: the live cwd is back as it was, and the tree that failed verification is left
+      // where an operator can look at it rather than removed.
+      check(
+        "the refused promotion put the previous tree back and left the staging tree as evidence",
+        existsSync(join(seatCwd, "tracked.txt")) && existsSync(join(staging, "tracked.txt")),
+      );
+      rmSync(staging, { recursive: true, force: true });
+    }
+
+    // The pointer is the seat's or it is nobody's: a session id the resume does not reopen refuses
+    // before anything is promoted.
+    {
+      const directory = join(seatCheckpointDir(destRoot, "restore-5"), "seat");
+      captureSeatCheckpoint(directory, { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: root, profile: { configSha256: "a".repeat(64) },
+        connector: { supportsResume: true, supportsSessionContinuation: true },
+        sessionId: "session-1", sessionStatePath: pointerPath,
+      });
+      check("a pointer whose session differs from the inventory's is refused", (() => {
+        try {
+          restoreSeatCheckpoints({
+            root,
+            seats: [{ name: "seat", directory, checkpoint: readSeatCheckpoint(directory), cwd: seatCwd, inventorySessionId: "another-session" }],
+          });
+          return false;
+        } catch (e) { return /checkpoint records session session-1, the retained inventory says another-session/.test((e as Error).message); }
+      })());
+      check("the refused pointer left no staging directory to inspect for a step that never ran", !existsSync(staging));
+    }
+
+    // A seat whose cwd IS a workspace root. The capture excludes the control directory by design,
+    // so promoting the restored tree over that cwd would move the destination's live trust material
+    // and maintenance state aside and leave it with none. Refused before staging.
+    {
+      const rootSeat = join(destRoot, "root-seat");
+      mkdirSync(join(rootSeat, ".cotal", "auth"), { recursive: true });
+      writeFileSync(join(rootSeat, ".cotal", "auth", "broker.json"), "LIVE TRUST MATERIAL\n");
+      const directory = join(seatCheckpointDir(destRoot, "restore-7"), "seat");
+      captureSeatCheckpoint(directory, { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+      check("a seat whose cwd holds a control directory is refused before staging", (() => {
+        try {
+          restoreSeatCheckpoints({
+            root,
+            seats: [{ name: "seat", directory, checkpoint: readSeatCheckpoint(directory), cwd: rootSeat }],
+          });
+          return false;
+        } catch (e) { return /holds a control directory at .*a checkpoint never carries one/s.test((e as Error).message); }
+      })());
+      check(
+        "the destination's live control directory survives that refusal unchanged",
+        readFileSync(join(rootSeat, ".cotal", "auth", "broker.json"), "utf8") === "LIVE TRUST MATERIAL\n" &&
+          !existsSync(`${rootSeat}.incoming`) &&
+          readdirSync(destRoot).filter((entry) => entry.startsWith("root-seat.superseded.")).length === 0,
+      );
+    }
+
+    // THE INCARNATION MISMATCH, through the shipped resume helper rather than a copy of its logic.
+    // A checkpoint whose lifecycle uid is not the one the retained inventory carries describes a
+    // different incarnation, and the refusal has to land before the restore moves a tree and before
+    // a generation is claimed, or the all-or-nothing rule is only a claim.
+    {
+      const mismatchRoot = mkdtempSync(join(tmpdir(), "cotal-seat-uid-"));
+      const mismatchCwd = join(mismatchRoot, "seat-tree");
+      mkdirSync(mismatchCwd, { recursive: true });
+      writeFileSync(join(mismatchCwd, "LIVE.txt"), "the live tree\n");
+      const other = mintLifecycleUid();
+      captureSeatCheckpoint(join(seatCheckpointDir(mismatchRoot, "uid-1"), "seat"), { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: mismatchRoot, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+      check("a checkpoint naming another incarnation than the inventory refuses the resume", (() => {
+        try {
+          admitAndRestoreSeatCheckpoints(mismatchRoot, "restore-space", "uid-1", {}, {
+            agents: [{ name: "seat", identity: { lifecycleUid: other }, launch: { cwd: mismatchCwd } }],
+          });
+          return false;
+        } catch (e) { return /checkpoint records lifecycle .*the retained inventory says/.test((e as Error).message); }
+      })());
+      check(
+        "that refusal moved no tree, promoted nothing, and claimed no generation",
+        readFileSync(join(mismatchCwd, "LIVE.txt"), "utf8") === "the live tree\n" &&
+          !existsSync(`${mismatchCwd}.incoming`) &&
+          readdirSync(mismatchRoot).filter((entry) => entry.startsWith("seat-tree.superseded.")).length === 0 &&
+          loadSeatWriterGeneration(mismatchRoot, "restore-space", "seat") === undefined,
+      );
+      // The same helper on a MATCHING uid restores and claims, so the refusal above is a decision
+      // rather than a helper that always throws.
+      captureSeatCheckpoint(join(seatCheckpointDir(mismatchRoot, "uid-2"), "seat"), { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: mismatchRoot, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+      admitAndRestoreSeatCheckpoints(mismatchRoot, "restore-space", "uid-2", {}, {
+        agents: [{ name: "seat", identity: { lifecycleUid: uid }, launch: { cwd: mismatchCwd } }],
+      });
+      check(
+        "a matching incarnation restores the tree and claims the successor generation",
+        execFileSync("git", ["status", "--porcelain"], { cwd: mismatchCwd, encoding: "utf8" }) === sealedRestore.repository.status &&
+          loadSeatWriterGeneration(mismatchRoot, "restore-space", "seat")?.generation === 1,
+      );
+      rmSync(mismatchRoot, { recursive: true, force: true });
+    }
+
+    // A store file inside the seat's own tree would be captured by the untracked archive AND placed
+    // again on top of what the extraction wrote. Refused at the cut.
+    check("a store inside the seat's working tree is refused at the cut", (() => {
+      try {
+        captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "restore-6"), "seat"), { name: "seat" }, {
+          cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+          workspaceRoot: root, profile: { configSha256: "a".repeat(64) },
+          connector: { supportsSessionContinuation: true },
+          sessionStorePaths: [cwd],
+        });
+        return false;
+      } catch (e) { return /is already carried by the untracked capture of/.test((e as Error).message); }
+    })());
+
+    rmSync(destRoot, { recursive: true, force: true });
   }
 
   rmSync(root, { recursive: true, force: true });

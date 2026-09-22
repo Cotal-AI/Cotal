@@ -498,6 +498,11 @@ export interface ManagerResumeAgent {
     forkSource?: string;
     /** Exact current host session reported by a continuation-capable connector. */
     sessionId?: string;
+    /** The connector's session pointer file on THIS host, when it declares one. Non-secret like
+     *  every other reference this document carries: a path, never the session bytes. A preservation
+     *  cut captures it so the destination can reopen the same session; without it the checkpoint
+     *  carries no pointer and the continuity class is capped below what the connector declares. */
+    sessionStatePath?: string;
     /** Values are deliberately not persisted: connector launch options are opaque and may be secrets. */
     unresolvedLaunchOptionKeys?: string[];
   };
@@ -2120,6 +2125,9 @@ export class Manager {
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         sessionId: a.restart?.armed ? this.readManagedSession(a) : a.launch.sessionId,
+        // Additive and only when the connector supplied one. A seat with no pointer records no
+        // field, which is what keeps an older inventory and a fresh one the same document shape.
+        ...(a.restart?.sessionStatePath ? { sessionStatePath: a.restart.sessionStatePath } : {}),
         unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
       },
       dependencies,

@@ -1,6 +1,6 @@
-import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   abortMaintenanceCut,
@@ -83,6 +83,7 @@ interface ManagerResumeAgentShape {
     connector: string;
     cwd?: string;
     sessionId?: string;
+    sessionStatePath?: string;
     unresolvedLaunchOptionKeys?: string[];
     source: { configSha256: string; manifestSha256?: string; hash?: string };
   };
@@ -103,7 +104,7 @@ export function downComplete(argv: string[]): CompletionResult {
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
 export async function down(args: ParsedArgs): Promise<void> {
-  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; space?: string };
+  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   const requested = [...new Set(args.positionals)];
   if (values["preserve-state"] && values["with-agents"])
     throw new Error("--preserve-state cannot be combined with --with-agents");
@@ -113,10 +114,11 @@ export async function down(args: ParsedArgs): Promise<void> {
     if (requested.length || values.file || values.run || values["dry-run"] || values.space)
       throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
-    await preserveStateDown(values["store-dir"]);
+    await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []));
     return;
   }
   if (values["store-dir"]) throw new Error("--store-dir is only valid with down --preserve-state");
+  if (values["session-store"]?.length) throw new Error("--session-store is only valid with down --preserve-state");
   if ((values.file || values.run) && (requested.length || values.space)) {
     throw new Error("component names and --space cannot be combined with --file or --run");
   }
@@ -519,7 +521,31 @@ function retainedPrincipalKeys(inventory: unknown): Set<string> {
   }).filter((id): id is string => Boolean(id)));
 }
 
-async function preserveStateDown(storeOverride?: string): Promise<void> {
+/**
+ * The operator's `--session-store` paths, resolved and proven to be directories.
+ *
+ * There is no default and nothing is inferred from a connector name: this repository does not know
+ * where a harness keeps its transcript, and a guess recorded as a fact would produce a checkpoint
+ * promising `exact` over bytes nobody chose. A path that does not exist or is not a directory is
+ * refused HERE, before a single process is stopped, because a cut that discovers it after the stack
+ * is down costs the operator the whole cut.
+ */
+function assertSessionStores(paths: readonly string[]): string[] {
+  return paths.map((path) => {
+    const resolved = resolvePath(path);
+    let stat;
+    try {
+      stat = statSync(resolved);
+    } catch (error) {
+      throw new Error(`--session-store ${resolved} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); name the harness transcript store directory for this host`);
+    }
+    if (!stat.isDirectory())
+      throw new Error(`--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
+    return resolved;
+  });
+}
+
+async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
   if (matching.length !== 1)
@@ -756,7 +782,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     // (`commitPreservation` above returned state "preserved" with no failures) and the whole stack
     // is down, so nothing is writing to a working tree or a transcript. A capture any earlier races
     // the harness by construction.
-    const captured = await captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId));
+    const captured = await captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores);
     completeMaintenanceCut(lock, {
       attemptId,
       observedAt: new Date().toISOString(),
@@ -802,6 +828,7 @@ async function captureSeatCheckpoints(
   space: string,
   resume: MaintenanceResumeDescriptor,
   destination: string,
+  sessionStores: readonly string[],
 ): Promise<SeatCheckpoint[]> {
   const document = readMaintenanceResumeDocument(root, resume);
   const inventory = document.inventory as { agents?: ManagerResumeAgentShape[] } | undefined;
@@ -814,19 +841,27 @@ async function captureSeatCheckpoints(
     // The generation this cut is taken at, from what this host holds. A destination claims the
     // successor by exclusive create before it launches anything.
     const held = loadSeatWriterGeneration(root, space, entry.name);
+    const connector = await connectorCapabilities(entry.launch.connector);
+    // The store is applied to every CONTINUATION-CAPABLE seat and to no other. A connector that
+    // does not reopen a session has nothing to reopen it from, and carrying a transcript for it
+    // would put harness bytes in an artifact that can never use them.
+    const carriesSession = Boolean(connector?.supportsSessionContinuation);
     sealed.push(captureSeatCheckpoint(join(destination, entry.name), entry, {
       cwd,
       space,
       name: entry.name,
       lifecycleUid: entry.identity.lifecycleUid,
       generation: held?.generation ?? 0,
+      workspaceRoot: root,
       profile: {
         configSha256: entry.launch.source.configSha256,
         ...(entry.launch.source.manifestSha256 ? { manifestSha256: entry.launch.source.manifestSha256 } : {}),
         ...(entry.launch.source.hash ? { hash: entry.launch.source.hash } : {}),
       },
-      connector: await connectorCapabilities(entry.launch.connector),
+      connector,
       ...(entry.launch.sessionId ? { sessionId: entry.launch.sessionId } : {}),
+      ...(carriesSession && entry.launch.sessionStatePath ? { sessionStatePath: entry.launch.sessionStatePath } : {}),
+      ...(carriesSession && sessionStores.length ? { sessionStorePaths: sessionStores } : {}),
     }));
   }
   return sealed;

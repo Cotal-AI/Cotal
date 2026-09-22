@@ -11,12 +11,14 @@
  * formats, so a self-hoster can verify every artifact by hand with the same commands.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { sessionContinuityClass, type Connector, type SessionContinuityClass } from "@cotal-ai/core";
 import {
   createSeatCheckpointWriter,
   type SeatCheckpoint,
+  type SeatCheckpointDestination,
   type SeatCheckpointFile,
   type SeatCheckpointSession,
 } from "@cotal-ai/workspace";
@@ -62,9 +64,57 @@ export interface SeatCaptureRequest {
   readonly sessionId?: string;
   /** The connector's session pointer file, when it declares one. */
   readonly sessionStatePath?: string;
+  /** The workspace root this cut was taken in. A pointer under it travels anchored on the
+   *  DESTINATION's root, which is the only spelling that survives a different host. */
+  readonly workspaceRoot?: string;
   /** The harness transcript store, an operator input: this repository names the pointer file and
    *  not the store, and a default written here would be a guess presented as a fact. */
   readonly sessionStorePaths?: readonly string[];
+}
+
+/**
+ * Where one captured session file lands on the destination.
+ *
+ * Anchored, never absolute: the destination has its own workspace root, its own account home and
+ * its own seat working tree, and the source host's spelling for any of them is a path the
+ * destination may not have or may not own. The anchors are tried innermost first, so a file inside
+ * the seat's tree travels with the tree rather than with the root it happens to sit under.
+ * A file under none of them has no destination-relative spelling and the cut refuses, rather than
+ * recording an absolute path a restore would write blind.
+ */
+function restoreDestination(path: string, what: string, cwd: string, workspaceRoot?: string): SeatCheckpointDestination {
+  const target = resolve(path);
+  const anchors: Array<[SeatCheckpointDestination["anchor"], string | undefined]> = [
+    ["cwd", cwd],
+    ["workspace-root", workspaceRoot],
+    ["home", homedir()],
+  ];
+  for (const [anchor, base] of anchors) {
+    if (!base) continue;
+    const rel = relative(resolve(base), target);
+    if (rel && !rel.startsWith("..") && !rel.startsWith(sep) && rel !== ".")
+      return { anchor, path: rel.split(sep).join("/") };
+  }
+  throw new Error(`seat checkpoint: ${what} ${target} is under neither the seat's working tree, the workspace root, nor this account's home, so no destination-relative path can be recorded for it`);
+}
+
+/** Every regular file under one operator-named store path, relative to that path. A store is a
+ *  directory of opaque harness bytes; nothing here parses one. */
+function storeFiles(path: string): string[] {
+  const root = resolve(path);
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) found.push(full);
+      else throw new Error(`seat checkpoint: session store entry ${full} is neither a regular file nor a directory`);
+    }
+  };
+  if (!statSync(root).isDirectory())
+    throw new Error(`seat checkpoint: session store ${root} is not a directory`);
+  walk(root);
+  return found;
 }
 
 /**
@@ -110,23 +160,51 @@ export function captureSeatCheckpoint<Entry>(
     const namesFile = join(staging, "untracked.list");
     writeFileSync(namesFile, names.length ? `${names.join("\0")}\0` : "");
     execFileSync("tar", ["--null", "--files-from", namesFile, "-cf", untrackedPath], { cwd, maxBuffer: 1024 * 1024 * 1024 });
+    // The status a destination compares its promoted tree against, read under the same selection
+    // rule the untracked set was produced under. `git status --porcelain` reports the control
+    // directory the capture deliberately excludes, so a raw reading would describe a tree these
+    // bytes cannot reproduce and every restore would refuse.
+    const status = git(cwd, ["status", "--porcelain"]).toString("utf8")
+      .split("\n").filter(Boolean)
+      .filter((line) => !(line.startsWith("?? ") && (line.slice(3) === CONTROL_DIR || line.slice(3).startsWith(CONTROL_DIR))))
+      .map((line) => `${line}\n`).join("");
 
     const bundle = writer.captureFile("repo.bundle", "bundle", bundlePath);
     const indexDiff = writer.captureFile("repo.index.diff", "index-diff", indexDiffPath);
     const worktreeDiff = writer.captureFile("repo.worktree.diff", "worktree-diff", worktreeDiffPath);
     const untracked = writer.captureFile("repo.untracked.tar", "untracked", untrackedPath);
 
+    const untrackedSet = new Set(names);
+    // A store file the untracked archive already carries would be captured twice and restored
+    // twice, and the second placement would land on a file the extraction just wrote. Refuse at
+    // the cut rather than produce an artifact whose own restore cannot complete.
+    const destinationFor = (path: string, what: string): SeatCheckpointDestination => {
+      const destination = restoreDestination(path, what, cwd, request.workspaceRoot);
+      if (destination.anchor === "cwd" && untrackedSet.has(destination.path))
+        throw new Error(`seat checkpoint: ${what} ${resolve(path)} is already carried by the untracked capture of ${cwd}; name a store outside the seat's working tree`);
+      return destination;
+    };
     const pointer: SeatCheckpointFile | undefined = request.sessionStatePath
-      ? writer.captureFile("session-pointer.json", "session-pointer", request.sessionStatePath)
+      ? writer.captureFile("session-pointer.json", "session-pointer", request.sessionStatePath,
+          destinationFor(request.sessionStatePath, "the connector session pointer"))
       : undefined;
-    const store = (request.sessionStorePaths ?? []).map((path, index) =>
-      writer.captureFile(`session-store.${index}`, "session-store", path));
+    // Each operator-named store path is a directory of opaque harness bytes, captured file by file
+    // so every one travels by size and digest like everything else in the record.
+    const store: SeatCheckpointFile[] = [];
+    for (const path of request.sessionStorePaths ?? []) {
+      for (const file of storeFiles(path)) {
+        store.push(writer.captureFile(`session-store.${store.length}`, "session-store", file,
+          destinationFor(file, "a session store file")));
+      }
+    }
     // What the connector DECLARES, capped by what this cut actually carried. A class is a promise
-    // a destination is entitled to act on, and `exact` or `fork` with no pointer and no store
-    // promises a session that can be reopened from bytes this checkpoint does not contain. Capping
-    // here keeps the promise answerable to the artifact rather than to the declaration.
+    // a destination is entitled to act on, and `exact` or `fork` promises a session the destination
+    // can reopen, which takes BOTH halves: the pointer names the session and the store holds the
+    // transcript it reopens. A pointer alone names a session whose bytes are not in the artifact,
+    // so it is capped exactly like carrying nothing. Capping here keeps the promise answerable to
+    // the artifact rather than to the declaration.
     const declared = sessionContinuityClass(request.connector ?? {});
-    const carriesSession = pointer !== undefined || store.length > 0;
+    const carriesSession = pointer !== undefined && store.length > 0;
     const continuity: SessionContinuityClass =
       !carriesSession && (declared === "exact" || declared === "fork")
         ? (request.connector?.supportsFreshStart ? "fresh" : "drain-only")
@@ -147,7 +225,7 @@ export function captureSeatCheckpoint<Entry>(
       capturedAt: new Date().toISOString(),
       recencyHorizonMs: request.recencyHorizonMs ?? DEFAULT_RECENCY_HORIZON_MS,
       profile: request.profile,
-      repository: { base, untrackedSelection: UNTRACKED_SELECTION, bundle, indexDiff, worktreeDiff, untracked },
+      repository: { base, untrackedSelection: UNTRACKED_SELECTION, status, bundle, indexDiff, worktreeDiff, untracked },
       session,
     });
   } catch (error) {
