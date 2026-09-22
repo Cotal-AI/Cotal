@@ -556,6 +556,12 @@ A restore that applied without error and produced a different index is a refusal
 two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves
 every seat's live `cwd` as it was.
 
+The superseded name is claimed before anything moves, by exclusive directory create, and a taken
+name gets a numeric suffix. The timestamp has one-second resolution, so two promotions of the same
+seat within one second would otherwise compute the same path and the second rename would either
+replace the first tree or fail on it. A superseded tree is the thing that rename exists to keep, so
+a name this step could not create is a name it does not use.
+
 `git` and `tar` run as child processes with argument arrays, never a shell string.
 
 A leftover `<cwd>.incoming` refuses the resume by name. A staging directory from a failed run is the

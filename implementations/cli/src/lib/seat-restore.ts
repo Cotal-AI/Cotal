@@ -178,9 +178,35 @@ function stageSeat(seat: SeatRestoreRequest, staging: string): void {
   run("tar", ["-xf", join(seat.directory, repository.untracked.path)], staging, seat.name, "extracting the untracked archive");
 }
 
-/** The timestamped name an existing `cwd` is moved aside under. */
-function supersededName(cwd: string): string {
-  return `${cwd}.superseded.${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+/**
+ * Move an existing `cwd` aside under a timestamped name, and return the name it went to.
+ *
+ * The name has to be one this call can prove it owns. A whole-second timestamp is not that: two
+ * promotions of the same seat inside one second compute the same path, and the second `rename`
+ * lands on the non-empty directory the first one just created. POSIX rename replaces an empty
+ * target directory silently and fails ENOTEMPTY on a full one, so the collision is either a lost
+ * tree or a refusal naming a rename instead of the real cause. Neither is acceptable for the one
+ * step that exists to keep a superseded tree.
+ *
+ * So the slot is CLAIMED before anything moves, by exclusive `mkdir` on the timestamped name, and
+ * the claim is retried with a counter while it is taken. `rename` onto the empty directory the
+ * claim created is the replace POSIX allows, and a name this call could not create is a name it
+ * does not own.
+ */
+function supersede(cwd: string, seat: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const candidate = `${cwd}.superseded.${stamp}${attempt ? `.${attempt}` : ""}`;
+    try {
+      mkdirSync(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    renameSync(cwd, candidate);
+    return candidate;
+  }
+  throw new SeatRestoreError(`seat ${seat}: could not claim a free superseded name beside ${cwd}; ${cwd}.superseded.${stamp}[.0-99] are all taken, so an earlier tree would be overwritten`);
 }
 
 /**
@@ -201,8 +227,7 @@ export function restoreSeatCheckpoints(options: SeatRestoreOptions): void {
   try {
     for (const { seat, staging } of staged) {
       const cwd = resolve(seat.cwd);
-      const superseded = existsSync(cwd) ? supersededName(cwd) : undefined;
-      if (superseded) renameSync(cwd, superseded);
+      const superseded = existsSync(cwd) ? supersede(cwd, seat.name) : undefined;
       renameSync(staging, cwd);
       promoted.push({ cwd, staging, ...(superseded ? { superseded } : {}) });
       // Before the status is read, for the same reason the capture read it with the store in place:

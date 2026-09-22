@@ -1527,6 +1527,10 @@ let openInventory: ManagerResumeAgent;
         cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
         workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
       });
+      captureSeatCheckpoint(join(seatCheckpointDir(destRoot, "restore-2b"), "seat"), { name: "seat" }, {
+        cwd, space: "restore-space", name: "seat", lifecycleUid: uid, generation: 0,
+        workspaceRoot: root, profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
       writeFileSync(join(seatCwd, "decoy.txt"), "provisioned, not preserved\n");
       restoreAt("restore-2");
       const superseded = readdirSync(destRoot).filter((entry) => entry.startsWith("seat-tree.superseded."));
@@ -1536,6 +1540,20 @@ let openInventory: ManagerResumeAgent;
         existsSync(join(destRoot, superseded[0]!, "decoy.txt")),
       );
       check("the promoted tree is the checkpoint's, not the one moved aside", !existsSync(join(seatCwd, "decoy.txt")));
+
+      // A SECOND promotion in the same second. A whole-second timestamp alone computes the name the
+      // first one already took, and renaming onto it either loses that tree or fails ENOTEMPTY
+      // naming a rename instead of the real cause. Both superseded trees must survive, distinctly.
+      writeFileSync(join(seatCwd, "second-decoy.txt"), "the second tree moved aside\n");
+      restoreAt("restore-2b");
+      const bothAside = readdirSync(destRoot).filter((entry) => entry.startsWith("seat-tree.superseded."));
+      check(
+        "two promotions in the same second keep both superseded trees under distinct names",
+        bothAside.length === 2 &&
+          bothAside.some((entry) => existsSync(join(destRoot, entry, "decoy.txt"))) &&
+          bothAside.some((entry) => existsSync(join(destRoot, entry, "second-decoy.txt"))),
+        bothAside,
+      );
       break cut2;
     }
 
