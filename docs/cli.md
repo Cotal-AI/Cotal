@@ -48,6 +48,7 @@ runtimes ship this way.
 | Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
+| Agents & personas | [`service`](#service) | Run the manager as a user service (survives logout and reboot) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
@@ -590,6 +591,29 @@ cotal spawn [<persona>] [--detach] [--name <n>] [--agent <a>] [--model <m>] [--v
 cotal spawn -f <cotal.yaml> [--dry-run]
 ```
 
+For a foreground spawn onto a remote user-auth mesh, a launcher may supply a one-time enrollment
+instead of a cached human login. Prefer a private file:
+
+```bash
+COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
+  cotal spawn --config ./seat.md --space main
+```
+
+The file contains only the enrollment URL, ending with at most one line terminator, and must be
+mode `0600` on POSIX. An orchestrator that cannot mount a file may set `COTAL_ENROLLMENT_URL`
+instead; that value is redeemed byte for byte, so a trailing newline in it is refused. Setting both
+is refused. Enrollment input
+requires `--space` and applies only to a foreground persona spawn. If the mesh is not registered yet,
+the enrollment response must carry the stock user-bundle fields and the command needs
+`--config <persona-file>` because there is no local remote-mesh persona catalog to read. The client
+redeems the URL once, registers the returned mesh material, exchanges the returned actor token at the
+pinned auth service, and removes both enrollment variables before starting any child process.
+
+A cached login for the same IdP and an enrollment are conflicting proofs, so the command refuses
+rather than choosing one. An invalid enrollment never falls back to login provisioning. Unknown,
+expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
+one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
@@ -979,6 +1003,12 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
+if every declared connector is unavailable, those commands stay on this instance rail only
+(`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
+unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
+inventory keeps the class rail and names `--on` on a harness refusal, because sibling
+inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
@@ -1014,6 +1044,66 @@ the authority service and grant `supervise` for detached agents. If a running re
 renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
 silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
 condition.
+
+## service
+
+```bash
+cotal service install [--mesh <name>] [--linger]
+cotal service status [--mesh <name>] [--json]
+cotal service uninstall [--mesh <name>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--mesh <name>` | this folder's mesh | The mesh whose manager the service runs; one unit per mesh |
+| `--linger` | off | install: also enable user lingering so the user manager starts at boot and the service survives logout. Never enabled silently |
+| `--json` | off | status: machine-readable output |
+
+Runs the manager as a user service so it survives logout and reboot. On Linux this installs a
+systemd user unit (`~/.config/systemd/user/cotal-manager@<key>.service`, where `<key>` is the
+case-safe mesh key); on macOS a launchd agent plist under `~/Library/LaunchAgents/`. Any other
+platform, or an absent systemd/launchd user session, fails with a message naming what is missing.
+
+`install` resolves the mesh from the registry and binds the unit to that entry's root and broker
+address, so it can be run from any directory. The mesh must be registered (`cotal up` or
+`cotal meshes add`) before installing; an unregistered name refuses before anything is written.
+
+The unit's `ExecStart` is the bare `supervise` command. The mesh facts travel in a `0600`
+`EnvironmentFile` (`COTAL_SPACE`, `COTAL_SERVER` pinned to the registered broker URL, whatever
+port it listens on) rather than the command line, because command lines are readable by every
+user on a multi-user host. The same file gives the service a private `COTAL_HOME` and
+`XDG_CONFIG_HOME` under the unit directory, so the service manager never touches the login
+user's `~/.cotal`. First-run connector seeding runs synchronously inside `service install`,
+against that private config root; the unit itself starts with `COTAL_SKIP_CONNECTOR_SEED=1`
+so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot
+complete (network unreachable, registry error) refuses instead of deferring.
+
+Every value the unit derives from a path (`WorkingDirectory`, the `EnvironmentFile` path, the
+`ExecStart` tokens) is escaped for systemd specifiers (`%` becomes `%%`), so a mesh root that
+contains `%` starts over its real path instead of a path systemd rewrote by expanding it. The
+provenance comment records the root unescaped.
+
+`service install` also refuses while a manager is already running for the mesh (`cotal down
+manager` first). The restart policy is `Restart=always` with `RestartSec=20s`, chosen for
+manager units in production: a manager exits for reasons that are not failures (broker
+restarts, host suspend), where `on-failure` with a short interval thrashes.
+
+`service status` reports the unit state from systemd/launchd, the manager's own health read from
+its pidfile at the unit's recorded root, and the machine facts a hosting side asks for:
+architecture, OS (the platform, never the hostname), whether `/dev/kvm` is present and
+accessible, CPU count, and total memory. `--json` returns the same fields as one object.
+
+`service uninstall` stops and disables the unit and removes it plus the private state directory.
+It works from any directory: the unit's own records name the mesh and root it serves, and an
+explicit `--mesh <name>` selects it. It refuses any unit that was not written by `service
+install` (the files carry a provenance comment), whose recorded mesh is missing, or that was
+installed for a different mesh, so operator-written units are never destroyed; `service status`
+applies the same rule and never reports a mesh a unit does not record.
+
+This command installs only the manager. The per-space auth service and the delivery daemon are
+not installed by it: on a shared broker an operator runs three units per space with `After=`
+edges (auth service, then manager, then delivery) and stops them in reverse. A broker-side `cotal
+up` unit is a separate unit documented in [Run a mesh](run-a-mesh.md).
 
 ## reconcile-gate
 

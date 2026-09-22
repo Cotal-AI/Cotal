@@ -45,12 +45,10 @@ Hermes is model-agnostic; set any one provider's key in your environment. Model 
 matches the other connectors: the `--model` flag, else the agent file's `model:`, else an ambient
 `HERMES_MODEL`. Hermes exposes no `cotal models` catalog (unlike OpenCode).
 
-With none of those set, the managed profile writes no `model:` and Hermes picks a default of its
-own, over a provider you may have no key for. The seat still joins the mesh and still accepts a
-turn, so the first sign is a provider authentication error partway through it. The managed profile
-does not read `~/.hermes`, so a model configured there is not used. The launch prints this as a
-warning. To run on your own profile instead, see
-[Use your own Hermes profile](#use-your-own-hermes-profile).
+With none of those set, the launch is refused. The managed profile does not read `~/.hermes`, so a
+model configured there is not used, and without a model Hermes would choose one of its own over a
+provider you may have no key for. The refusal names the three ways to set a model. To run on your
+own profile instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
 
 ## How it binds
 

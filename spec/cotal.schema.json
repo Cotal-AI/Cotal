@@ -308,6 +308,211 @@
           "type": "object"
         }
       ]
+    },
+    "AgentCard": {
+      "description": "A2A-inspired identity record for an endpoint or agent.",
+      "properties": {
+        "actor": {
+          "description": "The agent-instance actor token under  {@link  owner }  (server-derived from the spawn ledger in user mode; the connection id in the dev default). The other half of  {@link  id } .",
+          "type": "string"
+        },
+        "description": {
+          "description": "A2A-style one-line summary of what this agent does (discovery / observability).",
+          "type": "string"
+        },
+        "id": {
+          "description": "Unique, stable for the lifetime of this connection. The owner+actor **principal dot-form** `<owner>.<actor>` (= `principalKey().key`) under the owner+actor grammar — the wire identity every `msg.from.id` carries and every sender guard compares against. Peers address each other by this.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/EndpointKind",
+          "description": "'agent' (participates in coordination) or a plain 'endpoint' (logger, dashboard…)."
+        },
+        "meta": {
+          "additionalProperties": {},
+          "description": "Free-form advisory display metadata. Reserved flat string keys are `connector`, `model`, `host`, `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`.",
+          "type": "object"
+        },
+        "name": {
+          "description": "Human-readable display name.",
+          "type": "string"
+        },
+        "owner": {
+          "description": "The human/account owner token this agent acts under (opaque, per-space; `\"local\"` in the no-login dev default). One of the two halves of  {@link  id } ; travels in presence so peers resolve name→principal.",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "description": "Wire-contract version this participant speaks (the SPEC.md version, `\"0.2\"` today). A change signal, not negotiation: v0 has none, but a peer can detect a mismatch instead of silently misreading a future envelope. Omitted ⇒ assume the v0.x line.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Cotal addition: the role this participant plays (planner, reviewer, …).",
+          "type": "string"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/definitions/AgentSkill"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "description": "Cotal: free-form \"what it can do\" tags (A2A skill-tags, flattened) — discovery only.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AgentSkill": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "AttentionMode": {
+      "description": "How aggressively peer traffic interrupts an agent — chosen by the agent, orthogonal to  {@link  PresenceStatus } . Defined here (the wire layer) because it is now published in  {@link  Presence } ; the connector imports it. Advisory observability, not a security boundary.",
+      "enum": [
+        "open",
+        "dnd",
+        "focus"
+      ],
+      "type": "string"
+    },
+    "ChannelMode": {
+      "description": "Per-channel attention override (more specific than the global  {@link  AttentionMode } ).\n- `quiet` — still delivered + buffered, but never wakes; an `@`-mention still wakes (per-channel `dnd`).\n- `muted` — channel messages dropped on receive, incl. `@`-mentions (\"don't receive this channel\").",
+      "enum": [
+        "quiet",
+        "muted"
+      ],
+      "type": "string"
+    },
+    "EndpointKind": {
+      "description": "Cotal wire types (v0.2).\n\nThese are the shapes that travel on the mesh. They are intentionally A2A-inspired (AgentCard / Message / Part) but transport-agnostic. This file IS part of the \"wire contract\" — treat changes here as protocol changes.",
+      "enum": [
+        "agent",
+        "endpoint"
+      ],
+      "type": "string"
+    },
+    "Presence": {
+      "description": "Live presence record. Stored in the space's KV bucket under key = card.id.",
+      "properties": {
+        "activity": {
+          "description": "Freeform \"what I'm doing right now\".",
+          "type": "string"
+        },
+        "attention": {
+          "$ref": "#/definitions/AttentionMode",
+          "description": "This instance's current global attention mode. Advisory, within-space observability — a peer can see \"they're in focus\" and choose to DM. Published from the connector's authoritative state (presence is a mirror, never the source of truth for delivery). `open`/absent ⇒ receives all."
+        },
+        "card": {
+          "$ref": "#/definitions/AgentCard"
+        },
+        "channelModes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ChannelMode"
+          },
+          "description": "Per-channel attention overrides this instance currently has (runtime, reset on restart). Keys are concrete channel names. Advisory: lets a peer see \"locally muted #deploys → DM to reach me\". NOT access control — the broker still authorizes and delivers; this is a receive-side presentation.",
+          "type": "object"
+        },
+        "condition": {
+          "$ref": "#/definitions/PresenceCondition",
+          "description": "Structured condition reported by the harness. Missing means nothing was reported."
+        },
+        "environment": {
+          "description": "Opaque reference whose meaning belongs to the provider that issued it.",
+          "type": "string"
+        },
+        "lifecycleUid": {
+          "description": "This incarnation's lifecycle UID (SPEC §6/§13.1: MUST in auth mode from v0.4) — the value the alias currently maps to, published so peers/observers can attribute the alias's live occupant. Advisory observability, never authority (authority is the ledger/broker grants).",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/PresenceStatus"
+        },
+        "ts": {
+          "description": "Epoch ms of the last heartbeat.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "card",
+        "status",
+        "ts"
+      ],
+      "type": "object"
+    },
+    "PresenceCondition": {
+      "description": "A condition the harness reported. Connectors relay it and never infer one from absence.",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/PresenceConditionCode"
+        },
+        "message": {
+          "description": "Free-text detail reported by the harness.",
+          "type": "string"
+        },
+        "since": {
+          "description": "Epoch ms when this condition began.",
+          "type": "number"
+        },
+        "source": {
+          "description": "The harness's native value, preserved verbatim.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "PresenceConditionCode": {
+      "description": "Closed, provider-neutral categories a connector may relay from its harness's native signal.",
+      "enum": [
+        "rate_limit",
+        "overloaded",
+        "auth",
+        "billing",
+        "budget",
+        "context",
+        "model",
+        "request",
+        "server",
+        "retrying",
+        "approval",
+        "input",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "PresenceStatus": {
+      "description": "Lifecycle status of a participant.\n- `idle`: connected, no active task\n- `waiting`: blocked — awaiting input, approval, or a peer\n- `working`: actively executing a task / in a turn\n- `offline`: disconnected or heartbeat lapsed (derived by observers, not self-set while live)",
+      "enum": [
+        "idle",
+        "waiting",
+        "working",
+        "offline"
+      ],
+      "type": "string"
     }
   }
 }
