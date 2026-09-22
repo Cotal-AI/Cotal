@@ -45,7 +45,7 @@ process.env.COTAL_HOME = home;
 const { connect } = await import("@nats-io/transport-node");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 const {
-  probeConnect, registry, DEV_OWNER, openRecordsBucket,
+  probeConnect, registry, DEV_OWNER, openRecordsBucket, eventChannel,
   timerWriterContext, timerWriterConsumerConfig, timerWriterDurable, armCheckpointTimer,
   eptReqStreamName, replayRunJournal, newTakeoverId, resolveService, invokeCommand,
   setupSpaceStreams, openMembersRegistry, openChannelRegistry, listMembers, readChannelConfig,
@@ -103,7 +103,7 @@ const envJoin = (o: LaunchOptsT): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVER),
   COTAL_ID: o.id ?? "", COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "", COTAL_NAME: o.name,
 });
-const joinCon: ConnectorT = { kind: "connector", name: "join", requires: ["node"], buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
+const joinCon: ConnectorT = { kind: "connector", name: "join", requires: ["node"], eventChannel, buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
 registry.register(joinCon);
 
 let mgr: InstanceType<typeof Manager> | undefined;
