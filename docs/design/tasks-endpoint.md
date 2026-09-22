@@ -146,25 +146,33 @@ task it acts on is named in `taskId`.
 Per-command shapes, all proposed:
 
 - **`list-tasks`**. Input `{ cursor?: string, limit?: integer, status?: string[] }`. Output
-  `{ tasks: TaskSummary[], nextCursor?: string, observedAt: integer, changeSeq: integer, stale?: StaleMarker }`.
-  A bounded page of summaries for the space the endpoint serves. `limit` has a provider ceiling and the
-  provider returns its own applied value through the page rather than silently honouring a larger one.
+  `{ tasks: TaskSummary[], appliedLimit: integer, nextCursor?: string, observedAt: integer, changeSeq: integer, stale?: StaleMarker }`.
+  A bounded page of summaries for the space the endpoint serves. `limit` has a provider ceiling, and
+  `appliedLimit` reports the bound the provider actually used, so a caller that asked for more learns it
+  was narrowed rather than inferring completeness from a short page.
 - **`get-task`**. Input `{ taskId: string }`. Output the full task record of section 2, or `not-found`.
   Separated from `list-tasks` because a list carries summaries and a dashboard should not have to page a
   whole board to read one task.
-- **`my-tasks`**. Input is void. The caller triple is the query, which is why it is targeted at mode
-  `self` and takes no seat argument at all. This is the shape `turn-pending` already uses in
-  `manager-service-contract.ts` (`TURN_PENDING_OUTPUT_SCHEMA`, "Self-targeted, so the caller triple IS
-  the query; there is no other input"). Output
-  `{ tasks: TaskSummary[], observedAt: integer, changeSeq: integer, stale?: StaleMarker }`.
-- **`create-task`**. Input `{ title, brief?, status?, binding?, evidence? }`. Output the created record.
-  Untargeted because creating a task acts on the board, not on a seat. A `binding` supplied here is
-  applied under the rules of section 3 and requires the caller to also hold `tasks.bind` for that target;
-  a caller holding only `tasks.write` creates unbound tasks.
-- **`bind-task`**. Input `{ taskId, expectedBinding?: BindingRef | null }`. The target block names the
-  seat. Output the updated record. `expectedBinding` is the optimistic check: `null` asserts the task is
-  currently unbound, a `BindingRef` asserts it is bound to that exact triple, and a mismatch is `conflict`.
-  Absent means no check, which is the operator override.
+- **`my-tasks`**. Input `{ cursor?: string, limit?: integer }`. The caller triple is the query, which is
+  why it is targeted at mode `self` and takes no seat argument at all. This is the shape `turn-pending`
+  already uses in `manager-service-contract.ts` (`TURN_PENDING_OUTPUT_SCHEMA`, "Self-targeted, so the
+  caller triple IS the query; there is no other input"), widened only by the page controls, because a
+  seat's own list is bounded by nothing but the board and an unpaged read of it would be the one
+  unbounded reply in this cluster. Output
+  `{ tasks: TaskSummary[], appliedLimit: integer, nextCursor?: string, observedAt: integer, changeSeq: integer, stale?: StaleMarker }`.
+- **`create-task`**. Input `{ title, brief?, status?, evidence? }`. Output the created record. Untargeted
+  because creating a task acts on the board, not on a seat. It takes **no** binding argument: a task is
+  created unbound and bound by a second call. The reason is section 5's enforcement split. A binding
+  argument on an untargeted command would be a seat named in a payload, and the broker confines target
+  tokens in the subject, not fields in a body, so the check that a caller may bind to that seat would
+  move from the broker into the provider. Two calls keep every binding write on a targeted command.
+  `status` admits `open`, `blocked`, `done`, and `dropped`, and refuses `claimed` with `bad-request`:
+  `claimed` asserts a bound seat, and this command creates nothing bound.
+- **`bind-task`**. Input `{ taskId, expectedBinding?: BindingRef | null }`, where `BindingRef` is
+  `{ owner, actor, lifecycleUid }`, the three coordinates of section 2's binding without its recorded
+  metadata. The target block names the seat. Output the updated record. `expectedBinding` is the
+  optimistic check: `null` asserts the task is currently unbound, a `BindingRef` asserts it is bound to
+  that exact triple, and a mismatch is `conflict`. Absent means no check, which is the operator override.
 - **`claim-task`**. Input `{ taskId }`. Targeted at mode `self`, so the seat can only ever bind a task to
   itself. Refuses `conflict` when the task is already bound to another seat. A seat holding only
   `tasks.self` cannot rebind anything, which is the property section 5 rests on.
@@ -173,12 +181,16 @@ Per-command shapes, all proposed:
   including the lifecycle uid; anything else is `permission-denied`. This is the one command a seat needs
   to progress, attach evidence to, and close its own work, and it is one command rather than three
   because a status change and the evidence justifying it belong in the same call.
-- **`administer-task`**. Input `{ taskId, status?, binding?: BindingRef | null, note? }`. Untargeted and
+- **`administer-task`**. Input `{ taskId, status?, unbind?: true, note? }`. Untargeted and
   capability-gated. It exists for the case a self-mode command cannot cover: a seat that is gone and left
-  a task open. The untargeted plus capability-gated shape is the one the manager already uses for its
-  operator instruments; `manager-service-contract.ts` states it in the module header ("every admin-class
-  command is untargeted + capability-gated") and `ROWS` carries it for `purge`, `launch`, and the
-  resume family.
+  a task open. It can clear a binding and it can set a status; it cannot create one, because binding to a
+  seat is a targeted act and `bind-task` is where it stays. The untargeted plus capability-gated shape is
+  the one the manager already uses for its operator instruments; `manager-service-contract.ts` states it
+  in the module header ("every admin-class command is untargeted + capability-gated") and `ROWS` carries
+  it for `purge`, `launch`, and the resume family.
+
+`StaleMarker` is `{ staleAsOf: integer, reason: string }`, the shape section 4 requires on a degraded
+read. `staleAsOf` is epoch milliseconds and `reason` is a bounded provider string.
 
 Idempotency is by envelope `id` where the table says so, which is SPEC §13.8's ephemeral rule
 (idempotent commands by `id`, handler-local, within result retention). `bind-task` and `claim-task` are
@@ -199,10 +211,11 @@ declares `bind-task` as `class: "journal"` at a new revision, and must then decl
 
 The ceiling is derived from the input bounds, not chosen: `maxBytes` covers the largest canonically
 serialized `bind-task` input the section 2 field bounds permit, plus the envelope, with headroom;
-`maxDepth` is the input's own nesting depth, which is 3; `maxItems` is the largest member count the
-input schema admits. SPEC §13.7 requires the ceiling to be declared rather than compiled in, because it
-decides what a submission durably becomes, and two implementations that agreed on the wire while
-disagreeing on a constant would write different permanent decisions for identical bytes.
+`maxDepth` is that input's own nesting depth, which is 2, the outer object and the `expectedBinding`
+object inside it; `maxItems` is the largest member count the input schema admits. SPEC §13.7 requires
+the ceiling to be declared rather than compiled in, because it decides what a submission durably becomes,
+and two implementations that agreed on the wire while disagreeing on a constant would write different
+permanent decisions for identical bytes.
 
 ## 2. The task record
 
@@ -308,6 +321,12 @@ through `bind-task`, at mode `owner` for a seat under its own owner or at mode `
 instrument. A seat holding `tasks.self` binds an unbound task to itself through `claim-task`, and can
 reach no other triple, because mode `self` pins the whole caller triple in the subject.
 
+Both paths are targeted commands, and that is the invariant rather than a coincidence: a binding names a
+seat, the broker confines target tokens in the subject, and an untargeted command naming a seat in its
+payload would move that check into the provider. So no untargeted command in this cluster writes a
+binding. `create-task` takes no binding argument, and `administer-task` can only clear one. Clearing is
+safe untargeted because it names no seat; it only removes what is already recorded.
+
 **How a binding is confirmed.** The provider checks two different things for two different reasons, and
 keeping them apart is the point.
 
@@ -330,8 +349,8 @@ consequences, each stated so a reader cannot infer a friendlier one:
 - `update-task` from the new incarnation against the old binding is `permission-denied`. It is not
   silently accepted and it is not silently retargeted.
 - The task keeps its binding. It does not revert to `open`, and it is not auto-rebound. It becomes a
-  task whose bound lifecycle is no longer live, which is a state an operator resolves with `bind-task`
-  or `administer-task`.
+  task whose bound lifecycle is no longer live, which is a state an operator resolves: `bind-task` to
+  move it to a live seat, or `administer-task` with `unbind` to return it to the board.
 
 The reason for keeping the binding rather than clearing it is that clearing would destroy the only
 record of who was working on it, and a board's value is largely that record.
@@ -384,8 +403,9 @@ one is that an empty list is the most dangerous wrong answer a board can give: i
 - A provider serving from a degraded or lagging source returns its page **with** an explicit
   `stale: { staleAsOf: integer, reason: string }` marker. The result is usable and labelled, never
   silently fresh.
-- `{ tasks: [], observedAt, changeSeq }` with no `stale` marker is a positive assertion that the provider
-  read its store and the store holds nothing matching. It is the only shape that means "no tasks".
+- `{ tasks: [], observedAt, changeSeq, appliedLimit }` with no `stale` marker is a positive assertion
+  that the provider read its store and the store holds nothing matching. It is the only shape that means
+  "no tasks".
 - A reader that observes a `changeSeq` lower than one it has already seen treats the answer as stale
   rather than as a rollback, and refreshes.
 
@@ -430,8 +450,9 @@ layer: no self-mode command takes a target seat as an argument at all. `claim-ta
 `taskId`, and `update-task` takes only a `taskId` with its changes, so there is no field in which a
 foreign triple could be supplied, whatever a caller was persuaded to send.
 
-Rebinding lives in `bind-task` and `administer-task`, and neither is ever minted to a seat holding only
-`tasks.self`.
+Rebinding lives in `bind-task` alone, and it is never minted to a seat holding only `tasks.self`.
+`administer-task` can clear a binding but cannot write one, so the admin credential can free a task and
+not hand it to a seat of its choosing without going through the targeted command.
 
 **What this does not protect.** A seat that legitimately holds `tasks.bind` at mode `owner` can rebind
 any task under its own owner, including another seat's. That is the same reach `despawn` already has,
@@ -442,42 +463,56 @@ reach does not mint `tasks.bind` to seats.
 ## 6. Conformance
 
 Proposed. A provider may call itself a tasks endpoint when a reviewer can exercise each of the following
-against it with `cotal describe` and `cotal invoke`, and observe the stated result. Every check is
-phrased against what those two commands actually surface: `describeCmd` prints the command name, the
-capability, and the targeting shape, and `invokeCmd` prints the reply data or the error code with its
-message.
+against it and observe the stated result. Every check is phrased against what `cotal describe` and
+`cotal invoke` actually surface: `describeCmd` prints the command name, the capability, and the
+targeting shape, and `invokeCmd` prints the reply data or the error code with its message.
+
+**Two checks need more than today's CLI, and the record says which rather than implying the CLI can do
+more than it does.** `resolveTarget` in `implementations/cli/src/commands/describe.ts` builds a target
+block from `--self` alone, or from `--name` against the manager endpoint only: it exits with a named
+refusal for any other endpoint, because alias resolution runs through the manager's `inspect`. So a
+reviewer exercising an `owner`-mode or `any`-mode command against a tasks endpoint supplies the target
+triple through a client calling `invokeCommand` directly, until that endpoint has an alias resolver.
+And `invokeFlags` in the same file carries no id flag, while `epCall` in
+`packages/core/src/endpoint-verbs.ts` uses `op.id` when pinned and a fresh `nonce()` otherwise
+(`const requestId = op.id !== undefined ? assertIdToken(...) : nonce()`), so a repeated `cotal invoke`
+sends a different envelope id every time and cannot demonstrate id idempotency. That check pins the id
+through `invokeCommand`'s `opts.id`.
 
 1. `cotal describe <endpoint>` lists the eight commands of section 1 with the capability and the
    targeting shape that table gives. A missing command, a different capability, or a different targeting
    shape is a failure.
-2. `cotal invoke <endpoint> list-tasks` on an empty board returns `tasks: []` with an `observedAt` and a
-   `changeSeq` and no `stale` marker.
+2. `cotal invoke <endpoint> list-tasks` on an empty board returns `tasks: []` with an `observedAt`, a
+   `changeSeq`, and an `appliedLimit`, and no `stale` marker.
 3. With the provider's store made unreadable, the same call fails with `unavailable`. A reviewer who sees
    `tasks: []` here has found the failure this contract exists to prevent.
 4. `cotal invoke <endpoint> get-task --args '{"taskId":"<absent>"}'` returns `not-found`, not an empty
    object and not a null task.
 5. `cotal invoke <endpoint> my-tasks --self` returns the caller's own bound tasks. Invoking it without
-   `--self` is refused by the CLI as a targeted command with no target, which
-   `invokeCommand` in `packages/core/src/endpoint-invoke.ts` raises as `bad-request`.
+   `--self` is refused as a targeted command with no target, which `invokeCommand` in
+   `packages/core/src/endpoint-invoke.ts` raises as `bad-request` before anything is published.
 6. `cotal invoke <endpoint> claim-task --self --args '{"taskId":"<unbound>"}'` binds the task to the
    caller triple, and a second identical call returns the same record rather than a conflict or a second
-   binding.
+   binding. This one holds under the CLI, because `claim-task` is idempotent by `taskId` with the caller
+   triple rather than by envelope id.
 7. `cotal invoke <endpoint> claim-task --self` against a task already bound to another seat returns
    `conflict`.
 8. `cotal invoke <endpoint> update-task --self` against a task bound to another seat returns
    `permission-denied`, and the record is unchanged when read back with `get-task`.
-9. `cotal invoke <endpoint> bind-task --name <agent>` from an operator credential binds the task, and the
-   returned record carries the target's `owner`, `actor`, and `lifecycleUid`. Running it from a
-   credential holding only `tasks.self` is refused before the provider is reached.
+9. A `bind-task` call from an operator credential, with a target block naming a seat's owner, actor, and
+   lifecycle uid, binds the task, and the returned record carries that same triple. The same call from a
+   credential holding only `tasks.self` is refused by the broker before the provider is reached, because
+   no `tasks.self` grant mints an `owner`-mode or `any`-mode row.
 10. After the bound seat is stopped and a new seat is spawned under the same name, `get-task` still shows
     the original `lifecycleUid`, and `my-tasks --self` from the new seat does not list the task.
 11. A task bound to a seat whose presence card carried an `environment` reference shows that reference
     verbatim in `binding.environment`. A task bound to a seat whose card carried none omits the field.
     No value appears that the card did not carry.
 12. `cotal invoke <endpoint> list-tasks --args '{"limit":<large>}'` returns at most the provider's own
-    ceiling and reports the applied page bound, rather than returning the whole board.
+    ceiling and reports that ceiling in `appliedLimit`, rather than returning the whole board.
 13. Reading any task returns a record carrying no secret, no tool output body, and no transcript text.
-14. `cotal invoke <endpoint> create-task` twice with the same envelope id creates one task.
+14. Two `create-task` calls pinning the same envelope id create one task. A reviewer pins the id through
+    `invokeCommand`'s `opts.id`, for the reason stated above.
 
 Checks 3, 8, 10, and 11 are the ones that distinguish a conformant provider from a plausible one; a
 provider passing only the others has implemented a board, not this contract.
