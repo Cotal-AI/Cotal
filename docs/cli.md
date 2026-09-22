@@ -1188,6 +1188,8 @@ semantics (who may read or post) are set at mint / provision time, not here; see
 [Channels and permissions](channels-and-permissions.md). On a user-auth mesh, `list` rides your
 own login as is; `set` and `default` edit the registry over a short-lived
 channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+On a remote user-auth mesh that view is served by the public exchange; space-history `purger`
+and the read-only admin view are not.
 
 
 ## history
@@ -1242,7 +1244,9 @@ into this surface and serves
 `http://cotal.localhost:7799` by default (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
 need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need
-ledger scope `admin`. Detached mode re-execs the current Cotal installation, writes diagnostics to
+ledger scope `admin`. The public exchange serves `channel-purger` for a remote owner; it still
+refuses the startup admin view, so a remote `cotal web` is not a complete channel-management
+surface. Detached mode re-execs the current Cotal installation, writes diagnostics to
 the mesh root's `.cotal/web.log`, and reports success only after the HTTP server answers. It requires
 a recorded mesh root, but can be launched from any directory once `cotal up` has recorded the mesh.
 See [Watch a mesh](watch-a-mesh.md).

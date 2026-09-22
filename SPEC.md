@@ -750,6 +750,9 @@ exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry 
 client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
 every connect: the callout then mints the connection as the named elevated profile (Appendix B:
 `admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
+On a public exchange face, only `channel-writer` and `channel-purger` MAY be issued, still
+re-authorized against ledger scope `admin`; `admin`, `purger`, `deployer`, and `manager-service`
+MUST remain loopback-only. A managed-agent secret exchange MUST still refuse every view.
 
 ---
 

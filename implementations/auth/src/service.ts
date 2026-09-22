@@ -31,7 +31,9 @@
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
  * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
  * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
- * hold verbatim; `view` requests are REFUSED outright (operator surfaces stay loopback-only);
+ * hold verbatim; `view` requests other than `channel-writer` and `channel-purger` are REFUSED
+ * (those two stay ledger-gated on `admin`; every other operator surface stays loopback-only); a
+ * managed-agent secret exchange never mints a view on either face;
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
@@ -61,7 +63,7 @@ import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
-import type { UserTokenView, ValidatedUserToken } from "./token.js";
+import { PUBLIC_EXCHANGE_VIEWS, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { issueRemoteManagerAuthority } from "./manager-authority.js";
@@ -997,7 +999,9 @@ export async function dispatchManagerAuthorityRequest(
 interface ExchangePolicy {
   /** Demand `Authorization: Bearer <cap>` (the discovery-file capability) before anything else. */
   requireCapability: boolean;
-  /** Refuse any `view` request outright — elevated operator surfaces stay loopback-only. */
+  /** Refuse `view` requests that are not in {@link PUBLIC_EXCHANGE_VIEWS}. Loopback leaves this
+   *  false so every view still reaches the bridge; the public face keeps god-view, history-purge,
+   *  deployer, and manager-service loopback-only. */
   refuseViews: boolean;
   /** Permit the dedicated manager-service authority route. Public deployments opt in explicitly by
    * advertising the public exchange; the route still authenticates an IdP proof and fresh ledger
@@ -1026,7 +1030,8 @@ const LOOPBACK_POLICY: ExchangePolicy = {
   recordFailure: (ctx) => ctx.failures.push(Date.now()),
 };
 
-/** The public face's policy: no capability, views refused, and failures bucketed per peer in a
+/** The public face's policy: no capability, views other than {@link PUBLIC_EXCHANGE_VIEWS}
+ *  refused, and failures bucketed per peer in a
  *  bounded LRU — peer A's refusal flood throttles peer A, not peer B, and never the loopback
  *  face. With `trustedProxy`, the peer is the LAST X-Forwarded-For hop (the one address the
  *  operator's own reverse proxy appended — earlier hops are attacker-writable); without it the
@@ -1203,9 +1208,9 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   };
   if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
-  // The one-line class-closer: elevated views never ride the public face — operator surfaces are
-  // loopback-only, whatever the credential presented.
-  if (policy.refuseViews && view !== undefined)
+  // Public face: only channel-writer / channel-purger ride this listener (still ledger-gated).
+  // admin, purger, deployer, and manager-service stay loopback-only, whatever the credential.
+  if (policy.refuseViews && view !== undefined && !(PUBLIC_EXCHANGE_VIEWS as readonly string[]).includes(view))
     return send(res, 403, { error: "elevated views are a loopback operator surface - the public exchange never serves them" });
   // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
   // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
