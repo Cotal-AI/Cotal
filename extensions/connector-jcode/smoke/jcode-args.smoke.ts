@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, cotalToolSpecs, EventWal } from "@cotal-ai/connector-core";
 import { z } from "zod";
 import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
+import { createJcodeMapper } from "../src/agui-map.js";
+import { initializeJcodeEventBoundary, JcodeJournalSource } from "../src/agui-source.js";
 
 let pass = 0;
 let fail = 0;
@@ -125,6 +127,19 @@ try {
 
   const rooted = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir });
   check("workspaceRoot pins private state", rooted.env?.COTAL_JCODE_HOME === dir);
+  check("declares the shared AG-UI event channel", jcodeConnector.eventChannel?.({ owner: "owner", actor: "actor" }) === "events.owner.actor");
+  check("ordinary launches do not arm the event plane", rooted.env?.COTAL_EVENTS === undefined && rooted.env?.COTAL_WORKSPACE_ROOT === undefined);
+  const evented = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir, events: true });
+  check(
+    "event launches arm the plane, pin its durable root, and stabilize open-mode identity",
+    evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir && evented.env?.COTAL_ID === "seat",
+    evented.env,
+  );
+  check(
+    "an allocated event identity wins over the open-mode name",
+    jcodeConnector.buildLaunch({ space: "space", name: "seat", id: "allocated", workspaceRoot: dir, events: true }).env?.COTAL_ID === "allocated",
+  );
+  throws("events require a durable workspace root", () => jcodeConnector.buildLaunch({ space: "s", name: "n", events: true }), /workspace root/);
   check("Jcode TUI override is absent when unset", base.env?.COTAL_JCODE_TUI === undefined);
   process.env.COTAL_JCODE_TUI = "0";
   try {
@@ -189,6 +204,69 @@ try {
   throws("refuses tool sharing", () => jcodeConnector.buildLaunch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);
   throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
+
+  const mapperRecord = {
+    cursor: "journal:cursor:1",
+    record: { append_messages: [
+      {
+        role: "assistant",
+        timestamp: "2026-09-22T00:00:00.000Z",
+        content: [
+          { type: "reasoning", text: "why" },
+          { type: "tool_use", id: "call-1", name: "bash", input: { command: "printf ok" } },
+          { type: "text", text: "done" },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "ok" }] },
+    ] },
+  };
+  const mapper = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-1", now: () => 7 });
+  const mapped = mapper.map(mapperRecord);
+  check(
+    "maps durable Jcode message blocks into one native AG-UI run",
+    mapped?.runId === "run-1" &&
+      mapped.events.map((event) => event.type).join(",") ===
+        "RUN_STARTED,REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT,REASONING_MESSAGE_END,TOOL_CALL_START,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_END",
+    mapped,
+  );
+  mapper.forgetOpenRun("run-1");
+  check(
+    "a closed Jcode run opens a fresh run for later durable output",
+    mapper.map({ cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } })?.events[0]?.type === "RUN_STARTED",
+  );
+  const restartedMapped = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map(mapperRecord);
+  const messageIds = (result: typeof mapped) => result?.events.flatMap((event) => "messageId" in event ? [event.messageId] : []) ?? [];
+  check(
+    "durable Jcode record positions keep message ids stable across mapper restarts",
+    JSON.stringify(messageIds(restartedMapped)) === JSON.stringify(messageIds(mapped)),
+    { first: messageIds(mapped), restarted: messageIds(restartedMapped) },
+  );
+
+  const journal = join(dir, "restart.journal.jsonl"), walPath = join(dir, "restart.wal.json");
+  writeFileSync(journal, `${JSON.stringify({ append_messages: [
+    { role: "assistant", content: [{ type: "tool_use", id: "orientation-1", name: "cotal_orientation" }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "orientation-1", content: "ready" }] },
+  ] })}\n`);
+  const wal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
+  const boundary = await initializeJcodeEventBoundary(journal, wal);
+  appendFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "requested answer" }] }] })}\n`);
+  const restartedWal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
+  const acknowledged = await initializeJcodeEventBoundary(journal, restartedWal);
+  const source = new JcodeJournalSource(journal);
+  const recovered = await source.read(acknowledged);
+  const restartFrames = recovered.records.flatMap((record) =>
+    createJcodeMapper({ threadId: "session-restart", mintRunId: () => "run-requested", now: () => 9 })
+      .map({ cursor: record.cursor, record: record.value })?.events.map((event) => event.type) ?? []
+  );
+  check(
+    "the persisted Jcode boundary excludes readiness and replays a post-boundary record after restart",
+    acknowledged === boundary &&
+      recovered.records.length === 1 &&
+      recovered.records[0]?.value.append_messages?.[0]?.content?.[0]?.text === "requested answer" &&
+      restartFrames.join(",") === "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END" &&
+      hostSrc.includes("if (!readinessTurnOpen) await ensureEventsBound();"),
+    { boundary, acknowledged, recovered, restartFrames },
+  );
 
   console.log(`\nJCODE ARGS SMOKE PASSED: ${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;

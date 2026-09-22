@@ -9,7 +9,7 @@ the normal `cotal_*` tool surface through Jcode's documented stdio MCP configura
 **Beta** means the supported path is deliberately narrow: a fresh private session, prompt
 injection, presence, managed start/stop, requested reasoning effort, and an attached TUI work.
 Features that do not preserve that private session's mesh surface fail loud: `--resume`,
-exact-session continuation, `--share-tools`, `--events`, and connector `--opt` values are not
+exact-session continuation, `--share-tools`, and connector `--opt` values are not
 supported.
 
 ## Install
@@ -184,6 +184,26 @@ turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic re
 through an explicit inbox pull. The connector log names a startup prompt waiting on in-flight
 steering and a turn deferred because native state changed during that wait.
 
+## Event plane
+
+A seat launched with `cotal spawn --events` publishes run boundaries, assistant text, reasoning,
+and tool starts and ends on `events.<owner>.<actor>`. Tool arguments and results are not published.
+The channel and grant rules are the same as the other connectors; see
+[Connect Claude Code](connect-claude.md#event-plane) for how to grant and read one.
+
+Jcode's live Harness API reports token-sized text and reasoning deltas, but that stream cannot be
+read again after a host crash. The connector therefore reads Jcode's native append-only session
+journal under the seat's private home. The journal supplies a durable byte cursor and is keyed by
+the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
+stored in its event write-ahead log and does not republish records already acknowledged.
+
+The journal records settled message blocks rather than live deltas. Text and reasoning therefore
+arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
+blocks. User prompt text is not republished onto the event channel. Arming is `COTAL_EVENTS`, which
+the launcher sets only for `--events`; an ordinary Jcode seat publishes nothing.
+On an open mesh, an event-enabled Jcode seat uses its managed seat name as the stable actor token;
+without `--events`, open-mode identity keeps its ordinary self-minted behavior.
+
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
@@ -260,8 +280,6 @@ or at connector launch as a backstop:
 - **Tool sharing:** Jcode resolves its MCP configuration from several global and project sources.
   The connector owns a private configuration containing only `cotal`, rather than claim a chosen
   subset can be safely merged.
-- **Events:** Jcode's Harness API does not provide the durable structured rollout surface required
-  by Cotal's event plane.
 - **Launch options:** the connector does not map arbitrary flags/config into the Harness API.
 - **Containers:** the current deploy image does not bundle Jcode, so there is no containerized Jcode connector today.
 

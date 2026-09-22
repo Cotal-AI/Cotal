@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 
@@ -115,6 +115,7 @@ export const jcodeConnector: Connector = {
   // verbatim to Jcode, which owns the capability and ladder decisions.
   supportsModelVariant: true,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
+  eventChannel,
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
@@ -148,6 +149,21 @@ export const jcodeConnector: Connector = {
     // Copied by name because launchEnv does not inherit ambient COTAL_* (this name is per-launch).
     const tui = process.env.COTAL_JCODE_TUI?.trim();
     if (tui) env.COTAL_JCODE_TUI = tui;
+
+    // The AG-UI event plane. `COTAL_EVENTS` arms the emitter, while the eventChannel declaration
+    // above is what lets the CLI or manager grant the matching subject. A grant alone is not a
+    // request to publish. The workspace root rides with the arm because the durable cursor and WAL
+    // must live somewhere a restarted host can find again.
+    if (opts.events === true) {
+      if (!opts.workspaceRoot)
+        throw new Error("jcode connector: events require a workspace root for durable AG-UI state");
+      // Open mode has no credential to supply a stable actor. The event plane refuses an endpoint
+      // that self-mints a new actor on every process, so use the managed seat name there. Auth modes
+      // already pass the allocated identity in `opts.id` and keep their principal-based channel.
+      if (!opts.id && !opts.creds && !opts.userAuth) env.COTAL_ID = opts.name;
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
 
     if (opts.prompt !== undefined) {
       const prompt = opts.prompt.trim();
