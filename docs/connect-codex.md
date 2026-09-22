@@ -146,18 +146,18 @@ spawn, not at launch) rather than silently overridden.
 
 ## Event plane
 
-A seat launched with `cotal spawn --events` publishes a structured account of what it did: run
+A spawned seat publishes a structured account of what it did: run
 boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
 function-call and custom-tool interfaces, each with its start and its end. Tool arguments and
 tool results are not republished onto this channel. That covers the tools you watch a seat use,
 `shell` and `apply_patch` among them. The channel is
 `events.<owner>.<actor>`, named after the seat's principal, and the rules for it are the same on
 every connector: see [connect-claude.md](connect-claude.md#event-plane) for the channel, the grant,
-and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; your own
-`codex` publishes nothing.
+and how to read it. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out. Your
+own `codex` publishes nothing unless its environment arms the plane.
 
 ```bash
-cotal spawn watcher --agent codex --events -d   # armed, detached; read it with `cotal console`
+cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`
 ```
 
 Eight things are specific to Codex and worth knowing before you read a stream:

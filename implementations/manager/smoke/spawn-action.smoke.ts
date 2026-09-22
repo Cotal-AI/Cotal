@@ -104,7 +104,7 @@ for (const c of [joinCon, exitCon, stuckCon, boomCon]) registry.register(c);
 const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
 let callNc!: NatsConnection;
 const callSpawn = (args: Record<string, unknown>) =>
-  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
+  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { events: false, ...args } }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
 const callDespawn = (t: { actor: string; lifecycleUid: string }) =>
   epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller, args: { graceful: false }, target: { mode: "owner", owner: DEV_OWNER, actor: t.actor, lifecycleUid: t.lifecycleUid } }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
 

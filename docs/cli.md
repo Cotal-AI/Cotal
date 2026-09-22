@@ -824,7 +824,7 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--cwd <dir>` | this cwd | Working directory to root the agent at |
 | `--prompt <text>` | none | Initial prompt auto-submitted at start |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)) |
-| `--events` / `--no-events` | off | Publish the session's structured event plane to its own event channel |
+| `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
@@ -836,17 +836,17 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--allow-stale <a,b>` | none | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
 
-`--events` turns on the session's **event plane**: a stream of structured events describing what
-the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
+Each session uses its connector's **event plane** by default: a stream of structured events
+describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
 the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
 agents are allowed to share a display name and would then share a stream. The launch grants publish
-rights on that channel alone, foreground and detached alike, and a connector that does not
-publish an event plane refuses the flag rather than starting a session whose events have nowhere to
-go.
+rights on that channel alone, foreground and detached alike. `--no-events` is the explicit opt-out.
+A connector that does not publish an event plane refuses a bare launch and names `--no-events`
+rather than silently starting without the stream.
 
-The flag and the grant are separate on purpose. Holding publish rights on a channel is not a request
-to publish to it, so writing an event channel into an agent file's `allowPublish` does not turn the
-plane on: only the launch does.
+The launch decision and the grant are separate on purpose. Holding publish rights on a channel is
+not a request to publish to it, so writing an event channel into an agent file's `allowPublish`
+does not override `--no-events`.
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent

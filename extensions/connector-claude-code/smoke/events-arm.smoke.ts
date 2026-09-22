@@ -1,8 +1,8 @@
 /**
  * ARMING IS NOT AUTHORIZATION, AND THIS SUITE IS WHERE THE TWO ARE KEPT APART.
  *
- * A session publishes its AG-UI event plane only when the launch path ARMED it (`--events`, which
- * reaches the connector as `opts.events` and leaves as `COTAL_EVENTS`). The manager separately mints
+ * A session publishes its AG-UI event plane unless the launch explicitly opts out (`--no-events`,
+ * which reaches the connector as `opts.events = false`). The manager separately mints
  * a publish GRANT on the channel that plane lands on. Those are two different facts, and the
  * dangerous confusion is to treat the second as the first: an agent file or manifest can hand-write
  * anything it likes into `allowPublish`, so if a grant could arm the emitter, any author who could
@@ -36,7 +36,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const WS = "/tmp/cotal-events-arm-workspace";
 const env = (extra: Record<string, unknown>): Record<string, string> =>
-  claudeConnector.buildLaunch({ space: "s", name: "seat", ...extra } as never).env as Record<string, string>;
+  claudeConnector.buildLaunch({ space: "s", name: "seat", workspaceRoot: WS, ...extra } as never).env as Record<string, string>;
 const refusalFor = (extra: Record<string, unknown>): string | null => {
   try {
     env(extra);
@@ -48,21 +48,21 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
 
 console.log("claude connector: the event plane is armed by the launch, never by a grant");
 
-// ---- CONTROL: the default is OFF, so every positive cell below is measuring the flag ------------
+// ---- CONTROL: the default is ON -----------------------------------------------------------------
 {
-  const e = env({ workspaceRoot: WS });
-  check("CONTROL: an ordinary launch carries no COTAL_EVENTS", e.COTAL_EVENTS === undefined, e.COTAL_EVENTS);
-  check("CONTROL: an ordinary launch carries no COTAL_WORKSPACE_ROOT either", e.COTAL_WORKSPACE_ROOT === undefined, e.COTAL_WORKSPACE_ROOT);
+  const e = env({});
+  check("CONTROL: an ordinary launch carries COTAL_EVENTS", e.COTAL_EVENTS === "1", e.COTAL_EVENTS);
+  check("CONTROL: an ordinary launch carries the durable workspace root", e.COTAL_WORKSPACE_ROOT === WS, e.COTAL_WORKSPACE_ROOT);
 }
 
 // ---- ARMED: the flag, and only the flag, turns the plane on ------------------------------------
 {
-  const e = env({ events: true, workspaceRoot: WS });
+  const e = env({ events: true });
   check("--events arms the emitter (COTAL_EVENTS=1)", e.COTAL_EVENTS === "1", e.COTAL_EVENTS);
   check("an armed launch carries the workspace root the write-ahead log lives under", e.COTAL_WORKSPACE_ROOT === WS, e.COTAL_WORKSPACE_ROOT);
 }
 {
-  const e = env({ events: false, workspaceRoot: WS });
+  const e = env({ events: false });
   check("--no-events leaves the plane off", e.COTAL_EVENTS === undefined, e.COTAL_EVENTS);
 }
 
@@ -71,9 +71,9 @@ console.log("claude connector: the event plane is armed by the launch, never by 
 // agent file can. Nothing about holding it is a request to publish to it.
 const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" });
 {
-  const e = env({ workspaceRoot: WS, allowPublish: ["general", HANDWRITTEN] });
+  const e = env({ events: false, allowPublish: ["general", HANDWRITTEN] });
   check(
-    "a hand-written event-channel grant does NOT arm the emitter",
+    "a hand-written event-channel grant does NOT override an explicit opt-out",
     e.COTAL_EVENTS === undefined,
     { COTAL_EVENTS: e.COTAL_EVENTS, allowPublish: HANDWRITTEN },
   );
@@ -86,7 +86,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 
 // ---- THE WAL HOME: absent workspace root REFUSES, it does not fall back ------------------------
 {
-  const msg = refusalFor({ events: true });
+  const msg = refusalFor({ events: true, workspaceRoot: undefined });
   check("an armed launch with no workspace root refuses", msg !== null, msg);
   check(
     "and the refusal NAMES the write-ahead log, so the operator can act on it",

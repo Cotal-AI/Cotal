@@ -408,7 +408,7 @@ async function spawnDetached(
     subscribe: splitFlag(values.subscribe),
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
-    // Tri-state: true (--events), false (--no-events, explicit), absent → manager default.
+    // Explicit choice: true (--events/default), false (--no-events).
     events,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
@@ -503,12 +503,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error((e as Error).message);
     process.exit(1);
   }
-  // The AG-UI event plane is OFF by default. Tri-state: true (--events), false (--no-events,
-  // explicit), undefined (absent). Foreground treats absent as off; detached forwards the tri-state
-  // so absent defers to the manager's default. The flag ARMS the emitter; the manager separately
+  // The AG-UI event plane is ON by default. `--events` still forces on; `--no-events` is the only
+  // opt-out. The flag ARMS the emitter; the manager separately
   // grants publish on the channel the connector names. Both are required, which is what stops a
   // hand-written grant from turning events on by itself.
-  const events = values.events ? true : values["no-events"] ? false : undefined;
+  if (values.events && values["no-events"]) {
+    console.error(c.red("✗ --events and --no-events are mutually exclusive"));
+    process.exit(1);
+  }
+  const events = values["no-events"] ? false : true;
 
   // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
@@ -672,7 +675,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
   if (events && !connector.eventChannel) {
-    console.error(c.red(`\u2717 connector "${connector.name}" does not publish an AG-UI event plane, but --events was requested`));
+    console.error(c.red(`\u2717 connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
     process.exit(1);
   }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning

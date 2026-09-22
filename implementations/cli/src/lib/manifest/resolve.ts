@@ -172,6 +172,7 @@ function resolveAgents(
     description: entry.description,
     instructions: entry.instructions,
     prompt: entry.prompt,
+    events: entry.events,
     capabilities: entry.capabilities,
     personaPermissions: entry.personaPermissions ?? topPolicy,
     policy: invertPolicy(name, channels),

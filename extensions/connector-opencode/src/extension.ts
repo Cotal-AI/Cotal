@@ -164,7 +164,8 @@ export const opencodeConnector: Connector = {
     // Preserve an operator's machine-wide COTAL_OPENCODE_BIN pin from launchEnv. The manager's
     // boot-resolved executable is a fallback, not permission to overwrite that explicit choice.
     if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_RESOLVED_BIN = opts.resolvedBinaries.opencode;
-    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` arms the emitter, and arming is not authorization: a
     // publish grant on a channel is not a request to publish to it, so an agent file that can write
     // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.
     // `COTAL_WORKSPACE_ROOT` rides with it because the emitter's write-ahead log has to live
@@ -176,7 +177,7 @@ export const opencodeConnector: Connector = {
     // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
     // found by the process that wrote them. It is not safe for the log, which exists to be found by
     // a process that has not started yet.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(

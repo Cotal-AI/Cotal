@@ -200,14 +200,15 @@ export const claudeConnector: Connector = {
       COTAL_CHANNEL: "1",
       COTAL_CONTROL_SOCKET: control.path,
     };
-    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter and is what makes a grant meaningful:
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` is what makes the matching grant meaningful:
     // holding publish rights on a channel is not a request to publish to it. `COTAL_WORKSPACE_ROOT`
     // rides with it because the emitter's write-ahead log has to live somewhere a LATER start will
     // look, and there is no safe default: a WAL written under the launch cwd is invisible to the
     // next start, which then reads an already-published thread as virgin and republishes sequences
     // the stream has seen. Sent only when events are on, so a session that never emits carries no
     // path it has no use for.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(

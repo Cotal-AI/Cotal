@@ -150,11 +150,12 @@ export const jcodeConnector: Connector = {
     const tui = process.env.COTAL_JCODE_TUI?.trim();
     if (tui) env.COTAL_JCODE_TUI = tui;
 
-    // The AG-UI event plane. `COTAL_EVENTS` arms the emitter, while the eventChannel declaration
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` arms the emitter, while the eventChannel declaration
     // above is what lets the CLI or manager grant the matching subject. A grant alone is not a
     // request to publish. The workspace root rides with the arm because the durable cursor and WAL
     // must live somewhere a restarted host can find again.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       if (!opts.workspaceRoot)
         throw new Error("jcode connector: events require a workspace root for durable AG-UI state");
       // Open mode has no credential to supply a stable actor. The event plane refuses an endpoint

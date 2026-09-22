@@ -198,7 +198,8 @@ export const codexConnector: Connector = {
     // point at any repo (parity with the OpenCode connector's data root).
     env.COTAL_CODEX_HOME = opts.workspaceRoot ?? process.cwd();
 
-    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` arms the emitter, and arming is not authorization: a
     // publish grant on a channel is not a request to publish to it, so an agent file that can
     // write `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by
     // doing so.
@@ -212,7 +213,7 @@ export const codexConnector: Connector = {
     // That fallback is safe for an isolated codex home, which only ever has to be found by the
     // process that wrote it. It is not safe for the log, which exists to be found by a process
     // that has not started yet.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(

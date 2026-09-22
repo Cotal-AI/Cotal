@@ -82,8 +82,8 @@ export interface LaunchOpts {
   continueSession?: string;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
-   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
-   *  to opt in, surfaced as the `--events` flag on `cotal spawn` / `cotal start`.
+   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to ON for a
+   *  connector that declares an event channel; set `false` to opt out (`--no-events`).
    *
    *  The flag ARMS the emitter. It is deliberately separate from the grant the manager mints from
    *  {@link Connector.eventChannel}: holding publish rights on a channel is not a request to publish
