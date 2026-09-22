@@ -166,8 +166,9 @@ Per-command shapes, all proposed:
   argument on an untargeted command would be a seat named in a payload, and the broker confines target
   tokens in the subject, not fields in a body, so the check that a caller may bind to that seat would
   move from the broker into the provider. Two calls keep every binding write on a targeted command.
-  `status` admits `open`, `blocked`, `done`, and `dropped`, and refuses `claimed` with `bad-request`:
-  `claimed` asserts a bound seat, and this command creates nothing bound.
+  `status` admits `open`, `done`, and `dropped`, and refuses `claimed` and `blocked` with `bad-request`:
+  both assert a bound seat under the status-binding invariant of section 2, and this command creates
+  nothing bound.
 - **`bind-task`**. Input `{ taskId, expectedBinding?: BindingRef | null }`, where `BindingRef` is
   `{ owner, actor, lifecycleUid }`, the three coordinates of section 2's binding without its recorded
   metadata. The target block names the seat. Output the updated record. `expectedBinding` is the
@@ -178,16 +179,22 @@ Per-command shapes, all proposed:
   `tasks.self` cannot rebind anything, which is the property section 5 rests on.
 - **`update-task`**. Input `{ taskId, status?, brief?, evidence?, note? }`. Targeted at mode `self`. The
   provider serves it only when the task's recorded binding equals the broker-authenticated caller triple,
-  including the lifecycle uid; anything else is `permission-denied`. This is the one command a seat needs
-  to progress, attach evidence to, and close its own work, and it is one command rather than three
-  because a status change and the evidence justifying it belong in the same call.
+  including the lifecycle uid; anything else is `permission-denied`. `status` admits `claimed`,
+  `blocked`, `done`, and `dropped`, and refuses `open` with `bad-request`, per the status-binding
+  invariant: the task is bound while this command is being served, so `open` would assert nobody is
+  working on it while a binding says otherwise. A seat returning work to the board is asking to unbind,
+  which is `administer-task`. This is the one command a seat needs to progress, attach evidence to, and
+  close its own work, and it is one command rather than three because a status change and the evidence
+  justifying it belong in the same call.
 - **`administer-task`**. Input `{ taskId, status?, unbind?: true, note? }`. Untargeted and
   capability-gated. It exists for the case a self-mode command cannot cover: a seat that is gone and left
   a task open. It can clear a binding and it can set a status; it cannot create one, because binding to a
-  seat is a targeted act and `bind-task` is where it stays. The untargeted plus capability-gated shape is
-  the one the manager already uses for its operator instruments; `manager-service-contract.ts` states it
-  in the module header ("every admin-class command is untargeted + capability-gated") and `ROWS` carries
-  it for `purge`, `launch`, and the resume family.
+  seat is a targeted act and `bind-task` is where it stays. `unbind` on a nonterminal task moves it to
+  `open` and clears the binding in one write, because the status-binding invariant makes either half
+  alone invalid. The untargeted plus capability-gated shape is the one the manager already uses for its
+  operator instruments; `manager-service-contract.ts` states it in the module header ("every admin-class
+  command is untargeted + capability-gated") and `ROWS` carries it for `purge`, `launch`, and the resume
+  family.
 
 `StaleMarker` is `{ staleAsOf: integer, reason: string }`, the shape section 4 requires on a degraded
 read. `staleAsOf` is epoch milliseconds and `reason` is a bounded provider string.
@@ -276,6 +283,29 @@ bump a reader discovers by failing to match.
 `open` means nobody is working on it. `claimed` means a seat is bound and working. `blocked` means a
 seat is bound and cannot progress. `done` and `dropped` are the two terminals, and they are two rather
 than one because "finished" and "abandoned" are the distinction a board exists to make.
+
+**The status-binding invariant.** Two of those five describe a bound seat, so status and binding are not
+independent fields and the contract states their relation once rather than per command:
+
+- `claimed` and `blocked` require `binding` to be present. A record carrying either with no binding is
+  invalid, and a provider that would produce one refuses the write instead.
+- `open` requires `binding` to be absent. "Nobody is working on it" and a recorded seat are the same
+  contradiction stated twice.
+- `done` and `dropped` admit either. A binding on a terminal task is the record of who finished or
+  abandoned it, which section 3 keeps deliberately.
+
+Every write command is bound by this, which is what makes it an invariant rather than four separate
+rules. `create-task` creates nothing bound, so it admits `open`, `done`, and `dropped`, and refuses
+`claimed` and `blocked` with `bad-request`. `claim-task` moves `open` to `claimed` as it writes the
+binding. `update-task` may move its own task between `claimed`, `blocked`, `done`, and `dropped`, and
+may not set `open`, because a seat that wants to return a task to the board is asking to unbind it,
+which is `administer-task`. `bind-task` moves `open` to `claimed`; `administer-task` with `unbind`
+moves a nonterminal task to `open` and clears the binding in the same write, since doing either alone
+would leave the record invalid between the two.
+
+The alternative was to let any command set any status and leave the pairing to convention. That fails
+the same way an empty list does in section 4: the record stays syntactically valid while asserting
+something untrue, and a dashboard reading it has no way to tell.
 
 **Binding.** A binding names the full seat principal plus the lifecycle uid. It is scoped by the space
 the endpoint serves. It is never named by principal alone: `docs/control-surface.md` records that a
@@ -513,9 +543,20 @@ through `invokeCommand`'s `opts.id`.
 13. Reading any task returns a record carrying no secret, no tool output body, and no transcript text.
 14. Two `create-task` calls pinning the same envelope id create one task. A reviewer pins the id through
     `invokeCommand`'s `opts.id`, for the reason stated above.
+15. `cotal invoke <endpoint> create-task --args '{"title":"x","status":"claimed"}'` returns
+    `bad-request`, and the same call with `"blocked"` does too. Both assert a bound seat that this
+    command creates nothing bound to.
+16. `cotal invoke <endpoint> update-task --self --args '{"taskId":"<own>","status":"open"}'` returns
+    `bad-request` while the task is still bound to the caller. A provider that accepts it has produced a
+    record asserting nobody is working on a task whose binding names a seat.
+17. `administer-task` with `unbind` on a `claimed` task returns a record that is `open` **and** carries
+    no binding. A reply that clears one without the other has written the invalid state the invariant
+    exists to prevent, and is the failure this check is for.
 
 Checks 3, 8, 10, and 11 are the ones that distinguish a conformant provider from a plausible one; a
-provider passing only the others has implemented a board, not this contract.
+provider passing only the others has implemented a board, not this contract. Checks 15 through 17
+exercise the status-binding invariant, which is the one rule a provider can violate while every
+individual field still validates.
 
 ## 7. Providers
 
