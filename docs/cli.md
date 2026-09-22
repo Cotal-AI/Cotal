@@ -570,11 +570,11 @@ A restore that applied without error and produced a different index is a refusal
 two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves
 every seat's live `cwd` as it was.
 
-The superseded name is claimed before anything moves, by exclusive directory create, and a taken
-name gets a numeric suffix. The timestamp has one-second resolution, so two promotions of the same
-seat within one second would otherwise compute the same path and the second rename would either
-replace the first tree or fail on it. A superseded tree is the thing that rename exists to keep, so
-a name this step could not create is a name it does not use.
+The rename itself claims the superseded name, and a taken name gets a numeric suffix. The timestamp
+has one-second resolution, so two promotions of the same seat within one second compute the same
+path; a rename onto a name that already holds a tree fails on every platform, and that failure is
+read as taken. Nothing creates the name ahead of the move, because Windows refuses to rename onto an
+existing directory at all. A superseded tree is the thing that rename exists to keep.
 
 `git` and `tar` run as child processes with argument arrays, never a shell string.
 
