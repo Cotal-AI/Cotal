@@ -33,7 +33,7 @@
  *
  * Run: pnpm smoke:opencode-events-arm
  */
-import { eventChannel } from "@cotal-ai/core";
+import { eventChannel, readLaunchMaterial } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 
 let pass = 0;
@@ -107,6 +107,13 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
     { home: unarmed.COTAL_OPENCODE_HOME, root: unarmed.COTAL_WORKSPACE_ROOT });
 }
 {
+  const e = env({ events: true, eventsRequired: true, userAuth: {
+    owner: "u_abcdefghijklmnopqrstuvwxyz", actor: "seat", sentinelCredsPath: "/dev/null", bearerCmd: ["true"],
+  } });
+  const material = readLaunchMaterial(e.COTAL_LAUNCH_MATERIAL);
+  check("required policy rides OpenCode launch material", material.eventsRequired === true, material);
+}
+{
   // THE GATE ABOVE `buildLaunch`, and the one a live spawn hits FIRST. Both the CLI and the manager
   // refuse an armed launch whose connector does not implement `eventChannel`, before anything is
   // provisioned. A connector can hold a complete emitter, arm it correctly, and still exit 1 at the
@@ -132,7 +139,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 }
 
 // ---- Cell count, because a buildLaunch that threw on every input would DELETE cells, not fail them
-const EXPECTED = 15;
+const EXPECTED = 16;
 check(`every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

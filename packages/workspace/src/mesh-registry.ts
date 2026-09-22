@@ -36,6 +36,9 @@ export interface MeshEntry {
    *  broker truth: it lives under the user's protected registry dir and is trusted the way the
    *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
   userAuth?: UserAuthInfo;
+  /** Closed space policy carried by a user-auth registration. Absent preserves the generic launch
+   *  behavior; `events: "required"` forbids a connector session from joining without its event plane. */
+  policy?: { events: "required" };
   /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
    *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
    *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind
@@ -99,6 +102,8 @@ export interface MeshEntry {
   catalogRole?: string;
   catalogFetchedAt?: string;
   catalogError?: string;
+  /** Last successful or attempted trusted policy refresh for a pre-policy manual user registration. */
+  policyCheckedAt?: string;
   /** Present and true when the operator EXPLICITLY accepted registering an overlay address that
    *  this build cannot encrypt (`--allow-unencrypted-overlay`). Recorded rather than inferred: the
    *  address class is re-derivable from `server`, but CONSENT is not, and a dial that happens long

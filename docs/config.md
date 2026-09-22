@@ -90,6 +90,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | auto-detect |
 | `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher unless the launch used `--no-events` | launcher-managed |
+| `COTAL_EVENTS_REQUIRED` | hand-driven user-mode connector | Trusted registration says events are mandatory; arms the plane and refuses if the session grant omits its event channel. Launcher-managed sessions carry this in launch material instead | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin) | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works | off |
@@ -119,7 +120,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `COTAL_ENVIRONMENT` | Opaque provider-issued environment reference published in presence. Read once when the endpoint is constructed; omitted when the launcher sets none |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
-| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, and the control token. A PATH, never a secret |
+| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, the required-events flag, and the control token. A PATH, never a secret |
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
@@ -219,6 +220,12 @@ Driving a connector session **by hand** still works the documented way: set `COT
 a material file and any of them is refused rather than resolved by precedence: one launch carries one
 identity plane. `COTAL_LINK` counts as one of them, because a join link carries the server, the auth
 and the space in a single string.
+
+`eventsRequired` is an additive boolean in launch material. The launcher derives it from the selected
+user-auth registration. Connector config exposes it and the Claude and OpenCode startup gates arm on
+it even when `COTAL_EVENTS` is absent. A direct env launch may use `COTAL_EVENTS_REQUIRED=1` only with
+the complete user-auth quartet. The session refuses if its post ACL does not cover its own
+`events.<owner>.<actor>` channel.
 
 The control endpoint is a pair, and **half a pair is refused**. A launch with a control socket path
 and no resolvable token, or a token and no socket path, does not fall back to running without a

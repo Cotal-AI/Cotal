@@ -172,6 +172,18 @@ meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
 snapshot intact and reports the failure.
 
+The user-auth registration document may include one closed policy object:
+
+```json
+{ "policy": { "events": "required" } }
+```
+
+No other key under `policy` and no other value for `policy.events` is accepted. The registry preserves
+this field for manual, discovered, and enrollment-created entries. A pre-policy manual entry is
+refreshed from its own pinned exchange origin before launch; the returned space, broker, transport,
+IdP, issuer, audience, and exchange pins must all match before only the policy is added. A failed
+expired refresh refuses the operation. The five-second warm window makes no request.
+
 Every registration is also bound to the proved account. Its IdP URL must match the account and its
 issuer must match the exact JWT `iss` pin. Its exchange, provisioning, and manager-authority
 endpoints must be same-origin with that IdP. One foreign pin or endpoint refuses the whole
@@ -262,7 +274,7 @@ allowPublish[]
 ```
 
 The grant arrays are informational; the broker row remains authoritative. A stock-dialable
-deployment also includes `server`, `tlsRequired`, and `userAuth`, forming the same user-bundle
+deployment also includes `server`, `tlsRequired`, `userAuth`, and optional `policy`, forming the same user-bundle
 superset that `cotal meshes add --user-auth-file` accepts. That lets a bare seat register the mesh
 from the enrollment response before launch. For `brokerAccess.kind: "direct"`, the stock `server`
 must equal `brokerAccess.url` byte for byte or the client refuses the bundle before registration. A

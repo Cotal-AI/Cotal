@@ -240,6 +240,21 @@ try {
     // is silent: it costs the next spawn its un-suffixed name and nothing reports why.
     check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
   }
+  // 3b — registration policy makes the arm non-optional and names the space on every refusal.
+  {
+    const required = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot, eventsRequired: true });
+    (required as unknown as { auth: unknown }).auth = auth;
+    (required as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
+    (required as unknown as { ep: Record<string, unknown> }).ep = {
+      ref: () => ({ id: "required-mgr" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, getRoster: () => [],
+    };
+    const optOut = await required.startAgent({ name: "quiet-bot", agent: "smoke-emitter", events: false });
+    check("required policy refuses --no-events by space name", optOut.ok === false && (optOut.error ?? "").includes(space) && /--no-events/.test(optOut.error ?? ""), optOut);
+    const silent = await required.startAgent({ name: "quiet-bot", agent: "smoke-silent" });
+    check("required policy refuses a connector without an event plane by connector and space", silent.ok === false && (silent.error ?? "").includes(space) && /smoke-silent/.test(silent.error ?? ""), silent);
+    const built = emitterCon.buildLaunch({ space, name: "required-probe", events: true, eventsRequired: true } as never);
+    check("required policy arms an ordinary supported launch", lastLaunchEvents === true && built.command === "true", { built, lastLaunchEvents });
+  }
 
 
   // 4 — THE OWN-CHANNEL RULE. A spawn may be granted the event plane of the agent it is CREATING,
@@ -605,7 +620,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 41;
+const EXPECTED = 44;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

@@ -133,7 +133,7 @@ export const jcodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       COTAL_CONTROL_SOCKET: control.path,

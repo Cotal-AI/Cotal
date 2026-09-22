@@ -69,7 +69,7 @@ export const piConnector: Connector = {
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
       // extension drops even that once it has read it, so a shell this seat runs inherits neither.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

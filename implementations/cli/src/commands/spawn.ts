@@ -127,6 +127,7 @@ export interface EnrollmentBundle extends RemoteAgentMaterial {
   server?: string;
   tlsRequired?: boolean;
   userAuth?: unknown;
+  policy?: unknown;
 }
 
 export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: EnrollmentBundle; stock?: UserBundle } {
@@ -143,15 +144,19 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
       typeof idp.issuer !== "string" || !idp.issuer || typeof idp.audience !== "string" || !idp.audience)
     throw new Error("the enrollment bundle carries no complete idp { url, issuer, audience }");
   let stock: UserBundle | undefined;
-  const stockFields = [o.server, o.tlsRequired, o.userAuth];
-  if (stockFields.some((v) => v !== undefined)) {
-    if (stockFields.some((v) => v === undefined))
+  const hasStock = [o.server, o.tlsRequired, o.userAuth].some((v) => v !== undefined);
+  const rawPolicy = (o as { policy?: unknown }).policy;
+  if (rawPolicy !== undefined && !hasStock)
+    throw new Error("the enrollment bundle's policy requires its stock server, tlsRequired, and userAuth fields");
+  if (hasStock) {
+    if ([o.server, o.tlsRequired, o.userAuth].some((v) => v === undefined))
       throw new Error("the enrollment bundle's stock mesh fields must include server, tlsRequired, and userAuth together");
     const checked = checkUserBundle(JSON.stringify({
       space: o.space,
       server: o.server,
       tlsRequired: o.tlsRequired,
       userAuth: o.userAuth,
+      policy: (o as { policy?: unknown }).policy,
       sentinelCreds: material.material.sentinelCreds,
     }));
     if (!checked.ok) throw new Error(checked.message.replace(/^✗\s*/, ""));
@@ -385,6 +390,11 @@ async function spawnDetached(
     "control-caller-privileged",
     on,
   );
+  const eventsRequired = t.policy?.events === "required";
+  if (eventsRequired && events === false) {
+    console.error(c.red(`✗ space "${t.space}" requires the event plane by registration policy; --no-events is not allowed`));
+    process.exit(1);
+  }
   provenance.read("mesh", `${t.space} (${t.server})`);
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
   const reply = await askManager(t.space, t.server, "start", {
@@ -409,7 +419,7 @@ async function spawnDetached(
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
     // Explicit choice: true (--events/default), false (--no-events).
-    events,
+    events: eventsRequired || events,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
@@ -554,6 +564,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
   // selected `current` mesh, a local project, or the registry's only running mesh.
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+  const eventsRequired = target.policy?.events === "required";
+  if (eventsRequired && values["no-events"]) {
+    console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
+    process.exit(1);
+  }
+  const launchEvents = eventsRequired || events;
   const { space, server, auth } = target;
   const composition = { injected: false as const, root: target.root };
 
@@ -674,8 +690,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
-  if (events && !connector.eventChannel) {
-    console.error(c.red(`\u2717 connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
+  if (launchEvents && !connector.eventChannel) {
+    console.error(c.red(eventsRequired
+      ? `✗ space "${space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
     process.exit(1);
   }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
@@ -753,7 +771,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       capabilities: def.capabilities,
       lifecycleUid,
       liveOnly: values["live-only"] as boolean | undefined,
-      ...(events ? { eventChannel: connector.eventChannel! } : {}),
+      ...(launchEvents ? { eventChannel: connector.eventChannel! } : {}),
     }));
     // The launch's post-set is forwarded to the session as COTAL_ALLOW_PUBLISH, so it has to carry
     // whatever was actually minted. Letting the two diverge is how an agent ends up holding a right
@@ -765,7 +783,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // on the display name: a name is not an identity, and the manager derives the same subject from
     // the same connector function, so a foreground and a detached spawn of one persona land on one
     // channel rather than two.
-    if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: DEV_OWNER, actor: identity.id })];
+    if (launchEvents) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: DEV_OWNER, actor: identity.id })];
     const prov = new CotalEndpoint({
       space,
       servers: server,
@@ -872,7 +890,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
       resume: values.resume,
-      events,
+      events: launchEvents,
+      eventsRequired,
       mcpServers,
       envAllow,
       // Where a connector that keeps per-agent local state roots it. The manager passes its own

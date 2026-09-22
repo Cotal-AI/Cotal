@@ -13,8 +13,46 @@ import {
   userAuthStateDir,
   type MeshEntry,
 } from "@cotal-ai/workspace";
-import { checkUserBundle, type UserBundle } from "./meshes-add.js";
+import { checkUserBundle, pinnedFetch, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
+
+function sameRegistrationTrust(entry: MeshEntry, bundle: UserBundle): boolean {
+  const ua = entry.userAuth;
+  return entry.mode === "user" && ua !== undefined &&
+    entry.space === bundle.space && entry.server === bundle.server && (entry.tlsRequired === true) === bundle.tlsRequired &&
+    ua.idp.url === bundle.userAuth.idp.url && ua.idp.issuer === bundle.userAuth.idp.issuer &&
+    ua.idp.audience === bundle.userAuth.idp.audience && ua.endpoints?.url === bundle.userAuth.endpoints?.url;
+}
+
+const POLICY_FRESH_MS = 5_000;
+
+async function refreshManualPolicy(entry: MeshEntry): Promise<void> {
+  if (entry.origin !== "manual" || entry.mode !== "user" || entry.policy || !entry.userAuth?.endpoints?.url) return;
+  const checkedAt = entry.policyCheckedAt ? Date.parse(entry.policyCheckedAt) : Number.NaN;
+  if (Number.isFinite(checkedAt) && Date.now() - checkedAt < POLICY_FRESH_MS) return;
+  let base: URL;
+  try {
+    base = new URL(entry.userAuth.endpoints.url);
+  } catch {
+    throw new Error(`manual registration for "${entry.space}" has an invalid pinned exchange URL`);
+  }
+  base.pathname = `${base.pathname.replace(/\/$/, "")}/.well-known/cotal-mesh`;
+  base.search = "";
+  base.hash = "";
+  let response: Response;
+  try {
+    response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
+  } catch (error) {
+    throw new Error((error as Error).message.replace(/^✗ /, ""));
+  }
+  if (!response.ok)
+    throw new Error(`manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url} answered HTTP ${response.status}`);
+  const checked = checkUserBundle(await response.text());
+  if (!checked.ok) throw new Error(`manual registration "${entry.space}" policy refresh: ${checked.message.replace(/^✗ /, "")}`);
+  if (!sameRegistrationTrust(entry, checked.value))
+    throw new Error(`manual registration "${entry.space}" policy refresh returned different space, broker, transport, or user-auth trust pins`);
+  recordMesh({ ...entry, ...(checked.value.policy ? { policy: checked.value.policy } : {}), policyCheckedAt: new Date().toISOString() });
+}
 
 export interface CatalogSpace {
   id: string;
@@ -138,6 +176,7 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt
     ...(fetchedAt ? { catalogFetchedAt: fetchedAt } : {}),
     ...(error ? { catalogError: error } : {}),
     ...(row.registration.tlsRequired ? { tlsRequired: true } : {}),
+    ...(row.registration.policy ? { policy: row.registration.policy } : {}),
     userAuth: { ...row.registration.userAuth, remote: true, sentinelCredsPath },
     ts: new Date().toISOString(),
   };
@@ -221,14 +260,32 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   const values = args.values as { space?: string };
   const requested = values.space ?? (command === "use" ? args.positionals[0] : undefined);
   const named = requested ? findMesh(requested) : undefined;
+  if (named && named.origin === "manual") {
+    if (command === "meshes") return;
+    await refreshManualPolicy(named);
+    return;
+  }
   if (named && named.origin !== "catalog") return;
   if (!requested && command !== "meshes") {
     const current = getCurrent();
     const selected = current ? findMesh(current) : undefined;
+    if (selected?.origin === "manual") {
+      await refreshManualPolicy(selected);
+      return;
+    }
     if (selected && selected.origin !== "catalog") return;
     const local = meshesForRoot(findCotalRoot()).filter((m) => m.origin !== "catalog");
+    const localManual = local.find((m) => m.origin === "manual");
+    if (localManual) {
+      await refreshManualPolicy(localManual);
+      return;
+    }
     if (local.length > 0) return;
     const registered = loadMeshes();
+    if (registered.length === 1 && registered[0].origin === "manual") {
+      await refreshManualPolicy(registered[0]);
+      return;
+    }
     if (registered.length === 1 && registered[0].origin !== "catalog") return;
   }
   const force = Boolean(requested && !named);

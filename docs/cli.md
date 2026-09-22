@@ -740,6 +740,13 @@ teardown, cleanup, and liveness pruning do not remove it. A manual or locally st
 same name wins and remains untouched; that discovered name is reported as a collision. Logging out
 removes only the discovered entries owned by that account.
 
+`cotal meshes` and `cotal status` print `events: required` for a registration carrying
+`policy: { events: "required" }`. On that space, foreground spawn, detached spawn, manager starts,
+and interactive `join` cannot opt out or join without an event plane. `--no-events` is refused with
+the space named. A connector without an event plane is refused with both the space and connector
+named. A session whose own grant omits `events.<owner>.<actor>` is refused before joining and the
+message names a full-row `actor grant` repair.
+
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
@@ -840,9 +847,9 @@ Each session uses its connector's **event plane** by default: a stream of struct
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
 the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
 agents are allowed to share a display name and would then share a stream. The launch grants publish
-rights on that channel alone, foreground and detached alike. `--no-events` is the explicit opt-out.
-A connector that does not publish an event plane refuses a bare launch and names `--no-events`
-rather than silently starting without the stream.
+rights on that channel alone, foreground and detached alike. `--no-events` is the explicit opt-out
+unless the selected registration says `policy: { events: "required" }`. Required policy makes the
+event arm and grant mandatory, so `--no-events` and connectors without an event plane are refused.
 
 The launch decision and the grant are separate on purpose. Holding publish rights on a channel is
 not a request to publish to it, so writing an event channel into an agent file's `allowPublish`

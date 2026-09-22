@@ -320,6 +320,8 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
+  /** The selected registration requires every launched connector session to publish events. */
+  eventsRequired?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** P2 item 6: the broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -934,6 +936,7 @@ export class Manager {
   private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  private readonly eventsRequired: boolean;
   /** P2 item 6: the operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
@@ -1187,6 +1190,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
@@ -4390,12 +4394,18 @@ export class Manager {
     // the principal's owner is resolved further down, so deriving it from anything in scope here
     // would mean guessing at the identity the child will actually connect as. It is added at the
     // accept seam below, where the allocated triple exists.
-    const events = opts.events !== false;
+    if (this.eventsRequired && opts.events === false) {
+      this.reserved.delete(name);
+      return { ok: false, error: `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed` };
+    }
+    const events = this.eventsRequired || opts.events !== false;
     if (events && !connector.eventChannel) {
       // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
       // the next spawn of this persona its un-suffixed name and nothing reports why.
       this.reserved.delete(name);
-      return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
+      return { ok: false, error: this.eventsRequired
+        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
@@ -4625,6 +4635,7 @@ export class Manager {
         allowPublish,
         capabilities,
         events,
+        eventsRequired: this.eventsRequired,
         mcpServers,
         envAllow,
         resolvedBinaries: bootStatus?.binaries,

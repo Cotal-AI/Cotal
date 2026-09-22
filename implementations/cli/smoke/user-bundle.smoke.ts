@@ -63,6 +63,16 @@ if (parsed.ok) {
   for (let i = 0; i < 6; i++) cell("field cell skipped - the bundle was refused outright", false);
 }
 
+const required = { ...bundle, policy: { events: "required" } };
+const requiredParsed = checkUserBundle(JSON.stringify(required));
+cell("policy.events required is accepted", requiredParsed.ok && requiredParsed.value.policy?.events === "required");
+const wrongPolicy = checkUserBundle(JSON.stringify({ ...bundle, policy: { events: "optional" } }));
+cell("policy.events rejects every value except required and names the field",
+  !wrongPolicy.ok && wrongPolicy.message.includes("policy.events") && wrongPolicy.message.includes("required"), wrongPolicy.ok ? "accepted" : wrongPolicy.message);
+const extraPolicy = checkUserBundle(JSON.stringify({ ...bundle, policy: { events: "required", other: true } }));
+cell("policy is closed and an extra key is refused by name",
+  !extraPolicy.ok && extraPolicy.message.includes("policy.other"), extraPolicy.ok ? "accepted" : extraPolicy.message);
+
 // --advertised-server takes the same scheme family `cotal meshes add` dials.
 cell("advertised-server accepts wss", checkAdvertisedServer("wss://hosted.example/mesh-ws") === undefined);
 cell("advertised-server accepts nats", checkAdvertisedServer("nats://10.0.0.7:4222") === undefined);
@@ -136,7 +146,7 @@ cell(
   `cli derives ${JSON.stringify(userExchangeIssuer("hosted"))}, auth derives ${JSON.stringify(spaceIssuer("hosted"))}`,
 );
 
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 24;
 if (ran !== EXPECTED_CELLS) {
   console.error(`ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}`);
   process.exit(1);

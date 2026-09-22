@@ -104,6 +104,7 @@ export interface Connection {
    *  unregistered `--space`). Callers that branch on open vs static MUST read this, not the
    *  absence of `auth`: an authenticated registry entry with a missing seed is still `auth`. */
   mode?: MeshTarget["mode"];
+  policy?: MeshTarget["policy"];
   /** The connection's v0.4 caller triple (SPEC §13.2), present when this connection can ride the
    *  ep rails: a minted operator INSTRUMENT (`control-caller-*` / `deployer`, static trust
    *  material - the mint pins a fresh lifecycle uid) or a USER-mode bearer (the callout mints the
@@ -418,6 +419,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
   return {
     server: target.server, space: target.space, tls: target.tlsRequired, creds, auth: target.auth, root: target.root, source: target.source,
     mode: target.mode,
+    ...(target.policy ? { policy: target.policy } : {}),
     ...(epCaller ? { epCaller } : {}),
   };
 }
@@ -497,6 +499,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
       root: target.root,
       source: target.source,
       mode: target.mode,
+      ...(target.policy ? { policy: target.policy } : {}),
       epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
     };
   } catch (e) {

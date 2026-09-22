@@ -99,6 +99,7 @@ async function listMeshes(): Promise<void> {
   for (const m of all) {
     const marker = m.space === current ? c.green("*") : " ";
     const tags = [
+      ...(m.policy?.events === "required" ? [c.yellow("events: required")] : []),
       ...(m.origin === "manual" ? [c.dim("registered")] : []),
       ...(m.origin === "catalog" ? [c.dim("discovered")] : []),
       ...(m.origin === "catalog" && m.catalogName && m.catalogName !== m.space ? [c.dim(m.catalogName)] : []),

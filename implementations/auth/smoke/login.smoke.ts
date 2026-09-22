@@ -327,6 +327,7 @@ console.log("C2) advertised space catalog cache");
               : { url: `${catalogBase}/api/auth`, issuer: foreignTrust === "issuer" && i === 0 ? "http://127.0.0.1/" : "http://127.0.0.1", audience: "catalog" },
             endpoints: { url: foreignTrust === "endpoint" && i === 0 ? "https://foreign.example/exchange" : `${catalogBase}/exchange` },
           },
+          policy: i === 0 ? { events: "required" } : undefined,
           sentinelCreds: `catalog-sentinel-${i}`,
         },
       }));
@@ -356,6 +357,9 @@ console.log("C2) advertised space catalog cache");
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = catalogDir;
   await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
+  const discoveredRequired = (await import("@cotal-ai/workspace")).findMesh("shared_project");
+  check("catalog reconciliation preserves registration.policy.events required",
+    discoveredRequired?.policy?.events === "required", discoveredRequired);
   const meshDir = join(catalogDir, "meshes");
   const meshTimes = new Map(readdirSync(meshDir).map((file) => [file, statSync(join(meshDir, file)).mtimeMs]));
   const warmTimes: number[] = [];

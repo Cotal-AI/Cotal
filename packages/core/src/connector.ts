@@ -90,6 +90,10 @@ export interface LaunchOpts {
    *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
    *  path never armed. */
   events?: boolean;
+  /** The selected registration requires this session's structured event plane. A launcher sets this
+   *  from trusted registration material; connectors carry it into launch material for session-side
+   *  enforcement as well as arming the emitter. */
+  eventsRequired?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
    *  secret refs intact. A connector renders them into its own host format; the default is none

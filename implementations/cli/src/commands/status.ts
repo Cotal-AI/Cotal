@@ -376,8 +376,9 @@ async function printRegistry(): Promise<void> {
         ? c.dim(`  ${m.catalogName && m.catalogName !== m.space ? `${m.catalogName}  ` : ""}catalog ${m.catalogError ? `stale since ${m.catalogFetchedAt ?? "unknown"}: ${m.catalogError}` : `snapshot ${m.catalogFetchedAt ?? "unknown"}`}`)
         : "";
       const transport = m.tlsRequired ? "  tls-required" : "";
+      const policy = m.policy?.events === "required" ? "  events: required" : "";
       console.log(
-        `  ${mark} ${m.space.padEnd(pad)}  ${live === undefined ? c.dim("not probed") : live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}${transport}  ${m.server}  ${m.root}`)}${origin}${catalog}`,
+        `  ${mark} ${m.space.padEnd(pad)}  ${live === undefined ? c.dim("not probed") : live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}${transport}${policy}  ${m.server}  ${m.root}`)}${origin}${catalog}`,
       );
     }),
   );
@@ -405,6 +406,7 @@ async function printTarget(selected: Selected, cmd: string, responder: DeliveryR
   row("space", target.space);
   row("server", target.server);
   row("mode", target.mode);
+  if (target.policy?.events === "required") row("events", "required");
   if (target.tlsRequired) row("transport", "tls-required");
   if (target.userAuth) row("idp", target.userAuth.idp.url);
   row("source", target.source);
