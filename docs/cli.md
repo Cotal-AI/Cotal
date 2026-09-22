@@ -979,6 +979,12 @@ The manager is the agent supervisor and control plane: it answers `spawn --detac
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
+Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
+if every declared connector is unavailable, those commands stay on this instance rail only
+(`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
+unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
+inventory keeps the class rail and names `--on` on a harness refusal, because sibling
+inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that

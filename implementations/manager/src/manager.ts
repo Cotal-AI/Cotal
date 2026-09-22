@@ -619,6 +619,9 @@ export interface StartAgentOpts {
   cwd?: string;
   /** Internal resolved-manifest provenance used by the preservation inventory. */
   launchRef?: { runId: string; requested: string; hash: string };
+  /** The §13.2 rail this spawn rode. Class-rail harness refusals name `--on`; instance-pinned
+   *  refusals stay local. Direct `startAgent` (roster / `--spawn`) is not a class request. */
+  route?: "one" | "all" | "inst";
 }
 
 interface ManagedLaunch {
@@ -2751,7 +2754,7 @@ export class Manager {
       }),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
-      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
+      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h, ctx.subject.route))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -2811,7 +2814,7 @@ export class Manager {
       // P2 item 2 (ruling 3): manifest `launch` is an ACTION through the SAME chokepoint as spawn -
       // the manifest resolve + owner-equality authz run in opLaunch's accept path, then the goal
       // drives progress + terminal. The acceptance floor is the allocated identity + goal coords.
-      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h))),
+      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),
       resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
       commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
@@ -3825,7 +3828,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
     // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
     // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
@@ -3890,6 +3893,7 @@ export class Manager {
         allowPublish,
         shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
         ...(supervise !== undefined ? { supervise } : {}),
+        route,
       },
       caller,
       hooks,
@@ -3928,6 +3932,7 @@ export class Manager {
         const reason = (error as Error).message;
         console.error(`! manager boot: connector inventory unavailable - ${reason}`);
         this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
         return;
       }
     } else {
@@ -3951,6 +3956,29 @@ export class Manager {
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
+    if (!this.classSpawnEnabled())
+      console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
+  }
+
+  /** True when at least one declared connector is available. Empty inventory (or a failed
+   *  inventory load) skips the class `one` subscribe for spawn/launch so this member cannot
+   *  consume an unpinned request a sibling could serve. */
+  private classSpawnEnabled(): boolean {
+    return this.connectorStatuses.some((row) => row.state === "available");
+  }
+
+  private omitClassCommands(): readonly string[] | undefined {
+    return this.classSpawnEnabled() ? undefined : ["spawn", "launch"];
+  }
+
+  /** Named harness-unavailable refusal. On the class rail a partial inventory must not look
+   *  like the space cannot launch: name `--on` so the caller can pin a sibling. The standing
+   *  serve credential cannot enumerate sibling `svc.*.status` inventories, so the residual
+   *  is the flag, not a list of capable instance ids. Instance-pinned calls keep the local
+   *  reason only. */
+  private harnessUnavailableError(reason: string, route: "one" | "all" | "inst"): string {
+    if (route !== "one") return reason;
+    return `${reason}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
   }
 
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
@@ -4039,7 +4067,7 @@ export class Manager {
    *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
    *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
    *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
-  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks): Promise<ControlReply> {
+  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
     const runId = String(args.runId ?? "").trim();
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
@@ -4084,7 +4112,7 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner, runId), caller, hooks);
+    const reply = await this.startAgent({ ...launchAgentToStartOpts(la, configPath, spec.owner, runId), route }, caller, hooks);
     if (reply.ok)
       // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
       // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
@@ -4187,13 +4215,14 @@ export class Manager {
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
     const bootStatus = this.connectorStatuses.find((row) => row.agent === agent);
-    if (bootStatus?.state === "unavailable") return { ok: false, error: bootStatus.reason };
+    const route = opts.route ?? "inst";
+    if (bootStatus?.state === "unavailable") return { ok: false, error: this.harnessUnavailableError(bootStatus.reason ?? `${agent} harness is unavailable`, route) };
     // A connector registered after boot has no inventory row. Keep the existing pre-mint backstop
     // for that dynamic library-composition case; ordinary installed connectors were checked at boot.
     if (!bootStatus) {
       const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
       if (missing.length)
-        return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+        return { ok: false, error: this.harnessUnavailableError(`${agent} harness needs ${missing.join(", ")} on PATH - not found`, route) };
     }
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
@@ -5620,6 +5649,7 @@ export class Manager {
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+      classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
     };
   }
@@ -5731,6 +5761,7 @@ export class Manager {
             for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
             return undefined;
           },
+          ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
         });
       } catch (e) {
         await nc.drain().catch(() => nc.close());
@@ -5961,6 +5992,7 @@ export class Manager {
           for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
           return undefined;
         },
+        ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
       });
     } catch (e) {
       await nc.drain().catch(() => nc.close());
