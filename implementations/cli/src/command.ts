@@ -1,5 +1,5 @@
 import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
-import { isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
+import { isWorkspaceTargetError, renderWorkspaceError, serverFlag, spaceFlag } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
   isExtensionStub,
@@ -12,6 +12,7 @@ import {
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { cliVersion, extensionVersions } from "./lib/version.js";
+import { prepareCatalogCommand } from "./commands/sync.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -118,6 +119,22 @@ function isArgError(e: unknown): boolean {
   return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS");
 }
 
+/** One dispatcher-owned catalog gate for every command that uses the shared mesh target grammar,
+ * including commands self-registered by other packages. Registry-local `meshes add/rm` stay
+ * offline. `use` takes its target positionally, and status keeps stale bytes diagnostic-only. */
+async function prepareCatalogForCommand(cmd: Command, args: ReturnType<typeof parseCommandArgs>): Promise<void> {
+  if (cmd.name === "meshes") {
+    const sub = args.positionals[0];
+    if (sub === undefined || sub === "list") await prepareCatalogCommand(args, false, "meshes");
+    return;
+  }
+  if (cmd.name === "use") return prepareCatalogCommand(args, false, "use");
+  if (cmd.name === "status") return prepareCatalogCommand(args, true);
+  if (cmd.name === "personas" && args.values.running !== true) return;
+  const flags = cmd.flags ?? [];
+  if (flags.includes(spaceFlag) && flags.includes(serverFlag)) await prepareCatalogCommand(args);
+}
+
 /** Options a composition root passes to {@link runCli}. */
 export interface RunCliOptions {
   /** Load operator-installed extensions (`cotal ext add …`) into the surface: help/completion see
@@ -201,6 +218,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
+    await prepareCatalogForCommand(cmd, parsed);
     if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {

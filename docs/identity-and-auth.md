@@ -172,6 +172,11 @@ meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
 snapshot intact and reports the failure.
 
+Every registration is also bound to the proved account. Its IdP URL must match the account and its
+issuer must match the exact JWT `iss` pin. Its exchange, provisioning, and manager-authority
+endpoints must be same-origin with that IdP. One foreign pin or endpoint refuses the whole
+candidate snapshot.
+
 The `slug` is the space identity resolved by `--space`, `use`, registry roots, and collisions. The
 `name` is a display label only.
 
@@ -180,6 +185,10 @@ stored as an opaque digest, so accounts on one machine never union their spaces 
 not persist the subject. A manual or locally started record with the same name is never overwritten.
 Logout removes only the entries owned by the account whose session was revoked. Local teardown,
 cleanup, and liveness pruning do not remove discovered entries.
+
+An account that previously advertised no catalog is checked again by explicit `cotal sync`. The
+ordinary lazy path checks again after its five-second capability window, so an IdP can enable the
+Link for an existing login without making the person sign in again.
 
 **One auth service per space** hosts both halves: the NATS auth callout and the token
 exchange. Its default HTTP listener remains loopback-only and requires the per-start capability

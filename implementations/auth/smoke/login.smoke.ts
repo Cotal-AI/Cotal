@@ -287,6 +287,8 @@ console.log("C2) advertised space catalog cache");
   let conditional = 0;
   let failCatalog = false;
   let invalidCatalog = false;
+  let foreignTrust: "idp" | "issuer" | "endpoint" | undefined;
+  let advertiseCatalog = true;
   const catalogDir = mkdtempSync(join(tmpdir(), "cotal-login-catalog-"));
   let catalogBase = "";
   const catalog = createServer((req, res) => {
@@ -294,7 +296,7 @@ console.log("C2) advertised space catalog cache");
       tokenRequests++;
       res.writeHead(200, {
         "content-type": "application/json",
-        link: `<${catalogBase}/spaces>; rel="https://cotal.ai/relations/space-catalog"`,
+        ...(advertiseCatalog ? { link: `<${catalogBase}/spaces>; rel="https://cotal.ai/relations/space-catalog"` } : {}),
       });
       return void res.end(JSON.stringify({ token: "eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwOi8vMTI3LjAuMC4xIiwic3ViIjoiY2F0LXVzZXIifQ." }));
     }
@@ -306,7 +308,7 @@ console.log("C2) advertised space catalog cache");
         res.writeHead(200, { "content-type": "application/json", etag: '"bad"' });
         return void res.end(JSON.stringify({ v: 2 }));
       }
-      if (req.headers["if-none-match"] === '"v1"') return void res.writeHead(304).end();
+      if (req.headers["if-none-match"] === '"v1"' && foreignTrust === undefined) return void res.writeHead(304).end();
       res.writeHead(200, { "content-type": "application/json", etag: '"v1"' });
       const spaces = Array.from({ length: 100 }, (_, i) => ({
         id: `space-${i}`,
@@ -318,7 +320,13 @@ console.log("C2) advertised space catalog cache");
           space: i === 0 ? "shared_project" : `space_${i}`,
           server: `nats://127.0.0.1:${54991 + i}`,
           tlsRequired: false,
-          userAuth: { provider: "cotal", idp: { url: `${catalogBase}/api/auth`, issuer: "http://127.0.0.1", audience: "catalog" }, endpoints: { url: `${catalogBase}/exchange` } },
+          userAuth: {
+            provider: "cotal",
+            idp: foreignTrust === "idp" && i === 0
+              ? { url: "https://foreign.example/api/auth", issuer: "https://foreign.example", audience: "catalog" }
+              : { url: `${catalogBase}/api/auth`, issuer: foreignTrust === "issuer" && i === 0 ? "http://127.0.0.1/" : "http://127.0.0.1", audience: "catalog" },
+            endpoints: { url: foreignTrust === "endpoint" && i === 0 ? "https://foreign.example/exchange" : `${catalogBase}/exchange` },
+          },
           sentinelCreds: `catalog-sentinel-${i}`,
         },
       }));
@@ -392,6 +400,20 @@ console.log("C2) advertised space catalog cache");
   invalidCatalog = true;
   const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
   check("an invalid candidate refuses the whole update and retains the prior snapshot", invalid[0]?.state === "failed" && invalid[0].snapshot !== undefined, invalid);
+  invalidCatalog = false;
+  const cacheBeforeTrustProbe = readFileSync(cacheFile, "utf8");
+  const registryBeforeTrustProbe = new Map(readdirSync(meshDir).map((file) => [file, readFileSync(join(meshDir, file), "utf8")]));
+  for (const trustCase of ["idp", "issuer", "endpoint"] as const) {
+    foreignTrust = trustCase;
+    const refused = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
+    const trustLabel = trustCase === "idp" ? "IdP pin" : trustCase === "issuer" ? "exact issuer pin" : "exchange endpoint";
+    check(`a foreign ${trustLabel} refuses the whole snapshot and preserves prior state`,
+      refused[0]?.state === "failed" && refused[0].snapshot !== undefined &&
+        readFileSync(cacheFile, "utf8") === cacheBeforeTrustProbe &&
+        readdirSync(meshDir).every((file) => readFileSync(join(meshDir, file), "utf8") === registryBeforeTrustProbe.get(file)),
+      refused);
+  }
+  foreignTrust = undefined;
   if (process.platform !== "win32") {
     check("catalog cache file is 0600", (statSync(cacheFile).mode & 0o777) === 0o600);
     check("catalog state directory is 0700", (statSync(catalogDir).mode & 0o777) === 0o700);
@@ -405,6 +427,24 @@ console.log("C2) advertised space catalog cache");
   check("a valid legacy cached login learns sub lazily and discovers the catalog without re-login",
     legacy[0]?.state === "updated" && tokenRequests === beforeLegacyToken + 1 && catalogRequests === beforeLegacyCatalog + 1 && loadIdpSession(legacyDir, catalogIdp)?.sub === "cat-user",
     { legacy, tokenRequests, catalogRequests, session: loadIdpSession(legacyDir, catalogIdp) });
+  const lateDir = mkdtempSync(join(tmpdir(), "cotal-login-catalog-late-"));
+  saveIdpSession(lateDir, catalogIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
+  advertiseCatalog = false;
+  const absent = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, force: true, validate });
+  check("an IdP without the Link records no catalog", absent[0]?.state === "no-catalog", absent);
+  advertiseCatalog = true;
+  const lateTokenBase = tokenRequests;
+  const lateCatalogBase = catalogRequests;
+  const enabled = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, force: true, validate });
+  check("explicit sync discovers a Link enabled after login with one token and one catalog request",
+    enabled[0]?.state === "updated" && tokenRequests === lateTokenBase + 1 && catalogRequests === lateCatalogBase + 1,
+    { enabled, tokenRequests, catalogRequests });
+  const lateWarmToken = tokenRequests;
+  const lateWarmCatalog = catalogRequests;
+  const enabledWarm = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, validate });
+  check("a warm repeat after late discovery makes no requests",
+    enabledWarm[0]?.state === "fresh" && tokenRequests === lateWarmToken && catalogRequests === lateWarmCatalog,
+    enabledWarm);
   const { recordMesh, findMesh, getCurrent, removeCatalogMeshes, setCurrent } = await import("@cotal-ai/workspace");
   const switchedHome = mkdtempSync(join(tmpdir(), "cotal-login-catalog-switch-"));
   process.env.COTAL_HOME = switchedHome;

@@ -58,6 +58,7 @@ interface CatalogAccountState {
   ownerKey: string;
   catalogUrl?: string;
   advertised: boolean;
+  advertisementCheckedAt?: string;
   etag?: string;
   fetchedAt?: string;
   snapshot?: unknown;
@@ -395,6 +396,7 @@ function saveCatalogAdvertisement(dir: string, idpUrl: string, issuer: unknown, 
     sub,
     ownerKey: key,
     advertised: true,
+    advertisementCheckedAt: new Date().toISOString(),
     ...(catalogUrl ? { catalogUrl } : {}),
   };
   writeCatalogsFile(dir, file);
@@ -424,6 +426,7 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
     ...state,
     issuer: typeof claims.iss === "string" && claims.iss ? claims.iss : state.issuer,
     advertised: true,
+    advertisementCheckedAt: new Date().toISOString(),
     ...(catalogUrl ? { catalogUrl } : { catalogUrl: undefined }),
   };
 }
@@ -480,7 +483,8 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         advertised: false,
       };
       try {
-        if (!state.advertised) {
+        const advertisementFresh = typeof state.advertisementCheckedAt === "string" && Date.now() - Date.parse(state.advertisementCheckedAt) < CATALOG_FRESH_MS;
+        if (!state.advertised || (!state.catalogUrl && (opts.force || !advertisementFresh))) {
           state = await discoverAdvertisement(state, session);
           file.accounts[key] = state;
           changed = true;

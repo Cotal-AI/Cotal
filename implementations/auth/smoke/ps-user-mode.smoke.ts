@@ -318,13 +318,34 @@ try {
   if (!callout) throw new Error("fixture has no callout sentinel credential");
   let catalogFails = false;
   let catalogRequests = 0;
+  let includeJoining = false;
+  let includeListed = false;
+  let includeWorkflow = false;
   const originalHandler = handler!;
-  handler = ((req, res) => {
+  handler = (async (req, res) => {
     const url = new URL(req.url!, origin);
+    if (url.pathname === "/exchange") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const upstream = await fetch(`http://127.0.0.1:${PUBLIC_EXCHANGE_PORT}/exchange`, {
+        method: req.method,
+        headers: { "content-type": req.headers["content-type"] ?? "application/json" },
+        body: Buffer.concat(chunks),
+      });
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      return void res.end(Buffer.from(await upstream.arrayBuffer()));
+    }
     if (url.pathname === "/catalog") {
       catalogRequests++;
       if (catalogFails) return void res.writeHead(503).end();
       res.writeHead(200, { "content-type": "application/json", etag: '"ps-catalog-v1"' });
+      const registration = (space: string) => ({
+        space,
+        server: original.server,
+        tlsRequired: false,
+        userAuth: { ...original.userAuth, endpoints: { url: origin }, sentinelCredsPath: undefined },
+        sentinelCreds: callout.sentinelCreds,
+      });
       return void res.end(JSON.stringify({
         v: 1,
         account: { idpUrl: base, issuer: origin, sub },
@@ -334,14 +355,12 @@ try {
           name: "Shared project",
           kind: "local-test",
           role: "admin",
-          registration: {
-            space: SPACE,
-            server: original.server,
-            tlsRequired: false,
-            userAuth: { ...original.userAuth, endpoints: { url: `http://127.0.0.1:${PUBLIC_EXCHANGE_PORT}` }, sentinelCredsPath: undefined },
-            sentinelCreds: callout.sentinelCreds,
-          },
-        }],
+          registration: registration(SPACE),
+        },
+        ...(includeJoining ? [{ id: "joining-space", slug: "joining", name: "Joining project", kind: "local-test", role: "admin", registration: registration("joining") }] : []),
+        ...(includeListed ? [{ id: "listed-space", slug: "listed", name: "Listed project", kind: "local-test", role: "admin", registration: registration("listed") }] : []),
+        ...(includeWorkflow ? [{ id: "workflow-space", slug: "workflow_new", name: "Workflow new", kind: "local-test", role: "admin", registration: registration("workflow_new") }] : []),
+        ],
       }));
     }
     if (url.pathname === "/api/auth/token") {
@@ -369,8 +388,35 @@ try {
   const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
   check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
   check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
+  includeJoining = true;
+  const beforeUseRefresh = catalogRequests;
+  const discoveredUse = await cotal(["use", "joining"], 20_000);
+  check("use refreshes a positional catalog miss inside the freshness window and selects its slug",
+    discoveredUse.status === 0 && catalogRequests === beforeUseRefresh + 1 && findMesh("joining")?.origin === "catalog",
+    { out: discoveredUse.out, catalogRequests, beforeUseRefresh });
+  includeWorkflow = true;
+  const beforeRunRefresh = catalogRequests;
+  const discoveredRun = await cotal(["run", "ps", "--space", "workflow_new"], 20_000);
+  check("a self-registered target-bearing command receives dispatcher catalog preparation",
+    catalogRequests === beforeRunRefresh + 1 && findMesh("workflow_new")?.origin === "catalog" && !discoveredRun.out.includes('no mesh named "workflow_new"'),
+    { status: discoveredRun.status, out: discoveredRun.out.slice(-400), catalogRequests, beforeRunRefresh });
+  const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+  recordMesh({ space: "manual-current", server: original.server, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  setCurrent("manual-current");
+  includeListed = true;
+  await wait(5_100);
+  const beforeMeshesRefresh = catalogRequests;
+  const discoveredMeshes = await cotal(["meshes"], 20_000);
+  check("meshes refreshes discovery despite a manual current and local root",
+    discoveredMeshes.status === 0 && catalogRequests === beforeMeshesRefresh + 1 && discoveredMeshes.out.includes("listed") && findMesh("listed")?.origin === "catalog",
+    { out: discoveredMeshes.out.slice(-600), catalogRequests, beforeMeshesRefresh });
   catalogFails = true;
   await wait(5_100);
+  const beforeLocalRm = catalogRequests;
+  const localRm = await cotal(["meshes", "rm", "ghost"], 20_000);
+  check("meshes rm stays registry-local during a stale catalog outage",
+    localRm.status === 1 && localRm.out.includes('no mesh named "ghost" is registered') && catalogRequests === beforeLocalRm,
+    { out: localRm.out, catalogRequests, beforeLocalRm });
   const expired = await cotal(["ps", "--space", SPACE], 20_000);
   check("an expired discovered target refuses ps when its required refresh fails",
     expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });

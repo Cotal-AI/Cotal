@@ -51,6 +51,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Canonicalize an IdP identity for account binding with the same URL shape the stock provider
+ * accepts: HTTPS, or loopback HTTP; no credentials, query, fragment, or trailing slash. This is not
+ * a bundle validator. It compares already-validated registration trust to the proved account. */
+function canonicalIdpUrl(raw: string, what: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${what} is not a valid URL`);
+  }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "localhost";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+    throw new Error(`${what} must be https (or loopback http for local development)`);
+  if (url.username || url.password || url.search || url.hash)
+    throw new Error(`${what} must not contain credentials, a query, or a fragment`);
+  return `${url.origin}${url.pathname.replace(/\/$/, "")}`;
+}
+
+function assertRegistrationAccountBinding(bundle: UserBundle, account: AuthSpaceCatalogAccount, label: string): void {
+  const accountIdp = canonicalIdpUrl(account.idpUrl, "the proved account IdP URL");
+  const registrationIdp = canonicalIdpUrl(bundle.userAuth.idp.url, `${label} IdP URL`);
+  if (registrationIdp !== accountIdp || bundle.userAuth.idp.issuer !== account.issuer)
+    throw new Error(`${label} names IdP trust that differs from the proved catalog account`);
+  const accountOrigin = new URL(accountIdp).origin;
+  for (const [name, raw] of [
+    ["exchange endpoint", bundle.userAuth.endpoints?.url],
+    ["agent-provisioning endpoint", bundle.userAuth.endpoints?.agentProvisioningUrl],
+    ["manager-authority endpoint", bundle.userAuth.endpoints?.managerAuthorityUrl],
+  ] as const) {
+    if (!raw) continue;
+    let endpoint: URL;
+    try {
+      endpoint = new URL(raw);
+    } catch {
+      throw new Error(`${label} ${name} is not a valid URL`);
+    }
+    if (endpoint.username || endpoint.password || endpoint.origin !== accountOrigin)
+      throw new Error(`${label} ${name} is not same-origin with the proved catalog account`);
+  }
+}
+
 export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalogAccount): asserts value is SpaceCatalogSnapshot {
   if (!isRecord(value) || value.v !== 1 || !isRecord(value.account) || !Array.isArray(value.spaces))
     throw new Error("the space catalog is not a v1 snapshot");
@@ -65,6 +106,7 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
         throw new Error(`space catalog entry ${i + 1} has no ${key}`);
     const checked = checkUserBundle(JSON.stringify(row.registration));
     if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
+    assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
     if (checked.value.space !== row.slug)
       throw new Error(`space catalog entry "${row.name}" (${row.slug}) registration names space "${checked.value.space}"`);
     if (slugs.has(row.slug)) throw new Error(`space catalog repeats the slug "${row.slug}"`);
@@ -175,11 +217,12 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
 /** Shared once-per-command preparation. A named manual/local entry never depends on discovery.
  * Unknown names force one refresh even inside the freshness window. `status` keeps a failed stale
  * snapshot only as timestamped diagnostics; operational commands refuse before target resolution. */
-export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false): Promise<void> {
+export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false, command?: "meshes" | "use"): Promise<void> {
   const values = args.values as { space?: string };
-  const named = values.space ? findMesh(values.space) : undefined;
+  const requested = values.space ?? (command === "use" ? args.positionals[0] : undefined);
+  const named = requested ? findMesh(requested) : undefined;
   if (named && named.origin !== "catalog") return;
-  if (!values.space) {
+  if (!requested && command !== "meshes") {
     const current = getCurrent();
     const selected = current ? findMesh(current) : undefined;
     if (selected && selected.origin !== "catalog") return;
@@ -188,7 +231,7 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
     const registered = loadMeshes();
     if (registered.length === 1 && registered[0].origin !== "catalog") return;
   }
-  const force = Boolean(values.space && !named);
+  const force = Boolean(requested && !named);
   if (registry.all<AuthProvider>("auth-provider").length === 0) return;
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs) return;
