@@ -412,9 +412,6 @@ export interface SeatIdentityAdmission {
   readonly lifecycleUidIsLive: boolean;
   /** The destination's current profile revision for this seat, when it has one. */
   readonly profileConfigSha256?: string;
-  /** Set when the operator deliberately resumes under the RECORDED revision rather than the
-   *  destination's. Without it, a differing revision is refused rather than silently applied. */
-  readonly acceptRecordedProfile?: boolean;
 }
 
 /**
@@ -427,8 +424,12 @@ export function assertSeatCheckpointIdentity(record: SeatCheckpoint, admission: 
   if (admission.lifecycleUidIsLive)
     fail(`checkpoint identity: lifecycle ${record.lifecycleUid} is already live and this runtime cannot authoritatively adopt it`);
   const current = admission.profileConfigSha256;
-  if (current !== undefined && current !== record.profile.configSha256 && !admission.acceptRecordedProfile)
-    fail(`checkpoint identity: this destination's profile revision is ${current}, the checkpoint was cut at ${record.profile.configSha256}; resume under the recorded revision deliberately or align the profile`);
+  // No override. The checkpoint carries the recorded DIGEST, not the config bytes, so nothing here
+  // could run the seat under the recorded revision even if an operator consented; the manager
+  // re-digests the same file and refuses drift on its own. A flag that admitted here and was
+  // refused there would be consent that changes no outcome, so the refusal names the remedy.
+  if (current !== undefined && current !== record.profile.configSha256)
+    fail(`checkpoint identity: this destination's profile revision is ${current}, the checkpoint was cut at ${record.profile.configSha256}; restore the launch config to its recorded revision, then resume`);
 }
 
 export interface SeatRecencyAdmission {

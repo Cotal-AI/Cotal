@@ -167,7 +167,6 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
 | `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
-| `--accept-recorded-profile` | off | Resume a seat under the launch profile revision its checkpoint was cut at, rather than this host's |
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable |
@@ -492,8 +491,11 @@ nothing. Three gates run in order, each naming what it saw.
    refusal. Failure here consults no other gate.
 2. *Identity.* The recorded space must match, the recorded `lifecycleUid` must not belong to a live
    incarnation, and the profile revision must match this host's or be resumed under deliberately
-   with `--accept-recorded-profile`. This gate has no blanket override, which is the only reason the
-   next one may have one.
+   this host's. A differing revision is refused with both digests and the remedy, and there is no
+   override: the checkpoint carries the recorded digest and not the config bytes, so nothing could
+   run the seat under the recorded revision, and the manager re-digests the same file and refuses
+   drift on its own. This gate has no blanket override, which is the only reason the next one may
+   have one.
 3. *Recency.* `capturedAt` is compared to this host's clock against the horizon the record carries.
    Inside it, the seat resumes. Outside it, `up` refuses and prints the capture instant, the clock
    reading and the horizon; `--accept-stale-checkpoint` admits it anyway and the exercised consent

@@ -1340,13 +1340,67 @@ let openInventory: ManagerResumeAgent;
     catch (e) { return /already live and this runtime cannot authoritatively adopt it/.test((e as Error).message); }
   })());
   // The profile half of gate 2 only decides anything when the destination supplies its own
-  // revision. A caller that supplies none leaves nothing to compare, which is not a match.
-  check("a destination on a different profile revision is refused", (() => {
+  // revision, and it has no override: the record carries a digest, not the config bytes.
+  check("a destination on a different profile revision is refused naming both digests", (() => {
     try { admit("cut-4", { currentProfileConfigSha256: () => "c".repeat(64) }); return false; }
-    catch (e) { return /profile revision is/.test((e as Error).message); }
+    catch (e) {
+      const m = (e as Error).message;
+      return m.includes("c".repeat(64)) && m.includes("a".repeat(64)) && /restore the launch config/.test(m);
+    }
   })());
-  const consented = admit("cut-4", { currentProfileConfigSha256: () => "c".repeat(64), acceptRecordedProfile: true });
-  check("--accept-recorded-profile admits the recorded revision deliberately", consented.length === 1, consented);
+
+  // All or nothing. A refusal must leave every generation unclaimed, or the retry over a repaired
+  // checkpoint set loses an exclusive create it can never make again.
+  {
+    const pairRoot = mkdtempSync(join(tmpdir(), "cotal-seat-pair-"));
+    const pairCut = (attempt: string, seat: string, dest = pairRoot) =>
+      captureSeatCheckpoint(join(seatCheckpointDir(dest, attempt), seat), { name: seat }, {
+        cwd, space: "pair-space", name: seat, lifecycleUid: uid, generation: 0,
+        profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+    const admitPair = (attempt: string, retained: string[], opts: Partial<Parameters<typeof admitSeatCheckpoints>[0]> = {}) =>
+      admitSeatCheckpoints({
+        root: pairRoot, space: "pair-space",
+        checkpointDir: seatCheckpointDir(pairRoot, attempt),
+        liveLifecycleUids: new Set<string>(),
+        requireCovered: (names) => {
+          const covered = new Set(names);
+          const missing = retained.filter((seat) => !covered.has(seat));
+          if (missing.length) throw new Error(`retained seat(s) ${missing.join(", ")} have no admitted checkpoint`);
+        },
+        ...opts,
+      });
+    const claimed = (seat: string) => loadSeatWriterGeneration(pairRoot, "pair-space", seat)?.generation;
+
+    // Two retained seats, one checkpoint.
+    pairCut("pair-1", "a");
+    check("a retained seat with no checkpoint refuses the whole set", (() => {
+      try { admitPair("pair-1", ["a", "b"]); return false; }
+      catch (e) { return /retained seat\(s\) b have no admitted checkpoint/.test((e as Error).message); }
+    })());
+    check("the refused set left the present seat's generation unclaimed", claimed("a") === undefined, claimed("a"));
+
+    // Two checkpoints, the second tampered: a gate failure must not keep the first seat's claim.
+    pairCut("pair-2", "a");
+    pairCut("pair-2", "b");
+    const victim = join(seatCheckpointDir(pairRoot, "pair-2"), "b", "repo.bundle");
+    const bytes2 = Buffer.from(readFileSync(victim));
+    bytes2[bytes2.length - 1] ^= 0x01;
+    writeFileSync(victim, bytes2);
+    check("a gate failure on the second seat refuses the whole set", (() => {
+      try { admitPair("pair-2", ["a", "b"]); return false; }
+      catch (e) { return /checkpoint integrity: repo\.bundle hashes to/.test((e as Error).message); }
+    })());
+    check("neither seat claimed a generation when one failed a gate", claimed("a") === undefined && claimed("b") === undefined);
+
+    // Both present and intact: both claim, so the refusals above are not simply a dead path.
+    pairCut("pair-3", "a");
+    pairCut("pair-3", "b");
+    const both = admitPair("pair-3", ["a", "b"]);
+    check("a complete, intact set admits and claims every seat", both.length === 2 && claimed("a") === 1 && claimed("b") === 1, both.map((s) => s.name));
+
+    rmSync(pairRoot, { recursive: true, force: true });
+  }
 
   rmSync(root, { recursive: true, force: true });
 }

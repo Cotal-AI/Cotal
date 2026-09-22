@@ -17,8 +17,10 @@ Shipped:
   `assertSeatCheckpointIdentity` and `admitSeatCheckpointRecency` in
   `packages/workspace/src/seat-checkpoint.ts`, driven from the ordinary resume path in
   `implementations/cli/src/commands/up.ts` through `admitSeatCheckpoints` in
-  `implementations/cli/src/lib/seat-admission.ts`. The overrides are `--accept-stale-checkpoint`
-  and `--accept-recorded-profile`.
+  `implementations/cli/src/lib/seat-admission.ts`. The only override is `--accept-stale-checkpoint`.
+  The profile half of identity has no override: a checkpoint carries the recorded digest, not the
+  config bytes, so no destination could run the seat under the recorded revision, and the manager
+  re-digests the same file at relaunch and refuses drift anyway.
 - **3.2 and 3.3, the per-seat writer generation and its handover.**
   `loadSeatWriterGeneration` and `advanceSeatWriterGeneration` in
   `packages/workspace/src/auth-paths.ts`, claimed by the destination before it launches anything.

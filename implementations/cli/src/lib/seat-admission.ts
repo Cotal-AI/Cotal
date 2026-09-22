@@ -40,22 +40,39 @@ export interface AdmitSeatsOptions {
   readonly currentProfileConfigSha256?: (name: string) => string | undefined;
   /** `--accept-stale-checkpoint`. Consent for gate 3 only; gate 2 has no override. */
   readonly acceptStale?: boolean;
-  /** `--accept-recorded-profile`. Resume under the checkpoint's profile revision deliberately. */
-  readonly acceptRecordedProfile?: boolean;
+  /** The caller's own admissibility condition, run over the seat names the cut actually wrote,
+   *  before any gate and before any generation is claimed. It throws to refuse the whole set. */
+  readonly requireCovered?: (checkpointedNames: readonly string[]) => void;
   readonly now?: number;
 }
 
 /**
- * Admit every checkpoint the cut wrote and take custody of each seat. Throws on the first refusal:
- * a destination that launched some seats and refused others would be a half-transferred custody,
- * which is the state this whole mechanism exists to prevent.
+ * Admit every checkpoint the cut wrote and take custody of each seat.
+ *
+ * Three phases, and the order is the point. Coverage is settled first, from the directory listing
+ * alone, so a caller's own condition (a retained seat with no checkpoint) refuses before a single
+ * byte is digested. Then all three gates run over every checkpoint, collecting admissions and
+ * claiming nothing. Only when the whole set has passed does custody advance.
+ *
+ * Claiming inside the gate loop made a refusal expensive: a later seat's refusal left an earlier
+ * seat's generation already taken by exclusive create, so the retry that was supposed to cost
+ * nothing lost that claim and could never make it again. A failure anywhere now leaves every
+ * generation unclaimed.
  */
 export function admitSeatCheckpoints(options: AdmitSeatsOptions): SeatAdmission[] {
-  if (!existsSync(options.checkpointDir)) return [];
-  const admitted: SeatAdmission[] = [];
-  for (const name of readdirSync(options.checkpointDir).sort()) {
+  const directories = existsSync(options.checkpointDir)
+    ? readdirSync(options.checkpointDir).sort()
+        .filter((name) => existsSync(join(options.checkpointDir, name, "checkpoint.json")))
+    : [];
+
+  // Phase 1, coverage, before any gate. A missing checkpoint is not a gate failure and must not
+  // wait behind one.
+  options.requireCovered?.(directories);
+
+  // Phase 2, the gates, over every checkpoint. Nothing is claimed here.
+  const decided: SeatAdmission[] = [];
+  for (const name of directories) {
     const directory = join(options.checkpointDir, name);
-    if (!existsSync(join(directory, "checkpoint.json"))) continue;
     const checkpoint = readSeatCheckpoint(directory);
 
     // Gate 1, integrity. Failure here is a refusal and no other gate is consulted.
@@ -67,7 +84,6 @@ export function admitSeatCheckpoints(options: AdmitSeatsOptions): SeatAdmission[
       space: options.space,
       lifecycleUidIsLive: options.liveLifecycleUids.has(checkpoint.lifecycleUid),
       ...(current !== undefined ? { profileConfigSha256: current } : {}),
-      ...(options.acceptRecordedProfile ? { acceptRecordedProfile: true } : {}),
     });
 
     // Gate 3, recency.
@@ -76,23 +92,25 @@ export function admitSeatCheckpoints(options: AdmitSeatsOptions): SeatAdmission[
       ...(options.acceptStale ? { acceptStale: true } : {}),
     });
 
-    // Custody. Exclusive create on the SUCCESSOR value, before anything launches. A lost create
-    // means another destination is already claiming this seat, and it refuses rather than adopting.
-    const generation = checkpoint.generation + 1;
-    advanceSeatWriterGeneration(options.root, {
-      space: checkpoint.space,
-      name: checkpoint.name,
-      // The recorded uid is REUSED, never minted: the durables are keyed by it.
-      lifecycleUid: checkpoint.lifecycleUid,
-      generation,
-    });
-
-    admitted.push({
+    decided.push({
       name,
       checkpoint,
-      generation,
+      // The successor value this seat will claim in phase 3, not a claim yet.
+      generation: checkpoint.generation + 1,
       ...(recency.admitted === "override" ? { staleOverrideAgeMs: recency.ageMs } : {}),
     });
   }
-  return admitted;
+
+  // Phase 3, custody, once the whole set is admissible. Exclusive create on the SUCCESSOR value,
+  // before anything launches. A lost create means another destination is already claiming this
+  // seat, and it refuses rather than adopting.
+  for (const seat of decided)
+    advanceSeatWriterGeneration(options.root, {
+      space: seat.checkpoint.space,
+      name: seat.checkpoint.name,
+      // The recorded uid is REUSED, never minted: the durables are keyed by it.
+      lifecycleUid: seat.checkpoint.lifecycleUid,
+      generation: seat.generation,
+    });
+  return decided;
 }

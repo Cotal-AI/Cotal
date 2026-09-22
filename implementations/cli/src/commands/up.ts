@@ -173,7 +173,6 @@ export const upFlags: FlagSpec[] = [
   { name: "restore-only", type: "string", value: "<registry>", description: "restore only the registry component" },
   { name: "accept-missing-source", type: "boolean", description: "explicit disaster consent when the inode-bound preserved source is absent" },
   { name: "accept-stale-checkpoint", type: "boolean", description: "explicit consent to resume a seat checkpoint captured outside its recorded recency horizon" },
-  { name: "accept-recorded-profile", type: "boolean", description: "resume a seat under the launch profile revision its checkpoint was cut at, not this host's" },
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
@@ -226,7 +225,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
-    "accept-stale-checkpoint"?: boolean; "accept-recorded-profile"?: boolean;
+    "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
     __restoreAttempt?: string;
@@ -1225,7 +1224,7 @@ function admitSeatCheckpointsForResume(
   root: string,
   space: string,
   attemptId: string,
-  values: { "accept-stale-checkpoint"?: boolean; "accept-recorded-profile"?: boolean },
+  values: { "accept-stale-checkpoint"?: boolean },
   inventory: unknown,
 ): StaleCheckpointConsent[] {
   // The checkpoints of the CUT this resume is consuming, named by that cut's attempt id. A resume
@@ -1252,17 +1251,18 @@ function admitSeatCheckpointsForResume(
     // lifecycle uid can be live. A destination that resumes against a LIVE space supplies the
     // roster here instead; this path deliberately has none to supply.
     liveLifecycleUids: new Set<string>(),
+    // Reconcile inside the admission, after the gates and BEFORE any generation is claimed. A
+    // retained seat with no checkpoint would otherwise resume with no gate run and no custody
+    // claimed, and checking after the claims had landed would leave the earlier seats' exclusive
+    // creates behind, so the retry over a repaired checkpoint set could never make them again.
+    requireCovered: (admittedNames) => {
+      const covered = new Set(admittedNames);
+      const uncovered = retainedAgents.map((agent) => agent.name ?? "").filter((name) => !covered.has(name));
+      if (uncovered.length)
+        throw new Error(`preserved resume is refused: retained seat(s) ${uncovered.map((name) => JSON.stringify(name)).join(", ")} have no admitted checkpoint under ${checkpointDir}; a seat cannot resume without passing the admission gates and claiming its writer generation`);
+    },
     ...(values["accept-stale-checkpoint"] ? { acceptStale: true } : {}),
-    ...(values["accept-recorded-profile"] ? { acceptRecordedProfile: true } : {}),
   });
-
-  // Reconcile both ways. A retained seat with no checkpoint would otherwise resume with no gate
-  // run and no custody claimed, which is the one outcome this whole mechanism exists to prevent:
-  // silence would be read as consent.
-  const admittedNames = new Set(admitted.map((seat) => seat.checkpoint.name));
-  const uncovered = retainedAgents.map((agent) => agent.name ?? "").filter((name) => !admittedNames.has(name));
-  if (uncovered.length)
-    throw new Error(`preserved resume is refused: retained seat(s) ${uncovered.map((name) => JSON.stringify(name)).join(", ")} have no admitted checkpoint under ${checkpointDir}; a seat cannot resume without passing the admission gates and claiming its writer generation`);
 
   for (const seat of admitted) {
     // The uid is RECOVERED, never minted. A checkpoint that names a different incarnation than the
