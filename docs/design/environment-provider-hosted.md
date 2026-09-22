@@ -310,14 +310,18 @@ Contract:
 - `presence.environment === record.id` is the only join. A provider reference, host, volume or image
   reference is never an alternate join.
 - The provider exposes `hostedFacts(ref, op)` for `providerRef`, `volumeId`, resolved `network`,
-  provider deadline, state evidence, engine identity and provider observation time.
+  provider deadline, state evidence and provider observation time. It does not report `engine`:
+  section 8 host enrollment facts are authoritative for engine, so a provider-sourced engine would
+  be a second, non-authoritative source for one record field. `volumeId` is absent when the provider
+  did not report the fact.
   `describeHostedImage` supplies the stable image digest when available.
 - The manager records `id`, `provider`, `space`, `host`, `owner`, `createdAt`, the selected image
   reference, normalized architecture, probe result and `probedAt`.
 - The manager maps provider observations to the closed record state. `stoppedAt` is present only after
   a proved stop. `expiresAt` is absent only when the provider did not report a deadline.
-- `host`, `arch`, `engine`, `volumeId` and `expiresAt` are absent when the provider did not report the
-  fact. Section 8 host enrollment facts remain authoritative for `arch` and `engine`.
+- `host`, `arch`, `engine` and `volumeId` are absent when their source did not report the fact.
+  Section 8 host enrollment facts remain authoritative for `arch` and `engine` and supply `host` as
+  well; `hostedFacts` supplies `volumeId`.
 - `createdAt`, `stoppedAt`, `expiresAt` and `probedAt` are epoch milliseconds.
 - `providerRef` is opaque and may change after provider reconciliation. `id` never changes.
 - Every record update is appended or replaced through the manager's durable environment journal

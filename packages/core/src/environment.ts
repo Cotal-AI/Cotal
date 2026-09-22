@@ -243,11 +243,12 @@ export interface HostedEnvironmentLaunchRequest<Intent> extends ProviderEnvironm
   authentication: HostedEnvironmentLaunchAuthentication;
 }
 
+/** Provider-observed facts. `engine` is not a provider fact: section 8 host enrollment facts are
+ * authoritative for engine, and `volumeId` is absent when the provider did not report the fact. */
 export interface HostedEnvironmentProviderFacts {
   environment: HostedEnvironmentReference;
   providerRef: HostedEnvironmentRecordText;
-  engine: HostedEnvironmentRecordText;
-  volumeId: HostedEnvironmentRecordText;
+  volumeId?: HostedEnvironmentRecordText;
   state: "creating" | "running" | "stopped" | "failed";
   stoppedAt?: number;
   expiresAt?: number;
