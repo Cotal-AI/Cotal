@@ -344,9 +344,12 @@ needing the (by then intentionally dead) manager. A partial cut never publishes 
 be combined with component names, manifest teardown, or `--dry-run`.
 
 **Seat checkpoints.** After the stack is proven down, the cut writes one checkpoint per retained
-seat under `.cotal/maintenance/v1/checkpoints/<seat>/`, and prints the path, the continuity class
-and the generation for each. The capture happens only at that point because anything earlier races
-a harness that is still writing its transcript and its working tree.
+seat under `.cotal/maintenance/v1/checkpoints/<attempt>/<seat>/`, and prints the path, the
+continuity class and the generation for each. The path carries the preservation attempt because a
+checkpoint is immutable once sealed: a shared directory would make the second cut in a root refuse
+on the first cut's leftovers, and clearing it would destroy an artifact a rollback still needs. The
+capture happens only at that point because anything earlier races a harness that is still writing
+its transcript and its working tree.
 
 Each checkpoint directory is created 0700, refuses a destination that already exists, and holds:
 
