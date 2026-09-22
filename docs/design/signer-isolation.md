@@ -379,7 +379,7 @@ that may change uid. The manager never receives `CAP_SETUID`.
      **changes the shipped default.** Today's `defaultCustodyRoot`
      (`implementations/manager/src/runtime/custodial-pty.ts`) is
      `join(homedir(), ".cotal", "seats")`, so a manager started as `cotal-manager` lands
-     at `/home/cotal-manager/.cotal/seats`. That path is not traversable by `cotal-agent`
+     at `~cotal-manager/.cotal/seats`. That path is not traversable by `cotal-agent`
      after the drop. `mkSecretDir` (`packages/core/src/secret-fs.ts`) creates
      `~/.cotal` at `0700` (then `hardenPrivate` reasserts `0700` on POSIX). `FsSecretStore.put`
      (`packages/workspace/src/secret-store-fs.ts`) calls `mkSecretDir(dirname(p))` for every
@@ -387,7 +387,7 @@ that may change uid. The manager never receives `CAP_SETUID`.
      mode: 0o700 })` of the seats path (the `CustodialPtyRuntime` constructor and
      `launchSeat`) creates the same `0700` ancestor chain: measured, `home`, `.cotal`, and
      `seats` all come out `0700`. Chowning only the custody root and the per-seat directory
-     does not grant traverse of `/home/cotal-manager/.cotal`. Measured: opening
+     does not grant traverse of `~cotal-manager/.cotal`. Measured: opening
      `seat.sock` through an ancestor with execute stripped fails `EACCES` even when the
      children are `0777`; the same open succeeds after that ancestor is `0711`. Widening
      `~/.cotal` to `0711` is refused: that directory holds every credential
@@ -423,7 +423,7 @@ that may change uid. The manager never receives `CAP_SETUID`.
      `0700` directory owned by `cotal-manager` (so not `~/.cotal`). If any ancestor is
      missing, not a directory, owned by the wrong uid, or has a mode that denies
      `cotal-agent` execute, the helper throws, names the path, and does not `chmod` it.
-     It never grants traverse on `/home/cotal-manager`, `/home/cotal-manager/.cotal`,
+     It never grants traverse on `~cotal-manager`, `~cotal-manager/.cotal`,
      or `.cotal/auth`.
   3. Assert that the `cotal-agent` user is **not** a member of the `cotal-manager`
      group, by reading that group's member list and the agent user's primary group.
@@ -848,7 +848,7 @@ arms run as the agent uid, which is the child's uid after the spawn drop.
    only. Assign the workspace root and the account-record path before python runs:
 
    ```bash
-   ROOT=/home/cotal-manager
+   ROOT=$(getent passwd cotal-manager | cut -d: -f6)
    ACCOUNT_RECORD="$ROOT/.cotal/auth/account.<hex>.json"
    sudo -u cotal-manager python3 -c \
      'import json,sys
@@ -873,8 +873,9 @@ raise SystemExit(0)' \
 
    ```bash
    umask 077
-   sudo -u cotal-manager mkdir -p /home/cotal-manager/cotal-proof
-   sudo -u cotal-manager cotal mint proof-agent --profile agent --out /home/cotal-manager/cotal-proof/proof-agent.creds >/dev/null
+   ROOT=$(getent passwd cotal-manager | cut -d: -f6)
+   sudo -u cotal-manager mkdir -p "$ROOT/cotal-proof"
+   sudo -u cotal-manager cotal mint proof-agent --profile agent --out "$ROOT/cotal-proof/proof-agent.creds" >/dev/null
    echo $?
    # must print 0. Judge only the exit status; do not copy stdout (it names the new
    # principal) into a log or channel. Do not write the creds file under /tmp.
