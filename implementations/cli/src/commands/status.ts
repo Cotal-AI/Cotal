@@ -373,7 +373,7 @@ async function printRegistry(): Promise<void> {
       // control (and, unlike the others, its record is never swept away for it).
       const origin = m.origin === "manual" ? c.dim("  registered") : m.origin === "catalog" ? c.dim("  discovered") : "";
       const catalog = m.origin === "catalog"
-        ? c.dim(`  catalog ${m.catalogError ? `stale since ${m.catalogFetchedAt ?? "unknown"}: ${m.catalogError}` : `snapshot ${m.catalogFetchedAt ?? "unknown"}`}`)
+        ? c.dim(`  ${m.catalogName && m.catalogName !== m.space ? `${m.catalogName}  ` : ""}catalog ${m.catalogError ? `stale since ${m.catalogFetchedAt ?? "unknown"}: ${m.catalogError}` : `snapshot ${m.catalogFetchedAt ?? "unknown"}`}`)
         : "";
       const transport = m.tlsRequired ? "  tls-required" : "";
       console.log(

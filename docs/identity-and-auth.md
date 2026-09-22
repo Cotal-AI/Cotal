@@ -162,7 +162,7 @@ The catalog request carries the opaque cached session as its bearer and returns 
   "v": 1,
   "account": { "idpUrl": "https://idp.example/api/auth", "issuer": "https://idp.example", "sub": "user-id" },
   "spaces": [
-    { "id": "space-id", "slug": "main", "name": "main", "kind": "hosted", "role": "owner", "registration": {} }
+    { "id": "space-id", "slug": "shared_project", "name": "Shared project", "kind": "hosted", "role": "owner", "registration": {} }
   ]
 }
 ```
@@ -171,6 +171,9 @@ The client checks every `registration` with the same `checkUserBundle` validator
 meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional refresh uses the
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
 snapshot intact and reports the failure.
+
+The `slug` is the space identity resolved by `--space`, `use`, registry roots, and collisions. The
+`name` is a display label only.
 
 Discovered registry entries are owned by the normalized IdP origin plus the proved `sub`. That key is
 stored as an opaque digest, so accounts on one machine never union their spaces and the registry does

@@ -673,16 +673,31 @@ try {
 
   // Catalog-owned records are the same non-local ownership class, but account-scoped. Local
   // teardown, liveness pruning and a different account must never remove or overwrite them.
-  recordMesh({ space: "catalog-one", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-a", ts: new Date(0).toISOString() });
-  recordMesh({ space: "catalog-two", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-b", ts: new Date(0).toISOString() });
+  recordMesh({ space: "catalog_one", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-a", catalogSlug: "catalog_one", catalogName: "Catalog one", ts: new Date(0).toISOString() });
+  recordMesh({ space: "catalog_two", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-b", catalogSlug: "catalog_two", catalogName: "Catalog two", ts: new Date(0).toISOString() });
   check("a liveness or mismatch prune never removes a discovered entry",
-    pruneMesh("catalog-one", "mismatch") === false && findMesh("catalog-one") !== undefined, findMesh("catalog-one"));
-  check("a root teardown keeps discovered entries", removeMeshesByRoot(shared).length === 0 && findMesh("catalog-one") !== undefined, loadMeshes());
+    pruneMesh("catalog_one", "mismatch") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
+  check("a root teardown keeps discovered entries", removeMeshesByRoot(shared).length === 0 && findMesh("catalog_one") !== undefined, loadMeshes());
   const { removeCatalogMeshes } = await import("@cotal-ai/workspace");
   check("account cleanup removes only that account's discovered entries",
-    removeCatalogMeshes("acct-a").join(",") === "catalog-one" && findMesh("catalog-one") === undefined && findMesh("catalog-two") !== undefined,
+    removeCatalogMeshes("acct-a").join(",") === "catalog_one" && findMesh("catalog_one") === undefined && findMesh("catalog_two") !== undefined && findMesh("Catalog two") === undefined,
     loadMeshes());
-  removeMesh("catalog-two");
+  removeMesh("catalog_two");
+
+  let catalogBrokerAttempts = 0;
+  const catalogSink = createServer((socket) => { catalogBrokerAttempts++; socket.destroy(); });
+  await new Promise<void>((r) => catalogSink.listen(0, "127.0.0.1", r));
+  const catalogServer = `nats://127.0.0.1:${(catalogSink.address() as { port: number }).port}`;
+  for (let i = 0; i < 8; i++)
+    recordMesh({ space: `catalog_${i}`, server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-fanout", catalogSlug: `catalog_${i}`, catalogName: `Catalog ${i}`, ts: new Date(0).toISOString() });
+  const discoveredList = await run([]);
+  check("meshes lists discovered entries without probing any catalog broker", discoveredList.code === 0 && catalogBrokerAttempts === 0, { catalogBrokerAttempts, out: discoveredList.out });
+  const { use } = await import("../src/commands/use.js");
+  await use({ positionals: ["catalog_3"], values: {}, raw: [] });
+  check("use selects a discovered slug without probing any catalog broker", getCurrent() === "catalog_3" && catalogBrokerAttempts === 0, catalogBrokerAttempts);
+  for (let i = 0; i < 8; i++) removeMesh(`catalog_${i}`);
+  if (getCurrent() === "catalog_3") setCurrent("remote-dead");
+  catalogSink.close();
 
   // `cotal up --space <name>` reclaims a dead holder's name. It must not reclaim a REGISTERED one:
   // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,

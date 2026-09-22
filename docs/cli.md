@@ -673,7 +673,8 @@ cotal status [--space <s>] [--server <url>] [--components]
 `meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
 `cotal spawn` joins. Entries learned from a signed-in account are marked `discovered`. Their
 registration trust is stored under the account's private auth state, and the registry contains no
-session token or sentinel credential bytes.
+session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
+`name` is rendered only as a label.
 
 An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
 adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds

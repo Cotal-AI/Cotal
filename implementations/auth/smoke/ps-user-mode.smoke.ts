@@ -19,10 +19,10 @@
  * label-and-exit-0 shape. That is a product decision to be made on its own evidence; a red here
  * demanding a human look at it is then the correct behaviour, not a defect in this file.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -331,7 +331,7 @@ try {
         spaces: [{
           id: "catalog-space",
           slug: SPACE,
-          name: SPACE,
+          name: "Shared project",
           kind: "local-test",
           role: "admin",
           registration: {
@@ -360,20 +360,20 @@ try {
   rmSync(catalogCache, { force: true });
   await prepareIdpSpaceCatalogs({ dir: home, idpUrl: base, force: true, validate: validateCatalogSnapshot });
   await prepareCatalogTargets({ idpUrl: base, force: true });
+  execFileSync("pnpm", ["--filter", "@cotal-ai/auth", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
+  execFileSync("pnpm", ["--filter", "@cotal-ai/cli", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
   check("the empty registry was repopulated as a discovered user-mode target", findMesh(SPACE)?.origin === "catalog", findMesh(SPACE));
+  check("the display name is not a registry key", findMesh("Shared project") === undefined && findMesh(SPACE)?.catalogName === "Shared project", findMesh(SPACE));
   check("the discovered entry resolves through the ordinary synchronous target path", targetFromEntry(findMesh(SPACE)!, original.server, "registry").mode === "user");
   const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
   const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
   check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
   check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
-  const cacheFile = join(home, "space-catalogs.json");
-  const stale = JSON.parse(readFileSync(cacheFile, "utf8"));
-  Object.values(stale.accounts as Record<string, { fetchedAt?: string }>)[0].fetchedAt = new Date(0).toISOString();
-  writeFileSync(cacheFile, JSON.stringify(stale));
   catalogFails = true;
+  await wait(5_100);
   const expired = await cotal(["ps", "--space", SPACE], 20_000);
   check("an expired discovered target refuses ps when its required refresh fails",
-    expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, expired.out.slice(-400));
+    expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });
 
   console.log("4) kill manager — ps must fail loud, not empty-success");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness

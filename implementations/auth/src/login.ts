@@ -312,7 +312,8 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
  *  job, server-side. */
 export async function establishIdpSession(
   opts: DeviceLoginOpts & { dir: string },
-): Promise<{ session: IdpSession; sub: string; label?: string }> {
+): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
   const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token);
   const jwt = tokenResult.jwt;
@@ -333,7 +334,7 @@ export async function establishIdpSession(
   const label = [claims.email, claims.name, claims.preferred_username].find(
     (c): c is string => typeof c === "string" && c.length > 0,
   );
-  return { session, sub, ...(label ? { label } : {}) };
+  return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
 }
 
 function ownerKey(idpUrl: string, sub: string): string {
@@ -450,21 +451,31 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
   const lock = acquireLock(join(opts.dir, CATALOG_LOCK), { label: "space catalog sync", waitMs: 30_000 });
   try {
     const sessions = readSessionsFile(opts.dir).sessions;
-    const file = readCatalogsFile(opts.dir);
+    let file = readCatalogsFile(opts.dir);
     const idps = Object.keys(sessions).filter((idp) => !requested || idp === requested).sort();
     if (requested && idps.length === 0)
       throw new Error(`not logged in to ${requested} - run \`cotal login --idp ${requested}\``);
     const results: AuthSpaceCatalogResult[] = [];
     let changed = false;
     for (const idpUrl of idps) {
-      const session = loadIdpSession(opts.dir, idpUrl)!;
-      if (!session.sub)
-        throw new Error(`stored idp session for ${idpUrl} predates space catalogs - run \`cotal login --idp ${idpUrl}\` again`);
-      const key = ownerKey(idpUrl, session.sub);
+      let session = loadIdpSession(opts.dir, idpUrl)!;
+      if (!session.sub) {
+        const tokenResult = await fetchIdpJwtResponse(idpUrl, session.token);
+        const claims = decodeJwt(tokenResult.jwt);
+        if (typeof claims.sub !== "string" || !claims.sub)
+          throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`cotal login --idp ${idpUrl}\` again`);
+        session = { ...session, sub: claims.sub };
+        saveIdpSession(opts.dir, idpUrl, session);
+        saveCatalogAdvertisement(opts.dir, idpUrl, claims.iss, claims.sub, tokenResult.response.headers.get("link"));
+        file = readCatalogsFile(opts.dir);
+      }
+      const sub = session.sub;
+      if (!sub) throw new Error(`idp session: ${idpUrl} has no proved subject`);
+      const key = ownerKey(idpUrl, sub);
       let state = file.accounts[key] ?? {
         idpUrl,
         issuer: new URL(idpUrl).origin,
-        sub: session.sub,
+        sub,
         ownerKey: key,
         advertised: false,
       };

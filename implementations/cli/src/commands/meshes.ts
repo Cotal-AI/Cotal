@@ -101,6 +101,7 @@ async function listMeshes(): Promise<void> {
     const tags = [
       ...(m.origin === "manual" ? [c.dim("registered")] : []),
       ...(m.origin === "catalog" ? [c.dim("discovered")] : []),
+      ...(m.origin === "catalog" && m.catalogName && m.catalogName !== m.space ? [c.dim(m.catalogName)] : []),
       ...(m.origin !== "catalog" && offline.has(m.space) ? [c.yellow("offline")] : []),
     ];
     console.log(

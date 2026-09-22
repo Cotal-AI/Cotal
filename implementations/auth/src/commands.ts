@@ -86,7 +86,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     const idp = normalizeIdpUrl(idpArg);
     // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
     // proof leaves no cache entry to fool requireIdpSession later.
-    const { session, sub, label } = await establishIdpSession({
+    const { session, sub, previousSub, label } = await establishIdpSession({
       dir: homeCotalDir(),
       idpUrl: idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
@@ -97,6 +97,11 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       },
     });
     const provider = resolveAuthProvider();
+    if (previousSub) {
+      const removed = removeCatalogMeshes(deleteIdpSpaceCatalog(homeCotalDir(), idp, previousSub));
+      if (removed.length)
+        console.log(`Removed the previous account's discovered spaces: ${removed.join(", ")}. No replacement was selected automatically.`);
+    }
     if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
       const consumer = resolveSpaceCatalogConsumer();
       const catalog = await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate });

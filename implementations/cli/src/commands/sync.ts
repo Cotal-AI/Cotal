@@ -56,7 +56,7 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
     throw new Error("the space catalog is not a v1 snapshot");
   if (value.account.idpUrl !== account.idpUrl || value.account.issuer !== account.issuer || value.account.sub !== account.sub)
     throw new Error("the space catalog account does not match the proved login");
-  const names = new Set<string>();
+  const slugs = new Set<string>();
   for (let i = 0; i < value.spaces.length; i++) {
     const row = value.spaces[i];
     if (!isRecord(row)) throw new Error(`space catalog entry ${i + 1} is not an object`);
@@ -65,10 +65,10 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
         throw new Error(`space catalog entry ${i + 1} has no ${key}`);
     const checked = checkUserBundle(JSON.stringify(row.registration));
     if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
-    if (checked.value.space !== row.name)
-      throw new Error(`space catalog entry "${row.name}" registration names space "${checked.value.space}"`);
-    if (names.has(row.name)) throw new Error(`space catalog repeats the name "${row.name}"`);
-    names.add(row.name);
+    if (checked.value.space !== row.slug)
+      throw new Error(`space catalog entry "${row.name}" (${row.slug}) registration names space "${checked.value.space}"`);
+    if (slugs.has(row.slug)) throw new Error(`space catalog repeats the slug "${row.slug}"`);
+    slugs.add(row.slug);
     row.registration = checked.value;
   }
 }
@@ -78,11 +78,11 @@ function catalogRoot(ownerKey: string, space: string): string {
 }
 
 function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, fetchedAt?: string, error?: string): MeshEntry {
-  const root = catalogRoot(account.ownerKey, row.name);
-  const dir = userAuthStateDir(root, row.name);
+  const root = catalogRoot(account.ownerKey, row.slug);
+  const dir = userAuthStateDir(root, row.slug);
   const sentinelCredsPath = join(dir, "sentinel.creds");
   return {
-    space: row.name,
+    space: row.slug,
     server: row.registration.server,
     root,
     mode: "user",
@@ -125,25 +125,25 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
   if (result.snapshot === undefined) return diff;
   validateCatalogSnapshot(result.snapshot, result.account);
   const snapshot = result.snapshot;
-  const nextNames = new Set(snapshot.spaces.map((s) => s.name));
+  const nextSlugs = new Set(snapshot.spaces.map((s) => s.slug));
   for (const old of before) {
-    if (nextNames.has(old.space)) continue;
+    if (nextSlugs.has(old.space)) continue;
     removeMesh(old.space);
     diff.removed.push(old.space);
   }
   for (const row of snapshot.spaces) {
-    const existing = findMesh(row.name);
+    const existing = findMesh(row.slug);
     if (existing && (existing.origin !== "catalog" || existing.catalogOwner !== result.account.ownerKey)) {
-      diff.collisions.push(row.name);
+      diff.collisions.push(row.slug);
       continue;
     }
     const next = entryFor(result.account, row, result.fetchedAt);
-    const prior = priorByName.get(row.name);
+    const prior = priorByName.get(row.slug);
     writeCatalogCredential(next, row);
     recordMesh(next);
-    if (!prior) diff.added.push(row.name);
-    else if (sameEntry(prior, next)) diff.unchanged.push(row.name);
-    else diff.changed.push(row.name);
+    if (!prior) diff.added.push(row.slug);
+    else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
+    else diff.changed.push(row.slug);
   }
   const current = getCurrent();
   if (current && diff.removed.includes(current)) {
@@ -166,7 +166,9 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
   });
   if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined))
     return { results, diffs: results.map(() => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] })) };
-  const diffs = results.map(applyResult);
+  const diffs = results.map((result) => result.state === "updated" || result.state === "failed" || opts.force
+    ? applyResult(result)
+    : { added: [], changed: [], removed: [], unchanged: [], collisions: [] });
   return { results, diffs };
 }
 
@@ -197,7 +199,9 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
     validate: validateCatalogSnapshot,
   });
   if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined)) return;
-  const diffs = results.map(applyResult);
+  const diffs = results.map((result) => result.state === "updated" || result.state === "failed" || force
+    ? applyResult(result)
+    : { added: [], changed: [], removed: [], unchanged: [], collisions: [] });
   const vanished = diffs.map((d) => d.selectionInvalidated).filter((s): s is string => Boolean(s));
   if (vanished.length) {
     const message = `selected space "${vanished.join("\", \"")}" vanished from its account catalog; no default mesh is selected`;
