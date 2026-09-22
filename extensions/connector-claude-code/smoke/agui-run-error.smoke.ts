@@ -219,9 +219,39 @@ try {
   });
   await hook({ hook_event_name: "SessionStart", source: "startup" });
   await sleep(2_000);
+  const failurePresence = agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition;
+  check(
+    "presence:StopFailure relays the native code and detail as a rate-limit condition",
+    failurePresence?.code === "rate_limit"
+      && failurePresence.source === "rate_limit"
+      && failurePresence.message === "Claude AI usage limit reached",
+    failurePresence,
+  );
 
   // ---- Turn 2: a real turn that ENDS NORMALLY. The control that says the mapping is not blanket.
   appendFileSync(transcript, turn(2));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await sleep(500);
+  check(
+    "presence:a normal next turn clears the prior condition",
+    agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition === undefined,
+    agent.roster().find((p) => p.card.id === agent.ep.card.id),
+  );
+  await hook({ hook_event_name: "Notification", notification_type: "permission_prompt", message: "Approve Bash" });
+  await sleep(300);
+  check(
+    "presence:a permission notification relays approval",
+    agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition?.code === "approval",
+    agent.roster().find((p) => p.card.id === agent.ep.card.id),
+  );
+  await hook({ hook_event_name: "Notification", notification_type: "agent_needs_input", message: "Choose a target" });
+  await sleep(300);
+  const inputCondition = agent.roster().find((p) => p.card.id === agent.ep.card.id)?.condition;
+  check(
+    "presence:an agent-needs-input notification relays input and keeps the native source",
+    inputCondition?.code === "input" && inputCondition.source === "agent_needs_input",
+    inputCondition,
+  );
   await hook({ hook_event_name: "Stop" });
   await sleep(2_000);
   await events.settled();
@@ -281,7 +311,7 @@ try {
     normalTurnCloses[0]?.type === "RUN_FINISHED", normalTurnCloses[0]);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 7;
+  const EXPECTED = 11;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

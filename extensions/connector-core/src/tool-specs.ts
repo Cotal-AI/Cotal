@@ -687,7 +687,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 .map(([c]) => `#${c}`)
             : [];
           const mutedHint = muted.length ? ` (locally muted ${muted.join(", ")}; DM to reach)` : "";
-          const progress = p.status === "working" ? "working · progress unknown" : p.status;
+          const condition = p.condition ? ` (${p.condition.code})` : "";
+          const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
         return ok(`Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);

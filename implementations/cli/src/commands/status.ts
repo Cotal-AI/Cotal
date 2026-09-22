@@ -538,7 +538,8 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
     );
     for (const p of roster.slice(0, 8)) {
       const label = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
-      console.log(`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : ""}`);
+      const condition = p.condition ? ` (${p.condition.code})` : "";
+      console.log(`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : ""}`);
     }
     if (roster.length > 8) console.log(c.dim(`    +${roster.length - 8} more`));
     row("channels", channels.length ? channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none");
