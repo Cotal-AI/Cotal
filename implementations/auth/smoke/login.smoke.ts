@@ -66,11 +66,13 @@ console.log("A) one-shot remote enrollment client");
 {
   let requests = 0;
   let authorization: string | undefined;
+  let method: string | undefined;
   const enrollmentHome = mkdtempSync(join(tmpdir(), "cotal-enrollment-home-"));
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = enrollmentHome;
   const enrollment = createServer((req, res) => {
     requests++;
+    method = req.method;
     authorization = req.headers.authorization;
     res.setHeader("content-type", "application/json");
     if (req.url === "/redirect") {
@@ -91,7 +93,7 @@ console.log("A) one-shot remote enrollment client");
   check("the login conflict made no request", requests === 0);
   deleteIdpSession(enrollmentHome, `${enrollmentBase}/idp`);
   const ok = await cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/fresh` });
-  check("enrollment redeem GETs once with no Authorization header", requests === 1 && authorization === undefined && (ok as { ok?: boolean }).ok === true);
+  check("enrollment redeem GETs once with no Authorization header", requests === 1 && method === "GET" && authorization === undefined && (ok as { ok?: boolean }).ok === true);
   await rejects("an enrollment redirect is refused without following it", () => cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/redirect` }), "redirect");
   check("the redirect consumed exactly one request", requests === 2);
   await rejects("all enrollment refusals use the one closed message", () => cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/refused` }), "enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one");
