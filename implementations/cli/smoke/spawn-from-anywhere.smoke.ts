@@ -11,7 +11,7 @@
  * and is kept as offline.
  */
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -53,6 +53,8 @@ let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let spawnPersonaRef!: typeof import("../src/commands/spawn.js").spawnPersonaRef;
+let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
+let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
 let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let pruneStaleMeshes!: typeof import("../src/lib/meshes.js").pruneStaleMeshes;
 try {
@@ -70,7 +72,7 @@ try {
     saveSpaceAuth,
     setCurrent,
   } = await import("@cotal-ai/workspace"));
-  ({ spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
+  ({ enrollmentInput, scrubEnrollmentEnv, spawnComplete, spawnPersonaRef } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
 } catch (e) { cleanScratch(e); }
@@ -128,6 +130,21 @@ try {
   check("default persona: env overrides product fallback", spawnPersonaRef(undefined, [], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "reviewer");
   check("default persona: positional wins over env", spawnPersonaRef(undefined, ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "researcher");
   check("default persona: --config wins over positional/env", spawnPersonaRef("builder", ["researcher"], { COTAL_DEFAULT_PERSONA: "reviewer" }) === "builder");
+
+  const enrollmentFile = join(neutral, "enrollment.url");
+  writeFileSync(enrollmentFile, "https://auth.example/enroll/secret\n", { mode: 0o600 });
+  check("enrollment file input trims and returns the secret URL", enrollmentInput({ COTAL_ENROLLMENT_FILE: enrollmentFile }) === "https://auth.example/enroll/secret");
+  assert.throws(() => enrollmentInput({ COTAL_ENROLLMENT_FILE: enrollmentFile, COTAL_ENROLLMENT_URL: "https://other.example/enroll/secret" }), /both COTAL_ENROLLMENT/);
+  check("enrollment file and URL conflict before selection", true);
+  if (process.platform !== "win32") {
+    chmodSync(enrollmentFile, 0o640);
+    assert.throws(() => enrollmentInput({ COTAL_ENROLLMENT_FILE: enrollmentFile }), /mode 0600/);
+    check("enrollment file refuses non-0600 permissions", true);
+    chmodSync(enrollmentFile, 0o600);
+  }
+  const childEnv = { PATH: "/bin", COTAL_ENROLLMENT_URL: "secret", cotal_enrollment_file: "/secret", KEEP: "yes" };
+  scrubEnrollmentEnv(childEnv);
+  check("enrollment inputs are removed case-insensitively from the child environment", childEnv.KEEP === "yes" && !("COTAL_ENROLLMENT_URL" in childEnv) && !("cotal_enrollment_file" in childEnv));
   // Hardening: the registry dir is 0700 — its filenames are space names, so it must not be
   // world-traversable even though the file contents are already 0600.
   check(

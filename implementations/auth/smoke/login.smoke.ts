@@ -36,6 +36,7 @@ import {
   loadIdpSession,
   normalizeIdpUrl,
   pinnedJwksResolver,
+  cotalAuthProvider,
   requireIdpSession,
   revokeIdpSession,
   saveIdpSession,
@@ -60,8 +61,50 @@ const SPACE = "demo";
 const SECRET = "s".repeat(32);
 const CLIENT_ID = "cotal-cli";
 
+// ---------- remote enrollment redeem ----------
+console.log("A) one-shot remote enrollment client");
+{
+  let requests = 0;
+  let authorization: string | undefined;
+  const enrollmentHome = mkdtempSync(join(tmpdir(), "cotal-enrollment-home-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = enrollmentHome;
+  const enrollment = createServer((req, res) => {
+    requests++;
+    authorization = req.headers.authorization;
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/redirect") {
+      res.statusCode = 302;
+      res.setHeader("location", "/fresh");
+      return void res.end();
+    }
+    if (req.url === "/refused") {
+      res.statusCode = 404;
+      return void res.end(JSON.stringify({ error: "unknown, expired, or already-used enrollment" }));
+    }
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>((r) => enrollment.listen(0, "127.0.0.1", r));
+  const enrollmentBase = `http://127.0.0.1:${(enrollment.address() as AddressInfo).port}`;
+  saveIdpSession(enrollmentHome, `${enrollmentBase}/idp`, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  await rejects("a cached login conflicts before the one-time enrollment GET", () => cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/fresh` }), "refusing before redeeming");
+  check("the login conflict made no request", requests === 0);
+  deleteIdpSession(enrollmentHome, `${enrollmentBase}/idp`);
+  const ok = await cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/fresh` });
+  check("enrollment redeem GETs once with no Authorization header", requests === 1 && authorization === undefined && (ok as { ok?: boolean }).ok === true);
+  await rejects("an enrollment redirect is refused without following it", () => cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/redirect` }), "redirect");
+  check("the redirect consumed exactly one request", requests === 2);
+  await rejects("all enrollment refusals use the one closed message", () => cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/refused` }), "enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one");
+  check("the refusal is never retried", requests === 3);
+  await rejects("a non-loopback HTTP enrollment is refused before fetch", () => cotalAuthProvider.postAgentEnrollment!({ url: "http://example.com/secret" }), "loopback HTTP literal");
+  check("the non-loopback refusal made no request", requests === 3);
+  enrollment.close();
+  delete process.env.COTAL_HOME;
+  if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
+}
+
 // ---------- the real Better Auth IdP ----------
-console.log("A) real Better Auth (jwt + deviceAuthorization + bearer), the happy chain");
+console.log("B) real Better Auth (jwt + deviceAuthorization + bearer), the happy chain");
 
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 const server = createServer((req, res) => handler!(req, res));
@@ -166,7 +209,7 @@ const idpJwt = await fetchIdpJwt(base, session.token);
 }
 
 // ---- the session cache ----
-console.log("B) the machine-local session cache");
+console.log("C) the machine-local session cache");
 const dir = mkdtempSync(join(tmpdir(), "cotal-login-smoke-"));
 saveIdpSession(dir, `${base}/`, session); // trailing slash — must land on the normalized key
 {
@@ -215,7 +258,7 @@ await rejects("an IdP url with embedded credentials (@-confusion host spoof) is 
   () => normalizeIdpUrl("https://real-idp.example@evil.example/api/auth"), "embed credentials");
 
 // ---- the reject matrix ----
-console.log("C) denies, expiry, revocation");
+console.log("D) denies, expiry, revocation");
 await rejects("a client id the operator didn't pin is refused at /device/code",
   () => loginDeciding("approve", "evil-cli"), "refused the device authorization");
 await rejects("a deny at the verification page is a legible throw, not a retry loop",
@@ -240,7 +283,7 @@ await rejects("a deny at the verification page is a legible throw, not a retry l
 }
 
 // ---- a hostile / broken IdP: the client must refuse, never spin or cache ----
-console.log("D) hostile-IdP responses");
+console.log("E) hostile-IdP responses");
 {
   // A minimal fake IdP whose responses the smoke scripts per-path — the surface a MALICIOUS
   // (not merely misconfigured) IdP controls.

@@ -109,6 +109,25 @@ the configured HTTPS origin. To change these listener flags, stop and restart th
 of an already-running service does not replace its bind or proxy policy. See
 [Identity & auth](identity-and-auth.md#per-user-authentication) for the trust boundary.
 
+### Remote supervised seats by enrollment
+
+A remote seat does not need to run `cotal login` when the mesh owner pre-mints a single-use
+enrollment for it. Mount the enrollment URL as a private file, place the seat persona on the remote
+machine, and launch the foreground seat:
+
+```bash
+COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
+  cotal spawn --config ./worker.md --space main
+```
+
+The URL is redeemed once with an unauthenticated GET. Redirects, off-machine plain HTTP, retries,
+and login fallback are refused. If the seat has no mesh record yet, the enrollment response's stock
+user-bundle fields register it before the launch. The returned actor token then uses the same remote
+auth-service exchange as a login-provisioned agent. The enrollment URL and file path do not enter the
+harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
+for a fresh enrollment. The exact server contract is in
+[Enrollment redeem](identity-and-auth.md#enrollment-redeem).
+
 `cotal status` prints the detailed setup, process, registry, and live mesh status. Its Machine
 section names the running CLI's source checkout, installed package root, or npx package root beside
 the version. A stale Claude skills row names the installed and CLI versions it compared. `cotal

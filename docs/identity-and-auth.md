@@ -175,6 +175,50 @@ more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a 
 credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
 matters to the deployment.
 
+### Enrollment redeem
+
+A remote owner may pre-mint a one-time enrollment for a seat that has no browser, TTY, or cached
+IdP login. The enrollment is a secret-bearing URL. The client performs one request:
+
+```http
+GET <enrollment URL>
+```
+
+It sends no `Authorization` header and no request body. The URL must be HTTPS, except for plain HTTP
+to a loopback IP literal. Redirects are refused. The client never retries because a successful claim
+deletes the server-side token row. The token expires five minutes after mint.
+
+Success is `200` with this JSON object:
+
+```text
+space
+brokerAccess { kind, ... }
+owner
+actor
+lifecycleUid
+actorToken
+sentinelCreds
+authServiceUrl
+idp { url, issuer, audience }
+subscribe[]
+allowSubscribe[]
+allowPublish[]
+```
+
+The grant arrays are informational; the broker row remains authoritative. A stock-dialable
+deployment also includes `server`, `tlsRequired`, and `userAuth`, forming the same user-bundle
+superset that `cotal meshes add --user-auth-file` accepts. That lets a bare seat register the mesh
+from the enrollment response before launch.
+
+Unknown, expired, revoked, and already-used enrollments are intentionally indistinguishable. They
+all return `404 {"error":"unknown, expired, or already-used enrollment"}`. The client reports only
+`enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one`. It does not
+guess which case occurred.
+
+After redeem, the seat stores only the normal remote user-mesh and agent material. The actor token
+is exchanged at `authServiceUrl` through the existing `agent-bearer --exchange-url` path. The
+enrollment URL is not logged, persisted, or forwarded into the harness environment.
+
 The service starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for
 the creds it mints); the operator seed never enters it. It also owns the space's two authority

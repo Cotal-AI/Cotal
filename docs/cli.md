@@ -590,6 +590,27 @@ cotal spawn [<persona>] [--detach] [--name <n>] [--agent <a>] [--model <m>] [--v
 cotal spawn -f <cotal.yaml> [--dry-run]
 ```
 
+For a foreground spawn onto a remote user-auth mesh, a launcher may supply a one-time enrollment
+instead of a cached human login. Prefer a private file:
+
+```bash
+COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
+  cotal spawn --config ./seat.md --space main
+```
+
+The file contains only the enrollment URL and must be mode `0600` on POSIX. An orchestrator that
+cannot mount a file may set `COTAL_ENROLLMENT_URL` instead. Setting both is refused. Enrollment input
+requires `--space` and applies only to a foreground persona spawn. If the mesh is not registered yet,
+the enrollment response must carry the stock user-bundle fields and the command needs
+`--config <persona-file>` because there is no local remote-mesh persona catalog to read. The client
+redeems the URL once, registers the returned mesh material, exchanges the returned actor token at the
+pinned auth service, and removes both enrollment variables from the harness environment.
+
+A cached login for the same IdP and an enrollment are conflicting proofs, so the command refuses
+rather than choosing one. An invalid enrollment never falls back to login provisioning. Unknown,
+expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
+one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |

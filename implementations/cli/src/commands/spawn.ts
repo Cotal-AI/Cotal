@@ -1,5 +1,5 @@
 import { spawn as spawnProcess, execFile } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
@@ -45,6 +45,7 @@ import {
   defaultPersonaRef,
   launchFlags,
   loadMeshes,
+  findMesh,
   getSpaceAuth,
   materializeSecretToFile,
   mergeLaunchOptions,
@@ -65,6 +66,108 @@ import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
+import {
+  checkDialPolicy,
+  checkEnforcement,
+  checkServer,
+  checkUserBundle,
+  persistRemoteUserEntry,
+  probeEnforcement,
+  tlsIntent,
+  userExchangeIssuer,
+  verifyUserExchange,
+  type UserBundle,
+} from "./meshes-add.js";
+
+const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
+const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
+
+export function enrollmentInput(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const rawUrl = env[ENROLLMENT_URL_ENV]?.trim();
+  const file = env[ENROLLMENT_FILE_ENV]?.trim();
+  if (rawUrl && file)
+    throw new Error(`both ${ENROLLMENT_URL_ENV} and ${ENROLLMENT_FILE_ENV} are set - pass one enrollment source, not both`);
+  if (rawUrl) return rawUrl;
+  if (!file) return undefined;
+  let st: ReturnType<typeof statSync>;
+  try {
+    st = statSync(file);
+  } catch (e) {
+    throw new Error(`cannot read the enrollment file (${e instanceof Error ? e.message : String(e)})`);
+  }
+  if (!st.isFile()) throw new Error("the enrollment file path is not a regular file");
+  if (process.platform !== "win32" && (st.mode & 0o777) !== 0o600)
+    throw new Error("the enrollment file must have mode 0600");
+  const value = readFileSync(file, "utf8").trim();
+  if (!value) throw new Error("the enrollment file is empty");
+  return value;
+}
+
+export function scrubEnrollmentEnv(env: Record<string, string> | undefined): void {
+  if (!env) return;
+  for (const key of Object.keys(env)) {
+    const normalized = key.toUpperCase();
+    if (normalized === ENROLLMENT_URL_ENV || normalized === ENROLLMENT_FILE_ENV) delete env[key];
+  }
+}
+
+interface EnrollmentBundle extends RemoteAgentMaterial {
+  space: string;
+  brokerAccess: { kind: string; [key: string]: unknown };
+  authServiceUrl: string;
+  idp: { url: string; issuer: string; audience: string };
+  server?: string;
+  tlsRequired?: boolean;
+  userAuth?: unknown;
+}
+
+function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: EnrollmentBundle; stock?: UserBundle } {
+  const material = checkRemoteAgentMaterial(raw, actor);
+  if (!material.ok) throw new Error(material.message.replaceAll("agent-provisioning endpoint", "enrollment endpoint"));
+  const o = raw as Partial<EnrollmentBundle>;
+  if (typeof o.space !== "string" || !o.space) throw new Error("the enrollment bundle names no space");
+  if (o.brokerAccess === null || typeof o.brokerAccess !== "object" || typeof o.brokerAccess.kind !== "string" || !o.brokerAccess.kind)
+    throw new Error("the enrollment bundle carries no brokerAccess kind");
+  if (typeof o.authServiceUrl !== "string" || !o.authServiceUrl)
+    throw new Error("the enrollment bundle carries no authServiceUrl");
+  const idp = o.idp;
+  if (idp === null || typeof idp !== "object" || typeof idp.url !== "string" || !idp.url ||
+      typeof idp.issuer !== "string" || !idp.issuer || typeof idp.audience !== "string" || !idp.audience)
+    throw new Error("the enrollment bundle carries no complete idp { url, issuer, audience }");
+  let stock: UserBundle | undefined;
+  const stockFields = [o.server, o.tlsRequired, o.userAuth];
+  if (stockFields.some((v) => v !== undefined)) {
+    if (stockFields.some((v) => v === undefined))
+      throw new Error("the enrollment bundle's stock mesh fields must include server, tlsRequired, and userAuth together");
+    const checked = checkUserBundle(JSON.stringify({
+      space: o.space,
+      server: o.server,
+      tlsRequired: o.tlsRequired,
+      userAuth: o.userAuth,
+      sentinelCreds: material.material.sentinelCreds,
+    }));
+    if (!checked.ok) throw new Error(checked.message.replace(/^✗\s*/, ""));
+    stock = checked.value;
+    if (stock.userAuth.idp.url !== idp.url || stock.userAuth.idp.issuer !== idp.issuer || stock.userAuth.idp.audience !== idp.audience)
+      throw new Error("the enrollment bundle's stock userAuth IdP pins do not match its top-level idp pins");
+    if (stock.userAuth.endpoints?.url !== o.authServiceUrl)
+      throw new Error("the enrollment bundle's stock userAuth exchange URL does not match authServiceUrl");
+  }
+  return { bundle: { ...o, ...material.material, idp } as EnrollmentBundle, ...(stock ? { stock } : {}) };
+}
+
+async function registerEnrollmentMesh(stock: UserBundle, root: string): Promise<void> {
+  const serverCheck = checkServer(stock.server);
+  if (!serverCheck.ok) throw new Error(serverCheck.message.replace(/^✗\s*/, ""));
+  const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
+  const dial = checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false });
+  if (!dial.ok) throw new Error(dial.message.replace(/^✗\s*/, ""));
+  const exchange = await verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space));
+  if (!exchange.ok) throw new Error(exchange.message.replace(/^✗\s*/, ""));
+  const enforcement = checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root);
+  if (!enforcement.ok) throw new Error(enforcement.message.replace(/^✗\s*/, ""));
+  persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.value.residual));
+}
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
  *  is a persona from the mesh this spawn would target. Resolved OFFLINE (registry + `current`, no
@@ -309,6 +412,34 @@ async function spawnDetached(
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const values = args.values as FlagValues<typeof spawnFlags>;
+  let enrollmentUrl: string | undefined;
+  try {
+    enrollmentUrl = enrollmentInput();
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  if (enrollmentUrl && (values.detach || values.file)) {
+    console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
+    process.exit(1);
+  }
+  if (enrollmentUrl && !values.space) {
+    console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`));
+    process.exit(1);
+  }
+  const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));
+  if (enrollmentBootstrap) {
+    if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
+      console.error(c.red("✗ enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet"));
+      process.exit(1);
+    }
+    try {
+      loadAgentFile(resolvePath(values.config));
+    } catch (e) {
+      console.error(c.red(`✗ cannot load the enrollment bootstrap persona: ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
 
   // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
   // ownership-scoped). The broker must already be reachable; bringing up a fresh mesh is `up -f`.
@@ -375,6 +506,31 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
+  let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
+  // An enrollment may bootstrap the stock remote user-mesh record before normal target resolution.
+  // Redeem only when the named space is not registered; an existing entry defers redemption until
+  // after persona resolution so the response actor can be checked against the requested identity.
+  if (enrollmentBootstrap) {
+    let provider: ReturnType<typeof resolveAuthProvider>;
+    try {
+      provider = resolveAuthProvider();
+      if (!provider.postAgentEnrollment)
+        throw new Error(`the registered auth provider "${provider.name}" cannot redeem remote agent enrollments`);
+      const body = await provider.postAgentEnrollment({ url: enrollmentUrl! });
+      const actor = typeof (body as { actor?: unknown })?.actor === "string" ? (body as { actor: string }).actor : "";
+      if (!actor) throw new Error("the enrollment endpoint returned no actor - it cannot launch this seat");
+      redeemedEnrollment = checkEnrollmentBundle(body, actor);
+      if (redeemedEnrollment.bundle.space !== values.space)
+        throw new Error(`the enrollment is for space "${redeemedEnrollment.bundle.space}" but --space names "${values.space}"`);
+      if (!redeemedEnrollment.stock)
+        throw new Error("space is not registered and the enrollment bundle carries no stock { server, tlsRequired, userAuth } mesh material");
+      await registerEnrollmentMesh(redeemedEnrollment.stock, resolvePath(values.config!, ".."));
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
+
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
   // selected `current` mesh, a local project, or the registry's only running mesh.
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
@@ -386,7 +542,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const ref = spawnPersonaRef(values.config, positionals);
-  const path = agentFilePath(target.root, ref);
+  const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(target.root, ref);
   let def: AgentDef;
   try {
     def = loadAgentFile(path);
@@ -420,6 +576,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // --name / --role override the file (name defaults from the file's frontmatter).
   const requested = values.name ?? def.name;
   const role = values.role ?? def.role;
+  if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
+    console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
+    process.exit(1);
+  }
 
   // Preflight: fail with one sentence if the mesh is down or won't take our creds, instead of
   // crashing mid-connect with a raw NATS Authorization Violation.
@@ -506,13 +666,46 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const remoteProvisioningUrl = target.mode === "user" && target.userAuth?.remote
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
-  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl) {
+  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl) {
     console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
     process.exit(1);
   }
-  if (remoteProvisioningUrl) {
-    const remote = await provisionRemoteUserForeground(target, name, remoteProvisioningUrl);
+  if (target.mode === "user" && target.userAuth?.remote && enrollmentUrl) {
+    if (!redeemedEnrollment) {
+      try {
+        const provider = resolveAuthProvider();
+        if (!provider.postAgentEnrollment)
+          throw new Error(`the registered auth provider "${provider.name}" cannot redeem remote agent enrollments`);
+        const body = await provider.postAgentEnrollment({ url: enrollmentUrl, idpUrl: target.userAuth.idp.url });
+        redeemedEnrollment = checkEnrollmentBundle(body, name);
+      } catch (e) {
+        console.error(c.red(`✗ ${(e as Error).message}`));
+        process.exit(1);
+      }
+    }
+    const enrolled = redeemedEnrollment.bundle;
+    if (enrolled.space !== space) {
+      console.error(c.red(`✗ the enrollment is for space "${enrolled.space}" but this spawn targets "${space}"`));
+      process.exit(1);
+    }
+    if (enrolled.idp.url !== target.userAuth.idp.url || enrolled.idp.issuer !== target.userAuth.idp.issuer || enrolled.idp.audience !== target.userAuth.idp.audience) {
+      console.error(c.red("✗ the enrollment's IdP pins do not match the registered mesh"));
+      process.exit(1);
+    }
+    if (target.userAuth.endpoints?.url !== enrolled.authServiceUrl) {
+      console.error(c.red("✗ the enrollment's authServiceUrl does not match the registered mesh exchange"));
+      process.exit(1);
+    }
+    const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl });
+    userAuth = remote.userAuth;
+    userCleanup = remote.cleanup;
+    if (remote.material.subscribe) subscribe = remote.material.subscribe;
+    if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
+    if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+    lifecycleUid = remote.material.lifecycleUid;
+  } else if (remoteProvisioningUrl) {
+    const remote = await provisionRemoteUserForeground(target, name, { provisioningUrl: remoteProvisioningUrl });
     userAuth = remote.userAuth;
     userCleanup = remote.cleanup;
     // The mesh's grant is the authority on what this agent may read and post; the launch forwards
@@ -667,6 +860,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // construction because its write-ahead log had nowhere to live that a later start would look.
       workspaceRoot: target.root,
     });
+    scrubEnrollmentEnv(spec.env);
 
     // What happens next belongs to the CONNECTOR: naming one harness's first-run gate for all of
     // them sends the operator looking for a prompt that never appears, and reads as a hang.
@@ -775,7 +969,7 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
 async function provisionRemoteUserForeground(
   target: MeshTarget,
   name: string,
-  provisioningUrl: string,
+  source: { provisioningUrl: string } | { body: unknown; exchangeUrl: string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; material: RemoteAgentMaterial }> {
   const { space } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -785,24 +979,30 @@ async function provisionRemoteUserForeground(
     console.error(c.red(`✗ ${msg}`));
     process.exit(1);
   };
-  const idpUrl = target.userAuth?.idp.url;
-  if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
   let provider: ReturnType<typeof resolveAuthProvider>;
   try {
     provider = resolveAuthProvider();
   } catch (e) {
     return fail((e as Error).message);
   }
-  // The login proof rides the provisioning request, so the POST is the PROVIDER's (this package
-  // never touches the session cache); its thrown sentences are already operator-exact — the
-  // no-login gate names the `cotal login --idp …` line, a refusal carries the mesh's own reason.
-  if (!provider.postAgentProvisioning)
-    return fail(`the registered auth provider "${provider.name}" cannot provision agents on a remote mesh - run the agent where the mesh runs`);
   let body: unknown;
-  try {
-    body = await provider.postAgentProvisioning({ url: provisioningUrl, idpUrl, actor: name });
-  } catch (e) {
-    return fail((e as Error).message);
+  let exchangeUrl = target.userAuth?.endpoints?.url;
+  if ("body" in source) {
+    body = source.body;
+    exchangeUrl = source.exchangeUrl;
+  } else {
+    const idpUrl = target.userAuth?.idp.url;
+    if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
+    // The login proof rides the provisioning request, so the POST is the PROVIDER's (this package
+    // never touches the session cache); its thrown sentences are already operator-exact — the
+    // no-login gate names the `cotal login --idp …` line, a refusal carries the mesh's own reason.
+    if (!provider.postAgentProvisioning)
+      return fail(`the registered auth provider "${provider.name}" cannot provision agents on a remote mesh - run the agent where the mesh runs`);
+    try {
+      body = await provider.postAgentProvisioning({ url: source.provisioningUrl, idpUrl, actor: name });
+    } catch (e) {
+      return fail((e as Error).message);
+    }
   }
   const checked = checkRemoteAgentMaterial(body, name);
   if (!checked.ok) return fail(checked.message);
@@ -819,7 +1019,6 @@ async function provisionRemoteUserForeground(
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
     // exchange instead of a local service. A dead auth chain stops the spawn here.
-    const exchangeUrl = target.userAuth?.endpoints?.url;
     if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
     const bearerCmd = [
       process.execPath,
