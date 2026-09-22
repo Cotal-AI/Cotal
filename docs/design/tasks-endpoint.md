@@ -97,6 +97,11 @@ as an open question rather than assuming it.
 One event, `board-changed`, on the cluster event topic `ev.ai_cotal_tasks.board-changed`
 (SPEC §13.2 reserved event topics: `ev.<cluster>.<event>`).
 
+That topic is a subject **tail**, not a subject. `epeSubject` in
+`packages/core/src/endpoint-subjects.ts` builds what a provider publishes on as
+`cotal.<space>.epe.<endpoint>.<instanceId>.<epoch>.<topic...>`, so a reader subscribes to the whole
+subject and never to the topic alone. Section 6 gives the filter a reviewer uses.
+
 Payload, closed: `{ changeSeq: integer, observedAt: integer }`. `changeSeq` is a monotone counter the
 provider advances when anything in its store that this contract exposes has changed. `observedAt` is
 epoch milliseconds.
@@ -531,7 +536,7 @@ against it and observe the stated result. Every check is phrased against what `c
 `cotal invoke` actually surface: `describeCmd` prints the command name, the capability, and the
 targeting shape, and `invokeCmd` prints the reply data or the error code with its message.
 
-**Two checks need more than today's CLI, and the record says which rather than implying the CLI can do
+**Three checks need more than today's CLI, and the record says which rather than implying the CLI can do
 more than it does.** `resolveTarget` in `implementations/cli/src/commands/describe.ts` builds a target
 block from `--self` alone, or from `--name` against the manager endpoint only: it exits with a named
 refusal for any other endpoint, because alias resolution runs through the manager's `inspect`. So a
@@ -542,6 +547,19 @@ And `invokeFlags` in the same file carries no id flag, while `epCall` in
 (`const requestId = op.id !== undefined ? assertIdToken(...) : nonce()`), so a repeated `cotal invoke`
 sends a different envelope id every time and cannot demonstrate id idempotency. That check pins the id
 through `invokeCommand`'s `opts.id`.
+
+The third is the event check. The CLI has no event-subscription command at all: nothing under
+`implementations/cli/src` calls `epWatchEvents`, so no `cotal` invocation observes the event plane. A
+reviewer subscribes through `epWatchEvents` in `packages/core/src/endpoint-verbs.ts`, which core
+re-exports, and it takes a **fully qualified filter**: it throws when the filter does not start with
+`cotal.<space>.epe.`. The subject a provider publishes on is built by `epeSubject` in
+`packages/core/src/endpoint-subjects.ts` as
+`cotal.<space>.epe.<endpoint>.<instanceId>.<epoch>.<topic...>`, so the cluster topic
+`ev.ai_cotal_tasks.board-changed` is the **tail** of that subject and never a subject a reader can
+subscribe to on its own. The filter a reviewer uses is
+`cotal.<space>.epe.<endpoint-token>.*.*.ev.ai_cotal_tasks.board-changed`, with the instance and epoch
+wildcarded because a reader does not know which instance will publish, and the reader needs a §13.9
+read grant covering that subtree.
 
 1. `cotal describe <endpoint>` lists the eight commands of section 1 with the capability and the
    targeting shape that table gives. A missing command, a different capability, or a different targeting
@@ -607,10 +625,12 @@ one task from creation to terminal.
     is still present, since section 3 keeps the record of who finished the work.
 22. `my-tasks --self` lists that task while it is `claimed` and continues to list it at `done`, so a
     seat can see its own finished work rather than losing it at the terminal.
-23. A reader subscribed to `ev.ai_cotal_tasks.board-changed` observes at least one event across the
-    sequence in checks 18 to 21, and its payload carries only `changeSeq` and `observedAt`. No event
-    body carries a task id, a title, or a status. A provider that emits nothing fails; one that emits a
-    task body fails for the opposite reason.
+23. A reader watching `cotal.<space>.epe.<endpoint-token>.*.*.ev.ai_cotal_tasks.board-changed` through
+    `epWatchEvents` observes at least one event across the sequence in checks 18 to 21, and its payload
+    carries only `changeSeq` and `observedAt`. No event body carries a task id, a title, or a status. A
+    provider that emits nothing fails; one that emits a task body fails for the opposite reason. The
+    endpoint token is the deployment's endpoint name with its labels joined by `_`, per `endpointToken`
+    in `packages/core/src/endpoint-subjects.ts`.
 24. `list-tasks` across that sequence reports a `changeSeq` that never decreases, and a page whose
     `appliedLimit` is present on every answer.
 
