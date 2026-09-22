@@ -3,6 +3,49 @@
 A design record, not a description of shipped behavior. Every claim about current behavior
 names the file and the function it was read from. Everything else is proposed.
 
+## Status
+
+Part of this record now ships. The design below is left as written; this note says which sections
+are implemented, where, and what changed against what they propose.
+
+Shipped:
+
+- **1.3 steps 7 and 8, capture and seal.** `captureSeatCheckpoint` in
+  `implementations/cli/src/lib/seat-capture.ts`, called from `preserveStateDown` in
+  `implementations/cli/src/commands/down.ts` after the cut has proven the stack down.
+- **2.2, the three admission gates.** `assertSeatCheckpointIntegrity`,
+  `assertSeatCheckpointIdentity` and `admitSeatCheckpointRecency` in
+  `packages/workspace/src/seat-checkpoint.ts`, driven from the ordinary resume path in
+  `implementations/cli/src/commands/up.ts` through `admitSeatCheckpoints` in
+  `implementations/cli/src/lib/seat-admission.ts`. The overrides are `--accept-stale-checkpoint`
+  and `--accept-recorded-profile`.
+- **3.2 and 3.3, the per-seat writer generation and its handover.**
+  `loadSeatWriterGeneration` and `advanceSeatWriterGeneration` in
+  `packages/workspace/src/auth-paths.ts`, claimed by the destination before it launches anything.
+- **5.4, the continuity class.** Recorded in every checkpoint from `sessionContinuityClass` over
+  the connector's declared capabilities.
+
+The record shape, its reader and the gates live in `packages/workspace` rather than in either
+implementation, because `implementations/*` never depend on each other and both the CLI and the
+manager can reach the workspace layer.
+
+Two changes against what the sections below propose, both found by running the code:
+
+- **The untracked selection rule excludes `.cotal/`.** Section 6's capture uses
+  `git ls-files --others --exclude-standard` alone. When a seat's `cwd` is also the mesh root,
+  which is the ordinary single-root case, the control directory is untracked and that selection
+  pulls `auth/broker.json`, the space account, the manager instance identity's private seed and the
+  seat's own credentials into the artifact, contradicting 1.2. The shipped rule excludes the
+  control directory and records that it does.
+- **Checkpoints are scoped by the preservation attempt.** A shared per-seat directory makes the
+  second cut in a root impossible, because the writer refuses a destination that already exists and
+  deleting the previous one would destroy an artifact a rollback still needs. The path is
+  `.cotal/maintenance/v<N>/checkpoints/<attemptId>/<seat>/`, from `seatCheckpointDir`.
+
+Not shipped, and still open as the sections describe them: the eviction evidence a destination
+needs for the residual case in 3.3, the harness store paths for pi (4 in Open points, still an
+operator input), and everything in section 4.
+
 ## The question
 
 A managed seat is a harness process (pi, Claude Code, jcode) that a Cotal manager spawned and owns.

@@ -166,6 +166,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
+| `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
+| `--accept-recorded-profile` | off | Resume a seat under the launch profile revision its checkpoint was cut at, rather than this host's |
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable |
@@ -468,7 +470,32 @@ ever rolls back a live attempt. A registry-only artifact restores as registry-on
 `--restore-only registry` is passed; omitted infrastructure is always created and the exact
 post-restore stream inventory is asserted before commit intent. Ordinary `up` from a preserved cut
 resumes only the exact recorded source store and runtime; a contradicting `--store-dir` or
-`--runtime` fails in preflight. Authenticated restores validate the complete
+`--runtime` fails in preflight.
+
+**Admitting a seat checkpoint.** An ordinary `up` from a preserved cut admits that cut's seat
+checkpoints before it journals the resume attempt and before any process starts, so a refusal costs
+nothing. Three gates run in order, each naming what it saw.
+
+1. *Integrity.* Every file the record names must be present, a regular non-symlink file, the
+   recorded byte size and the recorded sha256, re-stat'd after the read so a file that moved is a
+   refusal. Failure here consults no other gate.
+2. *Identity.* The recorded space must match, the recorded `lifecycleUid` must not belong to a live
+   incarnation, and the profile revision must match this host's or be resumed under deliberately
+   with `--accept-recorded-profile`. This gate has no blanket override, which is the only reason the
+   next one may have one.
+3. *Recency.* `capturedAt` is compared to this host's clock against the horizon the record carries.
+   Inside it, the seat resumes. Outside it, `up` refuses and prints the capture instant, the clock
+   reading and the horizon; `--accept-stale-checkpoint` admits it anyway and the exercised consent
+   is printed with the actual age. An unreadable `capturedAt` is refused with no override, because a
+   freshness gate that fails open is not a gate.
+
+Custody transfers only after all three pass. The destination claims the recorded generation plus one
+by exclusive create, before it launches anything. A lost create means another destination is already
+claiming that seat, and it refuses with `seat-writer-generation-create-lost` rather than adopting
+the winner and becoming a second writer. The recorded `lifecycleUid` is reused and never minted, so
+the resumed seat binds the same lifecycle-keyed durables.
+
+Authenticated restores validate the complete
 space trust bundle before staging, including nkeys, seed matches, JWTs, signers, and space binding;
 full restores commit to the validated operator, system-account, data-account, and active-signer root
 chain in addition to the static/user authority fingerprint. Because the system account is part of that

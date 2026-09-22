@@ -37,6 +37,20 @@ export const SEAT_CHECKPOINT_RECORD = "checkpoint.json";
  *  a reader must be able to size its buffer before it trusts anything in the file. */
 export const MAX_SEAT_CHECKPOINT_BYTES = 1024 * 1024;
 
+/**
+ * Where one cut's seat checkpoints live: `.cotal/maintenance/v<N>/checkpoints/<attempt>/<seat>/`.
+ *
+ * Scoped by the preservation attempt, not shared across cuts. The writer refuses a destination
+ * that already exists, which is what makes a checkpoint immutable once sealed; without the attempt
+ * in the path the second cut in a root would refuse on the first seat's leftover directory, and
+ * deleting the old one to make room would destroy the artifact a rollback still needs.
+ */
+export function seatCheckpointDir(root: string, attemptId: string, version = 1): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/.test(attemptId))
+    fail(`invalid preservation attempt id for a checkpoint path: ${JSON.stringify(attemptId)}`);
+  return join(root, ".cotal", "maintenance", `v${version}`, "checkpoints", attemptId);
+}
+
 /** One captured file, addressed by its name inside the checkpoint directory. */
 export interface SeatCheckpointFile {
   /** Basename within the checkpoint directory. Never a path, so a record cannot name a file

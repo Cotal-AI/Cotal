@@ -34,12 +34,12 @@ import {
   MANAGER_PIDFILE,
   type LocalProcess,
   type LocalProcessContext,
-  MAINTENANCE_JOURNAL_VERSION,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
   writeMaintenanceResumeDocument,
   loadSeatWriterGeneration,
   materializeFromManifest,
   type MaintenanceResumeDescriptor,
+  seatCheckpointDir,
   type SeatCheckpoint,
   type JsonValue,
 } from "@cotal-ai/workspace";
@@ -526,9 +526,6 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     throw new Error(`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`);
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
-  // One directory per cut, beside the maintenance tree the cut already writes. The per-seat
-  // subdirectory inside it is created by the checkpoint writer, which refuses one that exists.
-  const checkpointDir = join(root, ".cotal", "maintenance", `v${MAINTENANCE_JOURNAL_VERSION}`, "checkpoints");
   const lock = acquireMaintenanceLock(root);
   try {
     const all = localProcessSurface();
@@ -754,7 +751,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     // (`commitPreservation` above returned state "preserved" with no failures) and the whole stack
     // is down, so nothing is writing to a working tree or a transcript. A capture any earlier races
     // the harness by construction.
-    const captured = await captureSeatCheckpoints(root, mesh.space, resume, checkpointDir);
+    const captured = await captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId));
     completeMaintenanceCut(lock, {
       attemptId,
       observedAt: new Date().toISOString(),
@@ -766,7 +763,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     console.log(c.dim(`  source: ${storeDir}`));
     console.log(c.dim(`  resume inventory: ${join(root, ".cotal", "maintenance", "v1", resume.file)}`));
     for (const seat of captured)
-      console.log(c.dim(`  checkpoint: ${seat.name} (${seat.session.continuity}, generation ${seat.generation}) -> ${join(checkpointDir, seat.name)}`));
+      console.log(c.dim(`  checkpoint: ${seat.name} (${seat.session.continuity}, generation ${seat.generation}) -> ${join(seatCheckpointDir(root, attemptId), seat.name)}`));
     console.log(c.dim("  stack remains stopped; create a backup or deliberately resume with `cotal up`"));
   } finally {
     releaseMaintenanceLock(lock);
