@@ -283,10 +283,10 @@ interface ManagedEnvironmentRecord {
   provider: HostedEnvironmentRecordText;
   providerRef: HostedEnvironmentRecordText;
   space: HostedEnvironmentRecordText;
-  host: HostedEnvironmentRecordText;
-  arch: HostedEnvironmentRecordText;
-  engine: HostedEnvironmentRecordText;
-  volumeId: HostedEnvironmentRecordText;
+  host?: HostedEnvironmentRecordText;
+  arch?: HostedEnvironmentRecordText;
+  engine?: HostedEnvironmentRecordText;
+  volumeId?: HostedEnvironmentRecordText;
   image: HostedEnvironmentRecordImage;
   owner: HostedEnvironmentRecordText;
   createdAt: number;
@@ -316,6 +316,9 @@ Contract:
   reference, normalized architecture, probe result and `probedAt`.
 - The manager maps provider observations to the closed record state. `stoppedAt` is present only after
   a proved stop. `expiresAt` is absent only when the provider did not report a deadline.
+- `host`, `arch`, `engine`, `volumeId` and `expiresAt` are absent when the provider did not report the
+  fact. Section 8 host enrollment facts remain authoritative for `arch` and `engine`.
+- `createdAt`, `stoppedAt`, `expiresAt` and `probedAt` are epoch milliseconds.
 - `providerRef` is opaque and may change after provider reconciliation. `id` never changes.
 - Every record update is appended or replaced through the manager's durable environment journal
   before it is served.

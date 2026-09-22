@@ -283,10 +283,10 @@ export interface ManagedEnvironmentRecord {
   provider: HostedEnvironmentRecordText;
   providerRef: HostedEnvironmentRecordText;
   space: HostedEnvironmentRecordText;
-  host: HostedEnvironmentRecordText;
-  arch: HostedEnvironmentRecordText;
-  engine: HostedEnvironmentRecordText;
-  volumeId: HostedEnvironmentRecordText;
+  host?: HostedEnvironmentRecordText;
+  arch?: HostedEnvironmentRecordText;
+  engine?: HostedEnvironmentRecordText;
+  volumeId?: HostedEnvironmentRecordText;
   image: HostedEnvironmentRecordImage;
   owner: HostedEnvironmentRecordText;
   createdAt: number;
