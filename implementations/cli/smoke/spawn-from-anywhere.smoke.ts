@@ -136,6 +136,7 @@ try {
   const enrollmentFile = join(neutral, "enrollment.url");
   writeFileSync(enrollmentFile, "https://auth.example/enroll/secret\n", { mode: 0o600 });
   check("enrollment file input trims and returns the secret URL", enrollmentInput({ COTAL_ENROLLMENT_FILE: enrollmentFile }) === "https://auth.example/enroll/secret");
+  check("enrollment URL env value is taken byte for byte, terminator included", enrollmentInput({ COTAL_ENROLLMENT_URL: "https://auth.example/enroll/secret\n" }) === "https://auth.example/enroll/secret\n");
   assert.throws(() => enrollmentInput({ COTAL_ENROLLMENT_FILE: enrollmentFile, COTAL_ENROLLMENT_URL: "https://other.example/enroll/secret" }), /both COTAL_ENROLLMENT/);
   check("enrollment file and URL conflict before selection", true);
   if (process.platform !== "win32") {
