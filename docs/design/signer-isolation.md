@@ -429,22 +429,56 @@ that may change uid. The manager never receives `CAP_SETUID`.
   4. Then `fork`, `setgid` / `initgroups` / `setuid` to `cotal-agent`, `exec` the existing
      custodian entry with the launch JSON on stdin. That is today's `launchSeat` minus
      same-uid `spawn`. The PTY child then inherits `cotal-agent` without a second drop.
-- After the drop, `runCustodian` (`packages/seat/src/custodian.ts`) `mkdirSync`s
-  `dirname(launch.socket)` (`0o700`), `listen`s, `chmodSync(launch.socket, 0o600)`, and
-  `writeRecord` (`packages/seat/src/record.ts`) writes `record.json` `0600` then
-  `chmodSync(dirname(path), 0o700)`. Those modes would hide the socket from
-  `cotal-manager`. The helper therefore `chmod`s the seat directory `0750` `cotal-agent:cotal-manager`
-  **after** `exec` returns the ready line (or the custodian, once it knows it is
-  `cotal-agent` with a manager-group gid, writes `record.json` `0640`, `seat.sock` `0660`,
-  and the directory `0750`). Either way, adopt from `cotal-manager` can open `seat.sock`
-  because `/var/lib/cotal` is `0711` and the seat directory is `0750` group-readable.
-  `SO_PEERCRED` on that socket continues to require the manager uid. If the ready line
-  never arrives (custodian `EACCES` on a non-traversable ancestor), this post-ready
-  chmod does not run; that is why the ancestor walk is before `setuid`.
-- The helper never reads the account signing seed and is not on the signer allowlist. It
-  never chmods a path it did not create in this request except the per-seat directory
-  after ready (the `0750` restore above). A `COTAL_SEAT_ROOT` under `~/.cotal` is a
-  mismatch of (2) and is refused.
+- After the drop, today's `runCustodian` (`packages/seat/src/custodian.ts`)
+  `mkdirSync`s `dirname(launch.socket)` (`0o700`), `listen`s, `chmodSync(launch.socket,
+  0o600)`, and `writeRecord` (`packages/seat/src/record.ts`) writes `record.json`
+  `0600` then `chmodSync(dirname(path), 0o700)`. Measured on a live `launchSeat` in
+  this worktree: directory `0700`, `seat.sock` `0600`, `record.json` `0600`. Applying
+  only a helper `chmod` of the per-seat directory to `0750` left the two leaves
+  `0600`. Directory group access does not add group permission to a `0600` leaf
+  owned by `cotal-agent`. `CustodialPtyRuntime.spawn` then `adoptSeatSync`s
+  (`custodial-pty.ts`); `SeatClient.connect` (`packages/seat/src/client.ts`)
+  `connect`s `this.record.socket`; `loadSeat` / `readRecord` (`record.ts`)
+  `readFileSync` the record. A distinct `cotal-manager` uid cannot open those
+  leaves. Isolation therefore changes the custodian, not a helper chmod of the
+  directory. Once the dropped process knows it is `cotal-agent` with
+  supplementary group `cotal-manager`, it writes:
+
+  | Path | Mode | Owner |
+  |---|---|---|
+  | `/var/lib/cotal/seats/<id>` | `0750` | `cotal-agent:cotal-manager` |
+  | `/var/lib/cotal/seats/<id>/record.json` | `0640` | `cotal-agent:cotal-manager` |
+  | `/var/lib/cotal/seats/<id>/seat.sock` | `0660` | `cotal-agent:cotal-manager` |
+
+  `writeRecord` must stop resetting the directory to `0700`. The helper does
+  not chmod any leaf after `exec`. A helper-only branch that restores only
+  the directory to `0750` is refused: it cannot be adopted. Today's
+  `handle` in `runCustodian` also refuses any peer whose `SO_PEERCRED` uid
+  is not `process.getuid()` (the "peer uid mismatch" destroy). After the
+  drop that uid is `cotal-agent`, so a distinct `cotal-manager` would be
+  refused even on a `0660` socket. Isolation therefore changes that check
+  to an allowlist of the manager uid (the same pattern as the signer
+  socket). Group `0660` is how that uid reaches the listen path; the
+  allowlist is who may stay connected.
+- Readiness is the seat record, not a helper stdout line. `launchSeat`
+  (`packages/seat/src/launcher.ts`) polls `readRecord(recPath)` until
+  `custodianPid > 0` and `childPid > 0`. The dropped custodian still writes
+  that record (`writeRecord` in `runCustodian`). The JSON line
+  `{ ready: true, childPid, custodianPid }` is written to `custodian.log`
+  when `logPath` is set, else to stdout (`custodian.ts`). Isolation's
+  helper `exec`s with the same launch JSON, so `logPath` is set and stdout
+  is not the channel. The helper waits on `record.json` the same way
+  `launchSeat` does. If that record never appears, spawn throws. Today's
+  `launchSeat` is `detached: true` and, on an early custodian exit, reads
+  `custodian.log` (`launcher.ts`). Isolation's helper is the parent of
+  the `fork`/`exec` (not a detached spawn), so an exit before
+  `writeRecord` is `waitpid`, not a read of that `0600` log. The log
+  stays agent-owned; it is not the ready channel.
+- The helper never reads the account signing seed and is not on the signer
+  allowlist. After `exec` it never chmods a path it created in this
+  request. A `COTAL_SEAT_ROOT` under `~/.cotal` is a mismatch of (2) and is
+  refused. The ancestor walk stays before `setuid` so the dropped
+  custodian can create the leaves at all.
 
 `CustodialPtyRuntime.spawn` becomes a client of this socket. It no longer `mkdirSync`s the
 root itself on Linux static-auth: that create is the helper's privileged step. If the
@@ -500,6 +534,10 @@ No fallback to in-process signing. Named refusals:
   meshes have no signer and are unchanged.
 - Seat-launch socket missing, peer not the helper, or helper not privileged: throw at start
   and at spawn. No in-process `pty.spawn` fallback on Linux static-auth.
+- Dropped custodian still writes `record.json` `0600`, `seat.sock` `0600`, or
+  directory `0700`, or still requires peer uid `=== process.getuid()`: throw
+  at spawn. `cotal-manager` cannot poll or adopt. No helper-only chmod
+  fallback.
 
 `SecretStore` adapters that export the seed into the manager process do not satisfy this
 design. A KMS that signs without export is a different implementation of the same
@@ -776,8 +814,10 @@ same steps.
    `$HOME/.cotal/seats`: that ancestor is `0700` `cotal-manager` (`mkSecretDir`) and the
    helper refuses it. Agents are `cotal-agent` only because that helper creates and
    chowns `/var/lib/cotal/seats` and the per-seat directory, then `setuid`s before
-   `exec` of the custodian; the manager never drops uid itself and never `mkdir`s a
-   `0700` seats tree under `~/.cotal`.
+   `exec` of the custodian. The dropped custodian, not the helper, then writes
+   `record.json` `0640` and `seat.sock` `0660` so `cotal-manager` can poll and
+   adopt. The manager never drops uid itself and never `mkdir`s a `0700` seats
+   tree under `~/.cotal`.
 6. `cotal mint`, `cotal doctor auth --fix`, and `remintDaemonCreds` use the same signer
    socket. They run as a uid on the signer allowlist.
 
@@ -792,7 +832,9 @@ same steps.
 | Socket up, seed file still `0600` as the old operator uid | isolation is not on; start refuses if that uid is the manager uid |
 | No `cotal-seat-launch` socket / helper not privileged | start refuses: cannot drop to `cotal-agent` |
 | Helper drops uid without chown of the custody root | spawn never becomes ready: `runCustodian` cannot write `seat.sock` under a `0700` manager-owned root (`custodial-pty.ts` constructor, `launchSeat`, `writeRecord`) |
-| Custody root still `$HOME/.cotal/seats`, or any ancestor `0700` `cotal-manager` | helper refuses before `setuid`: `cotal-agent` cannot traverse `mkSecretDir`'s `0700` `~/.cotal`; post-ready chmod never runs |
+| Helper chmods only the per-seat directory after ready, leaving shipped `0600` leaves | start / spawn refuse: `cotal-manager` cannot `readRecord` or `connect` `seat.sock` (`writeRecord` `0600`, `runCustodian` `chmodSync(socket, 0o600)`). The custodian must write `0640` / `0660` / `0750` |
+| Dropped custodian still requires peer uid `=== process.getuid()` | spawn / adopt refuse: `handle` in `runCustodian` destroys a distinct `cotal-manager` with "peer uid mismatch". The check must allowlist the manager uid |
+| Custody root still `$HOME/.cotal/seats`, or any ancestor `0700` `cotal-manager` | helper refuses before `setuid`: `cotal-agent` cannot traverse `mkSecretDir`'s `0700` `~/.cotal`; `writeRecord` never appears and `launchSeat`'s poll throws |
 | Agents still spawned as `cotal-manager` | start refuses: spawn uid is not `cotal-agent` |
 | `cotal mint --signer` used as a mount of the seed into the manager | refused; that command's purpose (strip operator, keep signing seed) is the old co-location |
 | Non-Linux host | static-auth manager start refuses |
