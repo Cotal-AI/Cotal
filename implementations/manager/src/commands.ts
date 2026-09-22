@@ -114,7 +114,7 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  * signer. Do not turn this into a partial startup that later fails on a broker permission error;
  * the public command owns the honest, actionable refusal below.
  */
-export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean; agentBearerExchangeUrl?: string } {
+export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean; eventsRequired: boolean; agentBearerExchangeUrl?: string } {
   // COTAL_SPACE / COTAL_SERVER stand in for the flags when the manager runs as a service: a
   // service unit's ExecStart stays bare (command lines are a publication surface on a multi-user
   // host) and the mesh facts arrive through a 0600 EnvironmentFile instead. An explicit flag
@@ -130,10 +130,10 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
       const target = resolveMeshTarget(root, { space: localSpace });
       if (ve.server !== undefined && ve.server !== target.server)
         throw new Error(`--server ${ve.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
-      return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired };
+      return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired, eventsRequired: target.policy?.events === "required" };
     } catch (error) {
       if (!isWorkspaceTargetError(error)) throw error;
-      return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false };
+      return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
     }
   }
 
@@ -144,6 +144,7 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
         throw new Error(`--server ${ve.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
       return {
         space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired,
+        eventsRequired: target.policy?.events === "required",
         agentBearerExchangeUrl: target.userAuth.endpoints?.url,
       };
     }
@@ -152,7 +153,7 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     // state this helper has not proved is the registered-participant case.
     if (ve.server !== undefined && ve.server !== target.server)
       throw new Error(`--server ${ve.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
-    return { space: target.space, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired };
+    return { space: target.space, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired, eventsRequired: target.policy?.events === "required" };
   } catch (error) {
     // `resolveMeshTarget(...,{space})` distinguishes every known registry fault. Only an absent
     // record gets the host-or-join wording; a corrupt/ambiguous record remains its own loud error.
@@ -162,7 +163,7 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
       // record. The broker address then comes from the flag/env, exactly what a service unit's
       // EnvironmentFile supplies.
       if (soleSpaceOf(authDir(root)) === localSpace)
-        return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false };
+        return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
       throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }
     throw error;
@@ -405,6 +406,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
     mgr = new Manager({
       space,
       servers: server,
+      eventsRequired: target.eventsRequired,
       runtime,
       consolePort,
       wsPort,

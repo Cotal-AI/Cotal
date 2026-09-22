@@ -346,10 +346,17 @@ try {
   const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
   const EXCHANGE_ISSUER = userExchangeIssuer("hosted");
   // A stand-in exchange: answers /health with its own issuer and /jwks with a key set.
+  let policyRefreshHits = 0;
+  let policyRefreshFails = false;
   const exchange = createHttpServer((req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: EXCHANGE_ISSUER }));
     if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [{ kty: "OKP" }] }));
+    if (req.url === "/.well-known/cotal-mesh") {
+      policyRefreshHits++;
+      if (policyRefreshFails) { res.statusCode = 503; return void res.end("unavailable"); }
+      return void res.end(JSON.stringify(bundleFor()));
+    }
     res.statusCode = 404;
     res.end("{}");
   });
@@ -374,6 +381,7 @@ try {
     server: AUTH_LIVE, // the broker that actually refuses a bare connect — the user-arm PASS
     tlsRequired: false, // loopback in this smoke; a real remote bundle says true
     userAuth: { provider: "cotal", idp: { url: ISSUER, issuer: ISSUER, audience: "cotal-mesh" }, endpoints: { url: exchangeUrl } },
+    policy: { events: "required" },
     sentinelCreds: SENTINEL_BLOB,
     ...over,
   });
@@ -415,6 +423,8 @@ try {
   const hostedEntry = findMesh("hosted");
   check("…marked remote, with the pinned exchange as a stated trust position",
     hostedEntry?.userAuth?.remote === true && hostedEntry?.userAuth?.endpoints?.url === exchangeUrl, hostedEntry);
+  check("…and preserves the required-events registration policy",
+    hostedEntry?.policy?.events === "required", hostedEntry);
   check("…and the record carries the sentinel PATH, never the blob",
     typeof hostedEntry?.userAuth?.sentinelCredsPath === "string" &&
       !JSON.stringify(hostedEntry).includes("sentinel-secret-material"), hostedEntry);
@@ -431,9 +441,32 @@ try {
   const hostedTarget = targetFromEntry(hostedEntry!, hostedEntry!.server, "registry");
   check("the remote entry round-trips through targetFromEntry",
     hostedTarget.mode === "user" && hostedTarget.userAuth?.remote === true && hostedTarget.server.startsWith("nats://127.0.0.1"), hostedTarget);
+  recordMesh({ ...hostedEntry!, policy: undefined, ts: new Date(0).toISOString() });
+  const { prepareCatalogCommand } = await import("../src/commands/sync.js");
+  await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  const refreshedManual = findMesh("hosted");
+  check("trusted refresh adds policy to a pre-existing manual registration without replacing it",
+    policyRefreshHits === 1 && refreshedManual?.origin === "manual" && refreshedManual.root === hostedEntry?.root && refreshedManual.policy?.events === "required", { policyRefreshHits, refreshedManual });
+  await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  check("the trusted manual policy refresh warm path makes zero requests", policyRefreshHits === 1, policyRefreshHits);
   const hostedList = await run([]);
-  check("`cotal meshes` output never contains the sentinel blob",
-    !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 200));
+  check("`cotal meshes` stays registry-local for a manual required-policy entry",
+    policyRefreshHits === 1, policyRefreshHits);
+  check("`cotal meshes` output shows the required-events policy without exposing the sentinel",
+    hostedList.out.includes("events: required") && !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 300));
+  policyRefreshFails = true;
+  recordMesh({ ...refreshedManual!, policy: undefined, policyCheckedAt: new Date(0).toISOString() });
+  let expiredRefreshError = "";
+  try {
+    await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  } catch (error) {
+    expiredRefreshError = (error as Error).message;
+  } finally {
+    policyRefreshFails = false;
+  }
+  check("an expired manual policy refresh failure names the pinned exchange and refuses",
+    expiredRefreshError.includes(exchangeUrl) && expiredRefreshError.includes("HTTP 503") && findMesh("hosted")?.policy === undefined,
+    { expiredRefreshError, entry: findMesh("hosted") });
   removeMesh("hosted");
   // A bundle missing ANY pin refuses — each of the trust fields, not just one.
   for (const strip of ["idp-url", "issuer", "audience", "endpoints", "sentinel"] as const) {

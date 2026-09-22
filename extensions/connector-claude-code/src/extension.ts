@@ -192,7 +192,7 @@ export const claudeConnector: Connector = {
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
       // shells, builds and third-party CLIs this session runs no longer inherit live authority.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the

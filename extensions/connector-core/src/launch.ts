@@ -239,6 +239,7 @@ export function materialEnv(opts: {
   servers?: string;
   token?: string;
   controlToken?: string;
+  eventsRequired?: boolean;
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 }): Record<string, string> {
   if (opts.userAuth && opts.creds)
@@ -248,6 +249,7 @@ export function materialEnv(opts: {
   if (opts.servers) material.servers = opts.servers;
   if (opts.token) material.token = opts.token;
   if (opts.controlToken) material.controlToken = opts.controlToken;
+  if (opts.eventsRequired) material.eventsRequired = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;

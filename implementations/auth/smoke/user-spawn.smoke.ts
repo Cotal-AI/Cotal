@@ -243,6 +243,8 @@ const e2eCon: Connector = {
     env: {
       ...launchEnv(),        // OS allow-list (PATH/HOME/TMPDIR/…) — the agent-bearer re-exec runs under tsx
       ...userAuthEnv(o),     // COTAL_OWNER / COTAL_ACTOR / COTAL_SENTINEL_CREDS / COTAL_BEARER_CMD (all-or-nothing)
+      ...(o.events !== false ? { COTAL_EVENTS: "1" } : {}),
+      ...(o.eventsRequired ? { COTAL_EVENTS_REQUIRED: "1" } : {}),
       CORE_DIST: coreDist,
       COTAL_SPACE: o.space,
       COTAL_NAME: o.name,
@@ -435,7 +437,7 @@ try {
   check("user-auth broker is reachable", up);
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   // Record the mesh mode "user" — Manager.start() cross-checks the registry against the on-disk marker.
-  recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
+  recordMesh({ space: SPACE, server: SERVER, root, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   // Personas (identity + file ACL) for the two spawns.
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   // `iota` is the never-joining seat the ps-projection cell needs, and `kappa` the one that joins
@@ -477,16 +479,30 @@ try {
 
   // ---------- B. detached user-mode spawn ----------
   console.log("B) Manager.startAgent (user mode) → managed grant + presence join as the principal");
-  manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
+  manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root, eventsRequired: true });
   await manager.start();
   const alphaPrincipal = principalKey(OWNER, "alpha").key;
-  const spawnReply: ControlReply = await manager.startAgent({ name: "alpha", agent: "e2e", owner: OWNER, events: false });
+  const spawnReply: ControlReply = await manager.startAgent({ name: "alpha", agent: "e2e", owner: OWNER });
   check("detached user-mode spawn reply ok (joined the mesh as the principal id)", spawnReply.ok === true, spawnReply);
   // The managed-actor row exists, in ITS OWN row space, carrying the sha256 secret hash.
   let managedRow: { tokenHash?: string } = {};
   const managedRowPath = rowFile("managed", OWNER, "alpha");
   try { managedRow = JSON.parse(readFileSync(managedRowPath, "utf8")); } catch { /* missing */ }
   check("a managed-actors row exists with a 64-hex tokenHash", typeof managedRow.tokenHash === "string" && /^[0-9a-f]{64}$/.test(managedRow.tokenHash), managedRow.tokenHash);
+  const alphaPid = psList(manager).find((a) => a.name === "alpha")?.pid;
+  const alphaEnv = alphaPid ? readFileSync(`/proc/${alphaPid}/environ`, "utf8").split("\0") : [];
+  const alphaRow = JSON.parse(readFileSync(managedRowPath, "utf8")) as { allowPublish?: string[] };
+  const alphaEvent = eventChannel({ owner: OWNER, actor: "alpha" });
+  check("required policy arms the real child without a launch flag",
+    alphaEnv.includes("COTAL_EVENTS=1") && alphaEnv.includes("COTAL_EVENTS_REQUIRED=1"), alphaEnv.filter((v) => v.startsWith("COTAL_EVENTS")));
+  check("required policy adds the child's own event channel to its managed grant",
+    alphaRow.allowPublish?.includes(alphaEvent) === true, alphaRow.allowPublish);
+  const optedOutRequired = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER, events: false });
+  check("required user-auth policy refuses events false by space name before provisioning",
+    optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
+  // The remaining sections exercise explicit opt-outs and unrelated authorization paths. They predate
+  // the required-policy scenario above, so return this in-process fixture to unrestricted behavior.
+  (manager as unknown as { eventsRequired: boolean }).eventsRequired = false;
   const alphaToken = readFileSync(incFiles("alpha").actorToken, "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
   const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });

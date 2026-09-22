@@ -246,7 +246,7 @@ export const cotal: Plugin = async () => {
       (runId: string) => mapper?.forgetOpenRun(runId),
     );
   }
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) events = newEventHolder();
+  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired) events = newEventHolder();
 
   /**
    * Give this principal's event WAL lock back, ONCE, at the final event teardown.

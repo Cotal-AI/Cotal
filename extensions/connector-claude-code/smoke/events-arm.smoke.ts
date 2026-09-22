@@ -19,7 +19,8 @@
  *
  * Run: pnpm smoke:claude-events-arm
  */
-import { eventChannel } from "@cotal-ai/core";
+import { eventChannel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { configFromEnv } from "@cotal-ai/connector-core";
 import { claudeConnector } from "../src/extension.js";
 
 let pass = 0;
@@ -100,7 +101,35 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
   );
 }
 
-// ---- ONE DERIVATION: the connector's channel is core's, not a local re-derivation ---------------
+// ---- REQUIRED POLICY: launch material and env fallback both expose the arm -----------------------
+{
+  const owner = "u_abcdefghijklmnopqrstuvwxyz";
+  const channel = eventChannel({ owner, actor: "seat" });
+  const material = writeLaunchMaterial({ servers: "nats://127.0.0.1:4222", eventsRequired: true, userAuth: {
+    owner, actor: "seat", sentinelCredsPath: "/dev/null", bearerCmd: ["true"],
+  } });
+  check("required policy survives launch material", readLaunchMaterial(material).eventsRequired === true);
+  const config = configFromEnv({ COTAL_NAME: "seat", COTAL_SPACE: "s", COTAL_LAUNCH_MATERIAL: material,
+    COTAL_LIFECYCLE_UID: "abcdefghijklmnopqrstuvwxzy1234", COTAL_ALLOW_PUBLISH: channel });
+  check("required launch material reaches connector config", config.eventsRequired === true);
+}
+{
+  const owner = "u_abcdefghijklmnopqrstuvwxyz";
+  const channel = eventChannel({ owner, actor: "seat" });
+  const config = configFromEnv({
+    COTAL_NAME: "seat", COTAL_SPACE: "s", COTAL_OWNER: owner, COTAL_ACTOR: "seat",
+    COTAL_SENTINEL_CREDS: "/dev/null", COTAL_BEARER_CMD: '["true"]', COTAL_LIFECYCLE_UID: "abcdefghijklmnopqrstuvwxzy1234",
+    COTAL_ALLOW_PUBLISH: channel, COTAL_EVENTS_REQUIRED: "1",
+  });
+  check("required policy env fallback reaches connector config", config.eventsRequired === true);
+  const refused = (() => { try {
+    configFromEnv({ COTAL_NAME: "seat", COTAL_SPACE: "s", COTAL_OWNER: owner, COTAL_ACTOR: "seat",
+      COTAL_SENTINEL_CREDS: "/dev/null", COTAL_BEARER_CMD: '["true"]', COTAL_LIFECYCLE_UID: "abcdefghijklmnopqrstuvwxzy1234",
+      COTAL_ALLOW_PUBLISH: "general", COTAL_EVENTS_REQUIRED: "1" }); return "";
+  } catch (error) { return (error as Error).message; } })();
+  check("required session refuses when its grant misses the event channel", refused.includes(channel) && refused.includes("actor grant"), refused);
+}
+
 // The manager grants what `eventChannel` returns and the session publishes to what it derives from
 // its own endpoint. If the connector sanitized, lowercased, or otherwise rebuilt the string here,
 // the two would disagree for exactly the principals a display-name sanitizer mangles, and the
@@ -126,7 +155,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 // A regression that makes `buildLaunch` throw on every input does not fail those cells, it deletes
 // them, and the run still prints a summary. Change the cases above and change this number
 // deliberately.
-const EXPECTED = 13;
+const EXPECTED = 17;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED,

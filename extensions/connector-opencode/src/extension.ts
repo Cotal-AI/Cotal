@@ -157,7 +157,7 @@ export const opencodeConnector: Connector = {
       // executes the session's tool calls, so a shell this seat runs inherits neither the material
       // nor a reference to it. The shim itself keeps the reference, because the server it starts is
       // the reader; it runs no tools of its own.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

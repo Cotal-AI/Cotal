@@ -19,6 +19,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
+import { findMesh } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
@@ -119,6 +120,11 @@ export async function join(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    const registered = findMesh(space);
+    if (registered?.policy?.events === "required") {
+      console.error(c.red(`✗ space "${space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
+      process.exit(1);
+    }
     refuseStaticCredsForKnownUserAuthOrExit(space, server, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
@@ -134,6 +140,10 @@ export async function join(args: ParsedArgs): Promise<void> {
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+    if (target.policy?.events === "required") {
+      console.error(c.red(`✗ space "${target.space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
+      process.exit(1);
+    }
     space = target.space;
     server = target.server;
     // USER-auth mesh: interactive join self-provisions a STATIC agent identity, which is the wrong

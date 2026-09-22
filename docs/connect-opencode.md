@@ -98,8 +98,10 @@ arguments and tool results are not republished onto this channel.
 The channel is `events.<owner>.<actor>`, named after the session's principal, and the rules for it
 are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for the
 channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by default; pass
-`--no-events` to opt out. A personal `opencode` with the plugin installed publishes nothing unless
-its environment arms the plane.
+`--no-events` to opt out on an unrestricted space. A required registration carries
+`eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
+personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
+cover the principal-keyed event channel or the connector refuses before joining.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 

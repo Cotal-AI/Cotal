@@ -263,8 +263,12 @@ with the adapter:
 A spawned session publishes a **structured** account of what it
 did: run boundaries per turn, assistant text, reasoning, and each tool call with its start
 and its end. Not prose about the work, the work itself, in a vocabulary a program can
-read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out. A personal session
-started outside the Cotal launcher publishes nothing unless its environment arms the plane.
+read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
+space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
+private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
+A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
+publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
+session with no launch material and no required-policy fallback keeps the generic default behavior.
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit

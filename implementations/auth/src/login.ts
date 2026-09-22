@@ -46,7 +46,7 @@ export interface IdpSession {
 }
 
 const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
-const CATALOG_FRESH_MS = 5_000;
+export const CATALOG_FRESH_MS = 5_000;
 const CATALOG_FILE = "space-catalogs.json";
 const CATALOG_VER = 1;
 const CATALOG_LOCK = "space-catalogs.lock";
