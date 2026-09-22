@@ -159,6 +159,10 @@ function stageSeat(seat: SeatRestoreRequest, staging: string): void {
   } catch (error) {
     throw new SeatRestoreError(`seat ${seat.name}: re-verifying the checkpoint before restore failed: ${(error as Error).message}`);
   }
+  // Before the clone, because this decides nothing about the tree and therefore should cost
+  // nothing: a pointer that names another session leaves no staging directory to inspect for a
+  // step that never ran.
+  if (seat.checkpoint.session.pointer) assertPointerSession(seat, seat.checkpoint.session.pointer);
   // A leftover staging directory is evidence of a failed run, never a tree to promote, and nothing
   // here removes it.
   if (existsSync(staging))
@@ -172,7 +176,6 @@ function stageSeat(seat: SeatRestoreRequest, staging: string): void {
   run("git", ["apply", "--binary", "--allow-empty", "--index", join(seat.directory, repository.indexDiff.path)], staging, seat.name, "applying the index diff");
   run("git", ["apply", "--binary", "--allow-empty", join(seat.directory, repository.worktreeDiff.path)], staging, seat.name, "applying the worktree diff");
   run("tar", ["-xf", join(seat.directory, repository.untracked.path)], staging, seat.name, "extracting the untracked archive");
-  if (seat.checkpoint.session.pointer) assertPointerSession(seat, seat.checkpoint.session.pointer);
 }
 
 /** The timestamped name an existing `cwd` is moved aside under. */

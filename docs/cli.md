@@ -271,7 +271,7 @@ and the manager's log both name the credential and this repair.
 ```bash
 cotal down
 cotal down --with-agents
-cotal down --preserve-state [--store-dir <dir>]
+cotal down --preserve-state [--store-dir <dir>] [--session-store <dir> …]
 cotal down manager [delivery auth web nats ...]
 cotal down web [--space <name>]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
@@ -286,6 +286,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
+| `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
 Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running.
 Before signalling the manager it verifies that the exact recorded manager supports releasing its
@@ -358,14 +359,17 @@ Each checkpoint directory is created 0700, refuses a destination that already ex
   index to worktree. Two rather than one because a single combined diff restores a mixed tree with
   the right bytes and the wrong index: a source reporting `MM README` would come back as ` M README`;
 - `repo.untracked.tar`, the untracked files in scope;
-- the harness session pointer and store, when the cut is given them. The manager's resume inventory
-  does not record either path today, so a checkpoint written by `down --preserve-state` carries
-  neither, and the continuity class below is capped to say so;
+- the harness session pointer, when the seat's connector declares one, and the transcript store
+  files the operator named with `--session-store`. Each records where the destination puts it back
+  as an anchor (the workspace root, the account home, or the seat's `cwd`) plus a relative path,
+  because the destination's root and home are its own and the source host's absolute spelling would
+  either miss them or write outside them;
 - `checkpoint.json`, written last, after every digest is computed over the bytes that landed.
 
 The record carries the manager's resume entry unchanged as its first field, then the space, the seat
 name, the recovered `lifecycleUid`, the writer generation the cut was taken at, `capturedAt`, the
-recency horizon, the applied profile revision, and the continuity class. Every captured file is
+recency horizon, the applied profile revision, the seat's `git status --porcelain` as the cut read
+it, and the continuity class. Every captured file is
 listed with its byte size and sha256, so an operator verifies the whole artifact with `sha256sum`
 and `git bundle verify`. No secret values, no operator keys and no source-host launch material
 enter it.
@@ -374,7 +378,13 @@ The continuity class is what the connector declares, capped by what the checkpoi
 connector declaring session continuation classifies as `exact`, but a checkpoint holding no session
 pointer and no store cannot reopen that session, so it is recorded as `fresh` when the connector
 declares a fresh start and `drain-only` otherwise. A class is a promise the destination is entitled
-to act on, so it never describes bytes the artifact does not contain.
+to act on, so it never describes bytes the artifact does not contain. The transcript store stays an
+operator input: this repository does not know where a harness keeps its transcript, so `exact`
+requires `--session-store` to name one.
+
+The recorded status is read under the same selection rule as the untracked set, so it describes the
+state the captured bytes can reproduce. The destination re-reads it in the promoted tree and refuses
+a difference.
 
 The untracked selection rule is recorded in the record and is
 `git ls-files --others --exclude-standard -z, excluding .cotal/`. It honors `.gitignore`, so an
@@ -522,12 +532,51 @@ are removed before the refusal is raised, by the exact paths it wrote, so a gene
 destination holds is never touched. A claim is a create that can never be made again, so a refusal
 that left one behind would consume the retry over the same checkpoint set.
 
-Two limits are worth stating plainly. The writer generation is claimed by exclusive create inside
-one workspace root, so it fences two resumes on the same host and does not fence two independent
-destinations: copy a checkpoint to two roots and both claim the same successor. And no shipped
-command consumes the captured bytes. The bundle, the two diffs and the untracked archive are
-written, digested and admitted, but restoring them into a working tree is a manual operation today,
-so an ordinary resume still requires the preserved source store.
+**Restoring a seat checkpoint.** Once every gate has passed over every checkpoint, and before a
+single generation is claimed, `up` puts each admitted seat's captured bytes back. A refusal here
+costs nothing for the same reason a gate failure does: no claim has been made and nothing has
+started.
+
+Each seat is staged beside its own `cwd`, in `<cwd>.incoming`:
+
+1. every recorded digest is verified again over the files as they are now;
+2. the bundle is cloned into `<cwd>.incoming`, which is refused when that path already exists;
+3. the recorded base commit is verified in the clone and checked out detached, so a bundle that does
+   not contain it stops the resume instead of continuing against a different history;
+4. the index diff is applied with `--index` and the worktree diff without it, both `--binary
+   --allow-empty`. That order is what puts staged content back in the index rather than only in the
+   worktree, and `--allow-empty` is why a seat with a clean tree is still restorable;
+5. the untracked archive is extracted.
+
+Every seat stages before any seat is promoted. Promotion moves an existing `cwd` aside to
+`<cwd>.superseded.<timestamp>` and renames the staging directory into place, then puts the session
+pointer and store files where the destination's connector reads them, then re-reads
+`git status --porcelain` in the promoted tree and compares it to the status the checkpoint recorded.
+A restore that applied without error and produced a different index is a refusal, not a warning. The
+two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves
+every seat's live `cwd` as it was.
+
+`git` and `tar` run as child processes with argument arrays, never a shell string.
+
+A leftover `<cwd>.incoming` refuses the resume by name. A staging directory from a failed run is the
+only record of what failed, so nothing removes one automatically: inspect it, remove it by hand, and
+resume. A pre-existing `cwd` is renamed rather than deleted, so a wrong checkpoint costs a rename
+instead of a tree. When a promotion fails, the renames that attempt made are undone and the staging
+tree is left where it is, as the evidence for what did not verify.
+
+A session pointer whose recorded `sessionId` is not the one the retained inventory reopens is
+refused before anything is cloned. A session file already present at its destination is judged by
+content: bytes equal to the recorded digest are already restored, and different bytes under the path
+the connector is about to read are refused with both digests rather than clobbered.
+
+`up --restore <dir>` reaches the same admission and the same restore, after the store is restored
+and validated and before commit intent is journaled. A registry-only restore resumes no seat, so it
+admits and restores nothing.
+
+One limit is worth stating plainly. The writer generation is claimed by exclusive create inside one
+workspace root, so it fences two resumes on the same host and does not fence two independent
+destinations: copy a checkpoint to two roots and both claim the same successor. A real cross-host
+fence needs a coordinate neither root owns.
 
 Authenticated restores validate the complete
 space trust bundle before staging, including nkeys, seed matches, JWTs, signers, and space binding;
