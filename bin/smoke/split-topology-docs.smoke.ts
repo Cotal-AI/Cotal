@@ -147,8 +147,9 @@ check(
   systemd.includes('export const DETACHED_SUPERVISION_DOC_SECTION = "Supervising the detached stack"'),
 );
 check(
-  "claim 6: docs state no installer and the example-unit cgroup tradeoff",
-  runAMesh.includes("no supported `cotal service install`") &&
+  "claim 6: docs state the manager service installer and the example-unit cgroup tradeoff",
+  runAMesh.includes("`cotal service install` is the supported way to run the manager as a user service") &&
+    runAMesh.includes("It installs only") &&
     runAMesh.includes("examples of process models") &&
     runAMesh.includes("Type=simple") &&
     runAMesh.includes("nats in the unit's cgroup") &&
@@ -161,7 +162,8 @@ check(
     runAMesh.includes("`cotal status --components` liveness check, not a") &&
     runAMesh.includes("`--detach` launcher") &&
     !runAMesh.includes("nats is orphaned outside the cgroup") &&
-    !runAMesh.includes("oneshot + `--detach` launcher"),
+    !runAMesh.includes("oneshot + `--detach` launcher") &&
+    !runAMesh.includes("There is no supported `cotal service install`"),
 );
 
 console.log(`SPLIT TOPOLOGY DOCS: ${pass}/${pass + fail}`);
