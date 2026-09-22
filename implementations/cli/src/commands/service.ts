@@ -76,6 +76,15 @@ export interface HostFacts {
   kvm: "present" | "absent" | "denied";
 }
 
+/** Make a path safe as the value of a systemd unit setting. systemd expands `%` specifiers
+ *  (`%h`, `%n`, …) in EVERY value it reads from a unit, including `WorkingDirectory`,
+ *  `EnvironmentFile=` paths and `ExecStart=` arguments; an unescaped `%` is a silent rewrite of
+ *  the path (a root named `root%name` becomes `root<unit-name>`, the unit fails at CHDIR with
+ *  status 200 while install reported success). `%%` is the literal-percent escape systemd
+ *  defines for unit setting values (verified on this host for mid-string and trailing `%`).
+ *  Only `%` is touched: this is the specifier escape, not shell quoting. */
+const escapeSystemdSpecifiers = (value: string): string => value.replaceAll("%", "%%");
+
 /** `/dev/kvm` presence and access. `denied` means it exists but this user cannot use it. */
 function kvmState(): HostFacts["kvm"] {
   try {
@@ -328,9 +337,11 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       ``,
       `[Service]`,
       `Type=simple`,
-      `WorkingDirectory=${root}`,
-      `EnvironmentFile=${envFile}`,
-      `ExecStart=${exec.map((t) => (t.includes(" ") ? JSON.stringify(t) : t)).join(" ")}`,
+      // Every value below is a path systemd will re-read: specifiers must be escaped or the
+      // unit fails at CHDIR/EXEC with status 200 over a path systemd itself rewrote.
+      `WorkingDirectory=${escapeSystemdSpecifiers(root)}`,
+      `EnvironmentFile=${escapeSystemdSpecifiers(envFile)}`,
+      `ExecStart=${exec.map((t) => escapeSystemdSpecifiers(t.includes(" ") ? JSON.stringify(t) : t)).join(" ")}`,
       `Restart=always`,
       `RestartSec=20s`,
       ``,
@@ -429,13 +440,17 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const path = join(userUnitDir(), unit);
     if (!existsSync(path)) return out;
     const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`);
+    // The mesh field is REQUIRED, never synthesized: a unit with no recorded mesh is not
+    // provably this command's, so status does not present one as its own either.
+    if (!fields.mesh)
+      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
     const state = systemdUnitStatus(unit);
     return {
       installed: true,
-      mesh: fields.mesh ?? mesh,
+      mesh: fields.mesh,
       ...(fields.root ? { root: fields.root } : {}),
       unit: { name: unit, state: state.state, enabled: state.enabled },
-      ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh ?? mesh) } : {}),
+      ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),
       linger: run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]).output.trim() === "yes",
     };
   }
@@ -444,14 +459,17 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const path = join(launchAgentsDir(), `${label}.plist`);
     if (!existsSync(path)) return out;
     const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`);
+    // Same required-recorded-mesh rule as the Linux arm.
+    if (!fields.mesh)
+      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
     const listed = run("launchctl", ["list", label]);
     const pid = Number(listed.output.split("\t")[0]);
     return {
       installed: true,
-      mesh: fields.mesh ?? mesh,
+      mesh: fields.mesh,
       ...(fields.root ? { root: fields.root } : {}),
       unit: { name: label, state: listed.status === 0 ? (Number.isInteger(pid) && pid > 0 ? "running" : "loaded") : "not-loaded", enabled: listed.status === 0 },
-      ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh ?? mesh) } : {}),
+      ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),
     };
   }
   throw new Error(`\`cotal service\` is not supported on ${process.platform}`);
@@ -496,16 +514,21 @@ function uninstall(values: { mesh?: string }): void {
     const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`);
     if (!fields.marked)
       throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
-    // Provenance keys on the marker PLUS the recorded mesh, never the unit name alone. The MESH
-    // is the identity an explicit `--mesh` pins, so uninstall works from any directory: the
-    // unit's own records name the root it serves, and a cwd-walked root here would refuse the
-    // very remedy this command's errors hand out. A mesh mismatch is still a hard refusal.
-    if ((fields.mesh ?? mesh) !== mesh)
+    // Provenance keys on the marker PLUS a recorded mesh equal to the one named, never the unit
+    // name alone and never a substitution: a unit whose recorded mesh is MISSING is not
+    // provably this command's (the marker line is two lines of text anyone can write), so it is
+    // a hard refusal, the same rule `status` applies. The mesh is the identity an explicit
+    // `--mesh` pins, so uninstall works from any directory: the unit's own records name the root
+    // it serves, and a cwd-walked root here would refuse the very remedy this command's errors
+    // hand out. A mesh mismatch is still a hard refusal.
+    if (!fields.mesh)
+      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\` (the marker alone is not ownership); this command refuses to remove it`);
+    if (fields.mesh !== mesh)
       throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
     const stopped = systemctl(["disable", "--now", unit]);
     if (stopped.status !== 0) throw new Error(`disabling ${unit} failed: ${stopped.output}`);
     rmSync(path);
-    rmSync(serviceStateDir(dir, fields.mesh ?? mesh), { recursive: true, force: true });
+    rmSync(serviceStateDir(dir, fields.mesh), { recursive: true, force: true });
     systemctl(["daemon-reload"]);
     systemctl(["reset-failed", unit]);
     const lingerOn = run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]).output.trim() === "yes";
@@ -523,13 +546,16 @@ function uninstall(values: { mesh?: string }): void {
     const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`);
     if (!fields.marked)
       throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
-    // Same mesh-pinned provenance rule as the Linux arm.
-    if ((fields.mesh ?? mesh) !== mesh)
+    // Same mesh-pinned provenance rule as the Linux arm: the recorded mesh must be present and
+    // equal; a missing record is a refusal, not a substitution.
+    if (!fields.mesh)
+      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\` (the marker alone is not ownership); this command refuses to remove it`);
+    if (fields.mesh !== mesh)
       throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
     const unloaded = run("launchctl", ["unload", "-w", path]);
     if (unloaded.status !== 0) throw new Error(`unloading ${path} failed: ${unloaded.output}`);
     rmSync(path);
-    rmSync(serviceStateDir(dir, fields.mesh ?? mesh), { recursive: true, force: true });
+    rmSync(serviceStateDir(dir, fields.mesh), { recursive: true, force: true });
     console.log(c.green(`✓ service removed: ${label}`));
     return;
   }

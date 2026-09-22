@@ -1049,6 +1049,11 @@ against that private config root; the unit itself starts with `COTAL_SKIP_CONNEC
 so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot
 complete (network unreachable, registry error) refuses instead of deferring.
 
+Every value the unit derives from a path (`WorkingDirectory`, the `EnvironmentFile` path, the
+`ExecStart` tokens) is escaped for systemd specifiers (`%` becomes `%%`), so a mesh root that
+contains `%` starts over its real path instead of a path systemd rewrote by expanding it. The
+provenance comment records the root unescaped.
+
 `service install` also refuses while a manager is already running for the mesh (`cotal down
 manager` first). The restart policy is `Restart=always` with `RestartSec=20s`, chosen for
 manager units in production: a manager exits for reasons that are not failures (broker
@@ -1062,8 +1067,9 @@ accessible, CPU count, and total memory. `--json` returns the same fields as one
 `service uninstall` stops and disables the unit and removes it plus the private state directory.
 It works from any directory: the unit's own records name the mesh and root it serves, and an
 explicit `--mesh <name>` selects it. It refuses any unit that was not written by `service
-install` (the files carry a provenance comment) or that was installed for a different mesh, so
-operator-written units are never destroyed.
+install` (the files carry a provenance comment), whose recorded mesh is missing, or that was
+installed for a different mesh, so operator-written units are never destroyed; `service status`
+applies the same rule and never reports a mesh a unit does not record.
 
 This command installs only the manager. The per-space auth service and the delivery daemon are
 not installed by it: on a shared broker an operator runs three units per space with `After=`
