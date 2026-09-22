@@ -19,6 +19,9 @@ import {
 
 export interface SeatAdmission {
   readonly name: string;
+  /** The directory this checkpoint was read from, so a consumer of the captured bytes does not
+   *  rebuild the path the gates already resolved. */
+  readonly directory: string;
   readonly checkpoint: SeatCheckpoint;
   /** The generation this destination claimed. Always the recorded one plus one. */
   readonly generation: number;
@@ -43,6 +46,11 @@ export interface AdmitSeatsOptions {
   /** The caller's own admissibility condition, run over the seat names the cut actually wrote,
    *  before any gate and before any generation is claimed. It throws to refuse the whole set. */
   readonly requireCovered?: (checkpointedNames: readonly string[]) => void;
+  /** Run once, after every gate has passed over every checkpoint and before a single generation is
+   *  claimed. This is where the destination consumes the captured bytes: a refusal here must cost
+   *  nothing, and it does, because no claim has been made and no process has started. It throws to
+   *  refuse the whole set. */
+  readonly beforeCustody?: (admitted: readonly SeatAdmission[]) => void;
   readonly now?: number;
 }
 
@@ -94,12 +102,18 @@ export function admitSeatCheckpoints(options: AdmitSeatsOptions): SeatAdmission[
 
     decided.push({
       name,
+      directory,
       checkpoint,
       // The successor value this seat will claim in phase 3, not a claim yet.
       generation: checkpoint.generation + 1,
       ...(recency.admitted === "override" ? { staleOverrideAgeMs: recency.ageMs } : {}),
     });
   }
+
+  // Between the gates and custody, deliberately. The restore runs over checkpoints that have all
+  // passed, so it never touches a working tree for a set that was going to be refused; and it runs
+  // before any claim, so its own refusal leaves every generation unclaimed like any gate failure.
+  options.beforeCustody?.(decided);
 
   // Phase 3, custody, once the whole set is admissible. Exclusive create on the SUCCESSOR value,
   // before anything launches. A lost create means another destination is already claiming that

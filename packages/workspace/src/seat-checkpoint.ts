@@ -51,6 +51,20 @@ export function seatCheckpointDir(root: string, attemptId: string, version = 1):
   return join(root, ".cotal", "maintenance", `v${version}`, "checkpoints", attemptId);
 }
 
+/**
+ * Where a captured session file is put back on the destination.
+ *
+ * An anchor plus a relative path, never an absolute one. The destination's workspace root, account
+ * home and seat working tree are its own, and a record that carried the source host's absolute
+ * spelling would either miss them or write outside them.
+ */
+export interface SeatCheckpointDestination {
+  readonly anchor: "workspace-root" | "home" | "cwd";
+  /** Relative to the anchor. No absolute spelling and no `..` segment, so a record cannot name a
+   *  path outside the directory it is anchored on. */
+  readonly path: string;
+}
+
 /** One captured file, addressed by its name inside the checkpoint directory. */
 export interface SeatCheckpointFile {
   /** Basename within the checkpoint directory. Never a path, so a record cannot name a file
@@ -59,6 +73,9 @@ export interface SeatCheckpointFile {
   readonly size: number;
   readonly sha256: string;
   readonly kind: "bundle" | "index-diff" | "worktree-diff" | "untracked" | "session-store" | "session-pointer";
+  /** Where a restore puts this file back. Carried by the two session kinds and by nothing else:
+   *  the repository artifacts are consumed by git and tar rather than copied to a path. */
+  readonly restore?: SeatCheckpointDestination;
 }
 
 /** The repository half: a bundle anchored on a named base, plus the delta the bundle cannot carry. */
@@ -68,6 +85,12 @@ export interface SeatCheckpointRepository {
   /** The exact selection rule the untracked set was produced under. A destination that cannot
    *  reproduce this rule refuses rather than restoring a silently thinner tree. */
   readonly untrackedSelection: string;
+  /** `git status --porcelain` as the source read it, under the same selection rule: the untracked
+   *  entries the rule excludes are excluded here too, so this describes the state the captured
+   *  bytes can actually reproduce. A restore re-reads it in the promoted tree and refuses a
+   *  difference, which is the only check that sees a restore that applied and still landed a
+   *  different index. */
+  readonly status: string;
   readonly bundle: SeatCheckpointFile;
   readonly indexDiff: SeatCheckpointFile;
   readonly worktreeDiff: SeatCheckpointFile;
@@ -148,8 +171,14 @@ function assertCapturedName(name: string): void {
 
 export interface SeatCheckpointWriter {
   readonly directory: string;
-  /** Copy one file into the checkpoint, returning its content address. */
-  captureFile(name: string, kind: SeatCheckpointFile["kind"], source: string): SeatCheckpointFile;
+  /** Copy one file into the checkpoint, returning its content address. `restore` is where the
+   *  destination puts it back, required for a file a restore has to place rather than consume. */
+  captureFile(
+    name: string,
+    kind: SeatCheckpointFile["kind"],
+    source: string,
+    restore?: SeatCheckpointDestination,
+  ): SeatCheckpointFile;
   /** Write the record. Last, after every digest above was computed over bytes that landed. */
   seal<Entry>(checkpoint: Omit<SeatCheckpoint<Entry>, "format">): SeatCheckpoint<Entry>;
   /** Remove an unsealed directory this writer exclusively created. */
@@ -183,9 +212,13 @@ export function createSeatCheckpointWriter(destination: string): SeatCheckpointW
 
   return {
     directory,
-    captureFile(name, kind, source) {
+    captureFile(name, kind, source, restore) {
       if (sealed) fail("seat checkpoint is already sealed");
       assertCapturedName(name);
+      // Validated where it is WRITTEN as well as where it is read: a destination this reader would
+      // refuse must never reach a sealed record, or the cut produces an artifact no resume admits.
+      if (restore !== undefined && !isRestoreDestination(restore))
+        fail(`invalid restore destination for ${name}: ${JSON.stringify(restore)}`);
       const from = resolve(source);
       const stat = lstatSync(from);
       if (!stat.isFile() || stat.isSymbolicLink())
@@ -207,6 +240,7 @@ export function createSeatCheckpointWriter(destination: string): SeatCheckpointW
         size: bytes.byteLength,
         sha256: createHash("sha256").update(bytes).digest("hex"),
         kind,
+        ...(restore ? { restore } : {}),
       };
     },
     seal<Entry>(checkpoint: Omit<SeatCheckpoint<Entry>, "format">): SeatCheckpoint<Entry> {
@@ -242,12 +276,31 @@ export function createSeatCheckpointWriter(destination: string): SeatCheckpointW
   };
 }
 
+/**
+ * A restore destination that cannot escape its anchor.
+ *
+ * Relative, non-empty, no leading slash, no `.` or `..` segment, no NUL and no backslash. The
+ * checkpoint is an artifact carried from another host, so this path is untrusted input that names
+ * a file the destination is about to WRITE: without this a record could place a file anywhere the
+ * resuming user can reach.
+ */
+function isRestoreDestination(value: unknown): value is SeatCheckpointDestination {
+  const destination = value as SeatCheckpointDestination;
+  if (!destination || typeof destination !== "object") return false;
+  if (!["workspace-root", "home", "cwd"].includes(destination.anchor)) return false;
+  const path = destination.path;
+  if (typeof path !== "string" || !path || path.length > 1024) return false;
+  if (path.startsWith("/") || path.includes("\\") || path.includes("\0")) return false;
+  return path.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+}
+
 function isCapturedFile(value: unknown): value is SeatCheckpointFile {
   const file = value as SeatCheckpointFile;
   return Boolean(file && typeof file === "object" &&
     typeof file.path === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/.test(file.path) &&
     Number.isInteger(file.size) && file.size >= 0 &&
-    typeof file.sha256 === "string" && /^[0-9a-f]{64}$/.test(file.sha256));
+    typeof file.sha256 === "string" && /^[0-9a-f]{64}$/.test(file.sha256) &&
+    (file.restore === undefined || isRestoreDestination(file.restore)));
 }
 
 /** Parse a checkpoint record, refusing anything a gate would otherwise have to guess about. */
@@ -282,6 +335,13 @@ export function parseSeatCheckpoint(value: unknown): SeatCheckpoint {
     fail("seat checkpoint session store is not a list of captured files");
   if (session.pointer !== undefined && !isCapturedFile(session.pointer))
     fail("seat checkpoint session pointer is not a captured file");
+  // A session file with nowhere to land is a file a restore would silently drop, and the class it
+  // supports would then promise a session the destination never received.
+  if (session.pointer && !session.pointer.restore)
+    fail("seat checkpoint session pointer records no restore destination");
+  for (const file of session.store) {
+    if (!file.restore) fail(`seat checkpoint session store file ${file.path} records no restore destination`);
+  }
   const repository = record.repository;
   if (!repository || typeof repository !== "object")
     fail("seat checkpoint record has no repository block");
@@ -289,6 +349,10 @@ export function parseSeatCheckpoint(value: unknown): SeatCheckpoint {
     fail(`seat checkpoint repository base is not a full object id: ${JSON.stringify(repository.base)}`);
   if (typeof repository.untrackedSelection !== "string" || !repository.untrackedSelection)
     fail("seat checkpoint repository does not state the untracked selection rule it was produced under");
+  // The empty string is a valid status (a clean tree), so this checks the TYPE and refuses an
+  // absent field: a restore with nothing to compare against would verify nothing.
+  if (typeof repository.status !== "string")
+    fail("seat checkpoint repository does not record the working tree status it was captured from");
   for (const key of ["bundle", "indexDiff", "worktreeDiff", "untracked"] as const) {
     if (!isCapturedFile(repository[key]))
       fail(`seat checkpoint repository.${key} is not a captured file`);
