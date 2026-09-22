@@ -316,7 +316,7 @@ try {
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
-  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot });
+  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("ep spawn accepts (acceptance floor) + the agent joins the mesh",
     acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerInstanceId && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
   {
@@ -448,14 +448,14 @@ try {
     // launch record just as it folds def.variant. Before the fix, launch.model stayed undefined and
     // ps reported the model ABSENT while the connector ran the seat on the persona's model.
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nrole: worker\nmodel: persona-m\n---\n`);
-    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot });
+    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psP = await A.call("ps");
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
     check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
     // #651 fix: an empty/whitespace persona model is not a pin - it coerces to undefined and
     // serializes ABSENT, never present-but-empty (which a key-presence consumer misreads as a pin).
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
-    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot });
+    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psE = await A.call("ps");
     const erow = ((psE.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === we.name);
     check("an empty/whitespace persona model serializes ABSENT, not present-empty", erow !== undefined && !("model" in erow), erow);
@@ -474,7 +474,7 @@ try {
   }
 
   console.log("4. baseline self-stop: the agent's OWN cred halts itself over ep.one");
-  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot });
+  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("w2 spawned + joined", acc2.name === "w2", acc2);
   {
     const w2 = M.agents.get("w2")!;
@@ -508,7 +508,7 @@ try {
     const runId = `run${name}`;
     const spec = {
       apiVersion: "cotal-launch/v1", space, runId,
-      agents: [{ name, agent: "cwd-stub", ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
+      agents: [{ name, agent: "cwd-stub", events: false, ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
     };
     const launched = await A.call("launch", { runId, name, spec });
     check(`manifest ${name} is accepted through the registered launch door`, launched.reply.ok === true, launched.reply);
@@ -605,7 +605,7 @@ try {
       rModels.reply.ok === true && Array.isArray(catalogs) && catalogs.some((c) => c.agent === "e2e-stub" && c.supported === false), rModels.reply);
     const rPurge = await A.call("purge", {});
     check("purge clears the space history (typed {chat} result)", rPurge.reply.ok === true && typeof (rPurge.reply.data as { chat: number }).chat === "number", rPurge.reply);
-    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("w3 spawned for attach", acc3.name === "w3", acc3);
     const rAttach = await A.call("attach", undefined, { actor: w3.id, lifecycleUid: w3.lifecycleUid });
     // P2 item 6: attach returns the holder-bound §13.6 session grant (no ws:// URL).
@@ -635,7 +635,7 @@ try {
       // here is what made a numbering change surface as a mystery failure. Two interfering tests
       // look like a smell and isolating them reads as tidying — but isolation would convert a
       // coupled proof into two independent constants that can both drift green.
-      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       check("M6 setup: a live incarnation holds the name", held.name === "m6pin", held);
 
       // THE BREAKING ARM: a manifest-declared name colliding with that live incarnation.
@@ -655,7 +655,7 @@ try {
       // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
       // the same base name still numbers. Same live occupant, same base name, opposite outcome —
       // that contrast is the whole content of M6.
-      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       // DERIVED from the shipped allocator, not spelled: this assertion previously hard-coded the
       // numbering separator, so changing the scheme failed here as a mystery rather than as a
       // deliberate update — and the literal was invisible to a search for the scheme itself.
@@ -694,7 +694,7 @@ try {
     const rTravRef = await A.call("spawn", { name: "../evil" });
     check("a traversal spawn ref refuses (bare ref = safe token, no path escape)",
       rTravRef.reply.ok === false && String(rTravRef.reply.error?.message ?? "").includes("unsafe name"), rTravRef.reply);
-    const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil" });
+    const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil", events: false });
     check("a traversal identity override refuses at the FINAL allocation-site grammar",
       rTravId.reply.ok === false && String(rTravId.reply.error?.message ?? "").includes("unsafe name"), rTravId.reply);
     const rTravDef = await A.call("define-persona", { name: "../evil", persona: "x" });
@@ -781,7 +781,7 @@ try {
     const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
     const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
     const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds, tls: false }), maxReconnectAttempts: 0 });
-    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",

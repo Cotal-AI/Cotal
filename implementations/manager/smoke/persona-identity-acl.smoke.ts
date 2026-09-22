@@ -92,7 +92,7 @@ try {
 
   // 1 — Spawn by FILENAME; identity comes from the file's name:, ACL from the file (not default).
   {
-    const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2" });
+    const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2", events: false });
     check("spawn by filename succeeds", reply.ok === true, reply);
     check("identity is the file's name: (socrates), not the filename", reply.ok && replyName(reply) === "socrates", reply.ok && replyName(reply));
 
@@ -106,7 +106,7 @@ try {
 
   // 2 — Spawning by the DISPLAY name (socrates) fails loud — there is no socrates.md; you spawn by file.
   {
-    const reply = await mgr.startAgent({ name: "socrates", agent: "smoke-rec2" });
+    const reply = await mgr.startAgent({ name: "socrates", agent: "smoke-rec2", events: false });
     check("spawn by display-name fails loud (no socrates.md)", reply.ok === false && /no persona "socrates"/.test(reply.error ?? ""), reply);
   }
 
@@ -115,7 +115,7 @@ try {
   //     was the SIXTH place to do so, each in a different syntactic form, each invisible to the
   //     search aimed at the previous one.
   {
-    const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2" });
+    const reply = await mgr.startAgent({ name: "review-critic", agent: "smoke-rec2", events: false });
     const expectSocrates = firstFreeName("socrates", (n) => n === "socrates");
   check(`control: the derived numbered identity differs from the base (${expectSocrates})`,
     expectSocrates !== "socrates" && expectSocrates.startsWith("socrates"), expectSocrates);

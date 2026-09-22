@@ -107,6 +107,7 @@ const j = (v: unknown) => JSON.stringify(v);
   const reply = await mgr.startAgent({
     name: "team",
     agent: "smoke-ov",
+    events: false,
     subscribe: ["review", "review.x"],
     allowSubscribe: ["review", "review.>"],
     allowPublish: ["review.>"],
@@ -120,7 +121,7 @@ const j = (v: unknown) => JSON.stringify(v);
 // 2 — no overrides → the persona file still rules (regression guard on the new precedence code).
 {
   resetOpts();
-  await mgr.startAgent({ name: "team", agent: "smoke-ov" });
+  await mgr.startAgent({ name: "team", agent: "smoke-ov", events: false });
   check("no override → file subscribe", j(lastOpts?.subscribe) === j(["team"]), lastOpts?.subscribe);
   check("no override → file allowPublish", j(lastOpts?.allowPublish) === j(["team"]), lastOpts?.allowPublish);
 }
@@ -128,32 +129,32 @@ const j = (v: unknown) => JSON.stringify(v);
 // 3 — allowSubscribe defaults from the OVERRIDDEN subscribe (one source feeds creds + connector).
 {
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov", subscribe: ["ops"] });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", subscribe: ["ops"], events: false });
   check("allowSubscribe defaults from overridden subscribe", j(lastOpts?.allowSubscribe) === j(["ops"]), lastOpts?.allowSubscribe);
 }
 
 // 4 — prompt threads verbatim.
 {
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov", prompt: "hello team" });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", prompt: "hello team", events: false });
   check("prompt threads into LaunchOpts.prompt", lastOpts?.prompt === "hello team", lastOpts?.prompt);
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", events: false });
   check("no --prompt → LaunchOpts.prompt undefined", lastOpts?.prompt === undefined, lastOpts?.prompt);
 }
 
 // 5 — share-tools selection narrows the declared servers; `none` = none; absent = all; unknown fails.
 {
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", events: false });
   check("absent shareTools → all declared servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha", "beta"]), lastOpts?.mcpServers);
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "alpha" });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "alpha", events: false });
   check("named selection → that server only", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha"]), lastOpts?.mcpServers);
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "none" });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "none", events: false });
   check("shareTools none → no servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j([]), lastOpts?.mcpServers);
-  const bad = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "gamma" });
+  const bad = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "gamma", events: false });
   check("undeclared share-tools name fails loud", bad.ok === false && /gamma/.test(bad.error ?? ""), bad);
 }
 
@@ -161,12 +162,12 @@ const j = (v: unknown) => JSON.stringify(v);
 // into both the reply and LaunchOpts (foreground's `requested = values.name ?? def.name` parity).
 {
   resetOpts();
-  const r = await mgr.startAgent({ name: "team", agent: "smoke-ov", identity: "scout" });
+  const r = await mgr.startAgent({ name: "team", agent: "smoke-ov", identity: "scout", events: false });
   check("identity override spawns", r.ok === true, r);
   check("identity override wins over file name:", (r.data as { name?: string })?.name === "scout", r.data);
   check("identity threads into LaunchOpts.name", lastOpts?.name === "scout", lastOpts?.name);
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov" });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", events: false });
   // Earlier sections spawned `plain` repeatedly — uniqueName auto-numbers, so match the series.
   check(`instrument control: the shipped numbering separator is one mintable char (${JSON.stringify(NUM_SEP)})`,
     NUM_SEP.length === 1 && /^[A-Za-z0-9_]$/.test(NUM_SEP), NUM_SEP);
@@ -183,11 +184,11 @@ const j = (v: unknown) => JSON.stringify(v);
     allowPublish: ["m"],
   } as MeshLaunchAgent;
   const cfg = join(agentsDir, "plain.md"); // any existing file — resolved supplies the identity
-  const r1 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, prompt: "x" });
+  const r1 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, prompt: "x", events: false });
   check("resolved + prompt rejected", r1.ok === false && /rejects imperative overrides/.test(r1.error ?? ""), r1);
-  const r2 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, subscribe: ["x"] });
+  const r2 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, subscribe: ["x"], events: false });
   check("resolved + subscribe rejected", r2.ok === false && /rejects imperative overrides/.test(r2.error ?? ""), r2);
-  const r3 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, identity: "x" });
+  const r3 = await mgr.startAgent({ name: "mfst", agent: "smoke-ov", config: cfg, resolved, identity: "x", events: false });
   check("resolved + identity rejected", r3.ok === false && /rejects imperative overrides/.test(r3.error ?? ""), r3);
 }
 
@@ -197,7 +198,7 @@ const j = (v: unknown) => JSON.stringify(v);
   process.env.COTAL_DEFAULT_AGENT = "smoke-ov";
   try {
     resetOpts();
-    const r = await mgr.startAgent({ name: "plain" });
+    const r = await mgr.startAgent({ name: "plain", events: false });
     check("COTAL_DEFAULT_AGENT spawn succeeds", r.ok === true, r);
     check("COTAL_DEFAULT_AGENT used as manager default", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
     check("env default reaches LaunchOpts", lastOpts?.space === "smoke" && autoNumbered("plain").test(lastOpts?.name ?? ""), { space: lastOpts?.space, name: lastOpts?.name });
@@ -226,12 +227,12 @@ const j = (v: unknown) => JSON.stringify(v);
   process.env.COTAL_DEFAULT_AGENT = "smoke-other";
   try {
     resetOpts();
-    const r = await mgr.startAgent({ name: "pinned" }); // no --agent, env points elsewhere
+    const r = await mgr.startAgent({ name: "pinned", events: false }); // no --agent, env points elsewhere
     check("file pin spawn succeeds", r.ok === true, r);
     check("persona agent: pin picks the harness (file beats env)", (r.data as { agent?: string })?.agent === "smoke-ov", r.data);
     check("the pinned connector built the launch", lastOpts !== undefined && /^pinned(-\d+)?$/.test(lastOpts.name ?? ""), lastOpts?.name);
     resetOpts();
-    const f = await mgr.startAgent({ name: "pinned", agent: "smoke-other" }); // explicit flag wins
+    const f = await mgr.startAgent({ name: "pinned", agent: "smoke-other", events: false }); // explicit flag wins
     check("flag spawn succeeds", f.ok === true, f);
     check("explicit --agent wins over the file pin", (f.data as { agent?: string })?.agent === "smoke-other", f.data);
   } finally {
@@ -240,11 +241,11 @@ const j = (v: unknown) => JSON.stringify(v);
   }
   // The loud guard: a pin naming an unregistered connector fails the spawn (no silent default).
   writeFileSync(join(agentsDir, "typo.md"), "---\nname: typo\nagent: no-such-connector\nsubscribe: []\n---\nx\n");
-  const t = await mgr.startAgent({ name: "typo" });
+  const t = await mgr.startAgent({ name: "typo", events: false });
   check("a pin naming an unregistered connector fails loud", t.ok === false && /no-such-connector/.test(t.error ?? ""), t);
   // An UNPINNED persona with an explicit flag is unaffected by any of the above (pin must not leak).
   delete process.env.COTAL_DEFAULT_AGENT;
-  const d = await mgr.startAgent({ name: "plain", agent: "smoke-other" });
+  const d = await mgr.startAgent({ name: "plain", agent: "smoke-other", events: false });
   check("unpinned persona still honors the flag", (d.data as { agent?: string })?.agent === "smoke-other", d.data);
 }
 
@@ -255,11 +256,11 @@ const j = (v: unknown) => JSON.stringify(v);
   const prev = process.env.COTAL_DEFAULT_AGENT;
   process.env.COTAL_DEFAULT_AGENT = "manager-default";
   try {
-    const caller = await mgr.startAgent({ name: "plain", defaultAgent: "caller-default" });
+    const caller = await mgr.startAgent({ name: "plain", defaultAgent: "caller-default", events: false });
     check("detached caller default beats the manager environment default", (caller.data as { agent?: string })?.agent === "caller-default", caller);
-    const pinned = await mgr.startAgent({ name: "pinned", defaultAgent: "caller-default" });
+    const pinned = await mgr.startAgent({ name: "pinned", defaultAgent: "caller-default", events: false });
     check("persona pin beats the detached caller default", (pinned.data as { agent?: string })?.agent === "smoke-ov", pinned);
-    const explicit = await mgr.startAgent({ name: "plain", agent: "manager-default", defaultAgent: "caller-default" });
+    const explicit = await mgr.startAgent({ name: "plain", agent: "manager-default", defaultAgent: "caller-default", events: false });
     check("explicit agent beats the detached caller default", (explicit.data as { agent?: string })?.agent === "manager-default", explicit);
   } finally {
     if (prev === undefined) delete process.env.COTAL_DEFAULT_AGENT;

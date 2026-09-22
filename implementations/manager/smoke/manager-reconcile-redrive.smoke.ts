@@ -231,7 +231,7 @@ try {
   const middleFailure = failedStatus?.staticReconciliation.failures.find((row) => row.alias === "orphan-middle");
   check("served status prints retry-scheduled and the failed alias with a next retry time", failedStatus?.staticReconciliation.state === "retry-wait" && middleFailure?.disposition === "retry-scheduled" && typeof middleFailure.nextRetryAt === "string", failedStatus?.staticReconciliation);
 
-  const blockedSpawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name });
+  const blockedSpawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name, events: false });
   check("the durable terminalizing row refuses same-alias spawn during the failure window", blockedSpawn.ok === false && /terminalizing/i.test(blockedSpawn.error ?? ""), blockedSpawn);
 
   const recovered = await until(async () => (await slot("orphan-middle"))?.phase === "retired", 5_000);
@@ -249,7 +249,7 @@ try {
   const expectedOp = createHash("sha256").update(`retire:${old.uid}`).digest("hex").slice(0, 26);
   check("the re-drive reused one deterministic terminal operation", oldGate?.row.state === "retired" && oldGate.row.op?.opId === expectedOp, oldGate?.row);
 
-  const respawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name });
+  const respawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name, events: false });
   const respawnUid = respawn.ok ? (respawn.data as { lifecycleUid: string }).lifecycleUid : undefined;
   check("same-alias spawn succeeds only after retirement and mints one successor lifecycle", respawn.ok === true && respawnUid !== old.uid, respawn);
   check("the predecessor lifecycle was not duplicated or replaced during re-drive", attempts.get("orphan-first") === 1 && attempts.get("orphan-middle") === 2 && attempts.get("orphan-last") === 1, Object.fromEntries(attempts));

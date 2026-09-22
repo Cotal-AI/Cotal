@@ -178,7 +178,7 @@ const spawnSeat = async (name: string): Promise<void> => {
   const prev = process.cwd();
   process.chdir(root);
   try {
-    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--agent", "seatcon", "--space", SPACE, "--name", name]));
+    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--no-events", "--agent", "seatcon", "--space", SPACE, "--name", name]));
   } finally {
     process.chdir(prev);
   }
@@ -306,7 +306,7 @@ try {
   const prev = process.cwd();
   process.chdir(rootB);
   try {
-    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--agent", "seatcon", "--space", SPACE, "--name", "seatB"]));
+    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--no-events", "--agent", "seatcon", "--space", SPACE, "--name", "seatB"]));
   } finally {
     process.chdir(prev);
   }
