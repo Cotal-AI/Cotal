@@ -34,8 +34,13 @@ import {
   MANAGER_PIDFILE,
   type LocalProcess,
   type LocalProcessContext,
+  MAINTENANCE_JOURNAL_VERSION,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
   writeMaintenanceResumeDocument,
+  loadSeatWriterGeneration,
+  materializeFromManifest,
+  type MaintenanceResumeDescriptor,
+  type SeatCheckpoint,
   type JsonValue,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -53,6 +58,7 @@ import {
   parsePrincipalKey,
   principalKey,
   standaloneConnectOpts,
+  type Connector,
   type ManagerLeaseInfo,
   type Presence,
 } from "@cotal-ai/core";
@@ -65,6 +71,22 @@ import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { captureSeatCheckpoint } from "../lib/seat-capture.js";
+
+/** The fields a checkpoint reads off one retained inventory entry. The manager owns
+ *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
+ *  other, so the coordinator states the shape it actually reads. */
+interface ManagerResumeAgentShape {
+  name: string;
+  identity: { lifecycleUid: string };
+  launch: {
+    connector: string;
+    cwd?: string;
+    sessionId?: string;
+    unresolvedLaunchOptionKeys?: string[];
+    source: { configSha256: string; manifestSha256?: string; hash?: string };
+  };
+}
 
 /** Complete selective component names without importing installed packages. */
 export function downComplete(argv: string[]): CompletionResult {
@@ -504,6 +526,9 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     throw new Error(`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`);
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
+  // One directory per cut, beside the maintenance tree the cut already writes. The per-seat
+  // subdirectory inside it is created by the checkpoint writer, which refuses one that exists.
+  const checkpointDir = join(root, ".cotal", "maintenance", `v${MAINTENANCE_JOURNAL_VERSION}`, "checkpoints");
   const lock = acquireMaintenanceLock(root);
   try {
     const all = localProcessSurface();
@@ -725,6 +750,11 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     if (stillRunning.length)
       throw new Error(`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(", ")}`);
     await waitForEndpointUnreachable(mesh.server);
+    // Step 7 and 8 of the cut. ONLY here: the manager has proven every child exited
+    // (`commitPreservation` above returned state "preserved" with no failures) and the whole stack
+    // is down, so nothing is writing to a working tree or a transcript. A capture any earlier races
+    // the harness by construction.
+    const captured = await captureSeatCheckpoints(root, mesh.space, resume, checkpointDir);
     completeMaintenanceCut(lock, {
       attemptId,
       observedAt: new Date().toISOString(),
@@ -735,9 +765,67 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     console.log(c.green(`✓ preserved state for "${mesh.space}"`));
     console.log(c.dim(`  source: ${storeDir}`));
     console.log(c.dim(`  resume inventory: ${join(root, ".cotal", "maintenance", "v1", resume.file)}`));
+    for (const seat of captured)
+      console.log(c.dim(`  checkpoint: ${seat.name} (${seat.session.continuity}, generation ${seat.generation}) -> ${join(checkpointDir, seat.name)}`));
     console.log(c.dim("  stack remains stopped; create a backup or deliberately resume with `cotal up`"));
   } finally {
     releaseMaintenanceLock(lock);
+  }
+}
+
+/**
+ * Capture one checkpoint per retained seat, after the cut has proven the whole stack down.
+ *
+ * A seat the manager would refuse to resume is refused here too, with the manager's own wording:
+ * `Manager.inventoryReferenceError` says `imperative launch options have no non-secret durable
+ * source`, and a checkpoint inherits that refusal rather than writing something that will not
+ * reproduce the seat.
+ */
+async function captureSeatCheckpoints(
+  root: string,
+  space: string,
+  resume: MaintenanceResumeDescriptor,
+  destination: string,
+): Promise<SeatCheckpoint[]> {
+  const document = readMaintenanceResumeDocument(root, resume);
+  const inventory = document.inventory as { agents?: ManagerResumeAgentShape[] } | undefined;
+  const agents = inventory?.agents ?? [];
+  const sealed: SeatCheckpoint[] = [];
+  for (const entry of agents) {
+    const keys = entry.launch?.unresolvedLaunchOptionKeys ?? [];
+    if (keys.length)
+      throw new Error(`imperative launch options have no non-secret durable source (${keys.join(", ")}): seat ${entry.name} cannot be checkpointed`);
+    const cwd = entry.launch?.cwd;
+    if (!cwd) throw new Error(`seat ${entry.name} has no launch cwd to capture`);
+    // The generation this cut is taken at, from what this host holds. A destination claims the
+    // successor by exclusive create before it launches anything.
+    const held = loadSeatWriterGeneration(root, space, entry.name);
+    sealed.push(captureSeatCheckpoint(join(destination, entry.name), entry, {
+      cwd,
+      space,
+      name: entry.name,
+      lifecycleUid: entry.identity.lifecycleUid,
+      generation: held?.generation ?? 0,
+      profile: {
+        configSha256: entry.launch.source.configSha256,
+        ...(entry.launch.source.manifestSha256 ? { manifestSha256: entry.launch.source.manifestSha256 } : {}),
+        ...(entry.launch.source.hash ? { hash: entry.launch.source.hash } : {}),
+      },
+      connector: await connectorCapabilities(entry.launch.connector),
+      ...(entry.launch.sessionId ? { sessionId: entry.launch.sessionId } : {}),
+    }));
+  }
+  return sealed;
+}
+
+/** Resolve a connector's DECLARED capabilities. An unresolvable connector is `undefined`, which
+ *  `sessionContinuityClass` reads as drain-only: unknown capabilities are default-deny and no
+ *  continuation promise may be inferred from a package name or a host-local probe. */
+async function connectorCapabilities(name: string): Promise<Pick<Connector, "supportsResume" | "supportsSessionContinuation" | "supportsFreshStart"> | undefined> {
+  try {
+    return await materializeFromManifest<Connector>({ kind: "connector", name });
+  } catch {
+    return undefined;
   }
 }
 

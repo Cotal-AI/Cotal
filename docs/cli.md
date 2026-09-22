@@ -341,6 +341,42 @@ the exact recorded attempt and finishes the remaining stop and endpoint proofs i
 needing the (by then intentionally dead) manager. A partial cut never publishes `ready`. It cannot
 be combined with component names, manifest teardown, or `--dry-run`.
 
+**Seat checkpoints.** After the stack is proven down, the cut writes one checkpoint per retained
+seat under `.cotal/maintenance/v1/checkpoints/<seat>/`, and prints the path, the continuity class
+and the generation for each. The capture happens only at that point because anything earlier races
+a harness that is still writing its transcript and its working tree.
+
+Each checkpoint directory is created 0700, refuses a destination that already exists, and holds:
+
+- `repo.bundle`, the seat `cwd`'s reachable history, anchored on the base commit the record names
+  by full object id;
+- `repo.index.diff` and `repo.worktree.diff`, the staging state as two diffs, base to index and
+  index to worktree. Two rather than one because a single combined diff restores a mixed tree with
+  the right bytes and the wrong index: a source reporting `MM README` would come back as ` M README`;
+- `repo.untracked.tar`, the untracked files in scope;
+- the harness session pointer and store, when the connector declares them;
+- `checkpoint.json`, written last, after every digest is computed over the bytes that landed.
+
+The record carries the manager's resume entry unchanged as its first field, then the space, the seat
+name, the recovered `lifecycleUid`, the writer generation the cut was taken at, `capturedAt`, the
+recency horizon, the applied profile revision, and the continuity class. Every captured file is
+listed with its byte size and sha256, so an operator verifies the whole artifact with `sha256sum`
+and `git bundle verify`. No secret values, no operator keys and no source-host launch material
+enter it.
+
+The untracked selection rule is recorded in the record and is
+`git ls-files --others --exclude-standard -z, excluding .cotal/`. It honors `.gitignore`, so an
+ignored file the seat needs does not travel and has to be moved separately. The `.cotal/` exclusion
+is a secrecy boundary rather than a size one: when a seat's `cwd` is also the mesh root, the control
+directory is untracked, and without the exclusion the broker trust material, the space account, the
+manager instance identity's private seed and the seat's own credentials would land inside the
+artifact. A checkpoint carries credential references only; the destination resolves that material
+itself.
+
+A seat whose launch options could not be resolved is refused rather than checkpointed, with the
+manager's own wording: `imperative launch options have no non-secret durable source (<keys>)`. The
+refusal arrives at prepare time, so the cut stops before any child does.
+
 ## clean
 
 ```bash
