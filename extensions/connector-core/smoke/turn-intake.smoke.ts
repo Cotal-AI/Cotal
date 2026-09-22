@@ -56,6 +56,10 @@ const rig = () => {
     principal: { owner: "local", actor: "seat" },
     setStatus: async () => { if (state.failStatusWrite) throw new Error("presence write failed"); },
     setActivity: async () => {},
+    // `setStatus` clears any standing condition on the way into `working`, so the double has to
+    // answer it or every block that drives a turn boundary dies on a missing method rather than
+    // on the property it is testing.
+    setCondition: async () => {},
     invokeService: async (_ep: string, command: string, args: unknown, opts: unknown) => {
       invokes.push({ command, args, opts });
       if (command === "turn-pending") {
