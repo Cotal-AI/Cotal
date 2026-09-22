@@ -515,6 +515,13 @@ without passing the gates has claimed no generation. `--accept-stale-checkpoint`
 resume journal with the seat, the capture instant, the admitted age and the horizon, so the consent
 survives the terminal it was typed into.
 
+The whole admission is all or nothing. Coverage is settled first, then every gate runs over every
+checkpoint, and only then is any generation claimed. A refusal at any point leaves every generation
+unclaimed, including a lost exclusive create during the claim itself: the claims that attempt made
+are removed before the refusal is raised, by the exact paths it wrote, so a generation another
+destination holds is never touched. A claim is a create that can never be made again, so a refusal
+that left one behind would consume the retry over the same checkpoint set.
+
 Two limits are worth stating plainly. The writer generation is claimed by exclusive create inside
 one workspace root, so it fences two resumes on the same host and does not fence two independent
 destinations: copy a checkpoint to two roots and both claim the same successor. And no shipped

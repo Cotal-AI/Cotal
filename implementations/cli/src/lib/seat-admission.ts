@@ -10,9 +10,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   admitSeatCheckpointRecency,
-  advanceSeatWriterGeneration,
   assertSeatCheckpointIdentity,
   assertSeatCheckpointIntegrity,
+  claimSeatWriterGenerations,
   readSeatCheckpoint,
   type SeatCheckpoint,
 } from "@cotal-ai/workspace";
@@ -102,15 +102,18 @@ export function admitSeatCheckpoints(options: AdmitSeatsOptions): SeatAdmission[
   }
 
   // Phase 3, custody, once the whole set is admissible. Exclusive create on the SUCCESSOR value,
-  // before anything launches. A lost create means another destination is already claiming this
-  // seat, and it refuses rather than adopting.
-  for (const seat of decided)
-    advanceSeatWriterGeneration(options.root, {
-      space: seat.checkpoint.space,
-      name: seat.checkpoint.name,
-      // The recorded uid is REUSED, never minted: the durables are keyed by it.
-      lifecycleUid: seat.checkpoint.lifecycleUid,
-      generation: seat.generation,
-    });
+  // before anything launches. A lost create means another destination is already claiming that
+  // seat, and the whole set is refused rather than adopting the winner.
+  //
+  // The set is claimed through one helper so it is all-or-nothing: each create is its own fence,
+  // so a later one can still lose after every gate passed, and a claim left behind would consume
+  // the retry over this same admissible set.
+  claimSeatWriterGenerations(options.root, decided.map((seat) => ({
+    space: seat.checkpoint.space,
+    name: seat.checkpoint.name,
+    // The recorded uid is REUSED, never minted: the durables are keyed by it.
+    lifecycleUid: seat.checkpoint.lifecycleUid,
+    generation: seat.generation,
+  })));
   return decided;
 }

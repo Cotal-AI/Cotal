@@ -18,7 +18,7 @@ import {
   type LaunchOpts,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, loadSeatWriterGeneration, seatCheckpointDir } from "@cotal-ai/workspace";
+import { advanceSeatWriterGeneration, agentCredsDir, agentLifecycleSecretFilePaths, loadSeatWriterGeneration, seatCheckpointDir } from "@cotal-ai/workspace";
 // The two shipped entry points the cut and the resume call, so these checks run the operator's
 // path rather than the gates underneath it. Implementations do not depend on each other, so this
 // is a dev-only smoke import from source, the same way attach.smoke.ts reads the CLI's ws client.
@@ -1398,6 +1398,43 @@ let openInventory: ManagerResumeAgent;
     pairCut("pair-3", "b");
     const both = admitPair("pair-3", ["a", "b"]);
     check("a complete, intact set admits and claims every seat", both.length === 2 && claimed("a") === 1 && claimed("b") === 1, both.map((s) => s.name));
+
+    // A failure INSIDE the claim phase. Every gate passes, then the later seat's exclusive create
+    // loses to a generation another destination already holds. The earlier seat's claim must not
+    // survive, or the retry over this same admissible set can never make it again.
+    const collideRoot = mkdtempSync(join(tmpdir(), "cotal-seat-collide-"));
+    const collideCut = (seat: string) =>
+      captureSeatCheckpoint(join(seatCheckpointDir(collideRoot, "collide"), seat), { name: seat }, {
+        cwd, space: "pair-space", name: seat, lifecycleUid: uid, generation: 0,
+        profile: { configSha256: "a".repeat(64) }, connector: undefined,
+      });
+    collideCut("a");
+    collideCut("b");
+    // The later seat's successor, already claimed. `b` sorts after `a`, so `a` is claimed first.
+    advanceSeatWriterGeneration(collideRoot, { space: "pair-space", name: "b", lifecycleUid: uid, generation: 1 });
+    check("a lost create in the claim phase refuses naming that seat", (() => {
+      try {
+        admitSeatCheckpoints({
+          root: collideRoot, space: "pair-space",
+          checkpointDir: seatCheckpointDir(collideRoot, "collide"),
+          liveLifecycleUids: new Set<string>(),
+        });
+        return false;
+      } catch (e) {
+        const m = (e as Error).message;
+        return /seat-writer-generation-create-lost/.test(m) && m.includes('"b"');
+      }
+    })());
+    check(
+      "the earlier seat's generation was released when the later create lost",
+      loadSeatWriterGeneration(collideRoot, "pair-space", "a") === undefined,
+      loadSeatWriterGeneration(collideRoot, "pair-space", "a"),
+    );
+    check(
+      "the generation that was already held is untouched",
+      loadSeatWriterGeneration(collideRoot, "pair-space", "b")?.generation === 1,
+    );
+    rmSync(collideRoot, { recursive: true, force: true });
 
     rmSync(pairRoot, { recursive: true, force: true });
   }

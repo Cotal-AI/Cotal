@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   composeSpaceAuth,
@@ -454,6 +454,51 @@ function seatGenerationFile(root: string, space: string, name: string, generatio
 
 function seatGenerationPrefix(space: string, name: string): string {
   return `seat-generation.${Buffer.from(`${space}\u0000${name}`, "utf8").toString("hex")}.`;
+}
+
+/**
+ * Claim a whole set of seat writer generations, or none of them.
+ *
+ * Each claim is its own exclusive create, so a later one can lose even when every earlier one
+ * succeeded. A claim is a create that can never be made again, so a partial set would let one
+ * refusal consume the retry over the very same input. This creates them in order and, on any
+ * failure, removes the files IT created in this call before rethrowing.
+ *
+ * The compensation is deliberately narrow. It unlinks by the exact path it wrote and nothing else,
+ * so it can never remove a generation another destination holds. An unlink that finds the file
+ * already gone is fine; any other unlink error is reported alongside the original failure rather
+ * than replacing it, because the original is why the operation is failing and the unlink error is
+ * why the tree is not clean.
+ *
+ * No lock, no retry, no fallback: a lost create still refuses the whole set.
+ */
+export function claimSeatWriterGenerations(
+  root: string,
+  claims: readonly SeatWriterGeneration[],
+): readonly SeatWriterGeneration[] {
+  const written: string[] = [];
+  for (const claim of claims) {
+    try {
+      advanceSeatWriterGeneration(root, claim);
+    } catch (error) {
+      const undoFailures: string[] = [];
+      for (const path of written) {
+        try {
+          rmSync(path);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+            undoFailures.push(`${path}: ${(e as Error).message}`);
+        }
+      }
+      if (undoFailures.length)
+        throw new Error(
+          `${(error as Error).message}; additionally, these generations claimed by this attempt could not be released and must be removed by hand: ${undoFailures.join("; ")}`,
+        );
+      throw error;
+    }
+    written.push(seatGenerationFile(root, claim.space, claim.name, claim.generation));
+  }
+  return claims;
 }
 
 /** The highest generation this host has claimed for a seat, or undefined when it never has.
