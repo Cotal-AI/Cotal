@@ -7,6 +7,7 @@ import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/cor
 import { configFromEnv, controlFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { z } from "zod";
 import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
+import { createJcodeMapper } from "../src/agui-map.js";
 
 let pass = 0;
 let fail = 0;
@@ -125,6 +126,19 @@ try {
 
   const rooted = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir });
   check("workspaceRoot pins private state", rooted.env?.COTAL_JCODE_HOME === dir);
+  check("declares the shared AG-UI event channel", jcodeConnector.eventChannel?.({ owner: "owner", actor: "actor" }) === "events.owner.actor");
+  check("ordinary launches do not arm the event plane", rooted.env?.COTAL_EVENTS === undefined && rooted.env?.COTAL_WORKSPACE_ROOT === undefined);
+  const evented = jcodeConnector.buildLaunch({ space: "space", name: "seat", workspaceRoot: dir, events: true });
+  check(
+    "event launches arm the plane, pin its durable root, and stabilize open-mode identity",
+    evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir && evented.env?.COTAL_ID === "seat",
+    evented.env,
+  );
+  check(
+    "an allocated event identity wins over the open-mode name",
+    jcodeConnector.buildLaunch({ space: "space", name: "seat", id: "allocated", workspaceRoot: dir, events: true }).env?.COTAL_ID === "allocated",
+  );
+  throws("events require a durable workspace root", () => jcodeConnector.buildLaunch({ space: "s", name: "n", events: true }), /workspace root/);
   check("Jcode TUI override is absent when unset", base.env?.COTAL_JCODE_TUI === undefined);
   process.env.COTAL_JCODE_TUI = "0";
   try {
@@ -189,6 +203,34 @@ try {
   throws("refuses tool sharing", () => jcodeConnector.buildLaunch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);
   throws("refuses unsupported launch options", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => jcodeConnector.buildLaunch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);
+
+  const mapper = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-1", now: () => 7 });
+  const mapped = mapper.map({
+    append_messages: [
+      {
+        role: "assistant",
+        timestamp: "2026-09-22T00:00:00.000Z",
+        content: [
+          { type: "reasoning", text: "why" },
+          { type: "tool_use", id: "call-1", name: "bash", input: { command: "printf ok" } },
+          { type: "text", text: "done" },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "ok" }] },
+    ],
+  });
+  check(
+    "maps durable Jcode message blocks into one native AG-UI run",
+    mapped?.runId === "run-1" &&
+      mapped.events.map((event) => event.type).join(",") ===
+        "RUN_STARTED,REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT,REASONING_MESSAGE_END,TOOL_CALL_START,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_END",
+    mapped,
+  );
+  mapper.forgetOpenRun("run-1");
+  check(
+    "a closed Jcode run opens a fresh run for later durable output",
+    mapper.map({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] })?.events[0]?.type === "RUN_STARTED",
+  );
 
   console.log(`\nJCODE ARGS SMOKE PASSED: ${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;
