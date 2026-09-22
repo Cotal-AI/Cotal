@@ -51,7 +51,12 @@ by hand; the next real boot overwrites it.
 There is no broker-only `up`. Auth-mode `up` still starts nats, the delivery daemon, and a
 local manager. A space may run more than one manager, addressed by instance id
 ([control surface](control-surface.md#instance-routing)); putting no manager on the broker host
-is a topology choice, not a singleton invariant. The supported split is:
+is a topology choice, not a singleton invariant. A manager whose boot inventory has no
+available connector does not take unpinned `spawn`/`launch` on the class rail, so a sibling
+that can launch the harness can. `describe` still rides the class rail, so an unpinned spawn
+can bind-fence when that skip member answered describe; re-issue, or pin `--on`. Pin one
+instance with `--on` when a partial inventory still answers with a harness refusal. The
+supported split is:
 
 ```bash
 # broker host (project root that owns the generated conf, pidfiles, and logs)
