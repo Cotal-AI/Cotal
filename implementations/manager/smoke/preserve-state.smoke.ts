@@ -1260,6 +1260,19 @@ let openInventory: ManagerResumeAgent;
       .split("\n").some((entry) => entry.startsWith(".cotal")),
   );
   check("an unresolvable connector is sealed as drain-only", sealed.session.continuity === "drain-only", sealed.session);
+  // A class is a promise about bytes. A connector declaring continuation still gets no better than
+  // its fresh-start capability when the cut carried no pointer and no store to reopen from.
+  const declaredExact = captureSeatCheckpoint(join(seatCheckpointDir(root, "cut-exact"), "seat"), { name: "seat" }, {
+    cwd, space: "checkpoint-space", name: "seat", lifecycleUid: uid, generation: 0,
+    profile: { configSha256: "a".repeat(64) },
+    connector: { supportsResume: true, supportsSessionContinuation: true, supportsFreshStart: true },
+    sessionId: "session-that-has-no-bytes-here",
+  });
+  check(
+    "a continuation-capable connector is not sealed as exact when no session bytes were captured",
+    declaredExact.session.continuity === "fresh" && declaredExact.session.pointer === undefined && declaredExact.session.store.length === 0,
+    declaredExact.session,
+  );
 
   const admit = (attemptId: string, opts: Partial<Parameters<typeof admitSeatCheckpoints>[0]> = {}) =>
     admitSeatCheckpoints({
@@ -1326,6 +1339,14 @@ let openInventory: ManagerResumeAgent;
     try { admit("cut-4", { liveLifecycleUids: new Set([uid]) }); return false; }
     catch (e) { return /already live and this runtime cannot authoritatively adopt it/.test((e as Error).message); }
   })());
+  // The profile half of gate 2 only decides anything when the destination supplies its own
+  // revision. A caller that supplies none leaves nothing to compare, which is not a match.
+  check("a destination on a different profile revision is refused", (() => {
+    try { admit("cut-4", { currentProfileConfigSha256: () => "c".repeat(64) }); return false; }
+    catch (e) { return /profile revision is/.test((e as Error).message); }
+  })());
+  const consented = admit("cut-4", { currentProfileConfigSha256: () => "c".repeat(64), acceptRecordedProfile: true });
+  check("--accept-recorded-profile admits the recorded revision deliberately", consented.length === 1, consented);
 
   rmSync(root, { recursive: true, force: true });
 }

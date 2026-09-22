@@ -46,6 +46,26 @@ Not shipped, and still open as the sections describe them: the eviction evidence
 needs for the residual case in 3.3, the harness store paths for pi (4 in Open points, still an
 operator input), and everything in section 4.
 
+Two shipped pieces are narrower than the sections they implement, and the difference matters:
+
+- **The writer generation fences one workspace root, not one seat across hosts.** 3.2 describes a
+  coordinate that makes a seat single-writer everywhere. `advanceSeatWriterGeneration` claims the
+  successor by exclusive create inside the destination's own `.cotal`, so two resumes in one root
+  are fenced and two independent destination roots both claim the same successor. Verified by a
+  reviewer, who copied one generation-0 checkpoint to two roots and admitted both. A real
+  cross-host fence needs a coordinate neither root owns, which is not in this cut.
+- **Nothing consumes the captured bytes.** 1.3 steps 7 and 8 capture and seal, and 2.2 admits, but
+  no shipped command applies the bundle, either diff, or the untracked archive, and none restores a
+  session pointer or store. An ordinary resume still requires the preserved source store on the
+  same host. The artifact is verifiable and admissible; restoring from it is manual today.
+
+Two more properties are shipped and worth naming because they were wrong first and fixed after
+review. A retained seat with no admitted checkpoint now refuses the resume by name, instead of
+resuming ungated with no generation claimed. And the continuity class is capped by what the
+checkpoint carries: the manager's resume inventory records no session pointer path, so a
+continuation-capable connector is recorded as `fresh` or `drain-only` rather than `exact`, because
+a class is a promise about bytes the artifact has to contain.
+
 ## The question
 
 A managed seat is a harness process (pi, Claude Code, jcode) that a Cotal manager spawned and owns.

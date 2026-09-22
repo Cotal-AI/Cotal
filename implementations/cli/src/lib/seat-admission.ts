@@ -34,6 +34,10 @@ export interface AdmitSeatsOptions {
   readonly space: string;
   /** Principals the destination believes are live, so gate 2 can refuse adopting one. */
   readonly liveLifecycleUids: ReadonlySet<string>;
+  /** This destination's current profile revision for a seat, by name. Returning undefined means
+   *  the destination has no revision to compare, which gate 2 treats as nothing to refuse rather
+   *  than as a match. */
+  readonly currentProfileConfigSha256?: (name: string) => string | undefined;
   /** `--accept-stale-checkpoint`. Consent for gate 3 only; gate 2 has no override. */
   readonly acceptStale?: boolean;
   /** `--accept-recorded-profile`. Resume under the checkpoint's profile revision deliberately. */
@@ -58,9 +62,11 @@ export function admitSeatCheckpoints(options: AdmitSeatsOptions): SeatAdmission[
     assertSeatCheckpointIntegrity(directory, checkpoint);
 
     // Gate 2, identity. No override.
+    const current = options.currentProfileConfigSha256?.(checkpoint.name);
     assertSeatCheckpointIdentity(checkpoint, {
       space: options.space,
       lifecycleUidIsLive: options.liveLifecycleUids.has(checkpoint.lifecycleUid),
+      ...(current !== undefined ? { profileConfigSha256: current } : {}),
       ...(options.acceptRecordedProfile ? { acceptRecordedProfile: true } : {}),
     });
 

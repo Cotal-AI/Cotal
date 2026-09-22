@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { sessionContinuityClass, type Connector } from "@cotal-ai/core";
+import { sessionContinuityClass, type Connector, type SessionContinuityClass } from "@cotal-ai/core";
 import {
   createSeatCheckpointWriter,
   type SeatCheckpoint,
@@ -116,12 +116,21 @@ export function captureSeatCheckpoint<Entry>(
     const worktreeDiff = writer.captureFile("repo.worktree.diff", "worktree-diff", worktreeDiffPath);
     const untracked = writer.captureFile("repo.untracked.tar", "untracked", untrackedPath);
 
-    const continuity = sessionContinuityClass(request.connector ?? {});
     const pointer: SeatCheckpointFile | undefined = request.sessionStatePath
       ? writer.captureFile("session-pointer.json", "session-pointer", request.sessionStatePath)
       : undefined;
     const store = (request.sessionStorePaths ?? []).map((path, index) =>
       writer.captureFile(`session-store.${index}`, "session-store", path));
+    // What the connector DECLARES, capped by what this cut actually carried. A class is a promise
+    // a destination is entitled to act on, and `exact` or `fork` with no pointer and no store
+    // promises a session that can be reopened from bytes this checkpoint does not contain. Capping
+    // here keeps the promise answerable to the artifact rather than to the declaration.
+    const declared = sessionContinuityClass(request.connector ?? {});
+    const carriesSession = pointer !== undefined || store.length > 0;
+    const continuity: SessionContinuityClass =
+      !carriesSession && (declared === "exact" || declared === "fork")
+        ? (request.connector?.supportsFreshStart ? "fresh" : "drain-only")
+        : declared;
     const session: SeatCheckpointSession = {
       continuity,
       ...(request.sessionId ? { sessionId: request.sessionId } : {}),

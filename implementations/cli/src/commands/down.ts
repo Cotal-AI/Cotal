@@ -655,6 +655,11 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       }
       if (unmanaged.length)
         throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
+      // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
+      // still running. This reads only the prepared inventory, so it needs nothing that stopping
+      // would provide, and refusing after the stack is down would cost the operator a running mesh
+      // to tell them the cut was never going to complete.
+      assertSeatsCheckpointable(plan.inventory);
       resume = writeMaintenanceResumeDocument(lock, {
         version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
         inventory: plan.inventory as JsonValue,
@@ -771,13 +776,27 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
 }
 
 /**
- * Capture one checkpoint per retained seat, after the cut has proven the whole stack down.
+ * Refuse any seat the cut could not checkpoint, from the prepared inventory alone.
+ *
+ * Called at prepare time, before a single child is stopped. The capture itself must wait until the
+ * stack is proven down, but the DECISION about whether a capture is possible reads only the
+ * inventory, so it belongs where the operator still has a running mesh.
  *
  * A seat the manager would refuse to resume is refused here too, with the manager's own wording:
  * `Manager.inventoryReferenceError` says `imperative launch options have no non-secret durable
  * source`, and a checkpoint inherits that refusal rather than writing something that will not
  * reproduce the seat.
  */
+function assertSeatsCheckpointable(inventory: unknown): void {
+  for (const entry of ((inventory as { agents?: ManagerResumeAgentShape[] }).agents ?? [])) {
+    const keys = entry.launch?.unresolvedLaunchOptionKeys ?? [];
+    if (keys.length)
+      throw new Error(`imperative launch options have no non-secret durable source (${keys.join(", ")}): seat ${entry.name} cannot be checkpointed`);
+    if (!entry.launch?.cwd) throw new Error(`seat ${entry.name} has no launch cwd to capture`);
+  }
+}
+
+/** Capture one checkpoint per retained seat, after the cut has proven the whole stack down. */
 async function captureSeatCheckpoints(
   root: string,
   space: string,
@@ -789,11 +808,9 @@ async function captureSeatCheckpoints(
   const agents = inventory?.agents ?? [];
   const sealed: SeatCheckpoint[] = [];
   for (const entry of agents) {
-    const keys = entry.launch?.unresolvedLaunchOptionKeys ?? [];
-    if (keys.length)
-      throw new Error(`imperative launch options have no non-secret durable source (${keys.join(", ")}): seat ${entry.name} cannot be checkpointed`);
-    const cwd = entry.launch?.cwd;
-    if (!cwd) throw new Error(`seat ${entry.name} has no launch cwd to capture`);
+    // Re-asserted over the document that was actually written, not the plan read at prepare time.
+    assertSeatsCheckpointable({ agents: [entry] });
+    const cwd = entry.launch.cwd as string;
     // The generation this cut is taken at, from what this host holds. A destination claims the
     // successor by exclusive create before it launches anything.
     const held = loadSeatWriterGeneration(root, space, entry.name);

@@ -359,7 +359,9 @@ Each checkpoint directory is created 0700, refuses a destination that already ex
   index to worktree. Two rather than one because a single combined diff restores a mixed tree with
   the right bytes and the wrong index: a source reporting `MM README` would come back as ` M README`;
 - `repo.untracked.tar`, the untracked files in scope;
-- the harness session pointer and store, when the connector declares them;
+- the harness session pointer and store, when the cut is given them. The manager's resume inventory
+  does not record either path today, so a checkpoint written by `down --preserve-state` carries
+  neither, and the continuity class below is capped to say so;
 - `checkpoint.json`, written last, after every digest is computed over the bytes that landed.
 
 The record carries the manager's resume entry unchanged as its first field, then the space, the seat
@@ -368,6 +370,12 @@ recency horizon, the applied profile revision, and the continuity class. Every c
 listed with its byte size and sha256, so an operator verifies the whole artifact with `sha256sum`
 and `git bundle verify`. No secret values, no operator keys and no source-host launch material
 enter it.
+
+The continuity class is what the connector declares, capped by what the checkpoint carries. A
+connector declaring session continuation classifies as `exact`, but a checkpoint holding no session
+pointer and no store cannot reopen that session, so it is recorded as `fresh` when the connector
+declares a fresh start and `drain-only` otherwise. A class is a promise the destination is entitled
+to act on, so it never describes bytes the artifact does not contain.
 
 The untracked selection rule is recorded in the record and is
 `git ls-files --others --exclude-standard -z, excluding .cotal/`. It honors `.gitignore`, so an
@@ -497,6 +505,20 @@ by exclusive create, before it launches anything. A lost create means another de
 claiming that seat, and it refuses with `seat-writer-generation-create-lost` rather than adopting
 the winner and becoming a second writer. The recorded `lifecycleUid` is reused and never minted, so
 the resumed seat binds the same lifecycle-keyed durables.
+
+Admission is reconciled against the inventory the resume is about to hand the manager. A retained
+seat with no admitted checkpoint refuses the resume by name: an absent checkpoint directory and an
+absent record are indistinguishable from a seat that was never checkpointed, and a seat that starts
+without passing the gates has claimed no generation. `--accept-stale-checkpoint` is recorded in the
+resume journal with the seat, the capture instant, the admitted age and the horizon, so the consent
+survives the terminal it was typed into.
+
+Two limits are worth stating plainly. The writer generation is claimed by exclusive create inside
+one workspace root, so it fences two resumes on the same host and does not fence two independent
+destinations: copy a checkpoint to two roots and both claim the same successor. And no shipped
+command consumes the captured bytes. The bundle, the two diffs and the untracked archive are
+written, digested and admitted, but restoring them into a working tree is a manual operation today,
+so an ordinary resume still requires the preserved source store.
 
 Authenticated restores validate the complete
 space trust bundle before staging, including nkeys, seed matches, JWTs, signers, and space binding;
