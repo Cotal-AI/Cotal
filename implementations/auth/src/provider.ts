@@ -391,25 +391,27 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
     if (idpUrl && loadIdpSession(homeCotalDir(), idpUrl))
       throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
-    // WHATWG parsing erases empty userinfo (`http://@host/`) and a bare query marker (`…/token?`).
-    // Reject the forbidden syntax from the raw credential before parsing can normalize it away.
-    const authorityStart = url.indexOf("://");
-    if (authorityStart >= 0) {
-      const start = authorityStart + 3;
-      const slash = url.indexOf("/", start);
-      const authority = url.slice(start, slash < 0 ? url.length : slash);
-      if (authority.includes("@")) throw new Error("the enrollment URL must not contain userinfo");
-    }
-    if (url.includes("?"))
-      throw new Error("the enrollment URL must not contain a query; its last path segment is the one-time secret");
-    if (url.includes("#"))
-      throw new Error("the enrollment URL must not contain a fragment");
+    // WHATWG parsing rewrites many inputs into a different URL than the owner minted: it folds
+    // backslashes into slashes, erases empty userinfo, lowercases the scheme and host, drops a
+    // default port, resolves dot segments, and canonicalizes short host forms. Accepting any of
+    // those means redeeming a URL the owner never issued, so the raw string is held to a positive
+    // grammar first and then required to be its own canonical serialization.
+    if (!url.startsWith("https://") && !url.startsWith("http://"))
+      throw new Error("the enrollment URL must begin with https:// or http:// in lowercase");
+    for (const [char, label] of [["\\", "a backslash"], ["@", "userinfo"], ["?", "a query"], ["#", "a fragment"]] as const)
+      if (url.includes(char)) throw new Error(`the enrollment URL must not contain ${label}`);
+    if (/[\s\u0000-\u001f\u007f]/.test(url) || /%(0[0-9a-f]|1[0-9a-f]|20|7f)/i.test(url))
+      throw new Error("the enrollment URL must not contain whitespace or control characters, encoded or literal");
     let enrollment: URL;
     try {
       enrollment = new URL(url);
     } catch {
       throw new Error("the enrollment URL is not a valid URL");
     }
+    if (enrollment.href !== url)
+      throw new Error("the enrollment URL is not in canonical form - redeem the URL exactly as the mesh owner minted it");
+    if (enrollment.username || enrollment.password || enrollment.search || enrollment.hash)
+      throw new Error("the enrollment URL must carry no userinfo, query, or fragment");
     if (!enrollment.pathname.split("/").filter(Boolean).at(-1))
       throw new Error("the enrollment URL must end with the one-time secret path segment");
     if (enrollment.protocol !== "https:" && !(enrollment.protocol === "http:" && isLoopbackLiteral(enrollment.hostname)))

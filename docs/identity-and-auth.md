@@ -185,9 +185,13 @@ GET <enrollment URL>
 ```
 
 It sends no `Authorization` header and no request body. The URL must be HTTPS, except for plain HTTP
-to a loopback IP literal. Raw userinfo, query markers, and fragments are refused before URL parsing,
-including empty forms such as `http://@127.0.0.1/…` and a trailing `?`. Redirects are refused. The client never retries because a successful claim
-deletes the server-side token row. The token expires five minutes after mint.
+to a loopback IP literal. The client redeems only an enrollment URL that is already in canonical
+form and contains none of `\ @ ? #`. That is checked on the raw string before parsing, so every
+rewrite a URL parser would perform, backslash folding, userinfo erasure, scheme or host case
+folding, default-port removal, dot-segment resolution, and short-host canonicalization, is a refusal
+rather than a redeem of a URL the owner never minted. Redirects are refused. The client never
+retries because a successful claim deletes the server-side token row. The token expires five minutes
+after mint.
 
 Success is `200` with this JSON object:
 

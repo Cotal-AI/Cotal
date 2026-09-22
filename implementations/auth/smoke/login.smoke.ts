@@ -100,10 +100,23 @@ console.log("A) one-shot remote enrollment client");
   check("the refusal is never retried", requests === 3);
   await rejects("a non-loopback HTTP enrollment is refused before fetch", () => cotalAuthProvider.postAgentEnrollment!({ url: "http://example.com/secret" }), "loopback HTTP literal");
   check("the non-loopback refusal made no request", requests === 3);
-  await rejects("empty enrollment userinfo is refused before WHATWG normalization", () => cotalAuthProvider.postAgentEnrollment!({ url: `http://@127.0.0.1:${(enrollment.address() as AddressInfo).port}/fresh` }), "must not contain userinfo");
-  check("the empty-userinfo refusal made no request", requests === 3);
-  await rejects("a bare enrollment query marker is refused before WHATWG normalization", () => cotalAuthProvider.postAgentEnrollment!({ url: `${enrollmentBase}/fresh?` }), "must not contain a query");
-  check("the bare-query refusal made no request", requests === 3);
+  // The class, not one instance: every form a URL parser would rewrite must be refused before fetch.
+  const port = (enrollment.address() as AddressInfo).port;
+  for (const [label, url, reason] of [
+    ["empty userinfo", `http://@127.0.0.1:${port}/fresh`, "must not contain userinfo"],
+    ["a bare query marker", `${enrollmentBase}/fresh?`, "must not contain a query"],
+    ["a backslash authority", `http:\\\\@127.0.0.1:${port}/fresh`, "must begin with https:// or http:// in lowercase"],
+    ["a mixed slash authority", `http:/\\@127.0.0.1:${port}/fresh`, "must begin with https:// or http:// in lowercase"],
+    ["an uppercase scheme", `HTTP://127.0.0.1:${port}/fresh`, "must begin with https:// or http:// in lowercase"],
+    ["a trailing space", `${enrollmentBase}/fresh `, "must not contain whitespace or control characters"],
+    ["an encoded newline", `${enrollmentBase}/fresh%0a`, "must not contain whitespace or control characters"],
+    ["a short host form", `http://127.1:${port}/fresh`, "is not in canonical form"],
+    ["a dot segment", `http://127.0.0.1:${port}/enroll/../fresh`, "is not in canonical form"],
+    ["a default port", "http://127.0.0.1:80/fresh", "is not in canonical form"],
+  ] as const) {
+    await rejects(`an enrollment URL with ${label} is refused`, () => cotalAuthProvider.postAgentEnrollment!({ url }), reason);
+    check(`the ${label} refusal made no request`, requests === 3);
+  }
   enrollment.close();
   delete process.env.COTAL_HOME;
   if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
