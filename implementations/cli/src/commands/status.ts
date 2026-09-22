@@ -367,14 +367,17 @@ async function printRegistry(): Promise<void> {
       // Honour the recorded transport. A bare TCP/INFO probe green-lights a plaintext broker that
       // has substituted for a TLS-required mesh — the FAIL1 attack — so a monitoring list that only
       // asks "is anything listening" cannot report on the one property the record claims.
-      const live = await isReachable(m.server, m.tlsRequired ? { tls: true } : {});
+      const live = m.origin === "catalog" ? undefined : await isReachable(m.server, m.tlsRequired ? { tls: true } : {});
       // A `down` record means two different things, and the repair differs: a mesh this machine
       // started can be re-`up`ed here, one registered by hand runs somewhere this machine doesn't
       // control (and, unlike the others, its record is never swept away for it).
-      const origin = m.origin === "manual" ? c.dim("  registered") : "";
+      const origin = m.origin === "manual" ? c.dim("  registered") : m.origin === "catalog" ? c.dim("  discovered") : "";
+      const catalog = m.origin === "catalog"
+        ? c.dim(`  ${m.catalogName && m.catalogName !== m.space ? `${m.catalogName}  ` : ""}catalog ${m.catalogError ? `stale since ${m.catalogFetchedAt ?? "unknown"}: ${m.catalogError}` : `snapshot ${m.catalogFetchedAt ?? "unknown"}`}`)
+        : "";
       const transport = m.tlsRequired ? "  tls-required" : "";
       console.log(
-        `  ${mark} ${m.space.padEnd(pad)}  ${live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}${transport}  ${m.server}  ${m.root}`)}${origin}`,
+        `  ${mark} ${m.space.padEnd(pad)}  ${live === undefined ? c.dim("not probed") : live ? c.green("reachable") : c.red("down")}  ${c.dim(`${m.mode}${transport}  ${m.server}  ${m.root}`)}${origin}${catalog}`,
       );
     }),
   );

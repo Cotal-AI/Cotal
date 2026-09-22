@@ -27,10 +27,12 @@
  * stall a login (or a non-interactive `requireIdpSession`→`fetchIdpJwt` on an agent connect)
  * forever. Override the 30s default with `COTAL_IDP_TIMEOUT_MS` for a slow IdP.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
-import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
+import { acquireLock } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -41,6 +43,30 @@ export interface IdpSession {
   /** The IdP subject this session proved at login (display + local owner derivation). Absent only
    *  in caches written by older builds — consumers that need it fail loud naming `cotal login`. */
   sub?: string;
+}
+
+const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
+const CATALOG_FRESH_MS = 5_000;
+const CATALOG_FILE = "space-catalogs.json";
+const CATALOG_VER = 1;
+const CATALOG_LOCK = "space-catalogs.lock";
+
+interface CatalogAccountState {
+  idpUrl: string;
+  issuer: string;
+  sub: string;
+  ownerKey: string;
+  catalogUrl?: string;
+  advertised: boolean;
+  advertisementCheckedAt?: string;
+  etag?: string;
+  fetchedAt?: string;
+  snapshot?: unknown;
+}
+
+interface CatalogsFile {
+  ver: number;
+  accounts: Record<string, CatalogAccountState>;
 }
 
 /** What the human must be shown to approve the sign-in. */
@@ -261,7 +287,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
 /** Fetch a fresh short-lived IdP user JWT for the cached session — the input to the bridge
  *  exchange. A 401 means the session was revoked or expired at the IdP: the error says exactly
  *  how to recover. The JWT is returned, never stored. */
-export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise<string> {
+async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string): Promise<{ jwt: string; response: Response }> {
   const base = normalizeIdpUrl(idpUrl);
   const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } });
   if (res.status === 401)
@@ -271,7 +297,11 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
   if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
   const body = await idpJson<{ token?: string }>(`${base}/token`, res);
   if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
-  return body.token;
+  return { jwt: body.token, response: res };
+}
+
+export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise<string> {
+  return (await fetchIdpJwtResponse(idpUrl, sessionToken)).jwt;
 }
 
 /** The whole login operation, in the only safe order: device sign-in, then PROVE the session
@@ -283,9 +313,11 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
  *  job, server-side. */
 export async function establishIdpSession(
   opts: DeviceLoginOpts & { dir: string },
-): Promise<{ session: IdpSession; sub: string; label?: string }> {
+): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
-  const jwt = await fetchIdpJwt(opts.idpUrl, session.token);
+  const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token);
+  const jwt = tokenResult.jwt;
   let claims: Record<string, unknown>;
   try {
     claims = decodeJwt(jwt);
@@ -299,10 +331,224 @@ export async function establishIdpSession(
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
   saveIdpSession(opts.dir, opts.idpUrl, session);
+  saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   const label = [claims.email, claims.name, claims.preferred_username].find(
     (c): c is string => typeof c === "string" && c.length > 0,
   );
-  return { session, sub, ...(label ? { label } : {}) };
+  return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
+}
+
+function ownerKey(idpUrl: string, sub: string): string {
+  return createHash("sha256").update(`${new URL(idpUrl).origin}\0${sub}`).digest("hex");
+}
+
+function readCatalogsFile(dir: string): CatalogsFile {
+  const path = join(dir, CATALOG_FILE);
+  if (!existsSync(path)) return { ver: CATALOG_VER, accounts: {} };
+  let parsed: CatalogsFile;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8")) as CatalogsFile;
+  } catch (e) {
+    throw new Error(`${path}: the space catalog cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) - delete it and run \`cotal sync\``);
+  }
+  if (parsed?.ver !== CATALOG_VER || parsed.accounts === null || typeof parsed.accounts !== "object" || Array.isArray(parsed.accounts))
+    throw new Error(`${path}: malformed or unsupported space catalog cache`);
+  return parsed;
+}
+
+function writeCatalogsFile(dir: string, file: CatalogsFile): void {
+  mkSecretDir(dir);
+  writeSecretFileAtomic(join(dir, CATALOG_FILE), JSON.stringify(file, null, 2));
+}
+
+function catalogUrlFromLink(idpUrl: string, link: string | null): string | undefined {
+  if (!link) return undefined;
+  const base = normalizeIdpUrl(idpUrl);
+  const origin = new URL(base).origin;
+  for (const value of link.split(/,\s*(?=<)/)) {
+    const match = value.match(/^\s*<([^>]+)>\s*((?:;[^,]*)*)$/);
+    if (!match) continue;
+    const rel = [...match[2].matchAll(/;\s*rel\s*=\s*(?:"([^"]*)"|([^;\s]+))/gi)][0];
+    const rels = (rel?.[1] ?? rel?.[2] ?? "").split(/\s+/);
+    if (!rels.includes(SPACE_CATALOG_REL)) continue;
+    let url: URL;
+    try {
+      url = new URL(match[1], `${base}/token`);
+    } catch {
+      return undefined;
+    }
+    const loopback = url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+    if (url.origin !== origin || (url.protocol !== "https:" && !loopback) || url.username || url.password)
+      return undefined;
+    return url.toString();
+  }
+  return undefined;
+}
+
+function saveCatalogAdvertisement(dir: string, idpUrl: string, issuer: unknown, sub: string, link: string | null): void {
+  const normalized = normalizeIdpUrl(idpUrl);
+  const key = ownerKey(normalized, sub);
+  const file = readCatalogsFile(dir);
+  const catalogUrl = catalogUrlFromLink(normalized, link);
+  file.accounts[key] = {
+    idpUrl: normalized,
+    issuer: typeof issuer === "string" && issuer ? issuer : new URL(normalized).origin,
+    sub,
+    ownerKey: key,
+    advertised: true,
+    advertisementCheckedAt: new Date().toISOString(),
+    ...(catalogUrl ? { catalogUrl } : {}),
+  };
+  writeCatalogsFile(dir, file);
+}
+
+function accountView(state: CatalogAccountState): AuthSpaceCatalogAccount {
+  return {
+    idpUrl: state.idpUrl,
+    issuer: state.issuer,
+    sub: state.sub,
+    ownerKey: state.ownerKey,
+    ...(state.catalogUrl ? { catalogUrl: state.catalogUrl } : {}),
+  };
+}
+
+function fresh(state: CatalogAccountState): boolean {
+  return typeof state.fetchedAt === "string" && Date.now() - Date.parse(state.fetchedAt) < CATALOG_FRESH_MS;
+}
+
+async function discoverAdvertisement(state: CatalogAccountState, session: IdpSession): Promise<CatalogAccountState> {
+  const result = await fetchIdpJwtResponse(state.idpUrl, session.token);
+  const claims = decodeJwt(result.jwt);
+  if (claims.sub !== state.sub)
+    throw new Error(`idp session: ${state.idpUrl} proved a different subject than the cached session - run \`cotal login --idp ${state.idpUrl}\` again`);
+  const catalogUrl = catalogUrlFromLink(state.idpUrl, result.response.headers.get("link"));
+  return {
+    ...state,
+    issuer: typeof claims.iss === "string" && claims.iss ? claims.iss : state.issuer,
+    advertised: true,
+    advertisementCheckedAt: new Date().toISOString(),
+    ...(catalogUrl ? { catalogUrl } : { catalogUrl: undefined }),
+  };
+}
+
+interface PrepareCatalogOpts {
+  dir: string;
+  idpUrl?: string;
+  force?: boolean;
+  validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+}
+
+const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();
+
+export function prepareIdpSpaceCatalogs(opts: PrepareCatalogOpts): Promise<AuthSpaceCatalogResult[]> {
+  const key = `${opts.dir}\0${opts.idpUrl ? normalizeIdpUrl(opts.idpUrl) : "*"}`;
+  const active = catalogPreparations.get(key);
+  if (active) return active;
+  const work = prepareIdpSpaceCatalogsLocked(opts).finally(() => catalogPreparations.delete(key));
+  catalogPreparations.set(key, work);
+  return work;
+}
+
+async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<AuthSpaceCatalogResult[]> {
+  const requested = opts.idpUrl ? normalizeIdpUrl(opts.idpUrl) : undefined;
+  const lock = acquireLock(join(opts.dir, CATALOG_LOCK), { label: "space catalog sync", waitMs: 30_000 });
+  try {
+    const sessions = readSessionsFile(opts.dir).sessions;
+    let file = readCatalogsFile(opts.dir);
+    const idps = Object.keys(sessions).filter((idp) => !requested || idp === requested).sort();
+    if (requested && idps.length === 0)
+      throw new Error(`not logged in to ${requested} - run \`cotal login --idp ${requested}\``);
+    const results: AuthSpaceCatalogResult[] = [];
+    let changed = false;
+    for (const idpUrl of idps) {
+      let session = loadIdpSession(opts.dir, idpUrl)!;
+      if (!session.sub) {
+        const tokenResult = await fetchIdpJwtResponse(idpUrl, session.token);
+        const claims = decodeJwt(tokenResult.jwt);
+        if (typeof claims.sub !== "string" || !claims.sub)
+          throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`cotal login --idp ${idpUrl}\` again`);
+        session = { ...session, sub: claims.sub };
+        saveIdpSession(opts.dir, idpUrl, session);
+        saveCatalogAdvertisement(opts.dir, idpUrl, claims.iss, claims.sub, tokenResult.response.headers.get("link"));
+        file = readCatalogsFile(opts.dir);
+      }
+      const sub = session.sub;
+      if (!sub) throw new Error(`idp session: ${idpUrl} has no proved subject`);
+      const key = ownerKey(idpUrl, sub);
+      let state = file.accounts[key] ?? {
+        idpUrl,
+        issuer: new URL(idpUrl).origin,
+        sub,
+        ownerKey: key,
+        advertised: false,
+      };
+      try {
+        const advertisementFresh = typeof state.advertisementCheckedAt === "string" && Date.now() - Date.parse(state.advertisementCheckedAt) < CATALOG_FRESH_MS;
+        if (!state.advertised || (!state.catalogUrl && (opts.force || !advertisementFresh))) {
+          state = await discoverAdvertisement(state, session);
+          file.accounts[key] = state;
+          changed = true;
+        }
+        if (!state.catalogUrl) {
+          results.push({ account: accountView(state), state: "no-catalog", ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}) });
+          continue;
+        }
+        if (!opts.force && fresh(state)) {
+          results.push({ account: accountView(state), state: "fresh", snapshot: state.snapshot, fetchedAt: state.fetchedAt });
+          continue;
+        }
+        const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
+        if (state.etag) headers["if-none-match"] = state.etag;
+        const response = await idpFetch(state.catalogUrl, { headers, redirect: "manual" });
+        if (response.status === 304) {
+          if (state.snapshot === undefined) throw new Error("the catalog returned 304 before this machine had a snapshot");
+          state = { ...state, fetchedAt: new Date().toISOString() };
+          file.accounts[key] = state;
+          changed = true;
+          results.push({ account: accountView(state), state: "not-modified", snapshot: state.snapshot, fetchedAt: state.fetchedAt });
+          continue;
+        }
+        if (!response.ok) throw new Error(`${state.catalogUrl} failed (HTTP ${response.status})`);
+        const snapshot = await idpJson<unknown>(state.catalogUrl, response);
+        opts.validate(snapshot, accountView(state));
+        state = {
+          ...state,
+          snapshot,
+          fetchedAt: new Date().toISOString(),
+          ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : { etag: undefined }),
+        };
+        file.accounts[key] = state;
+        changed = true;
+        results.push({ account: accountView(state), state: "updated", snapshot, fetchedAt: state.fetchedAt });
+      } catch (e) {
+        results.push({
+          account: accountView(state),
+          state: "failed",
+          ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}),
+          ...(state.fetchedAt ? { fetchedAt: state.fetchedAt } : {}),
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    if (changed) writeCatalogsFile(opts.dir, file);
+    return results;
+  } finally {
+    lock.release();
+  }
+}
+
+export function deleteIdpSpaceCatalog(dir: string, idpUrl: string, sub: string): string {
+  const file = readCatalogsFile(dir);
+  const key = ownerKey(normalizeIdpUrl(idpUrl), sub);
+  if (key in file.accounts) {
+    delete file.accounts[key];
+    writeCatalogsFile(dir, file);
+  }
+  return key;
+}
+
+export function hasIdpSpaceCatalog(dir: string, idpUrl: string, sub: string): boolean {
+  return Boolean(readCatalogsFile(dir).accounts[ownerKey(normalizeIdpUrl(idpUrl), sub)]?.catalogUrl);
 }
 
 /** Revoke the session server-side (sign out). A 401 back means the session is already dead —

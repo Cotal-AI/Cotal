@@ -18,7 +18,7 @@ import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
 import { resolve, sep } from "node:path";
-import { fetchIdpJwt, hasIdpSessions, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
+import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -52,6 +52,15 @@ function pidAlive(pid: number): boolean {
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  prepareSpaceCatalogs: prepareIdpSpaceCatalogs,
+  syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate }) => {
+    const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate });
+    const failed = results.find((r) => r.state === "failed");
+    if (failed) throw new Error(`space catalog for ${idpUrl} failed after login: ${failed.error}`);
+    return results;
+  },
+  hasSpaceCatalog: ({ dir, idpUrl, sub }) => hasIdpSpaceCatalog(dir, idpUrl, sub),
+  removeSpaceCatalog: ({ dir, idpUrl, sub }) => deleteIdpSpaceCatalog(dir, idpUrl, sub),
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
     const { space, store, dir, idpUrl } = input;
     // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
