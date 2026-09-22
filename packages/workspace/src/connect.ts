@@ -249,8 +249,8 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * because there is only one place the sentence is written.
  */
 export class ConnectRefusal extends Error {
-  constructor(readonly rendered: string, readonly hint?: string) {
-    super(rendered);
+  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown }) {
+    super(rendered, options);
     this.name = "ConnectRefusal";
   }
 }
@@ -540,7 +540,9 @@ export async function resolveTargetOrThrow(flags: {
   try {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
-    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }));
+    // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
+    // every other refusal can read its `code` instead of matching the rendered sentence.
+    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e });
     throw e;
   }
   // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
