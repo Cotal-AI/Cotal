@@ -94,6 +94,20 @@ export function admitAndRestoreSeatCheckpoints(
     // staging directory beside its cwd and are promoted only once every seat has staged; a refusal
     // here leaves every live cwd as it was and claims no generation, like a gate failure.
     beforeCustody: (staged) => {
+      // THE INCARNATION RECONCILIATION, AND IT RUNS BEFORE THE RESTORE TOUCHES ANYTHING.
+      //
+      // This compares the checkpoint's recovered `lifecycleUid` against the one the inventory this
+      // resume is about to hand the manager carries, and it used to run after the whole admission
+      // returned. By then the restore had already moved each live `cwd` aside and promoted another
+      // seat's tree over it, and the generation had been claimed under the checkpoint's uid, so the
+      // refusal arrived after the two irreversible steps it exists to prevent. A mismatch means the
+      // checkpoint describes a different incarnation than the seat being resumed, which is the last
+      // moment where refusing is still free.
+      for (const seat of staged) {
+        const expected = retained.get(seat.checkpoint.name)?.identity?.lifecycleUid ?? "";
+        if (expected && expected !== seat.checkpoint.lifecycleUid)
+          throw new Error(`seat ${seat.checkpoint.name}: checkpoint records lifecycle ${seat.checkpoint.lifecycleUid}, the retained inventory says ${expected}`);
+      }
       restoreSeatCheckpoints({
         root,
         seats: staged.map((seat) => {
@@ -118,11 +132,6 @@ export function admitAndRestoreSeatCheckpoints(
   });
 
   for (const seat of admitted) {
-    // The uid is RECOVERED, never minted. A checkpoint that names a different incarnation than the
-    // inventory this resume is about to hand the manager is not this seat's checkpoint.
-    const expected = retained.get(seat.checkpoint.name)?.identity?.lifecycleUid ?? "";
-    if (expected && expected !== seat.checkpoint.lifecycleUid)
-      throw new Error(`seat ${seat.checkpoint.name}: checkpoint records lifecycle ${seat.checkpoint.lifecycleUid}, the retained inventory says ${expected}`);
     console.log(c.dim(`  admitted checkpoint: ${seat.checkpoint.name} (${seat.checkpoint.session.continuity}) at generation ${seat.generation}`));
     if (seat.staleOverrideAgeMs !== undefined)
       console.log(c.yellow(`  stale checkpoint admitted by --accept-stale-checkpoint: ${seat.checkpoint.name} is ${seat.staleOverrideAgeMs}ms past capture, horizon ${seat.checkpoint.recencyHorizonMs}ms`));

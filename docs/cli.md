@@ -375,9 +375,11 @@ and `git bundle verify`. No secret values, no operator keys and no source-host l
 enter it.
 
 The continuity class is what the connector declares, capped by what the checkpoint carries. A
-connector declaring session continuation classifies as `exact`, but a checkpoint holding no session
-pointer and no store cannot reopen that session, so it is recorded as `fresh` when the connector
-declares a fresh start and `drain-only` otherwise. A class is a promise the destination is entitled
+connector declaring session continuation classifies as `exact`, but reopening a session takes both
+halves, the pointer that names it and the store that holds its transcript. A checkpoint missing
+either one cannot reopen that session, so it is recorded as `fresh` when the connector declares a
+fresh start and `drain-only` otherwise. A pointer with no store is capped the same way as a cut
+carrying neither, because it names a session whose bytes the artifact does not contain. A class is a promise the destination is entitled
 to act on, so it never describes bytes the artifact does not contain. The transcript store stays an
 operator input: this repository does not know where a harness keeps its transcript, so `exact`
 requires `--session-store` to name one.
@@ -518,7 +520,11 @@ claiming that seat, and it refuses with `seat-writer-generation-create-lost` rat
 the winner and becoming a second writer. The recorded `lifecycleUid` is reused and never minted, so
 the resumed seat binds the same lifecycle-keyed durables.
 
-Admission is reconciled against the inventory the resume is about to hand the manager. A retained
+Admission is reconciled against the inventory the resume is about to hand the manager, and that
+reconciliation finishes before the restore moves a single tree. A checkpoint whose recorded
+`lifecycleUid` is not the one the retained inventory carries describes a different incarnation of
+that seat, and it refuses with both uids while every live working tree is still untouched and no
+generation is claimed. A retained
 seat with no admitted checkpoint refuses the resume by name: an absent checkpoint directory and an
 absent record are indistinguishable from a seat that was never checkpointed, and a seat that starts
 without passing the gates has claimed no generation. `--accept-stale-checkpoint` is recorded in the
@@ -536,6 +542,13 @@ that left one behind would consume the retry over the same checkpoint set.
 single generation is claimed, `up` puts each admitted seat's captured bytes back. A refusal here
 costs nothing for the same reason a gate failure does: no claim has been made and nothing has
 started.
+
+A restore never moves or replaces the destination's own control directory. A checkpoint excludes
+`.cotal/` by design, so a seat whose `cwd` holds one, which is the layout an operator gets by
+running `up` and `spawn` in a single directory, is refused before anything is staged: promoting a
+tree that cannot contain `.cotal/` over that `cwd` would carry this host's live trust material and
+maintenance state away with the superseded tree. The refusal names the control directory it found
+and the remedy, which is to give the seat a working tree that is not a workspace root.
 
 Each seat is staged beside its own `cwd`, in `<cwd>.incoming`:
 

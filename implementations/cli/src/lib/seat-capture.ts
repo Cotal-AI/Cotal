@@ -198,11 +198,13 @@ export function captureSeatCheckpoint<Entry>(
       }
     }
     // What the connector DECLARES, capped by what this cut actually carried. A class is a promise
-    // a destination is entitled to act on, and `exact` or `fork` with no pointer and no store
-    // promises a session that can be reopened from bytes this checkpoint does not contain. Capping
-    // here keeps the promise answerable to the artifact rather than to the declaration.
+    // a destination is entitled to act on, and `exact` or `fork` promises a session the destination
+    // can reopen, which takes BOTH halves: the pointer names the session and the store holds the
+    // transcript it reopens. A pointer alone names a session whose bytes are not in the artifact,
+    // so it is capped exactly like carrying nothing. Capping here keeps the promise answerable to
+    // the artifact rather than to the declaration.
     const declared = sessionContinuityClass(request.connector ?? {});
-    const carriesSession = pointer !== undefined || store.length > 0;
+    const carriesSession = pointer !== undefined && store.length > 0;
     const continuity: SessionContinuityClass =
       !carriesSession && (declared === "exact" || declared === "fork")
         ? (request.connector?.supportsFreshStart ? "fresh" : "drain-only")

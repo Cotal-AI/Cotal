@@ -152,6 +152,21 @@ function assertPointerSession(seat: SeatRestoreRequest, pointer: SeatCheckpointF
 
 /** Stage one seat: everything up to and including the extraction, inside `<cwd>.incoming` alone. */
 function stageSeat(seat: SeatRestoreRequest, staging: string): void {
+  // THE ONE TREE A PROMOTION MAY NOT REPLACE.
+  //
+  // A checkpoint deliberately excludes the control directory (see `UNTRACKED_SELECTION`): it holds
+  // the broker trust material, the space account, the seat's own credentials and the maintenance
+  // journal this very resume is reading, and a checkpoint carries credential references rather than
+  // values. Promotion replaces the whole `cwd`, so when the seat's `cwd` IS a workspace root, which
+  // is the ordinary layout an operator gets by running `cotal up` and `cotal spawn` in one
+  // directory, promoting a clone that cannot contain `.cotal/` moves the live control directory
+  // aside and leaves the destination with none.
+  //
+  // Moving the control directory across the promotion is not the answer: its contents are live
+  // while this command runs. So this refuses, and names the remedy rather than degrading.
+  const control = join(resolve(seat.cwd), ".cotal");
+  if (existsSync(control))
+    throw new SeatRestoreError(`seat ${seat.name}: ${resolve(seat.cwd)} holds a control directory at ${control}, and a checkpoint never carries one, so promoting the restored tree over it would move this destination's live trust material and maintenance state aside; give the seat a working tree that is not a workspace root, then resume`);
   // The digests again, over the files as they are NOW. Gate 1 ran before custody moved; a
   // checkpoint that changed between the gate and the bytes being applied is not the admitted one.
   try {
