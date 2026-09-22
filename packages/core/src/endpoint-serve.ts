@@ -263,7 +263,10 @@ export interface EpServeHandle {
  * Serve an authorized instance's granted commands on the three §13.2 rails, exactly the
  * per-command forms the serve credential grants (§13.9 {@link epServeSubscribeRows}): the class
  * rail queue-qualified under the canonical queue group (`one` = queue-group anycast), the
- * scatter rail plain, and this instance's own `inst` rail.
+ * scatter rail plain, and this instance's own `inst` rail. `opts.omitClassCommands` skips the
+ * class (`one`) subscribe for named commands only: the credential still grants those rows, the
+ * instance and scatter rails still serve them, and `describe` still lists them. A class queue
+ * has no nak, so not subscribing is the only way a member does not consume a class request.
  *
  * `serve` is the registry-authorized ARTIFACT {@link authorizeServeGrant} returned — the same
  * value the credential minted from. Construction refuses anything else (brand check), refuses
@@ -311,6 +314,10 @@ export function serveEndpoint(
      *  command it cannot enforce, and refuses an extraneous enforcement bundle on an
      *  ungoverned surface (fail loud both ways, never a silent no-op). */
     traits?: EpTraitEnforcement;
+    /** Commands that stay on scatter + `inst` but are not subscribed on the class `one` rail.
+     *  The serve credential still grants the class rows; this only changes what this process
+     *  consumes. `describe` is reserved and is never omitted. */
+    omitClassCommands?: readonly string[];
   } = {},
 ): EpServeHandle {
   assertServeGrantAuthorized(serve); // §13.9: the serve table consumes ONLY registry-authorized serve authority
@@ -426,8 +433,17 @@ export function serveEndpoint(
     handler: describeHandler(serve.descriptor, describe),
   });
 
+  const omitClass = new Set(opts.omitClassCommands ?? []);
+  if (omitClass.has("describe"))
+    throw new Error("describe is reserved and every endpoint must serve it on the class rail; omitClassCommands cannot name it (SPEC 13.7)");
+  for (const name of omitClass) {
+    if (!seen.has(name))
+      throw new Error(`omitClassCommands names "${name}", which is not in this serve table`);
+  }
+
   const p = spacePrefix(space);
   const subs: Subscription[] = [];
+
   const pending = new Set<Promise<void>>();
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -552,7 +568,8 @@ export function serveEndpoint(
     // same three shapes. The parsed subject carries which one a request rode; the handler reads
     // it off `ctx.subject.rail`, never off the body.
     for (const rail of ["ep", `ep.${EP_RAIL_V1}`]) {
-      subs.push(nc.subscribe(`${p}.${rail}.one.${e}.${cmd}.>`, { queue: epClassQueueGroup(identity.endpoint), callback: cb }));
+      if (!omitClass.has(cmd))
+        subs.push(nc.subscribe(`${p}.${rail}.one.${e}.${cmd}.>`, { queue: epClassQueueGroup(identity.endpoint), callback: cb }));
       subs.push(nc.subscribe(`${p}.${rail}.all.${e}.${cmd}.>`, { callback: cb }));
       subs.push(nc.subscribe(`${p}.${rail}.inst.${e}.${iId}.${cmd}.>`, { callback: cb }));
     }

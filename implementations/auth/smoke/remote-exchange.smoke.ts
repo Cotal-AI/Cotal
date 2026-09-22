@@ -26,9 +26,11 @@
  *   D. the credential is really the proof, not decoration: a revoked row's actorToken is refused
  *      at the NEXT exchange on the public face with no restart, and a wrong secret is refused
  *      with the same sentence as an unknown agent (a prober learns nothing about existence).
- *   E. the public face's own refusals: `view` is refused outright (elevated operator surfaces stay
- *      loopback-only, whatever the credential), and the same view request still MINTS on loopback
- *      — again a pair, so the refusal is the public face's policy and not a broken view path.
+ *   E. the public face's view policy: `purger` (and every other operator surface) is refused
+ *      outright, and the same view request still reaches the bridge on loopback — a pair, so the
+ *      refusal is the public face's policy and not a broken view path. `channel-writer` is the
+ *      allow-list exception: a signed-in human whose row carries `admin` mints it on the public
+ *      face. Agent-secret exchanges still never mint a view.
  *   F. Origin rejection, JSON-only content-type and the 64 KB body bound hold VERBATIM on the
  *      public face (they are inherited by sharing handleExchange, and this proves the sharing).
  *   G. per-peer isolation, the throttling claim: peer A floods the public face with refusals until
@@ -333,8 +335,8 @@ try {
   const agentBody2 = { owner: OWNER, actor: AGENT, actorToken: secret2.actorToken };
   check("the re-granted row exchanges again on the public face", (await post(`${PUBLIC}/exchange`, agentBody2)).status === 200);
 
-  // ---------- E. views are loopback-only ----------
-  console.log("E) elevated views refused on the public face, still minted on loopback");
+  // ---------- E. views stay loopback-only except channel-writer / channel-purger ----------
+  console.log("E) operator views refused on the public face; channel-writer mints when admin is granted");
   const idpJwt = await (async () => {
     const { fetchIdpJwt } = await import("@cotal-ai/auth");
     return fetchIdpJwt(base, idpSessionToken);
@@ -348,6 +350,17 @@ try {
   const viewLoopback = await post(`${LOOPBACK}/exchange`, { idpToken: idpJwt, actor: "cli", view: "purger" }, { authorization: `Bearer ${info!.cap}` });
   check("the same view request on LOOPBACK reaches the bridge (not the face refusal)",
     viewLoopback.status !== 403, viewLoopback);
+  grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "admin", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
+  const writerPublic = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "channel-writer" });
+  let writerView = "";
+  try {
+    const { payload } = await jwtVerify(writerPublic.body.token as string, verifyPublicBearer, {
+      algorithms: ["EdDSA"], issuer: `urn:cotal:auth:${SPACE}`, audience: SPACE,
+    });
+    writerView = (payload.act as { view?: string } | undefined)?.view ?? "";
+  } catch { /* checked below */ }
+  check("a channel-writer view mints on the public face when the row has admin",
+    writerPublic.status === 200 && writerView === "channel-writer", { status: writerPublic.status, writerView, body: writerPublic.body });
 
   // ---------- F. inherited hardening holds verbatim ----------
   const ids = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((name) => [name, { id: newIdentity().id }]));
@@ -478,7 +491,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 53;
+const EXPECTED = 54;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

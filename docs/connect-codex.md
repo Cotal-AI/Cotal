@@ -127,7 +127,16 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   path, and `ls -t .cotal/codex/*/host.log` finds it after the fact). Attached, a failure is also
   reported on the terminal; detached, that report goes to the pty, so the file is the durable copy.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
-  the model id is reported from the started thread.
+  approval requests relay an `approval` condition. A failed turn maps its native
+  `codexErrorInfo` into the closed condition vocabulary and preserves that value in
+  `condition.source`. The model id is reported from the started thread.
+
+  `contextWindowExceeded` maps to `context`; `sessionBudgetExceeded` to `budget`;
+  `usageLimitExceeded` to `billing`; `rateLimitExceeded` to `rate_limit`;
+  `serverOverloaded` to `overloaded`; `internalServerError` and `httpConnectionFailed` to
+  `server`; `unauthorized` to `auth`; `badRequest`, `cyberPolicy`, and
+  `misalignmentPolicyViolation` to `request`; and rollback, sandbox, `other`, or an unrecognized
+  value to `failed`. An error marked `willRetry` maps to `retrying` while keeping its native source.
 
 `--opt k=v` launch options render as codex `-c k=v` config overrides on the app-server child
 (top-level keys, scalar values; write TOML inline-table text yourself for nested values). The

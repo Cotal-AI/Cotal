@@ -274,6 +274,7 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
       agentCount: 0,
       uptimeMs: 1,
       connectors: [],
+      classSpawn: true,
       staticReconciliation: {
         state: "failed",
         failures: [{

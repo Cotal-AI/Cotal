@@ -51,7 +51,12 @@ by hand; the next real boot overwrites it.
 There is no broker-only `up`. Auth-mode `up` still starts nats, the delivery daemon, and a
 local manager. A space may run more than one manager, addressed by instance id
 ([control surface](control-surface.md#instance-routing)); putting no manager on the broker host
-is a topology choice, not a singleton invariant. The supported split is:
+is a topology choice, not a singleton invariant. A manager whose boot inventory has no
+available connector does not take unpinned `spawn`/`launch` on the class rail, so a sibling
+that can launch the harness can. `describe` still rides the class rail, so an unpinned spawn
+can bind-fence when that skip member answered describe; re-issue, or pin `--on`. Pin one
+instance with `--on` when a partial inventory still answers with a harness refusal. The
+supported split is:
 
 ```bash
 # broker host (project root that owns the generated conf, pidfiles, and logs)
@@ -109,6 +114,25 @@ the configured HTTPS origin. To change these listener flags, stop and restart th
 of an already-running service does not replace its bind or proxy policy. See
 [Identity & auth](identity-and-auth.md#per-user-authentication) for the trust boundary.
 
+### Remote supervised seats by enrollment
+
+A remote seat does not need to run `cotal login` when the mesh owner pre-mints a single-use
+enrollment for it. Mount the enrollment URL as a private file, place the seat persona on the remote
+machine, and launch the foreground seat:
+
+```bash
+COTAL_ENROLLMENT_FILE=/run/secrets/cotal-enrollment \
+  cotal spawn --config ./worker.md --space main
+```
+
+The URL is redeemed once with an unauthenticated GET. Redirects, off-machine plain HTTP, retries,
+and login fallback are refused. If the seat has no mesh record yet, the enrollment response's stock
+user-bundle fields register it before the launch. The returned actor token then uses the same remote
+auth-service exchange as a login-provisioned agent. The enrollment URL and file path do not enter the
+preflight or harness environment. A failed or reused enrollment leaves no actor material on disk; ask the owner
+for a fresh enrollment. The exact server contract is in
+[Enrollment redeem](identity-and-auth.md#enrollment-redeem).
+
 `cotal status` prints the detailed setup, process, registry, and live mesh status. Its Machine
 section names the running CLI's source checkout, installed package root, or npx package root beside
 the version. A stale Claude skills row names the installed and CLI versions it compared. `cotal
@@ -139,10 +163,12 @@ reconciliation sweep, then clears. This component reports reconciliation outcome
 whether footprint cleanup completed independently of the terminal result; that separate durable
 projection remains tracked by #1274.
 
-There is no supported `cotal service install` command yet. Running the manager as a launchd agent or
-systemd user service remains operator-managed; service installation is separate from this boot-time
-detection behavior. The units below are **examples of process models**, not a shipped installer:
-copy them only after you decide which processes the unit should own.
+`cotal service install` is the supported way to run the manager as a user service
+([CLI reference](cli.md#service)): a systemd user unit on Linux, a launchd agent on macOS, one
+per mesh, surviving logout and reboot when lingering is enabled with `--linger`. It installs only
+the manager; the units below remain the process models for every other component, and they are
+still **examples of process models** for those: copy them only after you decide which processes
+the unit should own.
 
 ### Supervising the detached stack
 
@@ -180,8 +206,9 @@ restart, including the nats PID. Escaping that cgroup needs an explicit unit set
 `KillMode=process`, or a separate nats unit; this CLI does not ship that escape. The
 `Type=oneshot` unit below is a `cotal status --components` liveness check, not a
 `--detach` launcher. Neither trade is universal from
-`Type=simple` alone; it follows from which processes the unit actually owns. There is still no
-supported installer, so pick the example that matches the ownership you want, and treat
+`Type=simple` alone; it follows from which processes the unit actually owns. `cotal service
+install` covers only the manager, so for the broker and its siblings pick the example that
+matches the ownership you want, and treat
 `systemctl is-active` as unit health, not mesh health.
 
 If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state

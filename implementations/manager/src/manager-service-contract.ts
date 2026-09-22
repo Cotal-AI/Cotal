@@ -57,7 +57,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "staticReconciliation"],
+  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "classSpawn", "staticReconciliation"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
@@ -69,6 +69,10 @@ const STATUS_OUTPUT_SCHEMA = {
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
     uptimeMs: { type: "integer", minimum: 0 },
+    /** Whether this instance takes unpinned `spawn`/`launch` on the class `one` rail.
+     *  False when every declared connector is unavailable at boot: those commands stay
+     *  on scatter and `inst` so a sibling that can launch them can win the class queue. */
+    classSpawn: { type: "boolean" },
     /** Connector harness availability measured once during manager boot. */
     connectors: {
       type: "array",
@@ -138,6 +142,7 @@ export interface ManagerStatus {
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
+  classSpawn: boolean;
   staticReconciliation: ManagerStaticReconciliationStatus;
 }
 
@@ -787,7 +792,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  14 = manager `status` adds static reconciliation state. Its output digest changed again, so
  *  cached revision-13 descriptions cannot name the new required output contract. This is a
  *  second, independent output change landing on the same command as 13, so it cannot fold into
- *  it: a caller holding a revision-13 descriptor would be told the surface it already knows. */
+ *  it: a caller holding a revision-13 descriptor would be told the surface it already knows.
+ *
+ *  15 = manager `status` adds `classSpawn`: whether this instance takes unpinned spawn/launch
+ *  on the class rail. A changed output contract is a changed described surface even though
+ *  the command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -805,7 +814,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 14,
+    revision: 15,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

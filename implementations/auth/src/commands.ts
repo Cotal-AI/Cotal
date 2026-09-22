@@ -6,6 +6,7 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { isIPv4, isIPv6 } from "node:net";
 import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
@@ -21,6 +22,17 @@ import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
+
+function isLoopbackLiteral(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIPv4(host)) return host.startsWith("127.");
+  const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
+  if (!isIPv6(host)) return false;
+  if (host === "::1") return true;
+  const mapped = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  return mapped !== null && mapped[1].startsWith("127.");
+}
 
 /** Every operational failure in these commands is a deliberately-legible thrown sentence
  *  (a refused client id, a revoked session, a malformed IdP response …) — the CLI's generic
@@ -324,12 +336,11 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       let u: URL;
       try { u = new URL(remote); }
       catch { throw new Error(`agent-bearer: --exchange-url is not a URL (got ${JSON.stringify(remote)})`); }
-      // No plain-http exception. A remote actorToken is the credential that proves this request;
-      // sending it over anything but HTTPS hands the spawn-time secret to the network. Requiring
-      // HTTPS unconditionally avoids the hostname-vs-address exception that has repeatedly been
-      // mistaken for a string-prefix question elsewhere.
-      if (u.protocol !== "https:")
-        throw new Error(`agent-bearer: --exchange-url must be https:// (got ${u.protocol}//) - the actor token is sent in the request body and must never cross plaintext`);
+      // Match the remote-registration and enrollment transport rule: HTTPS, except a loopback HTTP
+      // literal where the actor token never leaves this machine. Names such as localhost get no
+      // exception because name resolution chooses where the credential goes.
+      if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+        throw new Error(`agent-bearer: --exchange-url must be https://, except for a loopback HTTP literal (got ${u.protocol}//) - the actor token must never cross plaintext off this machine`);
       u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
       u.search = "";
       u.hash = "";

@@ -32,6 +32,11 @@ window, the honest output is that the *view* is stale, not that every peer died 
 `activity` string rides along ("what I'm doing right now"), and a peer's **attention**
 preference is mirrored here too (below). Each instance writes *only its own* key; presence
 is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
+The optional `condition` beside status relays a harness-reported cause such as `rate_limit`,
+`approval`, or `input`; missing means the harness reported none. A condition is cleared when a
+normal next turn starts. The optional `environment` is an opaque provider reference. Core publishes
+it and never interprets it. Readers reject a row whose `card.id` does not match its KV key and report
+that rejection through the recoverable warning path.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 

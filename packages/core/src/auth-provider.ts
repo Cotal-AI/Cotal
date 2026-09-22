@@ -121,6 +121,18 @@ export interface AuthProvider extends Extension {
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
   /**
+   * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
+   * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,
+   * so implementations MUST send no Authorization header, MUST refuse redirects and non-HTTPS
+   * destinations (except a loopback HTTP literal), MUST NOT retry, log, or echo the URL, and MUST
+   * surface the server's closed enrollment-refusal sentence without trying to distinguish unknown,
+   * expired, revoked, or already-used tokens. `idpUrl`, when known from an existing registration,
+   * lets the provider refuse an ambiguous login+enrollment invocation before consuming the token.
+   * The caller validates and persists the returned material. Optional so a provider without this
+   * path fails loud at the caller rather than falling back to login provisioning.
+   */
+  postAgentEnrollment?(opts: { url: string; idpUrl?: string }): Promise<unknown>;
+  /**
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's
    * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state

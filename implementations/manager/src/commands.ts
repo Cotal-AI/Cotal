@@ -115,7 +115,12 @@ function spaceFor(v: Values, root = findCotalRoot()): string {
  * the public command owns the honest, actionable refusal below.
  */
 export function superviseTarget(v: Values, root = findCotalRoot()): { space: string; server: string; remoteUser: boolean; tlsRequired: boolean; agentBearerExchangeUrl?: string } {
-  const localSpace = spaceFor(v, root);
+  // COTAL_SPACE / COTAL_SERVER stand in for the flags when the manager runs as a service: a
+  // service unit's ExecStart stays bare (command lines are a publication surface on a multi-user
+  // host) and the mesh facts arrive through a 0600 EnvironmentFile instead. An explicit flag
+  // still wins over the environment, so nothing changes for an operator typing the command.
+  const ve: Values = { ...v, space: v.space ?? process.env.COTAL_SPACE, server: v.server ?? process.env.COTAL_SERVER };
+  const localSpace = spaceFor(ve, root);
   if (hasUserAuthState(root, localSpace)) {
     // Preserve the historical host path's missing/stale-registry diagnostics in Manager.start():
     // a local marker proves this machine HOSTS the state, but not that its registry is healthy.
@@ -123,20 +128,20 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     // rejected here before a process can describe one mesh while dialing another.
     try {
       const target = resolveMeshTarget(root, { space: localSpace });
-      if (v.server !== undefined && v.server !== target.server)
-        throw new Error(`--server ${v.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
+      if (ve.server !== undefined && ve.server !== target.server)
+        throw new Error(`--server ${ve.server} does not match hosting space "${localSpace}" at ${target.server} - supervise refuses to split its local auth state from its broker`);
       return { space: localSpace, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired };
     } catch (error) {
       if (!isWorkspaceTargetError(error)) throw error;
-      return { space: localSpace, server: v.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false };
+      return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false };
     }
   }
 
   try {
     const target = resolveMeshTarget(root, { space: localSpace });
     if (target.mode === "user" && target.userAuth?.remote === true) {
-      if (v.server !== undefined && v.server !== target.server)
-        throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
+      if (ve.server !== undefined && ve.server !== target.server)
+        throw new Error(`--server ${ve.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
       return {
         space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired,
         agentBearerExchangeUrl: target.userAuth.endpoints?.url,
@@ -145,14 +150,21 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     // The marker is absent, but this is a local/static/open record or a malformed user entry. Let
     // the normal manager validation retain its mode-specific diagnostics rather than rewording a
     // state this helper has not proved is the registered-participant case.
-    if (v.server !== undefined && v.server !== target.server)
-      throw new Error(`--server ${v.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
+    if (ve.server !== undefined && ve.server !== target.server)
+      throw new Error(`--server ${ve.server} does not match registered space "${target.space}" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);
     return { space: target.space, server: target.server, remoteUser: false, tlsRequired: target.tlsRequired };
   } catch (error) {
     // `resolveMeshTarget(...,{space})` distinguishes every known registry fault. Only an absent
     // record gets the host-or-join wording; a corrupt/ambiguous record remains its own loud error.
-    if (isWorkspaceTargetError(error) && error.code === "unknown-space")
+    if (isWorkspaceTargetError(error) && error.code === "unknown-space") {
+      // A hosting root that predates a registry entry (or whose entry was pruned) still names its
+      // space on disk: `.cotal/auth` is the host proof `resolveMeshTarget` cannot see without a
+      // record. The broker address then comes from the flag/env, exactly what a service unit's
+      // EnvironmentFile supplies.
+      if (soleSpaceOf(authDir(root)) === localSpace)
+        return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false };
       throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
+    }
     throw error;
   }
 }
@@ -663,8 +675,8 @@ const managerCommands: Command[] = [
     summary:
       "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
-      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space; env COTAL_SPACE when unset)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },

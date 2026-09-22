@@ -158,7 +158,13 @@ The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exc
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
-match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
+match a fresh managed-ledger row. The public face mints only two elevated views, both still
+gated on ledger scope `admin`: `channel-writer` (`cotal channels set/default`) and
+`channel-purger` (the dashboard's per-click channel delete). God-view (`admin`), space-history
+`purger`, `deployer`, and `manager-service` stay loopback-only. A managed-agent secret exchange
+never mints a view on either face. This is not full remote channel management: `cotal web` still
+mints the read-only admin view at startup, so a remote dashboard that needs that god-view still
+fails even when a later delete would mint `channel-purger`.
 
 The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
 agents need before the bearer-driven auth callout. The pins ride a `userAuth` arm that names the
@@ -174,6 +180,59 @@ most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an
 more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass; a valid
 credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
 matters to the deployment.
+
+### Enrollment redeem
+
+A remote owner may pre-mint a one-time enrollment for a seat that has no browser, TTY, or cached
+IdP login. The enrollment is a secret-bearing URL. The client performs one request:
+
+```http
+GET <enrollment URL>
+```
+
+It sends no `Authorization` header and no request body. The URL must be HTTPS, except for plain HTTP
+to a loopback IP literal. The client redeems only an enrollment URL that is already in canonical
+form and contains none of `\ @ ? #`. That is checked on the raw string before parsing, so every
+rewrite a URL parser would perform, backslash folding, userinfo erasure, scheme or host case
+folding, default-port removal, dot-segment resolution, and short-host canonicalization, is a refusal
+rather than a redeem of a URL the owner never minted. Redirects are refused. The client never
+retries because a successful claim deletes the server-side token row. The token expires five minutes
+after mint.
+
+Success is `200` with this JSON object:
+
+```text
+space
+brokerAccess { kind, ... }
+owner
+actor
+lifecycleUid
+actorToken
+sentinelCreds
+authServiceUrl
+idp { url, issuer, audience }
+subscribe[]
+allowSubscribe[]
+allowPublish[]
+```
+
+The grant arrays are informational; the broker row remains authoritative. A stock-dialable
+deployment also includes `server`, `tlsRequired`, and `userAuth`, forming the same user-bundle
+superset that `cotal meshes add --user-auth-file` accepts. That lets a bare seat register the mesh
+from the enrollment response before launch. For `brokerAccess.kind: "direct"`, the stock `server`
+must equal `brokerAccess.url` byte for byte or the client refuses the bundle before registration. A
+tunnel kind carries no dial address, so its `brokerAccess` is not compared to the operator-asserted
+stock `server` face.
+
+Unknown, expired, revoked, and already-used enrollments are intentionally indistinguishable. They
+all return `404 {"error":"unknown, expired, or already-used enrollment"}`. The client reports only
+`enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one`. It does not
+guess which case occurred.
+
+After redeem, the seat stores only the normal remote user-mesh and agent material. The actor token
+is exchanged at `authServiceUrl` through the existing `agent-bearer --exchange-url` path. The
+enrollment URL is not logged, persisted, or forwarded into any child process, including the bearer
+preflight and harness.
 
 The service starts with the broker, is torn down by `cotal down`, and holds the
 data-account signing key for the callout (a running manager is the other standing holder, for
@@ -251,7 +310,9 @@ connection as the matching non-agent profile instead of `agent`. `cotal web` and
 is spawn-grade (the manager still refuses a manifest claiming another owner). Views exist
 only on a signed-in human exchange (an agent's managed exchange never mints one), are
 authorized against the fresh ledger row at every connect, and expire with the bearer, so
-narrowing or revoking a grant bites within minutes here too.
+narrowing or revoking a grant bites within minutes here too. On the public exchange face only
+`channel-writer` and `channel-purger` are served; `admin`, `purger`, `deployer`, and
+`manager-service` remain loopback-only.
 
 ### Remote manager authority
 

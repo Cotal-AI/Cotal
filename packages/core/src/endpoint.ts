@@ -63,6 +63,7 @@ import type {
   Part,
   Presence,
   PresenceStatus,
+  PresenceCondition,
   AttentionMode,
   ChannelMode,
   CotalMessage,
@@ -549,6 +550,11 @@ export class CotalEndpoint extends EventEmitter {
   private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
+  private condition?: PresenceCondition;
+  /** Advances on every condition change so an older in-flight put cannot be the final KV state. */
+  private conditionRevision = 0;
+  /** Read once at construction. Core publishes this opaque provider reference and never parses it. */
+  private readonly environment?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
    *  endpoint never reads these back into delivery — they exist only to broadcast. */
   private attentionMode?: AttentionMode;
@@ -601,6 +607,8 @@ export class CotalEndpoint extends EventEmitter {
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
+  /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key. */
+  private presenceBindingDrops = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
@@ -612,6 +620,11 @@ export class CotalEndpoint extends EventEmitter {
    *  Pull it, or listen for `split-recovered` — the event can be missed, the count cannot. */
   get splitRecoveryCount(): number {
     return this.splitsRecovered;
+  }
+
+  /** Mis-keyed presence rows this reader rejected. The warning event may be missed; the count cannot. */
+  get presenceBindingDropCount(): number {
+    return this.presenceBindingDrops;
   }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
@@ -722,6 +735,7 @@ export class CotalEndpoint extends EventEmitter {
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
     this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
+    this.environment = process.env.COTAL_ENVIRONMENT?.trim() || undefined;
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
@@ -2428,6 +2442,13 @@ export class CotalEndpoint extends EventEmitter {
 
   async setStatus(status: PresenceStatus): Promise<void> {
     this.status = status;
+    await this.publishPresence();
+  }
+
+  /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.condition = condition ?? undefined;
+    this.conditionRevision++;
     await this.publishPresence();
   }
 
@@ -5377,6 +5398,8 @@ export class CotalEndpoint extends EventEmitter {
       // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
       ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
       status: this.status,
+      condition: this.condition,
+      environment: this.environment,
       activity: this.activity,
       attention: this.attentionMode,
       channelModes: this.channelModes,
@@ -5393,6 +5416,7 @@ export class CotalEndpoint extends EventEmitter {
     // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
     // refusal on the connection that just published successfully.
     const epoch = this.presenceEpoch;
+    const conditionRevision = this.conditionRevision;
     try {
       await this.kv.put(this.card.id, JSON.stringify(record));
     } catch (e) {
@@ -5415,6 +5439,13 @@ export class CotalEndpoint extends EventEmitter {
     // timeout, so that overlap is routine rather than a corner, and the next failing put re-plants
     // the record with a fresh `since`. Tracked in #1461, not repaired here.
     if (epoch !== this.presenceEpoch || this.stopped) return;
+    // Presence writes may overlap. If this put carried an older condition, repair the KV with the
+    // latest local state before returning so a late failure publish cannot resurrect after a new
+    // turn cleared it. The revision is condition-specific; unrelated heartbeat overlap is unchanged.
+    if (conditionRevision !== this.conditionRevision) {
+      await this.publishPresence();
+      return;
+    }
     this.clearPresenceWriteFailure();
   }
 
@@ -5651,7 +5682,11 @@ export class CotalEndpoint extends EventEmitter {
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
     // mis-keyed record even if a broad writer slips one in under another agent's key.
-    if (raw.card?.id !== id) return;
+    if (raw.card?.id !== id) {
+      this.presenceBindingDrops++;
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(id)}: card.id ${JSON.stringify(raw.card?.id)} does not match its KV key`));
+      return;
+    }
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
     // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
@@ -5693,6 +5728,8 @@ export class CotalEndpoint extends EventEmitter {
       prev.lifecycleUid === p.lifecycleUid &&
       prev.status === p.status &&
       prev.activity === p.activity &&
+      sameCondition(prev.condition, p.condition) &&
+      prev.environment === p.environment &&
       prev.attention === p.attention &&
       sameChannelModes(prev.channelModes, p.channelModes)
     ) {
@@ -5922,6 +5959,13 @@ function sameChannelModes(
   const bk = b ? Object.keys(b) : [];
   if (ak.length !== bk.length) return false;
   return ak.every((k) => a![k] === b?.[k]);
+}
+
+function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | undefined): boolean {
+  return a?.code === b?.code
+    && a?.source === b?.source
+    && a?.message === b?.message
+    && a?.since === b?.since;
 }
 
 /** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a
