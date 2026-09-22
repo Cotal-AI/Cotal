@@ -49,6 +49,7 @@ export {
   fetchIdpJwt,
   revokeIdpSession,
   loadIdpSession,
+  hasIdpSessions,
   saveIdpSession,
   deleteIdpSession,
   requireIdpSession,

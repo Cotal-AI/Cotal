@@ -18,7 +18,7 @@ import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
 import { resolve, sep } from "node:path";
-import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
+import { fetchIdpJwt, hasIdpSessions, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -382,6 +382,65 @@ export const cotalAuthProvider: AuthProvider = {
     return body;
   },
 
+  /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this
+   *  method names it nowhere, sends no Authorization header, and performs exactly one manual-redirect
+   *  GET. A provider-level login conflict check runs before the GET so refusing the ambiguous input
+   *  cannot consume the token. */
+  async postAgentEnrollment({ url, idpUrl }: { url: string; idpUrl?: string }): Promise<unknown> {
+    if (!idpUrl && hasIdpSessions(homeCotalDir()))
+      throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
+    if (idpUrl && loadIdpSession(homeCotalDir(), idpUrl))
+      throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
+    // WHATWG parsing rewrites many inputs into a different URL than the owner minted: it folds
+    // backslashes into slashes, erases empty userinfo, lowercases the scheme and host, drops a
+    // default port, resolves dot segments, and canonicalizes short host forms. Accepting any of
+    // those means redeeming a URL the owner never issued, so the raw string is held to a positive
+    // grammar first and then required to be its own canonical serialization.
+    if (!url.startsWith("https://") && !url.startsWith("http://"))
+      throw new Error("the enrollment URL must begin with https:// or http:// in lowercase");
+    for (const [char, label] of [["\\", "a backslash"], ["@", "userinfo"], ["?", "a query"], ["#", "a fragment"]] as const)
+      if (url.includes(char)) throw new Error(`the enrollment URL must not contain ${label}`);
+    if (/[\s\u0000-\u001f\u007f]/.test(url) || /%(0[0-9a-f]|1[0-9a-f]|20|7f)/i.test(url))
+      throw new Error("the enrollment URL must not contain whitespace or control characters, encoded or literal");
+    let enrollment: URL;
+    try {
+      enrollment = new URL(url);
+    } catch {
+      throw new Error("the enrollment URL is not a valid URL");
+    }
+    if (enrollment.href !== url)
+      throw new Error("the enrollment URL is not in canonical form - redeem the URL exactly as the mesh owner minted it");
+    if (enrollment.username || enrollment.password || enrollment.search || enrollment.hash)
+      throw new Error("the enrollment URL must carry no userinfo, query, or fragment");
+    if (!enrollment.pathname.split("/").filter(Boolean).at(-1))
+      throw new Error("the enrollment URL must end with the one-time secret path segment");
+    if (enrollment.protocol !== "https:" && !(enrollment.protocol === "http:" && isLoopbackLiteral(enrollment.hostname)))
+      throw new Error("the enrollment URL must be https://, except for a loopback HTTP literal on this machine");
+    let res: Response;
+    try {
+      res = await fetch(enrollment, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error("the enrollment endpoint did not answer");
+    }
+    if (res.status >= 300 && res.status < 400)
+      throw new Error(`the enrollment endpoint answered ${res.status} with a redirect - redirects are refused because the enrollment URL is the credential`);
+    if (res.status !== 200) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error("enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one");
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error("the enrollment endpoint returned a 200 response that is not JSON");
+    }
+    return body;
+  },
+
   /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
    *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
    *  status` must be able to say "not signed in" without becoming a connect. */
@@ -490,6 +549,8 @@ registry.register(cotalAuthProvider);
 function isLoopbackLiteral(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (isIPv4(h)) return h.startsWith("127.");
+  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
   if (isIPv6(h)) {
     if (h === "::1") return true;
     const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);

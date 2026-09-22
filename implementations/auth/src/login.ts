@@ -364,6 +364,13 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   return { token: s.token, expiresAt: s.expiresAt, ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}) };
 }
 
+/** Whether this machine carries any cached human login. Enrollment URLs are single-use credentials,
+ *  so an unregistered-mesh client must resolve the login-vs-enrollment conflict before it GETs the
+ *  URL and learns which IdP the response names. */
+export function hasIdpSessions(dir: string): boolean {
+  return Object.keys(readSessionsFile(dir).sessions).length > 0;
+}
+
 export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession): void {
   const file = readSessionsFile(dir);
   file.sessions[normalizeIdpUrl(idpUrl)] = {
