@@ -233,12 +233,12 @@ cluster revision. The precedent is `ManagedEnvironmentRecord.version` in
 ```ts
 interface Task {
   version: "ai.cotal.tasks.task/v1";
-  taskId: TaskText;          // provider-minted, opaque, stable for the life of the task
-  space: TaskText;           // the space this task belongs to
-  title: TaskText;           // <= 200 UTF-8 bytes
-  brief?: TaskBrief;         // <= 4096 UTF-8 bytes
+  taskId: TaskText<128>;     // provider-minted, opaque, stable for the life of the task
+  space: TaskText<128>;      // the space this task belongs to
+  title: TaskText<200>;
+  brief?: TaskText<4096>;
   status: TaskStatus;
-  statusSource?: TaskText;   // the provider's native state name, relayed verbatim, never parsed
+  statusSource?: TaskText<64>;   // the provider's native state name, relayed verbatim, never parsed
   binding?: TaskBinding;     // absent means unbound
   evidence: TaskEvidence[];  // <= 32 entries
   createdAt: number;         // epoch ms
@@ -248,27 +248,40 @@ interface Task {
 type TaskStatus = "open" | "claimed" | "blocked" | "done" | "dropped";
 
 interface TaskBinding {
-  owner: TaskText;           // the seat principal's owner half
-  actor: TaskText;           // the seat principal's actor half
-  lifecycleUid: TaskText;    // the seat's lifecycle uid; a fresh incarnation is a different value
-  environment?: TaskText;    // copied verbatim from the seat's presence card, or absent
+  owner: TaskText<128>;      // the seat principal's owner half
+  actor: TaskText<128>;      // the seat principal's actor half
+  lifecycleUid: TaskText<128>;   // the seat's lifecycle uid; a fresh incarnation is a different value
+  environment?: TaskText<2048>;  // copied from the seat's presence card; see Environment below
+  environmentWithheld?: true;    // the card carried a value this record may not publish
   boundAt: number;           // epoch ms
-  boundBy: TaskText;         // the broker-authenticated principal that made the binding
+  boundBy: TaskText<128>;    // the broker-authenticated principal that made the binding
 }
 
 interface TaskEvidence {
   kind: "commit" | "branch" | "run" | "review";
-  ref: TaskText;             // opaque to this contract; the provider never parses it
+  ref: TaskText<512>;        // opaque to this contract; the provider never parses it
   addedAt: number;           // epoch ms
 }
 ```
 
+**`TaskText<N>`.** One text type, used by every string field above, parameterized only by its byte
+ceiling. A value is admitted when it is valid UTF-8 of at most `N` bytes, carries no control character,
+and does not match the record's secret-shaped-text refusal: bearer and credential blocks, private-key
+blocks, secret assignment text, URL userinfo, and secret-shaped query keys. The refusal set is the one
+`validateHostedEnvironmentRecordText` enforces in
+[environment-provider-hosted.md](environment-provider-hosted.md), reused rather than restated, so the
+two records cannot drift on what counts as credential-shaped.
+
+There is one text type rather than several because a second alias with its own rules is a second place
+for those rules to disagree. `N` is the only thing that varies, and every per-field bound above is a use
+of this definition rather than a separate number.
+
 `TaskSummary` is the same shape without `brief` and without `evidence`, which is what makes a page
 bounded.
 
-**Identity.** `taskId` is minted by the provider, opaque to Cotal, and stable for the task's life. It
-is bounded to 128 UTF-8 bytes with no control characters. It is never a credential and never encodes
-one.
+**Identity.** `taskId` is minted by the provider, opaque to Cotal, and stable for the task's life. It is
+a `TaskText<128>`, so its bound and its refusals are the ones defined above rather than a second rule.
+It is never a credential and never encodes one.
 
 **Status vocabulary.** Five values, closed, and closed deliberately. The rule for extending it is that
 it is not extended within this URN. A provider whose own model has more states maps each onto one of
@@ -315,21 +328,42 @@ would be silently inherited by whoever next holds the name.
 
 **Environment.** `binding.environment` is the environment **association**, not a binding key and not an
 identity. Several seats may share one environment reference, so the reference can never identify a seat.
-It is copied verbatim from the bound seat's presence card at bind time when the card carries one, and
-omitted when it does not. Absent means unknown; it is never inferred from a working directory, a host
-name, a display name, or a provider-specific handle, and no provider-specific handle is a fallback join
-key. It is never parsed, which is the rule SPEC §6 already states for core and which this contract
-adopts for the provider.
+It is never inferred from a working directory, a host name, a display name, or a provider-specific
+handle, and no provider-specific handle is a fallback join key.
+
+The provider never **parses** the value: it does not split it, resolve it, or read meaning out of it,
+which is the rule SPEC §6 states for core and this contract adopts for the provider. It does **admit**
+it, against `TaskText<2048>` and nothing else. Those are different acts, and separating them is what
+lets both rules hold at once.
+
+SPEC §6 admits any opaque string, so a conforming card may carry one this record may not publish, for
+instance a URL with userinfo in it. Three outcomes, and the record distinguishes all three:
+
+- The card carries no `environment`. Both fields are omitted. This means **unknown**.
+- The card's value is admitted. `environment` carries it byte for byte. The provider never truncates,
+  escapes, or normalizes to make a value fit: a value that does not pass is not published in a modified
+  form, because a rewritten opaque reference is a different reference and joins to nothing.
+- The card's value is refused. `environment` is omitted and `environmentWithheld: true` is recorded.
+
+The third outcome exists because the alternative is the failure section 4 rejects for reads. Silently
+omitting a refused value would make "the seat declared no environment" and "the seat declared one we
+will not publish" the same record, so a reader would conclude the seat has no environment when it has
+one. The marker says a value existed and is not here, and it is a boolean rather than a redacted copy,
+because a redaction of credential-shaped text is still derived from it.
+
+A refused value never blocks the binding. The binding names the seat principal and the lifecycle uid,
+and those are what identify the seat; the environment is an association, so its absence costs a display
+grouping and nothing else.
 
 Environment metadata carries no authority. Nothing in this contract grants, checks, widens, or narrows a
 capability because two records share an environment reference. A reader may group a board by that
 reference for display; an authorization decision that consulted it would be reading a display value as a
-grant.
+grant. `environmentWithheld` likewise grants nothing and is never a reason to refuse a command.
 
 **Evidence.** Each entry declares its kind and carries an opaque `ref`. The kinds are the four the brief
 names, and the contract parses none of them: a `commit` ref is a string to this contract, not a validated
 object name, because validating it would make the contract depend on one version control system.
-Bounded at 32 entries and 512 UTF-8 bytes per ref, so a record stays a record.
+Bounded at 32 entries, each ref a `TaskText<512>`, so a record stays a record.
 
 **Timestamps.** `createdAt` and `updatedAt` are epoch milliseconds, as `ManagedEnvironmentRecord` already
 uses for `createdAt`, `stoppedAt`, `expiresAt`, and `probedAt`.
@@ -339,8 +373,7 @@ or launch material identifier. No tool output body. No transcript, no message hi
 agent turn. No absolute host path. The reason is the same one `validateHostedEnvironmentRecordText`
 enforces in [environment-provider-hosted.md](environment-provider-hosted.md): a dashboard may read the
 whole record, so the record must hold nothing a dashboard reader may not see. Every string field above is
-a bounded `TaskText` or `TaskBrief`, refusing control characters and credential-shaped text before the
-provider stores it.
+a `TaskText<N>`, which is where that refusal is enforced.
 
 ## 3. Binding rules
 
@@ -369,7 +402,8 @@ Reachability is a separate, optional check. Before recording a binding the provi
 target triple has a presence entry whose `lifecycleUid` equals the target uid, and refuse
 `failed-precondition` when it does not. That is an operator convenience so a typo does not create a
 binding to nothing. It is not a security control, it is declared as such, and a deployment may disable it
-without changing who may bind. The environment reference is read from that same card when it is present.
+without changing who may bind. The environment reference is read from that same card when it is present,
+and recorded under the three-outcome rule of section 2: admitted, absent, or withheld.
 
 **When the lifecycle uid changes.** A fresh incarnation is not the same seat, and this contract never
 repairs the difference. A binding names a uid; a seat whose uid differs does not match it. Three
@@ -535,9 +569,11 @@ through `invokeCommand`'s `opts.id`.
    no `tasks.self` grant mints an `owner`-mode or `any`-mode row.
 10. After the bound seat is stopped and a new seat is spawned under the same name, `get-task` still shows
     the original `lifecycleUid`, and `my-tasks --self` from the new seat does not list the task.
-11. A task bound to a seat whose presence card carried an `environment` reference shows that reference
-    verbatim in `binding.environment`. A task bound to a seat whose card carried none omits the field.
-    No value appears that the card did not carry.
+11. A task bound to a seat whose presence card carried an admissible `environment` reference shows that
+    reference verbatim in `binding.environment`, with `environmentWithheld` absent. A task bound to a
+    seat whose card carried none omits both fields. A task bound to a seat whose card carried a value
+    the record refuses omits `environment` and carries `environmentWithheld: true`. The three cases are
+    distinguishable, and no value appears that the card did not carry.
 12. `cotal invoke <endpoint> list-tasks --args '{"limit":<large>}'` returns at most the provider's own
     ceiling and reports that ceiling in `appliedLimit`, rather than returning the whole board.
 13. Reading any task returns a record carrying no secret, no tool output body, and no transcript text.
@@ -553,10 +589,36 @@ through `invokeCommand`'s `opts.id`.
     no binding. A reply that clears one without the other has written the invalid state the invariant
     exists to prevent, and is the failure this check is for.
 
+**Positive exercises.** Checks 1 through 17 are mostly denials, and a denial suite has a blind spot: a
+provider that refuses every write passes all of them. One that answers `permission-denied` to every
+`update-task`, stores no evidence, closes nothing, and never emits an event would satisfy the list above
+while being unable to run a board. The following checks fail that provider, and a reviewer runs them on
+one task from creation to terminal.
+
+18. `create-task`, then `claim-task --self`, then `get-task`: the record reads `claimed` and its binding
+    names the caller's owner, actor, and lifecycle uid.
+19. `update-task --self` with `{"status":"blocked","note":"..."}` **succeeds**, and `get-task` reads
+    `blocked` with the binding intact. A provider that answers `permission-denied` to its own bound
+    seat fails here, which is the case checks 8 and 16 cannot distinguish from correct refusal.
+20. `update-task --self` attaching `{"evidence":[{"kind":"commit","ref":"<opaque>"}]}` **succeeds**, and
+    `get-task` returns that entry with its kind and its ref byte for byte, `addedAt` set, and no other
+    entry disturbed.
+21. `update-task --self` with `{"status":"done"}` **succeeds**, `get-task` reads `done`, and the binding
+    is still present, since section 3 keeps the record of who finished the work.
+22. `my-tasks --self` lists that task while it is `claimed` and continues to list it at `done`, so a
+    seat can see its own finished work rather than losing it at the terminal.
+23. A reader subscribed to `ev.ai_cotal_tasks.board-changed` observes at least one event across the
+    sequence in checks 18 to 21, and its payload carries only `changeSeq` and `observedAt`. No event
+    body carries a task id, a title, or a status. A provider that emits nothing fails; one that emits a
+    task body fails for the opposite reason.
+24. `list-tasks` across that sequence reports a `changeSeq` that never decreases, and a page whose
+    `appliedLimit` is present on every answer.
+
 Checks 3, 8, 10, and 11 are the ones that distinguish a conformant provider from a plausible one; a
 provider passing only the others has implemented a board, not this contract. Checks 15 through 17
 exercise the status-binding invariant, which is the one rule a provider can violate while every
-individual field still validates.
+individual field still validates. Checks 18 through 24 are the positive path, and they exist because
+every other check on this list can be passed by refusing.
 
 ## 7. Providers
 
