@@ -7,10 +7,11 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
-import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { CotalEndpoint, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
+  deleteIdpSpaceCatalog,
   establishIdpSession,
   loadIdpSession,
   normalizeIdpUrl,
@@ -95,6 +96,12 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         console.log(`Waiting for approval - the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
       },
     });
+    const provider = resolveAuthProvider();
+    if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
+      const consumer = resolveSpaceCatalogConsumer();
+      const catalog = await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate });
+      catalog?.forEach(consumer.apply);
+    }
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     const who = label ? `${label} (${sub})` : sub;
@@ -137,6 +144,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
       );
     }
     deleteIdpSession(dir, idp);
+    if (session.sub) removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
     console.log(`Logged out of ${idp} - server-side session revoked, local cache cleared.`);
   });
 }

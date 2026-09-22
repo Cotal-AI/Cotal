@@ -62,6 +62,28 @@ export interface AuthProvider extends Extension {
    */
   userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
   /**
+   * Prepare the signed-in account's optional space catalog without exposing its cached session
+   * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
+   * the private cache. The caller supplies the product validator so an invalid candidate is never
+   * published over the last valid snapshot.
+   */
+  prepareSpaceCatalogs?(opts: {
+    dir: string;
+    idpUrl?: string;
+    force?: boolean;
+    validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+  }): Promise<AuthSpaceCatalogResult[]>;
+  /** Complete login-time catalog discovery while the provider alone holds the new session. */
+  syncSpaceCatalogAfterLogin?(opts: {
+    dir: string;
+    idpUrl: string;
+    validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+  }): Promise<AuthSpaceCatalogResult[]>;
+  /** Whether the just-proved account advertised a catalog. Reads provider state only. */
+  hasSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): boolean;
+  /** Clear one account's provider cache and return its opaque registry ownership key. */
+  removeSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): string;
+  /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
    * provider must authenticate the signed-in human, fresh-check `supervise`, bind the returned
@@ -217,6 +239,39 @@ export interface AuthProvider extends Extension {
    * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
    * runtime only runs an argv and reads a line. */
   readonly agentBearerCommand: string;
+}
+
+/** Non-secret proved account identity returned beside a catalog snapshot. */
+export interface AuthSpaceCatalogAccount {
+  idpUrl: string;
+  issuer: string;
+  sub: string;
+  /** Opaque machine-local ownership key. It contains no subject or credential material. */
+  ownerKey: string;
+  catalogUrl?: string;
+}
+
+/** One account's catalog preparation result. A failure keeps and returns the prior snapshot. */
+export interface AuthSpaceCatalogResult {
+  account: AuthSpaceCatalogAccount;
+  state: "fresh" | "updated" | "not-modified" | "no-catalog" | "failed";
+  snapshot?: unknown;
+  fetchedAt?: string;
+  error?: string;
+}
+
+/** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI. */
+export interface SpaceCatalogConsumer extends Extension {
+  readonly kind: "space-catalog-consumer";
+  validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+  apply(result: AuthSpaceCatalogResult): void;
+}
+
+export function resolveSpaceCatalogConsumer(): SpaceCatalogConsumer {
+  const consumers = registry.all<SpaceCatalogConsumer>("space-catalog-consumer");
+  if (consumers.length !== 1)
+    throw new Error(consumers.length === 0 ? "no space catalog consumer is registered in this build" : "multiple space catalog consumers are registered");
+  return consumers[0];
 }
 
 /** Provider-defined, versioned manifest-safe commitment. Callers compare both fields exactly. */

@@ -201,6 +201,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
+    if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {
     // A bad flag/arg prints the command's help, not a stack trace. Trim node's verbose

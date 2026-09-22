@@ -33,6 +33,10 @@ import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } 
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
 import { service, serviceComplete } from "./commands/service.js";
+import { prepareCatalogCommand, sync, syncFlags } from "./commands/sync.js";
+
+const prepareCatalog = (args: Parameters<typeof prepareCatalogCommand>[0]): Promise<void> => prepareCatalogCommand(args);
+const prepareCatalogStatus = (args: Parameters<typeof prepareCatalogCommand>[0]): Promise<void> => prepareCatalogCommand(args, true);
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -170,6 +174,7 @@ const baseCommands: Command[] = [
       { name: "attempt", type: "string", value: "<id>", description: "restore-fallback: matching committed restore attempt" },
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
     ],
+    prepare: prepareCatalog,
     run: clean,
     complete: cleanComplete,
   },
@@ -181,8 +186,17 @@ const baseCommands: Command[] = [
     usage: "meshes [list] | meshes add [<space>] [--server <url>] [--root <dir>] [--mode auth|open] | meshes rm <space> …  (bare `meshes add` on a terminal is guided)",
     positionals: "[list | add <space> | rm <space> …]",
     flags: meshesFlags,
+    prepare: prepareCatalog,
     run: meshes,
     complete: meshesComplete,
+  },
+  {
+    kind: "command",
+    name: "sync",
+    group: "Mesh",
+    summary: "refresh signed-in space catalogs and report registry changes",
+    flags: syncFlags,
+    run: sync,
   },
   {
     kind: "command",
@@ -190,6 +204,7 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "detailed read-only status for setup, local processes, recorded meshes, and the selected live mesh",
     flags: statusFlags,
+    prepare: prepareCatalogStatus,
     run: status,
   },
   {
@@ -207,6 +222,7 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "set the default mesh for a bare `cotal spawn` from any directory",
     positionals: "<space>",
+    prepare: prepareCatalog,
     run: use,
     complete: useComplete,
   },
@@ -226,6 +242,7 @@ const baseCommands: Command[] = [
       { name: "lifecycle-uid", type: "string", value: "<uid>", description: "lifecycle uid paired with --creds (minted with the credential at provision time)" },
       { name: "tls", type: "boolean", description: "connect over TLS" },
     ],
+    prepare: prepareCatalog,
     run: join,
   },
   {
@@ -246,6 +263,7 @@ const baseCommands: Command[] = [
       spaceFlag,
       serverFlag,
     ],
+    prepare: prepareCatalog,
     run: mint,
   },
   {
@@ -266,6 +284,7 @@ const baseCommands: Command[] = [
     usage: 'send <dm <agent> | msg <channel> | ask <role>> "<text>"  [--space <s>] [--server <url>] [--creds <path>]',
     positionals: '<dm <agent> | msg <channel> | ask <role>> "<text>"',
     flags: [...targetFlags],
+    prepare: prepareCatalog,
     run: send,
     complete: sendComplete,
   },
@@ -285,6 +304,7 @@ const baseCommands: Command[] = [
       { name: "desc", type: "string", value: "<s>", description: "set: one-line channel description" },
       { name: "instructions", type: "string", value: "<s>", description: "set: instructions shown to joiners" },
     ],
+    prepare: prepareCatalog,
     run: channels,
   },
   {
@@ -299,6 +319,7 @@ const baseCommands: Command[] = [
       { name: "dms", type: "boolean", description: "also clear DM history" },
       { name: "force", type: "boolean", description: "required - clear without prompting" },
     ],
+    prepare: prepareCatalog,
     run: history,
   },
   {
@@ -328,6 +349,7 @@ const baseCommands: Command[] = [
       "launch an agent from a persona - spawn [<persona>] (defaults to COTAL_DEFAULT_PERSONA or `default`); --config accepts a persona name or path; foreground here, or --detach via the manager",
     positionals: "[<persona>]",
     flags: spawnFlags,
+    prepare: prepareCatalog,
     run: spawn,
     complete: spawnComplete,
     requiredExtensions: spawnRequiredExtensions,
@@ -338,6 +360,7 @@ const baseCommands: Command[] = [
     group: "Agents",
     summary: "list connector model catalogs and variants from the manager",
     flags: modelsFlags,
+    prepare: prepareCatalog,
     run: models,
     complete: modelsComplete,
   },
@@ -366,6 +389,7 @@ const baseCommands: Command[] = [
     group: "Agents",
     summary: "ask the manager to stop an agent - --name <n>",
     flags: stopFlags,
+    prepare: prepareCatalog,
     run: stop,
     complete: managedAgentComplete,
   },
@@ -375,6 +399,7 @@ const baseCommands: Command[] = [
     group: "Agents",
     summary: "list managed agents + their mesh status",
     flags: psFlags,
+    prepare: prepareCatalog,
     run: ps,
   },
   {
@@ -383,6 +408,7 @@ const baseCommands: Command[] = [
     group: "Agents",
     summary: "stream + drive an agent's terminal (pty runtime) - --name <n>",
     flags: attachFlags,
+    prepare: prepareCatalog,
     run: attach,
     complete: managedAgentComplete,
   },
@@ -392,6 +418,7 @@ const baseCommands: Command[] = [
     group: "Agents",
     summary: "type one line into an agent's terminal without attaching - --name <n> --text <t>",
     flags: inputFlags,
+    prepare: prepareCatalog,
     run: input,
     complete: managedAgentComplete,
   },
@@ -414,6 +441,7 @@ const baseCommands: Command[] = [
       { name: "running", type: "boolean", description: "list: mark personas live on the mesh" },
       { name: "force", type: "boolean", description: "rm: required - delete without prompting" },
     ],
+    prepare: (args) => args.values.running ? prepareCatalog(args) : Promise.resolve(),
     run: personas,
     complete: personasComplete,
   },
@@ -424,6 +452,7 @@ const baseCommands: Command[] = [
     group: "Observe",
     summary: "list every endpoint in the live presence roster, including the manager",
     flags: [...targetFlags],
+    prepare: prepareCatalog,
     run: endpoints,
   },
   {
@@ -434,6 +463,7 @@ const baseCommands: Command[] = [
     usage: "describe <endpoint>  [--space <s>] [--server <url>]",
     positionals: "<endpoint>",
     flags: describeFlags,
+    prepare: prepareCatalog,
     run: describeCmd,
     complete: describeComplete,
   },
@@ -445,6 +475,7 @@ const baseCommands: Command[] = [
     usage: "invoke <endpoint> <command>  [--args '<json>'] [--name <agent> | --self] [--admin]",
     positionals: "<endpoint> <command>",
     flags: invokeFlags,
+    prepare: prepareCatalog,
     run: invokeCmd,
     complete: describeComplete,
   },
@@ -454,6 +485,7 @@ const baseCommands: Command[] = [
     group: "Observe",
     summary: "live protocol view for a space - lazygit-style TUI, or a line stream on --plain",
     flags: [...targetFlags, { name: "plain", type: "boolean", description: "line stream instead of the TUI" }],
+    prepare: prepareCatalog,
     run: console_,
   },
   // `web` (dashboard) moved out to the `@cotal-ai/web` extension package (stage 4) — installed via

@@ -13,7 +13,7 @@
  */
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mintLifecycleUid } from "@cotal-ai/core";
@@ -35,6 +35,7 @@ import {
   generateSigningKey,
   loadIdpSession,
   normalizeIdpUrl,
+  prepareIdpSpaceCatalogs,
   pinnedJwksResolver,
   cotalAuthProvider,
   requireIdpSession,
@@ -275,6 +276,83 @@ await rejects("a fragment on the IdP url is refused, not silently dropped",
   () => normalizeIdpUrl("http://127.0.0.1/api/auth#frag"), "query or fragment");
 await rejects("an IdP url with embedded credentials (@-confusion host spoof) is refused",
   () => normalizeIdpUrl("https://real-idp.example@evil.example/api/auth"), "embed credentials");
+
+// ---- advertised space catalog: provider owns bearer, cache, ETag and lock ----
+console.log("C2) advertised space catalog cache");
+{
+  let tokenRequests = 0;
+  let catalogRequests = 0;
+  let conditional = 0;
+  let failCatalog = false;
+  let invalidCatalog = false;
+  const catalogDir = mkdtempSync(join(tmpdir(), "cotal-login-catalog-"));
+  let catalogBase = "";
+  const catalog = createServer((req, res) => {
+    if (req.url === "/api/auth/token") {
+      tokenRequests++;
+      res.writeHead(200, {
+        "content-type": "application/json",
+        link: `<${catalogBase}/spaces>; rel="https://cotal.ai/relations/space-catalog"`,
+      });
+      return void res.end(JSON.stringify({ token: "eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwOi8vMTI3LjAuMC4xIiwic3ViIjoiY2F0LXVzZXIifQ." }));
+    }
+    if (req.url === "/spaces") {
+      catalogRequests++;
+      if (req.headers["if-none-match"] === '"v1"') conditional++;
+      if (failCatalog) return void res.writeHead(503).end();
+      if (invalidCatalog) {
+        res.writeHead(200, { "content-type": "application/json", etag: '"bad"' });
+        return void res.end(JSON.stringify({ v: 2 }));
+      }
+      if (req.headers["if-none-match"] === '"v1"') return void res.writeHead(304).end();
+      res.writeHead(200, { "content-type": "application/json", etag: '"v1"' });
+      return void res.end(JSON.stringify({ v: 1, account: { idpUrl: `${catalogBase}/api/auth`, issuer: "http://127.0.0.1", sub: "cat-user" }, spaces: [] }));
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => catalog.listen(0, "127.0.0.1", r));
+  catalogBase = `http://127.0.0.1:${(catalog.address() as AddressInfo).port}`;
+  const catalogIdp = `${catalogBase}/api/auth`;
+  saveIdpSession(catalogDir, catalogIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
+  const validate = (snapshot: unknown) => {
+    if ((snapshot as { v?: unknown })?.v !== 1) throw new Error("invalid catalog");
+  };
+  const first = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
+  check("first preparation learns the Link relation and publishes one validated snapshot",
+    first[0]?.state === "updated" && tokenRequests === 1 && catalogRequests === 1, first);
+  const warm = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate });
+  check("a snapshot younger than five seconds makes zero requests", warm[0]?.state === "fresh" && tokenRequests === 1 && catalogRequests === 1, warm);
+  const cacheFile = join(catalogDir, "space-catalogs.json");
+  const makeStale = () => {
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    Object.values(cached.accounts as Record<string, { fetchedAt?: string }>)[0].fetchedAt = new Date(0).toISOString();
+    writeFileSync(cacheFile, JSON.stringify(cached));
+  };
+  makeStale();
+  const refresh = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate });
+  check("a stale snapshot makes one conditional request and accepts 304 only with prior bytes",
+    refresh[0]?.state === "not-modified" && catalogRequests === 2 && conditional === 1, refresh);
+  makeStale();
+  const beforeConcurrent = catalogRequests;
+  await Promise.all([
+    prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate }),
+    prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate }),
+  ]);
+  check("two concurrent preparations coalesce behind the account lock", catalogRequests === beforeConcurrent + 1, catalogRequests);
+  makeStale();
+  failCatalog = true;
+  const failed = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate });
+  check("a failed refresh reports failure while retaining the previous snapshot", failed[0]?.state === "failed" && failed[0].snapshot !== undefined, failed);
+  failCatalog = false;
+  invalidCatalog = true;
+  const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
+  check("an invalid candidate refuses the whole update and retains the prior snapshot", invalid[0]?.state === "failed" && invalid[0].snapshot !== undefined, invalid);
+  if (process.platform !== "win32") {
+    check("catalog cache file is 0600", (statSync(cacheFile).mode & 0o777) === 0o600);
+    check("catalog state directory is 0700", (statSync(catalogDir).mode & 0o777) === 0o700);
+  }
+  catalog.close();
+}
 
 // ---- the reject matrix ----
 console.log("D) denies, expiry, revocation");

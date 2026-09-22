@@ -145,6 +145,39 @@ bites at the very next connect. The operator grants access with
 channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
 
+**Space catalogs.** A successful authenticated `GET <idp>/token` may advertise one catalog with:
+
+```http
+Link: <https://idp.example/spaces>; rel="https://cotal.ai/relations/space-catalog"
+```
+
+The target must use HTTPS and the same origin as the normalized IdP URL. Loopback IP literals may
+use HTTP for local development. A missing, foreign-origin, or insecure link records that this account
+has no catalog. The client never guesses a path.
+
+The catalog request carries the opaque cached session as its bearer and returns a complete snapshot:
+
+```json
+{
+  "v": 1,
+  "account": { "idpUrl": "https://idp.example/api/auth", "issuer": "https://idp.example", "sub": "user-id" },
+  "spaces": [
+    { "id": "space-id", "slug": "main", "name": "main", "kind": "hosted", "role": "owner", "registration": {} }
+  ]
+}
+```
+
+The client checks every `registration` with the same `checkUserBundle` validator used by `cotal
+meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional refresh uses the
+catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
+snapshot intact and reports the failure.
+
+Discovered registry entries are owned by the normalized IdP origin plus the proved `sub`. That key is
+stored as an opaque digest, so accounts on one machine never union their spaces and the registry does
+not persist the subject. A manual or locally started record with the same name is never overwritten.
+Logout removes only the entries owned by the account whose session was revoked. Local teardown,
+cleanup, and liveness pruning do not remove discovered entries.
+
 **One auth service per space** hosts both halves: the NATS auth callout and the token
 exchange. Its default HTTP listener remains loopback-only and requires the per-start capability
 stored in the owner-only `auth-service.json` file. An operator may add a second listener with
