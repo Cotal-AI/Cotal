@@ -158,7 +158,13 @@ The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exc
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
-match a fresh managed-ledger row. Elevated `view` exchanges stay loopback-only.
+match a fresh managed-ledger row. The public face mints only two elevated views, both still
+gated on ledger scope `admin`: `channel-writer` (`cotal channels set/default`) and
+`channel-purger` (the dashboard's per-click channel delete). God-view (`admin`), space-history
+`purger`, `deployer`, and `manager-service` stay loopback-only. A managed-agent secret exchange
+never mints a view on either face. This is not full remote channel management: `cotal web` still
+mints the read-only admin view at startup, so a remote dashboard that needs that god-view still
+fails even when a later delete would mint `channel-purger`.
 
 The well-known response contains the IdP pins and the actual deny-all sentinel credential remote
 agents need before the bearer-driven auth callout. The pins ride a `userAuth` arm that names the
@@ -304,7 +310,9 @@ connection as the matching non-agent profile instead of `agent`. `cotal web` and
 is spawn-grade (the manager still refuses a manifest claiming another owner). Views exist
 only on a signed-in human exchange (an agent's managed exchange never mints one), are
 authorized against the fresh ledger row at every connect, and expire with the bearer, so
-narrowing or revoking a grant bites within minutes here too.
+narrowing or revoking a grant bites within minutes here too. On the public exchange face only
+`channel-writer` and `channel-purger` are served; `admin`, `purger`, `deployer`, and
+`manager-service` remain loopback-only.
 
 ### Remote manager authority
 

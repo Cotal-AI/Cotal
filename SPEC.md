@@ -11,7 +11,7 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-08-24. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-09-22. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.5 binding revision: workflow runs.** A deployment MAY host **durable workflow runs**: programs
@@ -763,6 +763,9 @@ exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry 
 client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
 every connect: the callout then mints the connection as the named elevated profile (Appendix B:
 `admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
+On a public exchange face, only `channel-writer` and `channel-purger` MAY be issued, still
+re-authorized against ledger scope `admin`; `admin`, `purger`, `deployer`, and `manager-service`
+MUST remain loopback-only. A managed-agent secret exchange MUST still refuse every view.
 
 ---
 

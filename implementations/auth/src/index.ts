@@ -15,6 +15,7 @@ export {
   USER_TOKEN_VER,
   MAX_TOKEN_TTL_SEC,
   USER_TOKEN_VIEWS,
+  PUBLIC_EXCHANGE_VIEWS,
   VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
   type UserTokenView,

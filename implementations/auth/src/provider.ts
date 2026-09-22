@@ -650,8 +650,8 @@ async function remoteUserCredentials(
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     // A refused exchange is an authenticated denial with the reason; surface it verbatim - the
-    // service's copy is already operator-exact (elevated views, for one, are refused on the
-    // public face by policy, and its refusal names that).
+    // service's copy is already operator-exact (god-view, history-purge, deployer, and
+    // manager-service stay loopback-only, and that refusal names the face).
     throw new Error(
       `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
     );
