@@ -33,6 +33,7 @@ import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } 
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
 import { service, serviceComplete } from "./commands/service.js";
+import { sync, syncFlags } from "./commands/sync.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -99,6 +100,7 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "start a local mesh (nats-server + JetStream, JWT auth by default) - or `-f <cotal.yaml>` for a whole manifest",
     flags: upFlags,
+    prepareMeshTarget: false,
     run: up,
     complete: upComplete,
   },
@@ -183,6 +185,14 @@ const baseCommands: Command[] = [
     flags: meshesFlags,
     run: meshes,
     complete: meshesComplete,
+  },
+  {
+    kind: "command",
+    name: "sync",
+    group: "Mesh",
+    summary: "refresh signed-in space catalogs and report registry changes",
+    flags: syncFlags,
+    run: sync,
   },
   {
     kind: "command",

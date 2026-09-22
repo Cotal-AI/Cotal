@@ -38,6 +38,7 @@ runtimes ship this way.
 | Set up & lifecycle | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
 | Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
 | Set up & lifecycle | [`meshes`](#mesh-registry) | List the running meshes on this machine |
+| Set up & lifecycle | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
 | Set up & lifecycle | [`use`](#mesh-registry) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
 | Agents & personas | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
@@ -569,11 +570,11 @@ A restore that applied without error and produced a different index is a refusal
 two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves
 every seat's live `cwd` as it was.
 
-The superseded name is claimed before anything moves, by exclusive directory create, and a taken
-name gets a numeric suffix. The timestamp has one-second resolution, so two promotions of the same
-seat within one second would otherwise compute the same path and the second rename would either
-replace the first tree or fail on it. A superseded tree is the thing that rename exists to keep, so
-a name this step could not create is a name it does not use.
+The rename itself claims the superseded name, and a taken name gets a numeric suffix. The timestamp
+has one-second resolution, so two promotions of the same seat within one second compute the same
+path; a rename onto a name that already holds a tree fails on every platform, and that failure is
+read as taken. Nothing creates the name ahead of the move, because Windows refuses to rename onto an
+existing directory at all. A superseded tree is the thing that rename exists to keep.
 
 `git` and `tar` run as child processes with argument arrays, never a shell string.
 
@@ -664,12 +665,28 @@ cotal meshes add                      # guided, on a terminal
 cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
+cotal sync [--idp <auth base URL>]
 cotal use <space>
 cotal status [--space <s>] [--server <url>] [--components]
 ```
 
 `meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
-`cotal spawn` joins.
+`cotal spawn` joins. Entries learned from a signed-in account are marked `discovered`. Their
+registration trust is stored under the account's private auth state, and the registry contains no
+session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
+`name` is rendered only as a label.
+
+An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
+adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds
+is used without a request. After that, commands that select a discovered space require one successful
+conditional refresh before target resolution. A failed refresh refuses the operation. `cotal sync`
+bypasses freshness and reports added, changed, removed, unchanged, and name collisions. `--idp`
+limits it to one signed-in account. It never connects to a broker.
+
+The shared dispatcher applies this preparation to every command that declares both `--space` and
+`--server` as mesh-target flags, including commands registered by other packages and commands that
+declare their own equivalent flag objects. Daemon and startup commands that use those names only as
+configuration explicitly opt out. Registry-local `meshes add` and `meshes rm` never refresh a catalog.
 
 Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
 one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
@@ -718,6 +735,11 @@ name it with `--space` to restart it. `cotal down` / `cotal clean all` still dro
 they tear down; a hand-added one they leave alone even when it shares a root, because nothing
 on this machine could write it back.
 
+A discovered entry belongs to the normalized IdP origin and proved subject that supplied it. Local
+teardown, cleanup, and liveness pruning do not remove it. A manual or locally started entry with the
+same name wins and remains untouched; that discovered name is reported as a collision. Logging out
+removes only the discovered entries owned by that account.
+
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
 (starting with the installed `cotal-ai` version), the installed extensions and their versions, this
@@ -725,6 +747,11 @@ folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mes
 membership feed). Stale Claude skills and out-of-date `.agents` skills recommend `cotal setup --skills`,
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing.
+
+If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
+stale with the last successful snapshot timestamp and the refresh error. It never calls that state
+synchronized or online. If a selected discovered space vanishes from a successful snapshot, the
+selection is cleared and the command reports that no default is selected.
 
 Persona rows name the catalog they describe. If this folder and the selected mesh use different
 catalogs, status names both and marks which one spawn launches from. A green `default` means the file
@@ -1558,10 +1585,13 @@ cotal logout --idp <auth base URL>
 ```
 
 Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
-once per machine. It prints your IdP subject, the id the operator grants against. After a
+once per machine. It prints your IdP subject, the id the operator grants against. When the trusted
+`/token` response advertises a same-origin space catalog, login validates and records that account's
+spaces immediately. After a
 login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
-ledger at connect time. `logout` revokes the IdP session and clears the cache. See
+ledger at connect time. `logout` revokes the IdP session, clears its cache, and removes only that
+account's discovered registry entries. See
 [identity & auth](identity-and-auth.md).
 
 ## actor

@@ -16,6 +16,14 @@ export const credsFlag = { name: "creds", type: "string", value: "<path>", descr
  *  folder's project > the registry. */
 export const targetFlags = [spaceFlag, serverFlag, credsFlag] as const satisfies readonly FlagSpec[];
 
+/** Whether a command declares the shared mesh-target grammar. Compare names, not object identity:
+ * self-registering packages may spell the same public flags without importing these singleton specs. */
+export function hasMeshTargetFlags(flags: readonly FlagSpec[] | undefined): boolean {
+  if (!flags) return false;
+  const names = new Set(flags.map((flag) => flag.name));
+  return names.has(spaceFlag.name) && names.has(serverFlag.name);
+}
+
 /**
  * The launch grammar: every knob for bringing an agent onto the mesh, shared verbatim by the
  * foreground and detached (`--detach`, manager-run) paths of `cotal spawn` — one bundle, so the

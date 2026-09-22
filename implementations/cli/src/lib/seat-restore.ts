@@ -198,28 +198,28 @@ function stageSeat(seat: SeatRestoreRequest, staging: string): void {
  *
  * The name has to be one this call can prove it owns. A whole-second timestamp is not that: two
  * promotions of the same seat inside one second compute the same path, and the second `rename`
- * lands on the non-empty directory the first one just created. POSIX rename replaces an empty
- * target directory silently and fails ENOTEMPTY on a full one, so the collision is either a lost
- * tree or a refusal naming a rename instead of the real cause. Neither is acceptable for the one
- * step that exists to keep a superseded tree.
+ * lands on the non-empty directory the first one just created. A refusal naming a rename instead
+ * of the real cause is not acceptable for the one step that exists to keep a superseded tree.
  *
- * So the slot is CLAIMED before anything moves, by exclusive `mkdir` on the timestamped name, and
- * the claim is retried with a counter while it is taken. `rename` onto the empty directory the
- * claim created is the replace POSIX allows, and a name this call could not create is a name it
- * does not own.
+ * So the rename IS the claim. Nothing creates the timestamped name ahead of the move: an
+ * exclusive `mkdir` first and a rename onto that empty directory is the replace POSIX allows, but
+ * Windows refuses to rename onto any existing directory (EPERM), so a claim made that way can never
+ * be redeemed there. Renaming onto a name that already holds a tree fails on every platform
+ * (ENOTEMPTY or EEXIST on POSIX, EPERM on Windows), and that failure is read as "taken" and retried
+ * with a counter. A rename that fails for any other reason is the error it is.
  */
 function supersede(cwd: string, seat: string): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
   for (let attempt = 0; attempt < 100; attempt++) {
     const candidate = `${cwd}.superseded.${stamp}${attempt ? `.${attempt}` : ""}`;
     try {
-      mkdirSync(candidate);
+      renameSync(cwd, candidate);
+      return candidate;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "ENOTEMPTY" || code === "EEXIST" || code === "EPERM") && existsSync(candidate)) continue;
       throw error;
     }
-    renameSync(cwd, candidate);
-    return candidate;
   }
   throw new SeatRestoreError(`seat ${seat}: could not claim a free superseded name beside ${cwd}; ${cwd}.superseded.${stamp}[.0-99] are all taken, so an earlier tree would be overwritten`);
 }
