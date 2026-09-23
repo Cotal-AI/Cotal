@@ -19,7 +19,7 @@ export class PiEvents {
 
   constructor(private readonly mesh: MeshAgent, private readonly space: string) {}
 
-  async start(sessionId: string, path: string | undefined, freshSession = false, oldEntryIds: readonly string[] = []): Promise<void> {
+  async start(sessionId: string, path: string | undefined, freshSession = false): Promise<void> {
     if (this.closing || this.dead) return;
     if (!path) {
       this.fail(new Error("Pi AG-UI: persistent native session file is required"));
@@ -32,7 +32,7 @@ export class PiEvents {
       this.path = path;
       const existed = existsSync(path);
       if (!existed && freshSession) await this.prepareFirstFile(sessionId);
-      const holder = this.newHolder(sessionId, path, !existed && freshSession, oldEntryIds);
+      const holder = this.newHolder(sessionId, path, !existed && freshSession);
       this.holder = holder;
       holder.adopt(path);
       if (existsSync(path)) holder.flush(path);
@@ -89,7 +89,7 @@ export class PiEvents {
       throw new Error("Pi AG-UI: fresh native session has a different source boundary");
   }
 
-  private newHolder(sessionId: string, path: string, freshFile: boolean, oldEntryIds: readonly string[]): AguiEmitterHolder<PiSessionEntry> {
+  private newHolder(sessionId: string, path: string, freshFile: boolean): AguiEmitterHolder<PiSessionEntry> {
     return new AguiEmitterHolder<PiSessionEntry>(async () => {
       await this.mesh.waitUntilConnected();
       if (!freshFile && !existsSync(path))
@@ -100,7 +100,6 @@ export class PiEvents {
       this.lock = lock;
       const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: this.space, principal });
       const wal = await EventWal.open(walPath, { space: this.space, principal, threadId: sessionId, subjectMayExist: false });
-      const virgin = wal.frontier.sourceCursor === undefined;
       if (freshFile && wal.frontier.sourceCursor !== undefined && wal.frontier.sourceCursor !== "pi:first-file")
         throw new Error("Pi AG-UI: native session file vanished after an event cursor was acknowledged");
       // For an existing transcript, capture its boundary before subsequent turns. A restart keeps
@@ -113,11 +112,10 @@ export class PiEvents {
         }
       }
       const map = createPiMapper(sessionId, wal.brackets?.run, wal.brackets?.tools);
-      const oldIds = virgin ? new Set(oldEntryIds) : new Set<string>();
       return AguiEmitter.start({
         endpoint: this.mesh.ep, wal, subjectFrontier,
         source: new PiSessionSource(path),
-        map: (entry) => entry.id && oldIds.has(entry.id) ? null : map(entry),
+        map,
       });
     }, (error) => this.fail(error));
   }
