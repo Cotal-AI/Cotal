@@ -77,6 +77,8 @@ let rebuildAgent: MeshAgent | undefined;
 let staleAgent: MeshAgent | undefined;
 let inflightAgent: MeshAgent | undefined;
 let overlapAgent: MeshAgent | undefined;
+let blockerAgent: MeshAgent | undefined;
+let blocker2Agent: MeshAgent | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -481,7 +483,79 @@ try {
   // own, and leaving the never-settling stub in place deadlocks it.
   for (const held of heldSameEpoch.splice(0)) held.resolve();
   overlapEp.kv = liveOverlapKv;
+
+  // #1461 PANEL ROUND 1, Blocker 1 (catch arm): put A starts first, put B starts, put A — the OLDER
+  // put — rejects. A put that is merely in flight is not evidence yet, so a settle is superseded
+  // only when a put that started after it has ALREADY SETTLED. B has not settled at all, so A's
+  // rejection is the latest evidence and the refusal must be recorded. At the fence that compared
+  // against the newest put STARTED, A's rejection was dropped and the bucket refused a write with
+  // presenceWriteFailure() undefined.
+  blockerAgent = new MeshAgent({ ...cfg, name: `transport-live-blocker1-${port}` });
+  await blockerAgent.start(100);
+  await until(() => blockerAgent!.connected, 30_000);
+  const b1Ep = blockerAgent.ep as unknown as {
+    kv?: unknown;
+    publishPresence(): Promise<void>;
+    presenceWriteFailure(): { error?: string } | undefined;
+  };
+  const heldB1: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const liveB1Kv = b1Ep.kv;
+  b1Ep.kv = { put: () => new Promise<void>((resolve, reject) => heldB1.push({ resolve, reject })) };
+  const takeB1 = async () => { await until(() => heldB1.length > 0, 10_000); return heldB1.shift()!; };
+  const b1A = b1Ep.publishPresence().catch(() => {});
+  const b1PutA = await takeB1();
+  const b1B = b1Ep.publishPresence().catch(() => {});
+  const b1PutB = await takeB1();
+  b1PutA.reject(new Error("bucket refuses writes"));
+  await b1A;
+  const b1AfterOlderRejection = b1Ep.presenceWriteFailure();
+  check(
+    "an OLDER put rejecting while a NEWER put is merely in flight still records the refusal",
+    b1AfterOlderRejection !== undefined && b1AfterOlderRejection.error === "bucket refuses writes",
+    { b1AfterOlderRejection },
+  );
+  for (const held of heldB1.splice(0)) held.resolve();
+  b1Ep.kv = liveB1Kv;
+
+  // #1461 PANEL ROUND 1, Blocker 2 (success arm): a refusal is recorded, put A starts after it,
+  // put B starts, put A — the OLDER put — succeeds. B has not settled, so A's success is the latest
+  // evidence and must clear the refusal. At the fence that compared against the newest put STARTED,
+  // A's success was marked superseded and the record stayed planted after the bucket had accepted a
+  // write.
+  blocker2Agent = new MeshAgent({ ...cfg, name: `transport-live-blocker2-${port}` });
+  await blocker2Agent.start(100);
+  await until(() => blocker2Agent!.connected, 30_000);
+  const b2Ep = blocker2Agent.ep as unknown as {
+    kv?: unknown;
+    publishPresence(): Promise<void>;
+    presenceWriteFailure(): { error?: string } | undefined;
+  };
+  const heldB2: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const liveB2Kv = b2Ep.kv;
+  b2Ep.kv = { put: () => new Promise<void>((resolve, reject) => heldB2.push({ resolve, reject })) };
+  const takeB2 = async () => { await until(() => heldB2.length > 0, 10_000); return heldB2.shift()!; };
+  const b2Seed = b2Ep.publishPresence().catch(() => {});
+  const b2SeedPut = await takeB2();
+  b2SeedPut.reject(new Error("bucket refuses writes"));
+  await b2Seed;
+  const b2Refusal = b2Ep.presenceWriteFailure();
+  const b2A = b2Ep.publishPresence().catch(() => {});
+  const b2PutA = await takeB2();
+  const b2B = b2Ep.publishPresence().catch(() => {});
+  const b2PutB = await takeB2();
+  b2PutA.resolve();
+  await b2A;
+  const b2AfterOlderSuccess = b2Ep.presenceWriteFailure();
+  for (const held of heldB2.splice(0)) held.resolve();
+  b2Ep.kv = liveB2Kv;
+  check(
+    "an OLDER put succeeding while a NEWER put is merely in flight still clears the refusal",
+    b2Refusal !== undefined && b2Refusal.error === "bucket refuses writes" && b2AfterOlderSuccess === undefined,
+    { b2Refusal, b2AfterOlderSuccess },
+  );
 } finally {
+  await blocker2Agent?.stop().catch(() => {});
+  await blockerAgent?.stop().catch(() => {});
   await overlapAgent?.stop().catch(() => {});
   await inflightAgent?.stop().catch(() => {});
   await staleAgent?.stop().catch(() => {});
@@ -493,7 +567,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 23;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

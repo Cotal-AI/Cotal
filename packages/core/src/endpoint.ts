@@ -523,13 +523,13 @@ export class CotalEndpoint extends EventEmitter {
   /** #1356: the broker's last refusal message, kept alongside the start time for diagnosis. */
   private lastPresenceWriteError?: string;
   /** #1461: monotonic per-put generation on the presence path, so a settle can tell whether it is
-   *  the latest evidence on its epoch. {@link publishPresence} snapshots it at put start and a
-   *  settle hands the "newest in flight" claim to the next put or back to `undefined`, so a
-   *  success clears the refusal record only when no put that started after it has settled. */
+   *  the latest evidence on its epoch. {@link publishPresence} snapshots it at put start and every
+   * settle records its generation here: a settle is the latest evidence only while no put that
+   * started after it has already settled. */
   private presencePutGeneration = 0;
-  /** #1461: the generation of the newest presence put that has started and not yet settled, or
-   *  `undefined` when none is in flight. */
-  private presencePutInFlight?: number;
+  /** #1461: the generation of the newest presence put that has SETTLED (succeeded or rejected),
+   * or `undefined` when none ever has. A put that is merely in flight is not evidence yet. */
+  private presencePutSettled?: number;
   private readonly roster = new Map<string, Presence>();
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
@@ -5425,12 +5425,11 @@ export class CotalEndpoint extends EventEmitter {
     // refusal on the connection that just published successfully.
     const epoch = this.presenceEpoch;
     const conditionRevision = this.conditionRevision;
-    // #1461: snapshot the put's generation BEFORE the put and clear it only when this put is still
-    // the newest one that has not settled. Same-epoch puts overlap routinely (heartbeat 2s against
-    // a ~5s JetStream put timeout), so "succeeded" alone is not "newest".
+    // #1461: snapshot the put's generation BEFORE the put. A settle (success or rejection) is the
+    // latest evidence on its epoch only while no put that started after it has ALREADY settled —
+    // a newer put merely in flight is not evidence yet. Same-epoch puts overlap routinely
+    // (heartbeat 2s against a ~5s JetStream put timeout), so "succeeded" alone is not "newest".
     const generation = ++this.presencePutGeneration;
-    let superseded = false;
-    this.presencePutInFlight = generation;
     try {
       await this.kv.put(this.card.id, JSON.stringify(record));
     } catch (e) {
@@ -5439,8 +5438,12 @@ export class CotalEndpoint extends EventEmitter {
       // nothing else here notices. Record WHEN the refusals started, at the one site that knows the
       // failing write was a presence write; a caller cannot infer that from the generic `warning`
       // stream, which carries any recoverable error.
-      superseded = this.presencePutInFlight !== generation;
-      if (this.presencePutInFlight === generation) this.presencePutInFlight = undefined;
+      //
+      // #1461: a rejection speaks when it is the newest SETTLED evidence — a newer put that has
+      // merely started does not silence it, but a newer put that already settled (either way)
+      // does.
+      const superseded = (this.presencePutSettled ?? 0) > generation;
+      this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
       if (epoch === this.presenceEpoch && !this.stopped && !superseded) {
         this.presenceWriteFailingSince ??= Date.now();
         this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
@@ -5450,13 +5453,15 @@ export class CotalEndpoint extends EventEmitter {
     // A late SUCCESS cannot erase a refusal from newer evidence. Two fences, each answering half:
     // the epoch fence (#1356) keeps a put that outlives its connection from writing or erasing a
     // record that belongs to a later connection; the generation fence (#1461) orders puts WITHIN
-    // one epoch: a settle is the latest evidence only when its put is still the newest in flight,
-    // so an earlier put that succeeds after a later put settled — either way — no longer speaks.
-    // Without it, an earlier put succeeding late cleared a later put's refusal while the bucket
-    // still refused writes (heartbeat 2s against a ~5s put timeout, so the overlap is routine
-    // rather than a corner).
-    if (this.presencePutInFlight === generation) this.presencePutInFlight = undefined;
-    else superseded = true;
+    // one epoch by SETTLE order, not start order: a settle is the latest evidence only while no
+    // put that started after it has already settled, whichever way that newer put settled. So an
+    // earlier put settling AFTER a later put settled no longer speaks — success cannot clear a
+    // newer refusal (#1461's original case), and a newer settle is not blocked by being merely
+    // started (panel round 1). Without the fence, an earlier put succeeding late cleared a later
+    // put's refusal while the bucket still refused writes (heartbeat 2s against a ~5s put timeout,
+    // so the overlap is routine rather than a corner).
+    const superseded = (this.presencePutSettled ?? 0) > generation;
+    this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
     if (epoch !== this.presenceEpoch || this.stopped || superseded) return;
     // Presence writes may overlap. If this put carried an older condition, repair the KV with the
     // latest local state before returning so a late failure publish cannot resurrect after a new
