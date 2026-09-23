@@ -160,7 +160,23 @@ try {
   for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
   ok("the first broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
 
-  console.log("\n3) a second boot keeps every persisted sibling callout account");
+  console.log("\n3) an unreadable account record REFUSES the boot (never a silently narrowed resolver)");
+  const corrupt = spaceAccountPath(authDir(root), "delta");
+  writeFileSync(corrupt, JSON.stringify({ space: "delta" })); // no account material
+  const before = readFileSync(confPath, "utf8");
+  const port2 = await freePort();
+  const refused = startUp(port2, "alpha");
+  let err = "";
+  refused.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
+  refused.stdout?.on("data", (b: Buffer) => { err += b.toString(); });
+  await Promise.race([once(refused, "exit"), sleep(60_000)]);
+  ok("the boot exited non-zero", refused.exitCode !== 0, { code: refused.exitCode });
+  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
+  ok("…and left the previous config untouched (no partially-rendered tenant list)",
+    readFileSync(confPath, "utf8") === before);
+  rmSync(corrupt);
+
+  console.log("\n4) a second boot keeps every persisted sibling callout account");
   const siblingCallouts = [];
   for (const acct of [beta, await createSpaceAccountAuth(broker, "gamma")]) {
     if (acct.space === "gamma") saveSpaceAccountAuth(authDir(root), acct);
@@ -181,20 +197,6 @@ try {
   await stopBoot(second);
   for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
   ok("the second broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
-
-  console.log("\n4) an unreadable account record REFUSES the boot (never a silently narrowed resolver)");
-  writeFileSync(spaceAccountPath(authDir(root), "delta"), JSON.stringify({ space: "delta" })); // no account material
-  const before = readFileSync(confPath, "utf8");
-  const port2 = await freePort();
-  const refused = startUp(port2, "alpha");
-  let err = "";
-  refused.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
-  refused.stdout?.on("data", (b: Buffer) => { err += b.toString(); });
-  await Promise.race([once(refused, "exit"), sleep(60_000)]);
-  ok("the boot exited non-zero", refused.exitCode !== 0, { code: refused.exitCode });
-  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
-  ok("…and left the previous config untouched (no partially-rendered tenant list)",
-    readFileSync(confPath, "utf8") === before);
 
   console.log(`\nUP MULTI-SPACE RENDER SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
