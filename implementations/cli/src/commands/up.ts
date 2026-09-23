@@ -164,7 +164,7 @@ const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [
   { name: "server", type: "string", value: "<url>", description: "listen URL override" },
-  { name: "host", type: "string", value: "<host>", description: "bind host override" },
+  { name: "host", type: "string", value: "<host>", description: "bind host override (an IP/hostname, not a URL; the URL is --server)" },
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
@@ -1869,7 +1869,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const host = m.broker?.host ?? "127.0.0.1";
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers) : (m.broker?.servers ?? DEFAULT_SERVER);
+  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: opts.idp ?? m.broker?.idp } : undefined; // flag > manifest
   const runtime = m.runtime ?? "pty";
@@ -2461,6 +2461,43 @@ async function waitReady(server: string, creds?: string): Promise<boolean> {
  *  bind necessarily covers. */
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
+/** Establish that a bind-host value IS a host, BEFORE anything brackets it, and return the
+ *  bracketed literal a URL can hold (#1697).
+ *
+ *  `--host` is the bind address; its sibling `--server` takes a URL, the registry stores and prints
+ *  URLs, and every message in this area shows one — so an operator plausibly types the URL here
+ *  (the manifest's `broker.host` carries the same ambiguity against `broker.servers`). Unrejected,
+ *  the IPv6 bracketing wrapped it into `nats://[nats://127.0.0.1:4222]:4222`, which is not a URL at
+ *  all. Nothing checked the derived string: the first code to look at it compared it with the
+ *  space's registry record, failed for a reason unrelated to what was typed, and showed the
+ *  operator the "registered by hand" refusal whose remedy de-registers a live mesh. Refused by name
+ *  here instead — pointing at the URL-carrying sibling — and a value that still cannot serve as a
+ *  URL host (a `host:port` spelling, say) is refused rather than reaching that comparison as a
+ *  silently wrong server string. Never rewritten: a value this flag cannot use is an error, not a
+ *  URL to derive from. */
+function assertBindableHost(host: string, source: string, urlSource: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
+    console.error(
+      c.red(
+        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,
+      ),
+    );
+    process.exit(1);
+  }
+  const literal = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  try {
+    new URL(`nats://${literal}:1`);
+  } catch {
+    console.error(
+      c.red(
+        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,
+      ),
+    );
+    process.exit(1);
+  }
+  return literal;
+}
+
 /**
  * Reconcile the bind address (`--host`, manifest `broker.host`) with the broker URL the readiness
  * probe, the mesh registry, and every later client use.
@@ -2471,16 +2508,28 @@ const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
  * derive one from the host (keeping the URL's port); with both, refuse a contradicting pair rather
  * than starting a broker that nothing can reach.
  */
-function reconcileHostAndServer(host: string, explicitServer: string | undefined): string {
+function reconcileHostAndServer(host: string, explicitServer: string | undefined, source = "--host", urlSource = "--server"): string {
   const url = new URL(explicitServer ?? DEFAULT_SERVER);
   if (WILDCARD_HOSTS.has(host)) return explicitServer ?? DEFAULT_SERVER;
-  // An unbracketed IPv6 literal cannot be assigned to a URL host — bracket it so the URL parses.
-  const literal = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const literal = assertBindableHost(host, source, urlSource);
   if (!explicitServer) return `nats://${literal}:${url.port || "4222"}`;
-  if (url.hostname !== new URL(`nats://${literal}:1`).hostname) {
+  // The comparison parses the literal. A host that passed `assertBindableHost` always parses, but
+  // this path states its own diagnosis and exits 1 — it never throws a raw `Invalid URL` (#1697).
+  let literalHost: string;
+  try {
+    literalHost = new URL(`nats://${literal}:1`).hostname;
+  } catch {
     console.error(
       c.red(
-        `✗ --host ${host} and --server ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,
+        `✗ ${source} ${host} and ${urlSource} ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,
+      ),
+    );
+    process.exit(1);
+  }
+  if (url.hostname !== literalHost) {
+    console.error(
+      c.red(
+        `✗ ${source} ${host} and ${urlSource} ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,
       ),
     );
     process.exit(1);
