@@ -120,6 +120,7 @@ function capture(fn: () => void): string[] {
 async function captureAsync<T>(fn: () => Promise<T>): Promise<{ lines: string[]; ret: T }> {
   const real = console.error;
   const lines: string[] = [];
+  // same swallow as `capture`, on its own line so each half of the instrument is addressable
   console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
   let ret!: T;
   try { ret = await fn(); } finally { console.error = real; }
