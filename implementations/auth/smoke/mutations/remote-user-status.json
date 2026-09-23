@@ -1,0 +1,43 @@
+{
+  "suite": [
+    "implementations/auth/smoke/ps-user-mode.smoke.ts"
+  ],
+  "guard": "a discovered user-mode space answers cotal status from its registry entry (login row, no no-material refusal) and the components pass probes as the signed-in login, never a raw Authorization Violation",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build && pnpm smoke:ps-user-mode",
+  "completionMarker": "PS USER MODE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/remote-user-status.json",
+  "why": [
+    "The ps-user-mode suite already staged the exact machine #1832 describes — a login, a live",
+    "user-mode mesh, an empty registry repopulated by catalog discovery — but its bare-status cell",
+    "asserted only exit 0 plus the catalog-snapshot line, which is why the defect stayed invisible.",
+    "The new cells name the login row, the grant-not-checkable row, the absence of an Authorization",
+    "Violation on the components pass, and the signed-out sentence with the exact login command.",
+    "",
+    "SPECIFIER BOUNDARY. The suite runs bin/cotal.ts through tsx but resolves @cotal-ai/auth and",
+    "@cotal-ai/cli from dist, so the command builds both before each run and `afterRestore` rebuilds,",
+    "or a restored source would sit behind a mutated dist and every later run would grade the wrong",
+    "tree."
+  ],
+  "mutations": [
+    {
+      "name": "userStatus loses the remote arm and throws the local-only refusal again",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    const ua = idp ? undefined : remoteUserAuthEntry(dir, space);\n    if (!idp && !ua)",
+      "replace": "    const ua = undefined;\n    if (!idp && !ua)",
+      "expectRed": "discovered space: bare status shows the signed-in subject, not a no-material refusal",
+      "cell": "discovered space: bare status shows the signed-in subject, not a no-material refusal",
+      "note": "Restores the exact #1832 behavior: a discovered entry's state dir has no idp.json, so userStatus threw the no-user-auth-material sentence and the renderer printed it as the login row. The signed-out cell reddens too (the thrown message replaces the not-signed-in row); the named cell reds first and is the evidence.",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the components pass probes a user-mode target with no credential again",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  if (target.mode !== \"user\") return { kind: \"static\", auth: target.auth };",
+      "replace": "  return { kind: \"static\", auth: target.auth };",
+      "expectRed": "discovered space: components probes as the signed-in login, never a raw Authorization Violation",
+      "cell": "discovered space: components probes as the signed-in login, never a raw Authorization Violation",
+      "note": "Typecheck stays green (target.auth is undefined on a user-mode target, the static arm's own shape). The unauthenticated manager probe against the authenticated broker prints `serve probe refused: Authorization Violation` with exit 3 — the exact reported output — and the named cell goes red on it.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}
