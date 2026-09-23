@@ -118,33 +118,49 @@ try {
   mkdirSync(join(emptyHome, "sessions"), { recursive: true, mode: 0o700 });
   const empty = startHost(emptyName, {});
   child = empty.child;
-  await waitFor("empty-sessions create_session", () =>
-    entriesOf(empty.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
-  );
-  await waitFor("empty-sessions orientation", () =>
-    entriesOf(empty.log).find(
-      (entry) =>
-        entry.ev === "request" &&
-        entry.frame?.req === "send_message" &&
-        String((entry.frame as { content?: string }).content).includes("cotal_orientation"),
-    ),
-  );
-  const emptyErr = empty.stderr();
-  const emptyReqs = entriesOf(empty.log).filter((entry) => entry.ev === "request");
-  check("an empty sessions directory still starts a fresh session", /started a fresh session/.test(emptyErr), emptyErr);
-  check(
-    "list_sessions is not sent when sessions is an empty directory",
-    !emptyReqs.some((entry) => entry.frame?.req === "list_sessions"),
-    emptyReqs.map((entry) => entry.frame?.req),
-  );
-  check("the empty-directory seat does not die as startup failed (unknown)", !/startup failed \(unknown\)/.test(emptyErr), emptyErr);
-  check("the empty-directory seat is still running after readiness", empty.child.exitCode === null, {
-    code: empty.child.exitCode,
-    stderr: emptyErr,
+  // The accept control AND its negative anchor: an early refusal of this seat (a check that
+  // fires on a directory the harness could perfectly well use) must fail HERE by name, not as
+  // an anonymous suite timeout. The 20s bound is generous for a healthy boot (~2s measured).
+  await waitFor(
+    "empty-sessions create_session",
+    () => entriesOf(empty.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
+    20_000,
+  ).catch((error: Error) => {
+    check(
+      "an empty sessions directory still starts a fresh session",
+      false,
+      `the empty writable directory never reached create_session: ${(error as Error).message}\nhost stderr:\n${empty.stderr()}`,
+    );
   });
-  empty.child.kill("SIGTERM");
-  await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
-  check("the empty-directory seat exits cleanly", empty.child.exitCode === 0, { code: empty.child.exitCode, stderr: empty.stderr() });
+  if (!existsSync(empty.log) || !entriesOf(empty.log).some((entry) => entry.req === "create_session")) {
+    empty.child.kill("SIGTERM");
+    await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
+  } else {
+    await waitFor("empty-sessions orientation", () =>
+      entriesOf(empty.log).find(
+        (entry) =>
+          entry.ev === "request" &&
+          entry.frame?.req === "send_message" &&
+          String((entry.frame as { content?: string }).content).includes("cotal_orientation"),
+      ),
+    );
+    const emptyErr = empty.stderr();
+    const emptyReqs = entriesOf(empty.log).filter((entry) => entry.ev === "request");
+    check("an empty sessions directory still starts a fresh session", /started a fresh session/.test(emptyErr), emptyErr);
+    check(
+      "list_sessions is not sent when sessions is an empty directory",
+      !emptyReqs.some((entry) => entry.frame?.req === "list_sessions"),
+      emptyReqs.map((entry) => entry.frame?.req),
+    );
+    check("the empty-directory seat does not die as startup failed (unknown)", !/startup failed \(unknown\)/.test(emptyErr), emptyErr);
+    check("the empty-directory seat is still running after readiness", empty.child.exitCode === null, {
+      code: empty.child.exitCode,
+      stderr: emptyErr,
+    });
+    empty.child.kill("SIGTERM");
+    await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
+    check("the empty-directory seat exits cleanly", empty.child.exitCode === 0, { code: empty.child.exitCode, stderr: empty.stderr() });
+  }
 
   const panicName = "panicpeer";
   const panicHome = managedHome("jcodeempty", panicName);
