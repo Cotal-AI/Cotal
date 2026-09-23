@@ -1,0 +1,40 @@
+{
+  "grades": "source",
+  "suite": [
+    "implementations/auth/smoke/login.smoke.ts"
+  ],
+  "guard": "a space catalog is applied to the registry under the provider's lock, with the cache saying the snapshot is not applied until the consumer's last write has happened, so a command that dies or pauses while applying leaves a cache the next command repairs instead of a partial registry it accepts as fresh",
+  "command": "pnpm -s smoke:auth-login",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/catalog-apply-under-lock.json",
+  "why": [
+    "The provider committed a fetched snapshot to its cache and released the catalog lock before the CLI wrote the registry one entry at a time. Measured at b260c3776 with the built components in real child processes: a sync killed after the first registry rename left the registry with one of three discovered spaces while the cache reported the whole snapshot as current; every later command inside the freshness window used that registry with zero requests, and after the window a conditional 304 confirmed it. Only an explicit sync repaired it. A second process could also list the half-written set while the first was still writing.",
+    "The suite drives the shipped prepareIdpSpaceCatalogs with the consumer's apply and reads the cache file between calls. It does not kill a process: the cells plant the cache state a death leaves behind (applied false), because that state is the contract the recovery rests on, and one cell observes the commit order from inside apply, which is the only vantage a paused process has.",
+    "Three mutations, each on the boundary and not on a message: skipping the pre-write commit makes the observed-order cell red because the cache inside apply still names the previous ETag; dropping the re-application makes the zero-request repair cell red because the provider answers fresh with nothing handed to the consumer; never recording applied makes the settled cell red because the consumer is handed an updated result on every warm call and the count check catches the second application."
+  ],
+  "mutations": [
+    {
+      "name": "the candidate is not committed to the cache before the consumer's first registry write",
+      "file": "implementations/auth/src/login.ts",
+      "find": "        file.accounts[key] = state;\n        writeCatalogsFile(opts.dir, file);\n        changed = false;\n",
+      "replace": "        file.accounts[key] = state;\n        changed = true;\n",
+      "expectRed": "a fetched candidate is committed as not applied before the consumer's first write and as applied after its last",
+      "cell": "a fetched candidate is committed as not applied before the consumer's first write and as applied after its last"
+    },
+    {
+      "name": "a cached snapshot whose application never finished is never applied again",
+      "file": "implementations/auth/src/login.ts",
+      "find": "        if (state.snapshot !== undefined && !state.applied) {\n",
+      "replace": "        if (false) {\n",
+      "expectRed": "a cached snapshot whose application never finished is applied again inside the freshness window with zero requests",
+      "cell": "a cached snapshot whose application never finished is applied again inside the freshness window with zero requests"
+    },
+    {
+      "name": "a fetched candidate is never recorded as applied after the consumer returns",
+      "file": "implementations/auth/src/login.ts",
+      "find": "        opts.apply(result);\n        state = { ...state, applied: true };\n        file.accounts[key] = state;\n        changed = true;\n        results.push(result);\n",
+      "replace": "        opts.apply(result);\n        results.push(result);\n",
+      "expectRed": "an applied snapshot inside the window is reported fresh and handed to the consumer no more",
+      "cell": "an applied snapshot inside the window is reported fresh and handed to the consumer no more"
+    }
+  ]
+}
