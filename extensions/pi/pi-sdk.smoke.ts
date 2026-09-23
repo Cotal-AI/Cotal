@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CotalEndpoint, DEV_OWNER, eventChannel } from "@cotal-ai/core";
+import { isAguiFramePart, parseAguiFrame } from "@cotal-ai/connector-core";
+import { fauxToolCall } from "@earendil-works/pi-ai";
+import cotalMesh from "./src/extension.js";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
@@ -255,4 +260,102 @@ try {
   session.dispose();
   faux.unregister();
   rmSync(temp, { recursive: true, force: true });
+}
+
+// Optional real-broker cell: PI_EVENTS_TEST_SERVER points at an isolated test broker. It drives
+// the actual Pi extension and SDK, replacing only the paid provider with Pi's faux provider.
+if (process.env.PI_EVENTS_TEST_SERVER) {
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-events-sdk-"));
+  const keys = ["COTAL_SPACE", "COTAL_NAME", "COTAL_ID", "COTAL_SERVERS", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT"] as const;
+  const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const space = process.env.PI_EVENTS_TEST_SPACE ?? `pi_events_${randomUUID().replace(/-/g, "")}`;
+  const actor = `pi_${randomUUID().replace(/-/g, "")}`;
+  Object.assign(process.env, {
+    COTAL_SPACE: space, COTAL_NAME: "pi-events-sdk", COTAL_ID: actor,
+    COTAL_SERVERS: process.env.PI_EVENTS_TEST_SERVER, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root,
+  });
+  const observer = new CotalEndpoint({
+    space, servers: process.env.PI_EVENTS_TEST_SERVER,
+    card: { name: "pi-events-observer", kind: "endpoint", id: `observer_${randomUUID().replace(/-/g, "")}` },
+  });
+  const frames: ReturnType<typeof parseAguiFrame>[] = [];
+  observer.on("message", (message, delivery) => {
+    for (const part of message.parts) if (isAguiFramePart(part)) frames.push(parseAguiFrame(part));
+    delivery.ack();
+  });
+  const provider = registerFauxProvider({ provider: "pi-native-events" });
+  const identity = AuthStorage.inMemory();
+  identity.setRuntimeApiKey("pi-native-events", "test");
+  const manager = SessionManager.create(root, join(root, "sessions"));
+  const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [cotalMesh] });
+  let native: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  try {
+    await observer.start();
+    await observer.joinChannel(eventChannel({ owner: DEV_OWNER, actor }));
+    await resources.reload();
+    ({ session: native } = await createAgentSession({
+      cwd: root, agentDir: root, model: provider.getModel(), resourceLoader: resources,
+      authStorage: identity, modelRegistry: ModelRegistry.inMemory(identity), sessionManager: manager,
+      settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+    }));
+    await native.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) });
+    provider.setResponses([
+      fauxAssistantMessage([fauxToolCall("bash", { command: "printf pi-native-events" }, { id: "pi-test-call" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("Pi persisted its completed answer."),
+    ]);
+    await native.prompt("Run one shell tool and answer.");
+    const deadline = Date.now() + 5_000;
+    while (!frames.flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const types = frames.flatMap((frame) => frame.events.map((event) => event.type));
+    assert.deepEqual(types, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"]);
+    assert.ok(frames.every((frame) => frame.threadId === manager.getSessionId()));
+    const priorSession = manager.getSessionId();
+    await native.reload();
+    assert.equal(manager.getSessionId(), priorSession, "reload keeps the native session identity");
+    const afterReloadProvider = registerFauxProvider({ api: provider.api, provider: "pi-native-events" });
+    afterReloadProvider.setResponses([fauxAssistantMessage("Only this new completed message should publish.")]);
+    await native.prompt("Second native turn after reload.");
+    const nextDeadline = Date.now() + 5_000;
+    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 2 && Date.now() < nextDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const afterReload = frames.flatMap((frame) => frame.events.map((event) => event.type));
+    assert.equal(afterReload.filter((type) => type === "RUN_STARTED").length, 2, "reload publishes one new run without replaying the old one");
+    assert.equal(afterReload.filter((type) => type === "RUN_FINISHED").length, 2, "both native turns close once");
+    assert.ok(frames.every((frame) => frame.threadId === priorSession), "reload preserves AG-UI thread identity");
+    afterReloadProvider.unregister();
+    await (native as any)._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    native.dispose();
+    native = undefined;
+    const resumed = SessionManager.open(manager.getSessionFile()!, join(root, "sessions"), root);
+    assert.equal(resumed.getSessionId(), priorSession, "new Pi SDK runtime opens the same native session");
+    const restartResources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [cotalMesh] });
+    await restartResources.reload();
+    const afterRestartProvider = registerFauxProvider({ api: provider.api, provider: "pi-native-events" });
+    ({ session: native } = await createAgentSession({
+      cwd: root, agentDir: root, model: afterRestartProvider.getModel(), resourceLoader: restartResources,
+      authStorage: identity, modelRegistry: ModelRegistry.inMemory(identity), sessionManager: resumed,
+      settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+    }));
+    await native.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) });
+    afterRestartProvider.setResponses([fauxAssistantMessage("Only the third completed answer appears after restart.")]);
+    await native.prompt("Third native turn in reopened process.");
+    const restartDeadline = Date.now() + 5_000;
+    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 3 && Date.now() < restartDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_STARTED").length, 3,
+      "reopened native session publishes only its new turn, never old acknowledged history");
+    afterRestartProvider.unregister();
+    console.log(`pi native events sdk: ${frames.length} broker frames, three completed runs, tool/text ordering and no reload/restart replay passed`);
+  } finally {
+    await (native as any)?._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    native?.dispose();
+    provider.unregister();
+    await observer.stop();
+    for (const key of keys) {
+      if (prior[key] === undefined) delete process.env[key];
+      else process.env[key] = prior[key];
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
 }

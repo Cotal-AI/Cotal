@@ -17,6 +17,7 @@ import {
   aclEnv,
   connectorLaunchOptions,
   controlEndpoint,
+  eventChannel,
   launchEnv,
   materialEnv,
 } from "@cotal-ai/connector-core";
@@ -41,6 +42,7 @@ export const piConnector: Connector = {
   requires: ["pi"],
   supportsResume: true,
   supportsSessionContinuation: true,
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.resume && opts.continueSession)
       throw new Error("pi connector: resume (fork source) and continueSession (same session) are mutually exclusive");
@@ -73,6 +75,13 @@ export const piConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // Arming is separate from the broker's publish grant. The WAL needs a stable root on restart.
+    if (opts.events !== false) {
+      if (!opts.workspaceRoot)
+        throw new Error("pi connector: events were requested without workspaceRoot for the durable event log");
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
