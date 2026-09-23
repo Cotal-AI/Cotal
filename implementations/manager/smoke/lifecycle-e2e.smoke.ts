@@ -35,7 +35,7 @@ import {
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -176,7 +176,7 @@ try {
   // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered
   // renewal pass and persists the audit record — here with both daemon files absent (no delivery
   // daemon staged), recorded honestly as skips, never a fabricated adoption.
-  const renewalPath = join(workspaceRoot, ".cotal", "renewal.json");
+  const renewalPath = renewalRecordPath(workspaceRoot, space);
   check("manager start writes the renewal audit record", existsSync(renewalPath));
   {
     const rec = JSON.parse(readFileSync(renewalPath, "utf8")) as { owner?: string; results?: Array<{ file: string; ok: boolean; skipped?: string }>; adoption?: unknown };

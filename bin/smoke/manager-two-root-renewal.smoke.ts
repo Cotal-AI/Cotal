@@ -185,7 +185,7 @@ try {
   must("daemon B's membership feed is up (the membership component is a real adopter here)", await until(() => sinkB.out.includes("membership feed up"), 15_000), sinkB.out.slice(-500));
 
   // The renewal owner is the REAL Manager: `start()` runs the initial class-2 renewal pass inline
-  // (re-sign through ITS store, request `reloadCreds {expected}`, persist `renewal.json`).
+  // (re-sign through ITS store, request `reloadCreds {expected}`, persist the per-space renewal record).
   mgrA = new Manager({ space: SPACE_DIVERGED, servers: servers1, runtime: "pty", workspaceRoot: rootA });
   let startRefusal: string | undefined;
   try {
