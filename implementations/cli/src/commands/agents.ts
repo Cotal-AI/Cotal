@@ -212,19 +212,12 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   process.exit(1);
 }
 
-/** The honest error #383 asked for: name the search, not just the absence. A registration that
- *  gave no answer within the deadline is NOT told to "retry": a manager whose host died never
- *  deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
- *  against it loops forever. Say what is known (registered, silent), what it may mean (a live
- *  slow host OR a dead registration), and the two real actions. `verb` names the command whose
- *  `--on` is the remedy; the console has no flag to offer, so it passes none and the sentence
- *  stops at the fact. */
-export function seatNotFoundMessage(loc: { checked: number; unreachable: string[] }, name: string, verb?: string): string {
+/** The console's wording for a seat the whole space proved absent. Main's richer `seatMissRefusal`
+ *  needs the `unknown` variant too; the console (and `attachSeat`'s returned verdict) only ever
+ *  hold a proved `absent`, so this stays the narrow shape their call sites guarantee. */
+export function seatNotFoundMessage(loc: { checked: number }, name: string, verb?: string): string {
   const remedy = verb ? ` To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).` : "";
-  const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.${remedy}`
-    : "";
-  return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`;
+  return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${remedy}`;
 }
 
 /**
