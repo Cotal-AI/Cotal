@@ -12,6 +12,7 @@ import { CotalEndpoint, DEV_OWNER, eventChannel, principalKey } from "@cotal-ai/
 import { acquirePrincipalLock, eventWalLocation, isAguiFramePart, parseAguiFrame } from "@cotal-ai/connector-core";
 import { fauxToolCall } from "@earendil-works/pi-ai";
 import cotalMesh from "./src/extension.js";
+import { piConnector } from "./src/connector.js";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import {
@@ -340,7 +341,7 @@ try {
   if (brokerRoot && port) broker = spawn("nats-server", ["-js", "-p", String(port), "-sd", brokerRoot], { stdio: "ignore" });
   const releaseBroker = broker && brokerRoot ? teardownOnSignal(broker, brokerRoot) : undefined;
   const root = mkdtempSync(join(tmpdir(), "cotal-pi-events-sdk-"));
-  const keys = ["COTAL_SPACE", "COTAL_NAME", "COTAL_ID", "COTAL_SERVERS", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT"] as const;
+  const keys = ["COTAL_SPACE", "COTAL_NAME", "COTAL_ID", "COTAL_SERVERS", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT", "COTAL_PI_EXPECTED_SESSION", "COTAL_PI_FRESH_SESSION"] as const;
   const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const space = process.env.PI_EVENTS_TEST_SPACE ?? `pi_events_${randomUUID().replace(/-/g, "")}`;
   const actor = `pi_${randomUUID().replace(/-/g, "")}`;
@@ -360,7 +361,15 @@ try {
   const provider = registerFauxProvider({ provider: "pi-native-events" });
   const identity = AuthStorage.inMemory();
   identity.setRuntimeApiKey("pi-native-events", "test");
-  const manager = SessionManager.create(root, join(root, "sessions"));
+  const launch = piConnector.buildLaunch({ space, name: "pi-events-sdk", workspaceRoot: root });
+  const sessionFlag = launch.args.indexOf("--session-id");
+  assert.ok(sessionFlag >= 0 && launch.env?.COTAL_PI_EXPECTED_SESSION === launch.args[sessionFlag + 1],
+    "managed Pi launch pins its fresh native session id");
+  assert.equal(launch.env.COTAL_PI_FRESH_SESSION, "1", "managed Pi launch marks only a minted fresh session");
+  assert.equal(process.env.PI_SESSION_ID, undefined, "host extension starts without a PI_SESSION_ID variable");
+  process.env.COTAL_PI_EXPECTED_SESSION = launch.env.COTAL_PI_EXPECTED_SESSION;
+  process.env.COTAL_PI_FRESH_SESSION = launch.env.COTAL_PI_FRESH_SESSION;
+  const manager = SessionManager.create(root, join(root, "sessions"), { id: launch.args[sessionFlag + 1] });
   const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [cotalMesh] });
   let native: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {
@@ -374,7 +383,7 @@ try {
     mkdirSync(deathRoot);
     const runDeath = (stage: "crash" | "recover"): Promise<number | null> => new Promise((done, reject) => {
       const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url)], {
-        env: { ...process.env, PI_EVENTS_DEATH_STAGE: stage, PI_EVENTS_DEATH_ROOT: deathRoot, PI_EVENTS_TEST_SERVER: server },
+        env: { ...process.env, COTAL_PI_EXPECTED_SESSION: "", COTAL_PI_FRESH_SESSION: "", PI_EVENTS_DEATH_STAGE: stage, PI_EVENTS_DEATH_ROOT: deathRoot, PI_EVENTS_TEST_SERVER: server },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";
@@ -383,7 +392,9 @@ try {
       const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`Pi ${stage} stage timed out`)); }, 12_000);
       child.once("exit", (code) => {
         clearTimeout(timer);
-        if (stage === "recover" && code !== 0) {
+        if (stage === "crash" && code !== 73) {
+          reject(new Error(`Pi crash stage failed to reach persistence hook: ${output.slice(-1200)}`));
+        } else if (stage === "recover" && code !== 0) {
           const assertion = "idle reopen publishes the saved first native turn before any next prompt";
           reject(new Error(`Pi recovery stage failed${output.includes(assertion) ? `: ${assertion}` : `: ${output.slice(-1500)}`}`));
         }

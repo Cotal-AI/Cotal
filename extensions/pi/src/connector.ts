@@ -95,6 +95,7 @@ export const piConnector: Connector = {
     // UUID at launch, so even an idle/no-prompt Pi has a recoverable session identity before its
     // first turn (Pi otherwise creates no session until a turn starts).
     const freshSessionId = !opts.resume && !opts.continueSession ? randomUUID() : undefined;
+    if (freshSessionId) env.COTAL_PI_FRESH_SESSION = "1";
     if (opts.resume) args.push("--fork", opts.resume);
     else if (opts.continueSession) args.push("--session-id", opts.continueSession);
     else args.push("--session-id", freshSessionId!);

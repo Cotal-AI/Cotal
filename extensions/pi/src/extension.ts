@@ -141,7 +141,8 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   // session_start handler below.
   const startupSessionId = process.env.PI_SESSION_ID?.trim() || undefined;
   const expectedSessionId = process.env.COTAL_PI_EXPECTED_SESSION?.trim() || undefined;
-  const freshManagedSession = Boolean(expectedSessionId && startupSessionId === expectedSessionId);
+  const freshManagedSession = process.env.COTAL_PI_FRESH_SESSION === "1";
+  delete process.env.COTAL_PI_FRESH_SESSION;
   delete process.env.COTAL_PI_EXPECTED_SESSION;
   // The socket path rides the env; the first-frame token rides the launch material, so a shell this
   // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub

@@ -724,6 +724,7 @@ for (const assistant of [
         env.COTAL_PI_EXPECTED_SESSION === launch.args[freshSessionAt + 1],
       "a fresh managed Pi seat gets an exact recoverable session id before its first turn",
     );
+    ok(env.COTAL_PI_FRESH_SESSION === "1", "fresh managed Pi seat carries explicit native freshness marker");
     ok(
       typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
       "managed Pi launch env carries the exact session-state path",
@@ -741,10 +742,12 @@ for (const assistant of [
     const forkAt = forked.args.indexOf("--fork");
     ok(forkAt >= 0 && forked.args[forkAt + 1] === "session weird;$(nope)", "Pi resume renders one opaque --fork argv token");
     ok(!forked.args.includes("--session-id"), "Pi fork resume never reuses the source session id");
+    ok(forked.env?.COTAL_PI_FRESH_SESSION === undefined, "Pi fork never claims a fresh managed native session");
     const continued = piConnector.buildLaunch({ space: "test", name: "pi", continueSession: "session-current", events: false });
     const sessionAt = continued.args.indexOf("--session-id");
     ok(sessionAt >= 0 && continued.args[sessionAt + 1] === "session-current", "Pi crash recovery reopens the exact current session id");
     ok(!continued.args.includes("--fork"), "Pi crash continuation never forks the session again");
+    ok(continued.env?.COTAL_PI_FRESH_SESSION === undefined, "Pi crash continuation never claims a fresh managed native session");
     assert.throws(
       () => piConnector.buildLaunch({ space: "test", name: "pi", resume: "source", continueSession: "current" }),
       /mutually exclusive/,
