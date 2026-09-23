@@ -45,6 +45,9 @@ import {
   timerWriterConsumerConfig,
   timerWriterDurable,
   armCheckpointTimer,
+  readCheckpointSpec,
+  readCheckpointStatus,
+  resumeCheckpoint,
   eptReqStreamName,
   eptSubject,
   chatSubject,
@@ -597,6 +600,127 @@ const A = await driver(RUN_A, TK_A);
   const inherited = plan.cut[0]!.requestId!;
   const readParent = await authority.pause(inherited, "read").then(() => "allowed", (error) => error instanceof RunScopeDenied ? "denied" : short(error));
   c("an inherited settled token cannot read the parent's live checkpoint plane", readParent === "denied", readParent);
+}
+
+// A settled wait does not leave its fire pump running: the drive returns with the pump drained
+// (#1460). The pump's `takeFire` is a journal replay under the drive's takeover id — the same
+// durable a successor authority for the run and lease reads through — and `settleOnce` used to
+// flip `wait.over` and return without awaiting the pump's in-flight fire. The reproduction is
+// deterministic here because the suite owns the pump's queue position: the pause host is wrapped
+// so the pump's NEXT `takeFire` is parked after being called (a busy broker holds the replay in
+// exactly that state, and every mediated read joins one process-wide replay queue), and the
+// pause is settled from OUTSIDE the drive by presenting the arming holder's claim on the raw
+// plane. At base, `startRun` resolved with the parked fire still in flight and the pump's replay
+// consumer opened under the drive's takeover id only after the drive had returned; a second
+// authority under that takeover then hits `RunJournalReplayRaced` about a driver that does not
+// exist. ROUNDS keep the cell honest against a fix that drains only most of the time.
+{
+  console.log("• the settle pump drains before the drive returns (#1460)");
+  const ROUNDS = 5;
+  let drainedLate = 0, settledFactReturned = 0;
+  for (let round = 1; round <= ROUNDS; round += 1) {
+    const runId = `run-pump-drain-${round}`;
+    const takeoverId = `pump${round}`;
+    const L = { holder: "manager", epoch: EPOCH, fencingToken: 1, takeoverId };
+    await admit(runId);
+    const pin = { endpoint: EP, runId, takeoverId, instanceId: IID, epoch: EPOCH };
+    const hostNc = await open(await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: pin }));
+    const hostPlanes = { nc: hostNc, js: jetstream(hostNc), jsm: await jetstreamManager(hostNc), kv: await openRecordsBucket(hostNc, S), space: S };
+    const drvNc = await open(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: pin }));
+    const drvJs = jetstream(drvNc);
+    const drvJsm = await jetstreamManager(drvNc);
+    const authority = createRunScopeAuthority(hostPlanes, runId, L);
+    const inner = createRunPauseHost(hostPlanes, { endpoint: EP, instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" } }, authority);
+    // The park: the pump's NEXT takeFire is called and held before its journal replay opens.
+    const park = { armed: false, release: null as (() => void) | null, started: 0, settled: 0 };
+    const release = () => { park.armed = false; if (park.release) { park.release(); park.release = null; } };
+    const pauses = {
+      ...inner,
+      async takeFire(token: string): Promise<boolean> {
+        park.started += 1;
+        if (park.armed) await new Promise<void>((r) => { park.release = r; });
+        try { return await inner.takeFire(token); } finally { park.settled += 1; }
+      },
+    };
+    const waits = createRunWaitHost(hostPlanes, authority, admissionOf(hostPlanes, runId));
+    const watcher: import("../src/index.js").SettleWatcher = {
+      // A 50ms observing poll: the settle fact is written while the pump's fire is parked, so the
+      // next poll observes it and the race decides — against a pump whose fire is still in flight.
+      async awaitSettle(ref) {
+        for (;;) {
+          const settled = await inner.readSettle(ref.token);
+          if (settled !== undefined) return settled;
+          await wait(50);
+        }
+      },
+    };
+    const handler = new MeshHandler(hostPlanes.nc, hostPlanes.kv, hostPlanes.js, hostPlanes.jsm, {
+      space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID, epoch: EPOCH,
+      holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h",
+    }, watcher, () => Date.now(), { pauses, waits, authority, admission: admissionOf(hostPlanes, runId) });
+    const driven = startRun(drvJs, drvJsm, {
+      space: S, endpoint: EP, runId,
+      source: 'await sleep("10m", { name: "nap" });',
+      kv: runRecordView(await openRecordsBucket(drvNc, S), createRunRecordHost(hostPlanes, EP, runId), S),
+      lease: L, handler,
+    }).then((o) => ({ o }), (e: unknown) => ({ e }));
+
+    // The pending sleep's token, read the way a successor authority would read it: through the
+    // mediator's replay rows, under the drive's own takeover id (the driver credential holds no
+    // replay durable but its own).
+    let token: string | undefined;
+    let lastProbe: unknown = "none";
+    for (let i = 0; i < 500 && token === undefined; i += 1) {
+      token = await replayRunJournal(hostPlanes.js, hostPlanes.jsm, S, runId, L.takeoverId)
+        .then((r) => {
+          lastProbe = `records=${r.records.length}`;
+          const e = r.records.flatMap(({ record }) => record.kind === "step" ? [record.entry as { kind?: string; state?: string; requestId?: string }] : [])
+            .find((x) => x.kind === "sleep" && x.state === "pending");
+          return e?.requestId;
+        }, (e) => { lastProbe = short(e); return undefined; });
+      if (token === undefined) await wait(40);
+    }
+    if (token === undefined) {
+      console.log("  pump-drain journal probe:", lastProbe, "park:", park.started, park.settled);
+      driven.then((r) => console.log("  pump-drain drive finished early:", "o" in r ? r.o.status : short(r.e)), () => {});
+      await wait(200);
+      throw new Error("the pump-drain run never reached its sleep");
+    }
+    for (let i = 0; i < 200 && (await readCheckpointStatus(hostPlanes.kv, { endpoint: EP, token })) === undefined; i += 1) await wait(20);
+    park.armed = true;
+    for (let i = 0; i < 1_000 && park.release === null; i += 1) await wait(5);
+    // The settle arrives from outside the drive: the arming holder's claim, on the raw plane.
+    const spec = await readCheckpointSpec(hostPlanes.kv, { endpoint: EP, token });
+    await resumeCheckpoint(hostPlanes.kv, hostPlanes.js, hostPlanes.jsm, S, { ref: { endpoint: EP, token }, presenter: spec!.holder, now: Date.now() });
+
+    // The defect window: the settle fact is written and the pump's fire is parked mid-flight, so a
+    // drive that resolves in this window resolved while its fire was still in flight. At base the
+    // drive returns as soon as the settle is observed (the race), leaving the fire in the air; the
+    // fix holds the return until the pump drains, so the drive cannot resolve here at all.
+    let early: Awaited<typeof driven> | undefined;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 300);
+      driven.then((out) => { clearTimeout(timer); early = out; resolve(); });
+    });
+    if (early !== undefined && "o" in early && early.o.status === "completed" && park.started - park.settled > 0) drainedLate += 1;
+
+    // Release the park and let the drive end: the fire lands, `wait.over` ends the pump, and only
+    // then may the drive return.
+    release();
+    const out = await withDeadline(driven, 10_000, `the pump-drain run ${round}`);
+    if (out !== undefined && "o" in out && out.o.status === "completed" && park.started - park.settled > 0) drainedLate += 1;
+    // The settled entry says the settle FACT returned to the program, not a cancellation: the
+    // settle won the race while its pump fire was mid-flight.
+    const settled = out !== undefined && "o" in out && out.o.status === "completed"
+      ? out.o.result.journal.entries().find((e) => e.kind === "sleep" && e.state === "settled")
+      : undefined;
+    if (settled !== undefined) settledFactReturned += 1;
+    await hostNc.close(); await drvNc.close();
+  }
+  c("a settled wait returns with its fire pump drained: no takeFire in flight when the drive resolves (#1460)",
+    drainedLate === 0, `drainedLate=${drainedLate}/${ROUNDS}`);
+  c("and the settle fact still won the race while the pump's fire was mid-flight",
+    settledFactReturned === ROUNDS, `settledFactReturned=${settledFactReturned}/${ROUNDS}`);
 }
 
 // A valid own-run step must not turn a forged bound plan into foreign registry authority.
