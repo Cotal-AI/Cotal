@@ -115,9 +115,17 @@ try {
   });
   // Accept control: an undefined-valued MEMBER of a plain object publishes — stringify drops just
   // that key (a faithful drop, not a rewrite), and the stored row is {"keep":1} with no drop key.
-  const dataUndefMember = await alice.unicast(bob.card.id, "unused-text", {
-    parts: [{ kind: "data", data: { keep: 1, drop: undefined } }],
-  });
+  // Wrapped like the refusal cells above: a regression must redden THIS cell, not crash the suite
+  // before its summary line (a crashed run grades INCONCLUSIVE in the mutation rig, not red).
+  let dataUndefMember: Awaited<ReturnType<typeof alice.unicast>> | undefined;
+  let undefMemberErr: string | undefined;
+  try {
+    dataUndefMember = await alice.unicast(bob.card.id, "unused-text", {
+      parts: [{ kind: "data", data: { keep: 1, drop: undefined } }],
+    });
+  } catch (e) {
+    undefMemberErr = e instanceof Error ? e.message : String(e);
+  }
   // `null` is a JSON value (SPEC §5): a data part carrying it keeps working end to end.
   const dataNull = await alice.unicast(bob.card.id, "unused-text", {
     parts: [{ kind: "data", data: null }],
@@ -230,8 +238,10 @@ try {
   );
   check(
     "an undefined object member publishes and the stored row drops just that key",
-    page.some((m) => m.id === dataUndefMember.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"keep":1}'),
-    page.map((m) => m.id),
+    undefMemberErr === undefined &&
+      dataUndefMember !== undefined &&
+      page.some((m) => m.id === dataUndefMember.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"keep":1}'),
+    undefMemberErr ?? page.map((m) => m.id),
   );
 
   const toSpoof = page.find((m) => m.id === "to-spoof-388");
