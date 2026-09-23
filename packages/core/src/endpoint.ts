@@ -5920,10 +5920,6 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): H
     return undefined;
   }
   if (!isHistoryDrainEnvelope(raw)) return undefined;
-  // #1413: every field the PUBLIC row type promises is checked here, before the row is
-  // returned. A row missing one is dropped, never returned with that member silently
-  // `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`
-  // or `msg.from.name` must not be able to reach one that was never there.
   if (!isVerifiedHistoryRow(raw)) return undefined;
   const parsed = parseSubject(m.subject);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
@@ -5943,10 +5939,13 @@ type HistoryDrainEnvelope = {
 
 /** The members `HistoryMessage` promises beyond the drain envelope (#1413): a full
  *  `EndpointRef` (`from.name`, and `from.role` only when a string), a finite `ts`, a string
- *  `space`, `parts` the drain could read. Nothing is invented for an absent field — the row
- *  is dropped instead, so no caller reads a default that was never stored. `parts` is held to
- *  "readable" (an array), NOT to `isMessagePart`: a pre-#1404 producer could publish a keyless
- *  `{kind:"data"}` part, and history must surface that row rather than drop it. */
+ *  `space`, `parts` the drain could read. Every field the PUBLIC row type promises is checked
+ *  here, before the row is returned. A row missing one is dropped, never returned with that
+ *  member silently `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`,
+ *  `msg.parts` or `msg.from.name` must not be able to reach one that was never there. Nothing
+ *  is invented for an absent field. `parts` is held to "readable" (an array), NOT to
+ *  `isMessagePart`: a pre-#1404 producer could publish a keyless `{kind:"data"}` part, and
+ *  history must surface that row rather than drop it. */
 function isVerifiedHistoryRow(row: HistoryDrainEnvelope): row is HistoryDrainEnvelope & HistoryMessage {
   if (typeof row.from.name !== "string") return false;
   if (row.from.role !== undefined && typeof row.from.role !== "string") return false;

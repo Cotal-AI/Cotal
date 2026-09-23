@@ -19,7 +19,7 @@
     {
       "name": "history drain returns the payload and discards SPEC §5 and the #1413 shape gate",
       "file": "packages/core/src/endpoint.ts",
-      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  // #1413: every field the PUBLIC row type promises is checked here, before the row is\n  // returned. A row missing one is dropped, never returned with that member silently\n  // `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`\n  // or `msg.from.name` must not be able to reach one that was never there.\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
       "replace": "  return raw as HistoryMessage;",
       "expectRed": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
       "cell": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
@@ -55,7 +55,8 @@
     {
       "name": "history drain skips the #1413 member checks and returns the partial row under the full type",
       "file": "packages/core/src/endpoint.ts",
-      "find": "  // #1413: every field the PUBLIC row type promises is checked here, before the row is\n  // returned. A row missing one is dropped, never returned with that member silently\n  // `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`\n  // or `msg.from.name` must not be able to reach one that was never there.\n  if (!isVerifiedHistoryRow(raw)) return undefined;",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);",
+      "replace": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  const parsed = parseSubject(m.subject);",
       "replace": "",
       "expectRed": "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
       "cell": "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
