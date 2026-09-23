@@ -15,11 +15,11 @@
       "file": "implementations/cli/src/lib/delivery-proc.ts",
       "find": "  if (o.noManager) return { running: false, responderBound: delivery.responderBound };\n",
       "replace": "",
-      "expectRed": "broker-only boot writes no manager pidfile",
-      "cell": "broker-only boot writes no manager pidfile",
+      "expectRed": "broker-only up reports the exact running component set (no manager)",
+      "cell": "broker-only up reports the exact running component set (no manager)",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "With the early return gone, `ensureControlPlane` falls through to `ensureManager` under the flag too, so the section-4 boot writes manager.6d61696e.pid and spawns a live supervise process. The cell named by expectRed reads exactly that pidfile and is the first one that can notice; `broker-only up reports the exact running component set (no manager)` reds on the same cause one check later (the summary then lists manager), and `broker-only down leaves no manager pidfile behind` reds at teardown. The refresh-refusal cells stay green under this mutant by design: the refusal reads the manager record BEFORE the control plane is ensured, so it proves the refresh guard, not the omission."
+      "note": "With the early return gone, `ensureControlPlane` falls through to `ensureManager` under the flag too, so the section-4 boot spawns a live manager. The FIRST cell that can notice is the summary line — `✓ running in the background` then lists `manager`, so the exact-component-set cell named by expectRed throws on its regex — followed by `broker-only boot writes no manager pidfile` and `broker-only down leaves no manager pidfile behind` on the same cause (the throw aborts before they run; named here so the verdict cannot be argued from them). The refresh-refusal cells stay green under this mutant by design: the refusal reads the manager record BEFORE the control plane is ensured, so it proves the refresh guard, not the omission."
     }
   ]
 }
