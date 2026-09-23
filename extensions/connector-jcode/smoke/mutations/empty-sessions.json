@@ -1,0 +1,62 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/empty-sessions.smoke.ts"
+  ],
+  "guard": "a managed Jcode seat whose private sessions directory exists but cannot be written is refused before any create_session reaches the harness, renders the fixed sessions_unwritable code with the path and the errno, and never dies as startup failed (unknown) - while an empty writable directory still starts, joins, and lists nothing",
+  "command": "TMPDIR=/tmp pnpm smoke:jcode-empty-sessions",
+  "completionMarker": "empty sessions:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/empty-sessions.json",
+  "why": [
+    "#1538: real jcode v0.81.5 accepts create_session on a sessions/ directory it cannot write",
+    "and dies only later, while persisting the session during the first turn, so the seat rendered",
+    "as `startup failed (unknown)` - a death outside every guard the connector owns. The connector",
+    "now asks the kernel the question the harness will actually face (W_OK on the directory), not",
+    "the question a readdir can answer: a readable-but-unwritable directory is the same defect as an",
+    "unreadable one, and a missing directory is a first launch that must stay untouched.",
+    "",
+    "M1 is the shipped defect: the refusal removed entirely, so the harness is asked, accepts, and",
+    "the seat dies on the first turn - the cell that must go red first names the create_session",
+    "that reached the harness. M2 narrows the check to directories the connector can also read,",
+    "recreating the exact gap this lane closed (readdir succeeds, W_OK refuses, nothing stops the",
+    "launch). M3 makes the render lie by falling back to the scrubbed unknown diagnostic. M4 and",
+    "M5 attack the accept control from both sides: refusing a first launch with no directory yet,",
+    "and refusing the legitimately empty writable directory the panic-recovery path exists to serve."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the shipped defect: ask the harness anyway, never refuse",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const unwritable = unwritableStoredSessions(stored);\n    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);",
+      "replace": "    const unwritable = undefined;",
+      "expectRed": "the unwritable sessions directory never reaches the harness"
+    },
+    {
+      "name": "M2 check only directories the connector can read (the readdir-only gap)",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "  if (inspection.kind !== \"empty-directory\" && inspection.kind !== \"populated\" && inspection.kind !== \"unreadable\")\n    return undefined;",
+      "replace": "  if (inspection.kind !== \"empty-directory\" && inspection.kind !== \"populated\") return undefined;",
+      "expectRed": "the unwritable sessions directory never reaches the harness"
+    },
+    {
+      "name": "M3 render the refusal as the scrubbed unknown diagnostic",
+      "file": "extensions/connector-jcode/src/host-main.ts",
+      "find": "  } else if (error instanceof JcodeSessionsUnwritableFailure) {",
+      "replace": "  } else if (error instanceof JcodeSessionsUnwritableFailure && false) {",
+      "expectRed": "the refusal names sessions_unwritable, the path, and EACCES"
+    },
+    {
+      "name": "M4 refuse a first launch whose sessions directory does not exist yet",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "    accessSync(inspection.path, constants.W_OK);\n    return undefined;",
+      "replace": "    if (inspection.kind === \"unreadable\") throw new Error(\"unreachable\");\n    accessSync(inspection.path, constants.W_OK);\n    return undefined;",
+      "expectRed": "the unwritable sessions directory never reaches the harness"
+    },
+    {
+      "name": "M5 refuse the legitimately empty writable directory",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    const unwritable = unwritableStoredSessions(stored);\n    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);",
+      "replace": "    const unwritable = { path: storedSessionsPath(socketHome.jcodeHome), code: \"EACCES\" };\n    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);",
+      "expectRed": "an empty sessions directory still starts a fresh session"
+    }
+  ]
+}

@@ -171,32 +171,38 @@ try {
   const lockedSessions = join(lockedHome, "sessions");
   mkdirSync(lockedSessions, { recursive: true, mode: 0o700 });
   if (process.platform === "win32") {
-    check("the unreadable sessions directory is named to the operator (unreachable on Windows)", true);
+    check("the unwritable sessions directory refuses before the harness is asked (unreachable on Windows)", true);
   } else {
-    // The local inspection runs on every managed seat's startup path. A directory it cannot read
-    // must not be fatal: this home starts fine on the pre-change connector, so killing it here
-    // would be a regression that reintroduces the exact `unknown` death this change removes.
+    // #1538: the harness accepts create_session on a sessions/ it cannot write and dies only while
+    // persisting the session during the first turn, outside every guard the connector owns, so the
+    // seat used to render as `startup failed (unknown)`. The connector must refuse first, before
+    // any create_session reaches the harness, naming the path and the errno.
     chmodSync(lockedSessions, 0o000);
     const locked = startHost(lockedName, {});
     child = locked.child;
     try {
-      // A timeout here is the regression itself, so it must redden a NAMED cell rather than
-      // aborting the suite anonymously: a mutation-proof run needs a cell name to anchor on.
-      await waitFor("unreadable-sessions create_session", () =>
-        entriesOf(locked.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
-      ).catch(() => undefined);
+      // The refusal must win the race with the harness ask: wait for the host to EXIT, not for a
+      // request, so a regression that reaches create_session first still terminates this cell on
+      // the exit's own terms rather than hanging until the suite-wide timeout.
+      const lockedExit = await Promise.race([once(locked.child, "exit"), sleep(20_000).then(() => undefined)]);
       const lockedErr = locked.stderr();
-      // The only claim this fixture can honestly make. The harness reads AND WRITES this directory,
-      // accepts create_session, and fails later while persisting, outside any guard the connector
-      // owns; on real jcode v0.81.5 the seat still dies and main dies identically. So the connector
-      // does not promise the seat survives, and asserting `never unknown` here would be a claim the
-      // real binary disproves. What it does promise, and what an operator needs before the harness
-      // death, is the path and the errno. Making the seat survive an unwritable home is #1538.
       check(
-        "the unreadable sessions directory is named to the operator",
-        /stored sessions directory could not be read \(.*sessions: EACCES\)/.test(lockedErr),
+        "the unwritable sessions directory exits non-zero before the seat joins",
+        lockedExit !== undefined && locked.child.exitCode === 1,
+        { exit: locked.child.exitCode, stderr: lockedErr },
+      );
+      check(
+        "the unwritable sessions directory never reaches the harness",
+        !existsSync(locked.log) || !entriesOf(locked.log).some((entry) => entry.frame?.req === "create_session"),
+        existsSync(locked.log) ? entriesOf(locked.log).map((entry) => entry.frame?.req ?? entry.ev) : ["(no harness log)"],
+      );
+      check(
+        "the refusal names sessions_unwritable, the path, and EACCES",
+        /startup failed \(sessions_unwritable\)/.test(lockedErr) &&
+          /cannot persist sessions at \S*sessions \(EACCES\)/.test(lockedErr),
         lockedErr,
       );
+      check("the unwritable sessions directory never renders as unknown", !/startup failed \(unknown\)/.test(lockedErr), lockedErr);
     } finally {
       chmodSync(lockedSessions, 0o700);
       locked.child.kill("SIGTERM");

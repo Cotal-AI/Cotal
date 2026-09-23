@@ -7,7 +7,7 @@
  * already known (an empty directory holds no resumable session), and so a listing
  * failure still names the panic and the path instead of `unknown`.
  */
-import { lstatSync, readdirSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 export function storedSessionsPath(jcodeHome: string): string {
@@ -47,6 +47,30 @@ export function inspectStoredSessions(jcodeHome: string): StoredSessionsInspecti
 /** True only for a real empty directory. A missing directory is a first launch, not this defect. */
 export function isEmptyStoredSessionsDirectory(inspection: StoredSessionsInspection): boolean {
   return inspection.kind === "empty-directory";
+}
+
+/** Why the harness cannot use a `sessions/` directory that exists but will not take its writes.
+ *
+ * The harness reads AND WRITES this directory: it accepts `create_session` and only fails later,
+ * while persisting the session during the first turn, so the seat dies as `startup failed (unknown)`
+ * (#1538). The connector therefore decides by what the harness needs to do there, not by what a
+ * `readdir` alone reports: a directory the connector can list but not write is the same defect as
+ * one it cannot read at all. A missing directory is a first launch and stays untouched; the
+ * harness legitimately creates it. Windows is unreachable for this check: the locked-directory
+ * cell itself is POSIX-only there, and an ACL check through `access` answers a different question
+ * than the harness's own CreateFile, so refusing on it would kill seats that start.
+ *
+ * The errno comes from the kernel, never from harness or provider bytes. */
+export function unwritableStoredSessions(inspection: StoredSessionsInspection): { path: string; code: string } | undefined {
+  if (process.platform === "win32") return undefined;
+  if (inspection.kind !== "empty-directory" && inspection.kind !== "populated" && inspection.kind !== "unreadable")
+    return undefined;
+  try {
+    accessSync(inspection.path, constants.W_OK);
+    return undefined;
+  } catch (error) {
+    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? "unknown" };
+  }
 }
 
 /**
