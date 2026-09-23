@@ -2475,7 +2475,7 @@ const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
  *  URL host (a `host:port` spelling, say) is refused rather than reaching that comparison as a
  *  silently wrong server string. Never rewritten: a value this flag cannot use is an error, not a
  *  URL to derive from. */
-function assertBindableHost(host: string, source: string, urlSource: string): string {
+function assertBindableHost(host: string, source: string, urlSource: string): { literal: string; hostname: string } {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
     console.error(
       c.red(
@@ -2486,7 +2486,9 @@ function assertBindableHost(host: string, source: string, urlSource: string): st
   }
   const literal = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   try {
-    new URL(`nats://${literal}:1`);
+    // ONE parse, both consumers served from it: `literal` builds the derived URL (a URL host needs
+    // the brackets), `hostname` compares against the explicit server's (the URL API strips them).
+    return { literal, hostname: new URL(`nats://${literal}:1`).hostname };
   } catch {
     console.error(
       c.red(
@@ -2495,7 +2497,6 @@ function assertBindableHost(host: string, source: string, urlSource: string): st
     );
     process.exit(1);
   }
-  return literal;
 }
 
 /**
@@ -2511,22 +2512,13 @@ function assertBindableHost(host: string, source: string, urlSource: string): st
 function reconcileHostAndServer(host: string, explicitServer: string | undefined, source = "--host", urlSource = "--server"): string {
   const url = new URL(explicitServer ?? DEFAULT_SERVER);
   if (WILDCARD_HOSTS.has(host)) return explicitServer ?? DEFAULT_SERVER;
-  const literal = assertBindableHost(host, source, urlSource);
+  const { literal, hostname } = assertBindableHost(host, source, urlSource);
   if (!explicitServer) return `nats://${literal}:${url.port || "4222"}`;
-  // The comparison parses the literal. A host that passed `assertBindableHost` always parses, but
-  // this path states its own diagnosis and exits 1 — it never throws a raw `Invalid URL` (#1697).
-  let literalHost: string;
-  try {
-    literalHost = new URL(`nats://${literal}:1`).hostname;
-  } catch {
-    console.error(
-      c.red(
-        `✗ ${source} ${host} and ${urlSource} ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,
-      ),
-    );
-    process.exit(1);
-  }
-  if (url.hostname !== literalHost) {
+  // NO parse on this path: `assertBindableHost` just parsed the identical literal above, so the
+  // mismatch check compares two parsed hostnames and can only ever print its diagnostic and exit 1
+  // — the "never throw a raw Invalid URL" requirement (#1697) holds by construction, not by a
+  // second guard that no input could reach.
+  if (url.hostname !== hostname) {
     console.error(
       c.red(
         `✗ ${source} ${host} and ${urlSource} ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,

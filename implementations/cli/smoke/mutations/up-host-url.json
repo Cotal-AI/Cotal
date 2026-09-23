@@ -2,49 +2,35 @@
   "suite": [
     "implementations/cli/smoke/up-refresh-identity-live.smoke.ts"
   ],
-  "guard": "a URL or host:port typed into `cotal up --host` is refused by name at the flag (pointing at --server) before any bracketing or registry comparison, and the --host/--server mismatch path prints its own diagnostic instead of throwing a raw Invalid URL (#1697)",
+  "guard": "a URL or host:port typed into `cotal up --host` is refused by name at the flag (pointing at --server) before any bracketing or registry comparison, and the --host/--server mismatch path prints its own diagnostic rather than anything a raw parse error could produce (#1697)",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-host-url.json",
   "why": [
     "The suite drives the shipped binary (`tsx bin/cotal.ts`), whose `@cotal-ai/*` imports resolve from `dist/`, so both the mutated run and the restore must rebuild — a stale build would grade the pre-change tree and report a vacuous verdict.",
-    "Each mutation removes exactly one limb of the fix (the URL refusal, the malformed-host refusal, the mismatch parse guard) while leaving the surrounding refusals live, so a green run after it means the suite observes some refusal rather than the one it names. The negative cells (`...not as a raw parse error`, `...not as the manual-record registry refusal it used to misfire as`) are what distinguish the fixed refusal from the two failure modes the issue reported."
+    "Each mutation removes exactly one limb of the fix while leaving the other refusal live, so a green run after it means the suite observed some refusal rather than the one it names. The negative cells (`...not as a raw parse error`, `...not as the manual-record registry refusal it used to misfire as`) are what distinguish the fixed refusal from the two failure modes the issue reported; the control cell (a bare host still reaching the registry refusal) is what proves the guard did not widen."
   ],
   "mutations": [
     {
-      "name": "let a URL through --host unbracketed-check (fall to bracketing)",
+      "name": "let a URL through --host to the bracketing",
       "file": "implementations/cli/src/commands/up.ts",
       "find": "  if (/^[a-z][a-z0-9+.-]*:\\/\\//i.test(host)) {\n    console.error(\n      c.red(\n        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,\n      ),\n    );\n    process.exit(1);\n  }\n",
       "replace": "",
-      "expectRed": "a URL passed to --host is refused",
-      "cell": "a URL passed to --host is refused",
+      "expectRed": "...naming --host and pointing at --server",
+      "cell": "...naming --host and pointing at --server",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "Removes only the scheme refusal; the malformed-host parse check below it stays live, so the URL cell must go red on the missing BY-NAME refusal (the bracketed literal `nats://[nats://…]:4222` parses true for `new URL` only if bracketing made a host of it — it does not: `http://[nats://…]` throws, so the fallback refusal fires with the WRONG message and the `looks like a URL` cells fail while the generic refused cell catches the exit-code change)."
+      "note": "Removes only the scheme refusal; the parse refusal below it stays live, so a URL still exits 1 — but with the WRONG message (the bracketed literal does not parse, so the fallback fires with `is not a valid bind host`). The red must therefore land on the cell that greps for `looks like a URL`, which is the by-name half of the fix; `a URL passed to --host is refused` (bare exit-code check) is expected to stay green under this mutant and is named here so the verdict cannot be argued from it. This is exactly the distinction the issue reported: a refusal that does not name the operator's mistake."
     },
     {
-      "name": "drop the malformed-host parse refusal",
+      "name": "drop the bind-host parse refusal (the parse guard)",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  try {\n    new URL(`nats://${literal}:1`);\n  } catch {\n    console.error(\n      c.red(\n        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,\n      ),\n    );\n    process.exit(1);\n  }\n  return literal;",
-      "replace": "  return literal;",
+      "find": "  try {\n    // ONE parse, both consumers served from it: `literal` builds the derived URL (a URL host needs\n    // the brackets), `hostname` compares against the explicit server's (the URL API strips them).\n    return { literal, hostname: new URL(`nats://${literal}:1`).hostname };\n  } catch {\n    console.error(\n      c.red(\n        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,\n      ),\n    );\n    process.exit(1);\n  }\n",
+      "replace": "  return { literal, hostname: new URL(`nats://${literal}:1`).hostname };\n",
       "expectRed": "a host:port spelling is refused as a bind host",
       "cell": "a host:port spelling is refused as a bind host",
-      "expectRedAlso": [
-        "a URL passed to --host is refused even alongside --server"
-      ],
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "With the scheme refusal still live, a `scheme://` URL is still refused by name; the `host:port` spelling alone loses its refusal and flows on as a silently bracketed `[127.0.0.1:4222]` literal. Compile-clean: `literal` is still assigned above."
-    },
-    {
-      "name": "revert the mismatch parse to an unguarded throw",
-      "file": "implementations/cli/src/commands/up.ts",
-      "find": "  let literalHost: string;\n  try {\n    literalHost = new URL(`nats://${literal}:1`).hostname;\n  } catch {\n    console.error(\n      c.red(\n        `✗ ${source} ${host} and ${urlSource} ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,\n      ),\n    );\n    process.exit(1);\n  }\n",
-      "replace": "  const literalHost = new URL(`nats://${literal}:1`).hostname;\n",
-      "expectRed": "...never a raw Invalid URL from the mismatch parse",
-      "cell": "...never a raw Invalid URL from the mismatch parse",
-      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
-      "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "Unreachable through the two named host shapes (the scheme refusal exits first), so this mutant is graded by the guard's OWN cell surviving removal: the cell asserts the mismatch path never surfaces a raw `Invalid URL`, and with the try/catch gone the property it names has no enforcement site. If a future host shape reaches the comparison unparseable, the raw throw is exactly the regression this records."
+      "note": "With the scheme refusal still live a scheme:// URL is still refused by name; only the host:port spelling loses its refusal, and its cell must go red because the value then flows on as a silently bracketed literal instead of exiting. This mutation is also the parse guard for the mismatch path: with the try/catch gone an unparseable literal would throw a raw `Invalid URL` from the comparison, which is the exact mode-2 failure, so killing this mutant proves the parse is load-bearing for BOTH cells that assert `...never a raw Invalid URL`."
     }
   ]
 }
