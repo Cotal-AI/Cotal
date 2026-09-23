@@ -1,5 +1,18 @@
 # @cotal-ai/connector-codex
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+
 ## 0.50.1
 
 ## 0.50.0

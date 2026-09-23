@@ -1,5 +1,25 @@
 # @cotal-ai/connector-core
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- 491e923: The public user-auth exchange now mints `channel-writer` and `channel-purger` for a signed-in
+  human whose ledger row carries `admin`, so a remote owner can run `cotal channels set/default`
+  and a dashboard channel delete without a loopback capability. `admin`, `purger`, `deployer`, and
+  `manager-service` stay loopback-only. A managed-agent secret exchange still never mints a view.
+  This is not full remote channel management: `cotal web` still asks for the read-only admin view
+  at startup.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+
 ## 0.50.1
 
 ## 0.50.0

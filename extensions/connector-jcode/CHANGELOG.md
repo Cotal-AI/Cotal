@@ -1,5 +1,15 @@
 # @cotal-ai/connector-jcode
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec28dce: Add a durable AG-UI event plane for Jcode seats, backed by the native session journal and enabled through `cotal spawn --events`.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
 ## 0.50.1
 
 ## 0.50.0

@@ -1,5 +1,88 @@
 # @cotal-ai/workspace
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 314a12c: Refuse a malformed mesh registry record by name instead of crashing the command that reads it. A
+  parseable record missing `server`, `mode`, `root`, or `ts` (or carrying a `mode`/`origin` this build
+  does not know) reached the registry listing and crashed `cotal meshes` with a bare TypeError while
+  `cotal status` rendered `undefined` columns; an unparseable record was silently skipped, hiding it
+  from `cotal meshes rm` too. `loadMeshes` now validates every record and fails loud with the file
+  path and the reason, so the operator learns which file is wrong. Every command that loads the
+  registry shares the refusal.
+- 92a8938: Run a manual registration's policy refresh where the policy is consumed. The refresh reached the
+  pinned exchange from the command dispatcher, ahead of every command's own refusals, so `cotal status`
+  on a pre-policy manual entry failed on a transport error and `cotal supervise` reported that error
+  instead of its `--server` mismatch or missing-login sentence. Spawn, join and supervise now refresh
+  after their local refusals; read-only commands never refresh. The bundle validator, the pinned fetch
+  and the dial classifier move to `@cotal-ai/workspace` so the manager can share them.
+- 949d4d1: Admit seat checkpoints and take custody on the resume path, before anything starts.
+
+  An ordinary `up` from a preserved cut now runs the three admission gates over that cut's seat checkpoints, then claims the seat's next writer generation, all before the resume attempt is journalled and long before a manager launches. A refusal at that point costs nothing; the same refusal after a launch would be a second writer.
+
+  Integrity checks presence, regular non-symlink, byte size and sha256, and re-stats after the read. Identity checks the space, that the recorded `lifecycleUid` is not live, and the profile revision against this host's current digest of the seat's launch config, with no override at all: a differing revision is refused naming both digests and the remedy, because the checkpoint carries the recorded digest and not the config bytes, and the manager re-digests the same file at relaunch and refuses drift on its own. Recency compares `capturedAt` to this host's clock against the horizon the record carries, refusing outside it with all three values named. `--accept-stale-checkpoint` admits a stale checkpoint and records the exercised consent in the resume journal with the seat, the capture instant, the admitted age and the horizon.
+
+  Admission is all or nothing. Coverage is settled first from the cut's own directory listing, then all three gates run over every checkpoint, and only when the whole set has passed does any generation get claimed. A refusal anywhere leaves every generation unclaimed, including a lost exclusive create inside the claim phase itself: the claims made by that attempt are removed before the refusal is raised, by the exact paths it wrote and nothing else, so a generation another destination holds is never touched. The resume can then be retried over a repaired checkpoint set. Custody is claimed by exclusive create on the recorded generation plus one, and a lost create refuses rather than adopting the winner.
+
+  Admission is reconciled against the inventory the resume is about to hand the manager. A retained seat with no admitted checkpoint refuses the resume by name, before any gate runs and before any generation is claimed: an absent checkpoint directory and an absent record look identical to a reader of the directory alone, and a seat that starts without passing the gates has claimed no writer generation.
+
+  Two limits are stated in `docs/cli.md` rather than implied. The writer generation is claimed inside one workspace root, so it fences two resumes on one host and not two independent destinations. And no shipped command consumes the captured bytes: the bundle, diffs and untracked archive are written, digested and admitted, but restoring them is manual today, so an ordinary resume still requires the preserved source store.
+
+  Checkpoints are addressed by the preservation attempt that wrote them, `.cotal/maintenance/v<N>/checkpoints/<attemptId>/<seat>/`, through one shared path helper so the cut and the resume cannot disagree about where they are. A shared per-seat directory made the second cut in a root impossible: the writer refuses a destination that already exists, and deleting the previous one would destroy an artifact a rollback still needs.
+
+- 949d4d1: Add seat checkpoints: the content-addressed record describing one preserved seat well enough to start it on another host, its writer and reader, the three admission gates a destination runs before it launches, and the per-seat writer generation that keeps one writer at a time.
+
+  The record carries the manager's resume entry unchanged as its first field, the generation it was cut at, `capturedAt`, the recency horizon, the continuity class and the applied profile revision. Every captured file is recorded by path, byte size and sha256, and the record is written last, after those digests are computed over the bytes that landed. The writer refuses a destination that already exists and hardens it to 0700 before anything lands.
+
+  Admission is three gates in order, each refusing with what it saw. Integrity: present, regular, non-symlink, size and sha256, with a re-stat after the read so a file that moved is a refusal. Identity: the recorded lifecycle uid is not live, the space matches, and the profile revision matches or is deliberately resumed under; this gate has no override. Recency: `capturedAt` against the destination clock and the horizon in the record, refused by default with all three values in the message, overridable by explicit operator consent that the caller records.
+
+  The writer generation is persisted beside the manager instance identity and claimed by exclusive create on the successor value before anything launches. It uses `createManagerInstanceIdentity`'s publication primitive and deliberately not its resolution: a lost create there adopts the winner, because two managers sharing one logical instanceId is intended; here a lost create means two hosts claiming one seat, so it refuses.
+
+- f50e20d: Restore an admitted seat checkpoint on the destination, before the preserved resume starts.
+
+  A destination used to admit a checkpoint and then launch the seat against whatever happened to be at `launch.cwd`. The captured bundle, the two diffs and the untracked archive were written, digested and admitted, and nothing consumed them. `cotal up` now puts those bytes back, as a step of the preserved-resume path that runs after every gate has passed over every checkpoint and before a single writer generation is claimed, so a refusal costs nothing for the same reason a gate failure does.
+
+  Each seat stages beside its own `cwd`. Every recorded digest is verified again over the files as they are now; the bundle is cloned into `<cwd>.incoming`, refused when that path already exists; the recorded base commit is verified in the clone and checked out detached; the index diff is applied with `--index` and the worktree diff without it, both `--binary --allow-empty`; the untracked archive is extracted. Every seat stages before any seat is promoted, and promotion moves an existing `cwd` aside to `<cwd>.superseded.<timestamp>` before renaming the staging directory into place. Those two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves every seat's live `cwd` as it was, promotes nothing and claims no generation. `git` and `tar` run as child processes with argument arrays, never a shell string.
+
+  The superseded name is claimed before anything moves, by exclusive directory create, with a numeric suffix when the name is taken. The timestamp has one-second resolution, so two promotions of the same seat within one second would otherwise compute the same path, and the second rename would either replace the tree the first one saved or fail on it. A name this step could not create is a name it does not use.
+
+  A leftover `<cwd>.incoming` refuses by name and is never removed automatically: a staging directory from a failed run is the only record of what failed, so an operator inspects it and removes it by hand. A pre-existing `cwd` is renamed rather than deleted, so a wrong checkpoint costs a rename instead of a tree.
+
+  The promoted tree is verified once more. A checkpoint now records the seat's `git status --porcelain` as the cut read it, under the same selection rule the untracked set was produced under, and the restore re-reads it in the promoted tree and refuses a difference. Both applies can return 0 and still leave an index the source did not have, and this is the only check that sees it.
+
+  The session files travel the same way. The manager's resume entry carries the connector's `sessionStatePath` when the seat has one, `cotal down --preserve-state` takes `--session-store <path>` (repeatable, applied to every continuation-capable retained seat, refused when the path does not exist or is not a directory), and each captured session file records where it lands as an anchor plus a relative path rather than the source host's absolute spelling. The restore places them before the seat launches, so a connector that declares exact continuation is sealed and resumed as `exact` rather than capped. A pointer whose recorded `sessionId` is not the one the retained inventory reopens is refused before anything is cloned, and a session file already present at its destination is judged by content: equal bytes are already restored, different bytes are refused with both digests rather than clobbered.
+
+  `up --restore <dir>` reaches the same admission and the same restore, after the store is restored and validated and before commit intent is journaled. It previously handed a retained inventory to the manager with no gate run, no generation claimed and no restore.
+
+  The incarnation check runs before the restore does. The recorded `lifecycleUid` is reconciled against the inventory the resume is about to hand the manager as a gate over the staged set, so a checkpoint describing a different incarnation refuses with both uids while every live working tree is still in place and no generation has been claimed. That comparison previously ran after admission returned, which is after a tree had been moved aside, another promoted over it and a generation claimed under the checkpoint's uid.
+
+  A restore never moves or replaces the destination's own control directory. A seat whose `cwd` holds a `.cotal/`, the layout an operator gets from running `up` and `spawn` in one directory, is refused before staging: a checkpoint excludes the control directory by design, so promoting a tree that cannot contain it would carry the destination's live trust material and maintenance state away under the superseded tree, and the restore would report success.
+
+  A continuity class of `exact` or `fork` now requires the pointer and at least one store file. A pointer alone names a session whose transcript the artifact does not hold, and it is capped like a cut carrying neither.
+
+- a0c8a59: Discover a signed-in account's advertised spaces lazily, cache validated snapshots, and add `cotal sync` for explicit refreshes.
+- 26d864b: `cotal update` and `cotal update --self` complete on a machine with no recorded mesh instead of refusing with "no mesh running": there is no running manager to observe there, so the continuity read is skipped. The same holds when every recorded mesh is down and none is selected. A recorded mesh that is down still refuses when the command selects it, with `--space` or from inside its project, and so does a named space that is not running. A connect refusal that came from mesh-target resolution now carries that target error as its `cause`.
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [ec8649b]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+  - @cotal-ai/core@0.51.0
+
 ## 0.50.1
 
 ### Patch Changes

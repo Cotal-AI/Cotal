@@ -1,5 +1,16 @@
 # @cotal-ai/pi
 
+## 0.51.0
+
+### Minor Changes
+
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 7885a2b: Publish Pi's native persisted assistant and tool boundaries as durable AG-UI events at completed-message granularity.
+
 ## 0.50.1
 
 ## 0.50.0
