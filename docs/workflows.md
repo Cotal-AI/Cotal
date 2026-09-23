@@ -173,13 +173,20 @@ cotal run ps                                            # list run records: stat
 cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
+cotal run migrate run-3f2a90c41b7e0d5a6c884e19b02df4a1 --local --file build-v2.cotal.js   # check an edited program against the journal
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
 takes the run id alone and the manager reads the source back; an edited program is a `migrate` or a
-`fork`, never a resume. An answer is recorded under the answerer the manager knows from the
-caller's credential: a managed agent by its name, anyone else by their principal. The request
+`fork`, never a resume. `cotal run migrate <runId> --local --file <program>` is that check: it
+replays the run's journal and walks the edited program over it, prints whether the migration is
+admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and
+code, and exits 0 on admissible and non-zero on not. It reads only, under the same credential
+`journal` reads on, and the commit side is not reachable yet: the report itself says what a commit
+would file and that this invocation filed nothing. An answer is recorded under the answerer the
+manager knows from the caller's credential: a managed agent by its name, anyone else by their
+principal. The request
 carries no name. An agent with `capabilities: [run]` has the same five verbs as the `cotal_run`
 tool ([MCP tools](mcp-tools.md)), so a program can be written and started from inside a session.
 A `start` or `resume` answers once the run's record is written, within a bounded wait; a manager
@@ -299,7 +306,9 @@ is the in-process route, yours to drive with your own handler; a run the driver 
 the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the five record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
-`@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
+`@cotal-ai/runtime` (`implementations/runtime`). The migrate check is reachable as
+`cotal run migrate <runId> --local --file <program>`; committing a migration it judged admissible
+is not reachable from any surface yet. On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
 `spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
 `spawn` is
