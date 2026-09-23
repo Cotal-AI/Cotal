@@ -174,20 +174,20 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   registerCotalTools(pi, runtime.mesh, runtime.config);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
 
-  pi.on("session_start", (_event, context) => {
+  pi.on("session_start", async (_event, context) => {
     cleanPersonaFile(runtime);
     runtime.sessionId = context.sessionManager.getSessionId();
     if (runtime.expectedSessionId && runtime.sessionId !== runtime.expectedSessionId)
       throw new Error(`pi connector: expected session ${runtime.expectedSessionId}, host opened ${runtime.sessionId}`);
     runtime.expectedSessionId = undefined;
     persistSessionId(runtime.sessionId);
-    runtime.events?.start(runtime.sessionId, context.sessionManager.getSessionFile(),
+    await runtime.events?.start(runtime.sessionId, context.sessionManager.getSessionFile(),
       _event.reason === "new" || (_event.reason === "startup" && (freshManagedSession || !startupSessionId && !expectedSessionId)),
       context.sessionManager.getEntries().map((entry) => entry.id).filter((id): id is string => typeof id === "string"));
     runtime.driver.onSessionStart(asContext(context));
   });
-  pi.on("agent_start", (_event, context) => {
-    runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile(),
+  pi.on("agent_start", async (_event, context) => {
+    await runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile(),
       !startupSessionId && !expectedSessionId,
       context.sessionManager.getEntries().map((entry) => entry.id).filter((id): id is string => typeof id === "string"));
     runtime.driver.onAgentStart(asContext(context));

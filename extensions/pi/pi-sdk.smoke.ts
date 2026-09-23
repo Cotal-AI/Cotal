@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isReachable } from "@cotal-ai/core";
 import { pickFreePort } from "../../packages/core/smoke/_free-port.js";
 import { CotalEndpoint, DEV_OWNER, eventChannel, principalKey } from "@cotal-ai/core";
@@ -28,6 +29,68 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 assert.equal(VERSION, "0.79.10", "the lifecycle proof must run against the pinned Pi host");
+
+// A child of THIS smoke runs the pinned Pi runtime. The first process dies in turn_end after Pi
+// persisted its assistant but before Cotal's flush. The second opens the same native session.
+if (process.env.PI_EVENTS_DEATH_STAGE) {
+  const stage = process.env.PI_EVENTS_DEATH_STAGE;
+  const root = process.env.PI_EVENTS_DEATH_ROOT!;
+  const server = process.env.PI_EVENTS_TEST_SERVER!;
+  const record = join(root, "identity.json");
+  const identity = stage === "crash"
+    ? { space: `death_${randomUUID().replace(/-/g, "")}`, actor: `pi_${randomUUID().replace(/-/g, "")}`, path: "" }
+    : JSON.parse(readFileSync(record, "utf8")) as { space: string; actor: string; path: string };
+  if (stage === "crash") writeFileSync(record, JSON.stringify(identity));
+  Object.assign(process.env, { COTAL_SPACE: identity.space, COTAL_NAME: "pi-death", COTAL_ID: identity.actor,
+    COTAL_SERVERS: server, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root });
+  const manager = stage === "crash" ? SessionManager.create(root, join(root, "sessions"))
+    : SessionManager.open(identity.path, join(root, "sessions"), root);
+  if (stage === "crash") {
+    identity.path = manager.getSessionFile()!;
+    writeFileSync(record, JSON.stringify(identity));
+  } else process.env.PI_SESSION_ID = manager.getSessionId();
+  const observer = new CotalEndpoint({ space: identity.space, servers: server,
+    card: { name: "pi-death-observer", kind: "endpoint", id: `obs_${randomUUID().replace(/-/g, "")}` } });
+  const frames: ReturnType<typeof parseAguiFrame>[] = [];
+  observer.on("message", (message, delivery) => {
+    for (const part of message.parts) if (isAguiFramePart(part)) frames.push(parseAguiFrame(part));
+    delivery.ack();
+  });
+  const provider = registerFauxProvider({ provider: "pi-death-provider" });
+  const auth = AuthStorage.inMemory(); auth.setRuntimeApiKey("pi-death-provider", "test");
+  const dieAfterPersistence = (pi: ExtensionAPI): void => {
+    pi.on("turn_end", () => {
+      if (stage === "crash") {
+        assert.ok(existsSync(manager.getSessionFile()!), "Pi persisted the first assistant before turn_end");
+        process.exit(73);
+      }
+    });
+  };
+  const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [dieAfterPersistence, cotalMesh] });
+  await observer.start(); await observer.joinChannel(eventChannel({ owner: DEV_OWNER, actor: identity.actor }));
+  await resources.reload();
+  const { session: native } = await createAgentSession({ cwd: root, agentDir: root, model: provider.getModel(),
+    resourceLoader: resources, authStorage: auth, modelRegistry: ModelRegistry.inMemory(auth), sessionManager: manager,
+    settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }), noTools: "all" });
+  await native.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) });
+  if (stage === "crash") {
+    provider.setResponses([fauxAssistantMessage("survives-process-death")]);
+    await native.prompt("Persist one assistant then terminate before the event hook");
+    assert.fail("native turn_end crash hook did not run");
+  }
+  const deadline = Date.now() + 6_000;
+  while (!frames.flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < deadline)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(frames.flatMap((frame) => frame.events).filter((event) => event.type === "TEXT_MESSAGE_CONTENT")
+    .map((event) => (event as { delta: string }).delta), ["survives-process-death"],
+    "idle reopen publishes the saved first native turn before any next prompt");
+  await (native as any)._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  native.dispose(); provider.unregister(); await observer.stop();
+  console.log("pi native death recovery: saved first run appeared at idle reopen");
+  process.exit(0);
+}
+
+if (!process.env.PI_EVENTS_DEATH_STAGE) {
 
 interface Seen {
   type: string;
@@ -307,6 +370,26 @@ try {
         await new Promise((resolve) => setTimeout(resolve, 25));
       assert.ok(await isReachable(server), "owned Pi smoke broker started");
     }
+    const deathRoot = join(root, "process-death");
+    mkdirSync(deathRoot);
+    const runDeath = (stage: "crash" | "recover"): Promise<number | null> => new Promise((done, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url)], {
+        env: { ...process.env, PI_EVENTS_DEATH_STAGE: stage, PI_EVENTS_DEATH_ROOT: deathRoot, PI_EVENTS_TEST_SERVER: server },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "";
+      child.stdout.on("data", (bytes: Buffer) => { output += bytes.toString(); });
+      child.stderr.on("data", (bytes: Buffer) => { output += bytes.toString(); });
+      const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`Pi ${stage} stage timed out`)); }, 12_000);
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        if (stage === "recover" && code !== 0) reject(new Error(`Pi recovery stage failed: ${output.slice(-1500)}`));
+        else done(code);
+      });
+    });
+    assert.equal(await runDeath("crash"), 73, "real Pi process exits after native persistence and before AG-UI flush");
+    assert.equal(await runDeath("recover"), 0, "new Pi process publishes the saved first run while idle");
+    console.log("pi native process death: saved first run recovered at idle reopen");
     await observer.start();
     await observer.joinChannel(eventChannel({ owner: DEV_OWNER, actor }));
     await resources.reload();
@@ -439,4 +522,5 @@ try {
     releaseBroker?.();
     if (brokerRoot) rmSync(brokerRoot, { recursive: true, force: true });
   }
+}
 }

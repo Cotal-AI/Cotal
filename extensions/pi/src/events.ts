@@ -19,7 +19,7 @@ export class PiEvents {
 
   constructor(private readonly mesh: MeshAgent, private readonly space: string) {}
 
-  start(sessionId: string, path: string | undefined, freshSession = false, oldEntryIds: readonly string[] = []): void {
+  async start(sessionId: string, path: string | undefined, freshSession = false, oldEntryIds: readonly string[] = []): Promise<void> {
     if (this.closing || this.dead) return;
     if (!path) {
       this.fail(new Error("Pi AG-UI: persistent native session file is required"));
@@ -31,18 +31,14 @@ export class PiEvents {
       this.sessionId = sessionId;
       this.path = path;
       const existed = existsSync(path);
+      if (!existed && freshSession) await this.prepareFirstFile(sessionId);
       const holder = this.newHolder(sessionId, path, !existed && freshSession, oldEntryIds);
       this.holder = holder;
       holder.adopt(path);
-      await holder.settled();
-      if (holder.failure) throw holder.failure;
-      if (existsSync(path)) {
-        holder.flush(path);
-        await holder.settled();
-        if (holder.failure) throw holder.failure;
-      }
+      if (existsSync(path)) holder.flush(path);
     });
     this.pending = step.catch((error: Error) => this.fail(error));
+    await this.pending;
   }
 
   flush(sessionId: string, path: string | undefined): void {
@@ -80,6 +76,19 @@ export class PiEvents {
     this.path = undefined;
   }
 
+  /** A file-free native session needs its durable start cursor before Pi may save its first answer.
+   * This is local filesystem work only: no broker dial or AG-UI preflight blocks the host hook. */
+  private async prepareFirstFile(threadId: string): Promise<void> {
+    const workspaceRoot = resolveEventsStateRoot(process.env);
+    const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
+    const { walPath, lock } = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId });
+    this.lock = lock;
+    const wal = await EventWal.open(walPath, { space: this.space, principal, threadId, subjectMayExist: false });
+    if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly("pi:first-file");
+    if (wal.frontier.sourceCursor !== "pi:first-file" && wal.frontier.seq === 0)
+      throw new Error("Pi AG-UI: fresh native session has a different source boundary");
+  }
+
   private newHolder(sessionId: string, path: string, freshFile: boolean, oldEntryIds: readonly string[]): AguiEmitterHolder<PiSessionEntry> {
     return new AguiEmitterHolder<PiSessionEntry>(async () => {
       await this.mesh.waitUntilConnected();
@@ -91,6 +100,7 @@ export class PiEvents {
       this.lock = lock;
       const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: this.space, principal });
       const wal = await EventWal.open(walPath, { space: this.space, principal, threadId: sessionId, subjectMayExist: false });
+      const virgin = wal.frontier.sourceCursor === undefined;
       if (freshFile && wal.frontier.sourceCursor !== undefined && wal.frontier.sourceCursor !== "pi:first-file")
         throw new Error("Pi AG-UI: native session file vanished after an event cursor was acknowledged");
       // For an existing transcript, capture its boundary before subsequent turns. A restart keeps
@@ -103,7 +113,7 @@ export class PiEvents {
         }
       }
       const map = createPiMapper(sessionId, wal.brackets?.run, wal.brackets?.tools);
-      const oldIds = wal.frontier.seq === 0 ? new Set(oldEntryIds) : new Set<string>();
+      const oldIds = virgin ? new Set(oldEntryIds) : new Set<string>();
       return AguiEmitter.start({
         endpoint: this.mesh.ep, wal, subjectFrontier,
         source: new PiSessionSource(path),
