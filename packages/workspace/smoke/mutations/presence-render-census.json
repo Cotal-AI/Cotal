@@ -77,9 +77,16 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 314,",
-      "replace": "    \"total\": 313,",
+      "find": "    \"total\": 375,",
+      "replace": "    \"total\": 374,",
       "expectRed": "presence render census count drifted"
+    },
+    {
+      "name": "M10 the narrowed agent.ts anchor regresses to the bare working token",
+      "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
+      "find": "      \"anchor\": \"one.\\n      if (prev === \\\"working\\\" && status === \\\"idle\\\") t\"",
+      "replace": "      \"anchor\": \"\\\"working\\\"\"",
+      "expectRed": "manifest anchor must exist exactly once in extensions/connector-core/src/agent.ts but occurs 3 time(s)"
     }
   ],
   "suite": [
