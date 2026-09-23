@@ -1,0 +1,54 @@
+{
+  "suite": [
+    "implementations/cli/smoke/meshes-registry.smoke.ts"
+  ],
+  "grades": "suite",
+  "guard": "loadMeshes refuses a registry record this build cannot use, naming the file, instead of handing the renderer a record that crashes it",
+  "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/meshes-malformed-record.json",
+  "why": [
+    "A parseable record missing server/mode reached listMeshes, whose width() helper pads m.server",
+    "and m.mode, and `cotal meshes` died with \"Cannot read properties of undefined (reading 'length')\"",
+    "while `cotal status` printed literal `undefined` columns. Reproduced on a disposable COTAL_HOME",
+    "with one well-formed control record plus the three-field record from the report.",
+    "",
+    "loadMeshes now validates each parsed document (assertMeshEntryShape) and refuses by name. The",
+    "mutations cover both halves of the guard: reverting the shape check returns to the skip-everything",
+    "posture (red on the missing-fields cell), and reverting the parse guard to a skip returns to the",
+    "old silent-skip behavior (red on the does-not-parse cell). A third mutation proves the enum check",
+    "is load-bearing: without it a record with an unknown mode loads and the cell named for it greens."
+  ],
+  "mutations": [
+    {
+      "name": "the shape check is reverted to the old skip",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "    assertMeshEntryShape(entry, file);",
+      "replace": "",
+      "expectRed": "a record missing required fields refuses naming the file and the fields",
+      "cell": "a record missing required fields refuses naming the file and the fields",
+      "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "a file that does not parse is skipped again",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "      throw new Error(`${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`);",
+      "replace": "      continue;",
+      "expectRed": "a registry file that does not parse refuses naming the file (no silent skip)",
+      "cell": "a registry file that does not parse refuses naming the file (no silent skip)",
+      "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the mode enum check is removed",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "  if (entry.mode !== \"auth\" && entry.mode !== \"open\" && entry.mode !== \"user\")\n    throw new Error(`${file} is not a usable mesh record: mode \"${entry.mode}\" is not one of auth, open, user - restore the record or remove it`);",
+      "replace": "",
+      "expectRed": "a record with a mode this build does not know refuses naming the file",
+      "cell": "a record with a mode this build does not know refuses naming the file",
+      "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
+      "afterRestore": "pnpm build"
+    }
+  ]
+}

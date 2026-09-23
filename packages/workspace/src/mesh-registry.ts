@@ -222,7 +222,7 @@ function meshFile(space: string): string {
  *  older builds). Matched by each document's own `space` - never by decoding the filename, which
  *  would case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh
  *  the canonical file no longer records. A file that will not parse is left for {@link loadMeshes}
- *  to skip. */
+ *  to refuse by name. */
 function removeLegacyMeshFiles(space: string): void {
   let files: string[];
   try {
@@ -356,10 +356,44 @@ export function removeCatalogMeshes(ownerKey: string): string[] {
   return removed.sort();
 }
 
-/** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —
- *  one bad file must not hide the rest. One record per space: if a pre-hex legacy file and the
- *  canonical `space.<hex>` file both name the same space (a crash between {@link recordMesh}'s
- *  write and its legacy sweep), the canonical one wins — it is the newer scheme's write. */
+/** Validate one parsed registry document as a {@link MeshEntry} a consumer can actually use, or
+ *  throw naming the file. Required are the fields every consumer dereferences blindly — the
+ *  renderer pads `server`/`mode` (a missing one was the `reading 'length'` TypeError), the target
+ *  resolver dials `server`, the sweep probes `server` under `root`, and every keyed API addresses
+ *  the record by `space`. Enum fields must hold a value this build understands, and `space` must be
+ *  one the keyed namespaces can address at all ({@link spaceSegment} refuses `.`/`..` and
+ *  ill-formed Unicode, so a record carrying those could be listed but never removed or re-recorded).
+ *
+ *  REFUSED, never repaired: inventing a server would send credentials at whatever address a guess
+ *  produced. REFUSED, never skipped: a skipped record is invisible to `cotal meshes` AND to
+ *  `cotal meshes rm`, so the operator could neither see it nor remove it by name — the only honest
+ *  answer is the file's own name. */
+function assertMeshEntryShape(entry: MeshEntry, file: string): void {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry))
+    throw new Error(`${file} is not a usable mesh record: the document is not an object - restore the record or remove it`);
+  const missing = (["space", "server", "root", "mode", "ts"] as const).filter(
+    (k) => typeof (entry as unknown as Record<string, unknown>)[k] !== "string" || ((entry as unknown as Record<string, unknown>)[k] as string).length === 0,
+  );
+  if (missing.length > 0)
+    throw new Error(`${file} is not a usable mesh record: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing - restore the record or remove it`);
+  if (entry.mode !== "auth" && entry.mode !== "open" && entry.mode !== "user")
+    throw new Error(`${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
+  if (entry.origin !== undefined && entry.origin !== "up" && entry.origin !== "manual" && entry.origin !== "catalog")
+    throw new Error(`${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
+  try {
+    spaceSegment(entry.space);
+  } catch (e) {
+    throw new Error(`${file} is not a usable mesh record: ${(e as Error).message}`);
+  }
+}
+
+/** All currently-recorded meshes, refusing a record this build cannot use BY NAME rather than
+ *  rendering or skipping it. One record per space: if a pre-hex legacy file and the canonical
+ *  `space.<hex>` file both name the same space (a crash between {@link recordMesh}'s write and its
+ *  legacy sweep), the canonical one wins — it is the newer scheme's write. A registry file that
+ *  does not parse or does not carry the {@link MeshEntry} shape throws naming the file; the CLI
+ *  renders that as one `✗` line, so the operator reads WHICH record is wrong instead of a
+ *  TypeError from the renderer (or a silently `undefined` column in `status`). */
 export function loadMeshes(): MeshEntry[] {
   let files: string[];
   try {
@@ -369,19 +403,19 @@ export function loadMeshes(): MeshEntry[] {
   }
   const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
   for (const f of files.sort()) {
+    const file = join(meshesDir(), f);
     let entry: MeshEntry;
     try {
-      entry = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
-    } catch {
-      continue; /* skip a corrupt/half-written entry rather than fail the whole listing */
+      entry = JSON.parse(readFileSync(file, "utf8")) as MeshEntry;
+    } catch (e) {
+      // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
+      // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
+      throw new Error(`${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`);
     }
-    if (typeof entry.space !== "string" || !entry.space) continue; // every consumer keys on space
-    let canonical = false;
-    try {
-      canonical = f === meshFileName(entry.space);
-    } catch {
-      /* a degenerate space name in the doc has no canonical filename - rank it as legacy */
-    }
+    assertMeshEntryShape(entry, file);
+    // Safe unguarded: the shape check above ran `space` through `spaceSegment`, which is the only
+    // throw site of `meshFileName`.
+    const canonical = f === meshFileName(entry.space);
     const prev = bySpace.get(entry.space);
     if (!prev || (canonical && !prev.canonical)) bySpace.set(entry.space, { entry, canonical });
   }
