@@ -168,26 +168,27 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   markOnboarded(ONBOARD_VERSION);
   provenance.wrote("onboarded stamp", join(homeCotalDir(), "onboarded.json"));
   const cmd = displayCmd();
-  // The finale is the whole loop, minimal by default: start the mesh, talk to your one agent, stop.
-  // With --demo it names the team; without, it points at --demo (and the optional dashboard).
+  // The finale is the whole loop, minimal by default: start the mesh, talk to your one agent, watch
+  // it in the browser, stop. The browser dashboard is the first experience; the terminal console is
+  // the tail alternative. With --demo it names the team; without, it points at --demo.
   const driveLines = demo
     ? [
         `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
         `${ok("✓")} drive a session     ${dim(`${cmd} spawn me`)}`,
         `${ok("✓")} ask the experts     ${dim(`${cmd} spawn david · ${cmd} spawn sven`)}`,
-        `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
+        `${ok("✓")} watch the mesh      ${dim(`${cmd} web`)}`,
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ]
     : [
         `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
         `${ok("✓")} talk to your agent  ${dim(`${cmd} spawn`)}`,
-        `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
+        `${ok("✓")} watch the mesh      ${dim(`${cmd} web`)}`,
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ];
   const tail = demo
-    ? [dim(`Visual dashboard: ${cmd} web`)]
+    ? [dim(`Terminal instead of a browser? ${cmd} console`)]
     : [
-        dim(`Want a visual dashboard? ${cmd} web`),
+        dim(`Terminal instead of a browser? ${cmd} console`),
         dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
       ];
   note(
