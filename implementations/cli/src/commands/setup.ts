@@ -435,8 +435,8 @@ async function readyCard(cwd: string): Promise<void> {
       hasDemo
         ? `drive it:        ${dim(`${cmd} spawn me`)}   ${dim("(or david / sven)")}`
         : `drive it:        ${dim(`${cmd} spawn`)}   ${dim("(talk to your agent · guided team: " + cmd + " setup --demo)")}`,
-      `watch it:        ${dim(`${cmd} console`)}   ${dim("(live TUI in this terminal)")}`,
-      `more:            ${dim(`${cmd} web · ${cmd} down · ${cmd} feedback "<msg>" · ${cmd} --help`)}`,
+      `watch it:        ${dim(`${cmd} web`)}   ${dim("(browser dashboard)")}`,
+      `more:            ${dim(`${cmd} console · ${cmd} down · ${cmd} feedback "<msg>" · ${cmd} --help`)}`,
     ].join("\n"),
     brandBold("cotal · status"),
   );

@@ -179,6 +179,15 @@ ok("demo setup still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFIL
 const second = cotal(["setup"], proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
 ok("repeat run shows the status card", /cotal · status/.test(second.stdout + second.stderr), (second.stdout + second.stderr).slice(-300));
+// The card's watch hint matches the finale's order: `cotal web` is the watch step, the terminal
+// console sits in the `more:` line as the alternative.
+{
+  const out = second.stdout + second.stderr;
+  const cardWatch = out.match(/watch it:\s+.*web\s+\(browser dashboard\)/);
+  const more = out.match(/more:\s+.*console/);
+  ok("status card: the watch hint is the browser dashboard", cardWatch !== null, out.slice(-600));
+  ok("status card: the terminal console is in the more line", more !== null, out.slice(-600));
+}
 ok("repeat run still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
 // F — removed surface fails loud.

@@ -125,7 +125,7 @@ failure context. Type `/exit` to return, and it retries.
 
 ## The primitives
 
-The vocabulary behind those three commands, which every other page builds on:
+The vocabulary behind those four commands, which every other page builds on:
 
 | Primitive | What it is |
 |---|---|
