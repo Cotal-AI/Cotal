@@ -56,6 +56,13 @@ cotal spawn --agent opencode --model anthropic/claude-sonnet-4-6 --variant high
 A `--variant` on a connector that doesn't support variants is rejected up front; the OpenCode
 connector advertises variant support, so this is the connector where it applies.
 
+For an explicit model pin, the connector checks the running OpenCode server's `/provider`
+listing before joining the mesh. If that server does not list the model, launch refuses with
+the id and names both the server listing and the `opencode models --pure --verbose` CLI catalog.
+The CLI catalog alone does not prove that the server serving this session has the model.
+OpenCode's cold server bootstrap can take longer than the generic 30-second manager check;
+the connector declares a two-minute readiness window for this check and the mesh join.
+
 ## How it binds
 
 OpenCode has a native plugin runtime, so the adapter is **not** an MCP server; a single
