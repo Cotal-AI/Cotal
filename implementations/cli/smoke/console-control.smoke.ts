@@ -130,8 +130,8 @@ try {
 
   await m1.start();
   await m2.start();
-  const s1 = await m1.startAgent({ name: "w1", agent: "seat", cwd: repoRoot });
-  const s2 = await m2.startAgent({ name: "w2", agent: "seat", cwd: repoRoot });
+  const s1 = await m1.startAgent({ name: "w1", agent: "seat", cwd: repoRoot, events: false });
+  const s2 = await m2.startAgent({ name: "w2", agent: "seat", cwd: repoRoot, events: false });
   check("fixture: manager 1 hosts w1 and manager 2 hosts w2, both joined", s1.ok && s2.ok && !!(await until(() => (live("w1") && live("w2") ? true : undefined), 15_000)), { s1, s2, roster: watcher.getRoster().map((p) => p.card.name) });
 
   session = new ConsoleSession(["--space", space, "--server", servers], home, {}, { cols: 140, rows: 36 });

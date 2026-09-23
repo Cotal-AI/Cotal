@@ -178,7 +178,11 @@ export const COMMANDS: ConsoleCommand[] = [
       const [persona, identity] = rest.trim().split(/\s+/).filter(Boolean);
       if (!persona) return ctx.notify("usage: spawn <persona> [name]");
       ctx.notify(`spawning ${persona}… (the manager answers on join, exit, or its readiness deadline)`);
-      const r = await ctx.control("start", identity ? { name: persona, identity } : { name: persona });
+      // The event plane is on by default since #1758, and a connector that cannot publish one is
+      // refused by the manager. The palette has no events toggle (nothing here consumes the plane),
+      // so it mirrors `cotal spawn --no-events`: a seat spawned from the console is spawned to be
+      // watched and driven here, and the plane is the connector's own concern.
+      const r = await ctx.control("start", identity ? { name: persona, identity, events: false } : { name: persona, events: false });
       if (!r.ok) return ctx.notify("spawn: " + why(r));
       ctx.notify(`spawned ${(r.data as { name?: string })?.name ?? persona}`);
     },
