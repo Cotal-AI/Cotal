@@ -203,6 +203,29 @@ try {
     channel: "other",
     parts: [{ kind: "text", text: "chat-injected" }],
   }));
+  // #1413 REPRO, raw-row stage: a stored row carrying only id + object from SITS on the same
+  // DM subject with a matching sender. Read back through the PUBLIC dmHistory only.
+  raw.publish(dmSubj, JSON.stringify({
+    id: "partial-1413",
+    from: { id: "local.alice" },
+  }));
+  // Control arms for the new contract: a full row published raw on the same subject, the
+  // pre-fix keyless data part, a nameless from, and a non-finite ts.
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "full-1413" })));
+  raw.publish(dmSubj, JSON.stringify(envelope({
+    id: "pre-fix-keyless-data-1413",
+    parts: [{ kind: "data" }],
+  })));
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "nameless-from-1413", from: { id: "local.alice" } })));
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "bad-ts-1413", ts: Number.NaN })));
+  // R2 (grok verdict) rows: a null parts slot, and optional members in the wrong shape.
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "parts-null-slot-1413", parts: [null] })));
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "mentions-number-1413", mentions: 7 })));
+  raw.publish(chatSubj, JSON.stringify(envelope({
+    id: "chat-parts-null-1413",
+    channel: "log",
+    parts: [null],
+  })));
   await raw.flush();
   await raw.close();
   await wait(200);
@@ -261,6 +284,63 @@ try {
     toSpoof,
   );
 
+  // ---- #1413: what dmHistory returns for rows lacking what CotalMessage promises ----
+  // The CONTRACT cells read the page as its consumers do. `as Record<string, unknown>` is
+  // deliberate: the fix types this row honestly, so the smoke must observe the shipped fields
+  // rather than lean on the type being wrong or right.
+  const field = (m: { id?: unknown } | undefined, key: string) =>
+    (m as Record<string, unknown> | undefined)?.[key];
+  const partial1413 = page.find((m) => m.id === "partial-1413");
+  console.log(`  [#1413 post-fix] partial row via dmHistory: id=${partial1413?.id} ts=${field(partial1413, "ts")} space=${field(partial1413, "space")} parts=${JSON.stringify(field(partial1413, "parts"))} from.name=${JSON.stringify(field(partial1413?.from, "name"))} to=${field(partial1413, "to")}`);
+  // The rule: a row missing a field the public type requires is DROPPED, not returned with
+  // that member undefined. The consumer-visible proof: no row with that id exists on the page,
+  // so partsToText(msg.parts) / new Date(msg.ts) / msg.from.name cannot reach it.
+  check(
+    "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
+    partial1413 === undefined,
+    partial1413,
+  );
+  // A full row published raw round-trips: same id, finite ts preserved, from.name intact,
+  // to derived from the subject, and text renders through the shipped partsToText.
+  const full1413 = page.find((m) => m.id === "full-1413");
+  check(
+    "full raw row round-trips unchanged (id, finite ts, EndpointRef.name, subject-derived to, text)",
+    full1413 !== undefined && typeof full1413.ts === "number" && Number.isFinite(full1413.ts) &&
+      full1413.from.name === "alice" && full1413.to === bob.card.id && text(full1413) === "x",
+    full1413,
+  );
+  // A pre-fix producer's keyless {kind:"data"} row is still SURFACED, not dropped.
+  check(
+    "pre-fix keyless data part row is still surfaced by dmHistory",
+    page.some((m) => m.id === "pre-fix-keyless-data-1413" && m.parts.some((p) => p.kind === "data" && !("data" in p))),
+    page.map((m) => m.id),
+  );
+  // Same rule per field: a nameless from and a non-finite ts (stringify stores NaN as null).
+  check(
+    "row whose from lacks name is ABSENT (EndpointRef.name is checked, never defaulted)",
+    !page.some((m) => m.id === "nameless-from-1413"),
+    page.map((m) => m.id),
+  );
+  check(
+    "row with non-finite ts is ABSENT (ts is checked finite, never defaulted)",
+    !page.some((m) => m.id === "bad-ts-1413"),
+    page.map((m) => m.id),
+  );
+
+  // R2 (grok verdict): same rule for parts members and the optional members. A null parts slot
+  // used to reach partsToText and throw "Cannot read properties of null (reading 'kind')".
+  check(
+    "row with a null parts slot is ABSENT (every part checked readable: object with string kind)",
+    !page.some((m) => m.id === "parts-null-slot-1413"),
+    page.map((m) => m.id),
+  );
+  // And one optional member in the wrong shape: mentions must be an array of strings when present.
+  check(
+    "row with mentions not an array of strings is ABSENT (checked, never asserted)",
+    !page.some((m) => m.id === "mentions-number-1413"),
+    page.map((m) => m.id),
+  );
+
   let chatPage: Awaited<ReturnType<typeof viewer.channelHistory>> = [];
   let chatThrew: string | undefined;
   try {
@@ -271,6 +351,7 @@ try {
   check("channelHistory does not throw on a spoofed sibling", chatThrew === undefined, chatThrew);
   check("channelHistory keeps the honest multicast", chatPage.some((m) => m.id === chatHonest.id), chatPage.map((m) => m.id));
   check("channelHistory drops a from.id mismatch (same drainWindow as dmHistory)", !chatPage.some((m) => m.id === "chat-spoof-388"), chatPage.map((m) => m.id));
+  check("channelHistory also drops a null parts slot (one contract serves both reads)", !chatPage.some((m) => m.id === "chat-parts-null-1413"), chatPage.map((m) => m.id));
 
   let multi: Awaited<ReturnType<typeof viewer.multiChannelHistory>> = [];
   let multiThrew: string | undefined;

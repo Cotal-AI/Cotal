@@ -386,6 +386,25 @@ export type CotalMessage =
       to?: never;
     });
 
+/** A history row the drain VERIFIED — the read-side counterpart of {@link CotalMessage}, and
+ *  what `channelHistory` / `dmHistory` / `multiChannelHistory` return (#1413). Checked before
+ *  the row is returned: a usable string `id`, a full `from` (`id` and `name` strings, `role` a
+ *  string when present), a finite number `ts`, a string `space`, `parts` whose every member is
+ *  an object with a string `kind`, `mentions` an array of strings when present, `replyTo` and
+ *  `contextId` strings when present, and the one route key the delivering subject carries
+ *  (`channel`/`to`/`toService` derived from the SUBJECT, never the payload). A stored row
+ *  failing any check does not appear in history at all — the alternative, returning it with
+ *  the member silently `undefined` or in the wrong shape under the full type, is what this
+ *  type exists to make unrepresentable.
+ *
+ *  One member is deliberately NOT held to the full `CotalMessage` shape: a `parts` member is
+ *  checked readable (an object with a string `kind`), not validated by `isMessagePart`,
+ *  because a pre-#1404 producer could publish `{kind:"data"}` without a `data` key and
+ *  history must surface that row rather than drop it. A consumer iterating `parts` can
+ *  therefore meet a part no Plane-3 guard admitted (never a null or non-object slot: those
+ *  rows are dropped). */
+export type HistoryMessage = CotalMessage;
+
 export type PresenceEvent =
   | { type: "join"; presence: Presence }
   | { type: "update"; presence: Presence }

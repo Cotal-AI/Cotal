@@ -67,6 +67,7 @@ import type {
   AttentionMode,
   ChannelMode,
   CotalMessage,
+  HistoryMessage,
   DeliveryClass,
   MembershipRecord,
   ChannelMembership,
@@ -2906,11 +2907,14 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
-   *  reclaims its ephemeral consumer before the promise rejects. */
+   *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
+   *  (#1413): every field present on a row was checked by the drain before the row was
+   *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
+   *  returned with that member silently `undefined`. */
   async channelHistory(
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal },
-  ): Promise<CotalMessage[]> {
+  ): Promise<HistoryMessage[]> {
     // history from any sender
     return (await this.streamHistory(
       chatStream(this.space),
@@ -2960,7 +2964,7 @@ export class CotalEndpoint extends EventEmitter {
   async multiChannelHistory(
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
-  ): Promise<{ channel: string; msg: CotalMessage }[]> {
+  ): Promise<{ channel: string; msg: HistoryMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
       if (!isConcreteChannel(channel))
         throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
@@ -2992,7 +2996,7 @@ export class CotalEndpoint extends EventEmitter {
     const batches: string[][] = [];
     for (let i = 0; i < subjects.length; i += size)
       batches.push(subjects.slice(i, i + size));
-    const pages: { seq: number; subject: string; msg: CotalMessage }[][] = new Array(batches.length);
+    const pages: { seq: number; subject: string; msg: HistoryMessage }[][] = new Array(batches.length);
     let next = 0;
     const readBatch = async (): Promise<void> => {
       for (;;) {
@@ -3069,8 +3073,11 @@ export class CotalEndpoint extends EventEmitter {
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
    *  active pull and reclaims its ephemeral consumer. God-view only:
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
-   *  skips for them — only an `admin`-profile cred can read it. */
-  async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<CotalMessage[]> {
+   *  skips for them — only an `admin`-profile cred can read it. Returns `HistoryMessage[]`
+   *  (#1413): every field present on a row was checked by the drain before the row was
+   *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
+   *  returned with that member silently `undefined`. */
+  async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
     // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
     return (await this.streamHistory(
       dmStream(this.space),
@@ -3110,7 +3117,7 @@ export class CotalEndpoint extends EventEmitter {
     limit: number,
     before?: number,
     signal?: AbortSignal,
-  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
+  ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     if (!this.nc) throw new Error("endpoint not started");
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
@@ -3313,9 +3320,9 @@ export class CotalEndpoint extends EventEmitter {
     ceiling: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
+  ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     signal?.throwIfAborted();
-    const out: { seq: number; subject: string; msg: CotalMessage }[] = [];
+    const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
@@ -5880,23 +5887,24 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
  *  unparseable subject, or `from.id !== parsed.sender` (SPEC §5). This derives the remaining
  *  routing tokens from the subject for rows that survived — it does not rewrite a mismatched
  *  `from.id`. Live tails, channel backfill, and channel recall skip the mismatch; history
- *  does the same (#388). */
-function authenticatedMessage(msg: CotalMessage, parsed: ParsedSubject): CotalMessage {
+ *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
+ *  row type already verified stays verified (#1413). */
+function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
   if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
   if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
   return msg;
 }
 
-function authenticatedChannelMessage(msg: CotalMessage, channel: string): CotalMessage {
-  if (msg.channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
+function authenticatedChannelMessage<M extends CotalMessage>(msg: M, channel: string): CotalMessage & M {
+  if ((msg as CotalMessage).channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
   const { to: _to, toService: _toService, ...base } = msg;
-  return { ...base, channel } as CotalMessage;
+  return { ...base, channel } as CotalMessage & M;
 }
 
-function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
-  if (msg.to === to && msg.channel === undefined && msg.toService === undefined) return msg;
+function authenticatedDmMessage<M extends CotalMessage>(msg: M, to: string): CotalMessage & M {
+  if (msg.to === to && (msg as CotalMessage).channel === undefined && msg.toService === undefined) return msg;
   const { channel: _channel, toService: _toService, ...base } = msg;
-  return { ...base, to } as CotalMessage;
+  return { ...base, to } as CotalMessage & M;
 }
 
 /** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
@@ -5904,7 +5912,7 @@ function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
  *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
  *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
  *  god-view history must include the viewer's own sends. */
-function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): CotalMessage | undefined {
+function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): HistoryMessage | undefined {
   let raw: unknown;
   try {
     raw = m.json();
@@ -5912,10 +5920,55 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): C
     return undefined;
   }
   if (!isHistoryDrainEnvelope(raw)) return undefined;
+  if (!isVerifiedHistoryRow(raw)) return undefined;
   const parsed = parseSubject(m.subject);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
   if (raw.from.id !== parsed.sender) return undefined;
   return authenticatedMessage(raw, parsed);
+}
+
+/** A row `isHistoryDrainEnvelope` admitted: object envelope, usable `id`, object `from` — the
+ *  drain's own MINIMAL row type, what it checked and nothing more (#1413). Distinct from both
+ *  `CotalMessage` (which promises more than the drain verified) and `HistoryMessage` (the
+ *  PUBLIC row, whose every present field the drain checked before returning it). */
+type HistoryDrainEnvelope = {
+  id: string;
+  from: { id: unknown; name?: unknown; role?: unknown };
+  [key: string]: unknown;
+};
+
+/** The members `HistoryMessage` promises beyond the drain envelope (#1413): a full
+ *  `EndpointRef` (`from.name`, and `from.role` only when a string), a finite `ts`, a string
+ *  `space`, `parts` the drain could read, and the optional members in their promised shape
+ *  when present. Every field the PUBLIC row type promises is checked here, before the row is
+ *  returned. A row missing one is dropped, never returned with that member silently
+ *  `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`
+ *  or `msg.from.name` must not be able to reach one that was never there. Nothing is invented
+ *  for an absent field.
+ *
+ *  `parts` is held to READABLE, not to `isMessagePart`: every member must be an object with a
+ *  string `kind` (so `partsToText` can read `part.kind` without throwing), but a keyless
+ *  `{kind:"data"}` row from a pre-#1404 producer is not dropped — history must surface it.
+ *  `mentions`, `replyTo`, and `contextId` keep exactly their `CotalMessage` shapes when
+ *  present: an array of strings, a string, a string. */
+function isVerifiedHistoryRow(row: HistoryDrainEnvelope): row is HistoryDrainEnvelope & HistoryMessage {
+  if (typeof row.from.name !== "string") return false;
+  if (row.from.role !== undefined && typeof row.from.role !== "string") return false;
+  if (typeof row.ts !== "number" || !Number.isFinite(row.ts)) return false;
+  if (typeof row.space !== "string") return false;
+  if (!Array.isArray(row.parts) || !row.parts.every(isReadableMessagePart)) return false;
+  if (row.mentions !== undefined &&
+      (!Array.isArray(row.mentions) || !row.mentions.every((name) => typeof name === "string"))) return false;
+  if (row.replyTo !== undefined && typeof row.replyTo !== "string") return false;
+  if (row.contextId !== undefined && typeof row.contextId !== "string") return false;
+  return true;
+}
+
+/** A part `partsToText` can read without throwing: an object with a string `kind` (#1413).
+ *  Deliberately weaker than `isMessagePart` — a keyless `{kind:"data"}` part passes here —
+ *  because history must surface rows a pre-#1404 producer wrote, not drop them. */
+function isReadableMessagePart(value: unknown): boolean {
+  return isRecord(value) && typeof value.kind === "string";
 }
 
 /**
@@ -5924,13 +5977,15 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): C
  * lets `authenticatedMessage` take the row without a cast.
  *
  * Does NOT verify SPEC §5 message shape. It does not require a string `from.id` (the SPEC §5
- * comparison still rejects a mismatch), exactly one route key, a finite `ts`, a string
- * `space`, a full EndpointRef `from` (`name`/`role`), or well-formed `parts`. Those belong
- * to `isCotalMessage` (Plane-3). History must not use that guard: a publisher now REFUSES a
- * `data` part carrying a non-JSON value, but a keyless `{kind:"data"}` row from a pre-fix
- * producer can still sit in a stream, and history must surface it rather than drop it.
+ * comparison still rejects a mismatch) or exactly one route key. The members the PUBLIC
+ * history row promises beyond this envelope — a full EndpointRef `from` (`name`/`role`), a
+ * finite `ts`, a string `space` — are checked by {@link isVerifiedHistoryRow} before the row
+ * is returned (#1413). Well-formed `parts` still belong to `isCotalMessage` (Plane-3), and
+ * history must not use that guard: a publisher now REFUSES a `data` part carrying a non-JSON
+ * value, but a keyless `{kind:"data"}` row from a pre-fix producer can still sit in a stream,
+ * and history must surface it rather than drop it.
  */
-function isHistoryDrainEnvelope(value: unknown): value is CotalMessage {
+function isHistoryDrainEnvelope(value: unknown): value is HistoryDrainEnvelope {
   return isRecord(value) && isUsableMessageId(value.id) && isRecord(value.from);
 }
 
