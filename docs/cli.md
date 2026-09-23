@@ -70,7 +70,7 @@ runtimes ship this way.
 | Extensions & misc | [`completion`](#completion) | Print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
-| Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint |
+| Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Extensions & misc | [`feedback-intake`](#server-daemons) | Run a self-hosted feedback intake server |
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
@@ -1842,6 +1842,7 @@ cotal run resume <runId> [--local --file <program>]
 cotal run ps [--endpoint <ep>]
 cotal run journal <runId> [--endpoint <ep>]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
+cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
@@ -1852,7 +1853,12 @@ the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the m
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
-answerer from your credential, so no `--by` is taken there. `--timeout` sets the default
+answerer from your credential, so no `--by` is taken there. `migrate` runs the migrate check of an
+edited program against a run's journal, from this terminal under a read credential (`--local`
+only; the manager serves no run-migrate command): it prints whether the migration is admissible,
+every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
+writes nothing: the commit that would file the migration is not reachable yet, and the report
+says so. `--timeout` sets the default
 checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
