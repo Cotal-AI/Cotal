@@ -273,7 +273,8 @@ try {
   const brokerRoot = process.env.PI_EVENTS_TEST_SERVER ? undefined : mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const port = brokerRoot ? await pickFreePort() : undefined;
   const server = process.env.PI_EVENTS_TEST_SERVER ?? `nats://127.0.0.1:${port}`;
-  const broker = brokerRoot ? spawn("nats-server", ["-js", "-p", String(port), "-sd", join(brokerRoot, "jetstream")], { stdio: "ignore" }) : undefined;
+  let broker: ReturnType<typeof spawn> | undefined;
+  if (brokerRoot && port) broker = spawn("nats-server", ["-js", "-p", String(port), "-sd", brokerRoot], { stdio: "ignore" });
   const releaseBroker = broker && brokerRoot ? teardownOnSignal(broker, brokerRoot) : undefined;
   const root = mkdtempSync(join(tmpdir(), "cotal-pi-events-sdk-"));
   const keys = ["COTAL_SPACE", "COTAL_NAME", "COTAL_ID", "COTAL_SERVERS", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT"] as const;
