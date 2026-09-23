@@ -181,17 +181,21 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. With `-f`, overrides the manifest's runtime |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
+| `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it (`cotal down manager` first). Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
 `--server`, it auto-selects a free port if the default address is taken; an explicit `--server`
 stays fail-loud on collision. `--detach` also brings up the control plane (delivery daemon in auth
-mode, then the manager). There is no broker-only mode: a local manager still starts, even on a host
-you intend to leave as broker + delivery. For a split topology, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then `cotal down manager` on that
+mode, then the manager). `--no-manager` is the broker-only mode: it boots
+the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
+pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
+than keeping or stopping it: `cotal down manager` first. For a split topology with a manager, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then `cotal down manager` on that
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
-`manager` listed (pidfile liveness, not a teardown boundary). The `-f` form is a [manifest deploy](#manifest-deploys).
+`manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
+only what actually started. The `-f` form is a [manifest deploy](#manifest-deploys).
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
@@ -803,8 +807,10 @@ state wins):
   reconciliation say `static reconciliation not reported by this manager build`; the line stays
   visible even when the manager is otherwise `serving`.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
-  signal), and the latest `renewal.json` adoption verdict. A re-signed credential and a
-  broker-accepted adoption stay distinct facts.
+  signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
+  command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
+  broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
+  names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
 - **web**: local PID record and the dashboard's own loopback `/api/meta` response, which must name
   the same PID and its requested port. A different process on the port, an unreadable PID command,
   or an unrecognizable process record is `refused`, not a green default-port guess.
@@ -1798,7 +1804,9 @@ a default, so a persona that pins its harness still wins over it. An `--agent` n
 connector fails loud with the exact
 `cotal ext add` to restore it. Set `COTAL_SKIP_CONNECTOR_SEED=1` to turn off the automatic first-run
 seed/refresh entirely (for a controlled or offline setup that manages connectors by hand); `cotal ext
-seed` still runs on request.
+seed` still runs on request. `cotal agent-bearer` never takes the seed at all: it is exec'd by
+spawned seats on every bearer refresh, so it neither reconciles nor is refused by the store's
+generation (see [Plumbing](#plumbing)).
 
 ## completion
 
@@ -1904,5 +1912,8 @@ spawn-time secret; you never run it directly either. Its local arm uses `--dir` 
 capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
 `--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
 pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS
-URL because the actor token is the credential in the request body. (`cotal start` is a removed tombstone: it
+URL because the actor token is the credential in the request body. Because a seat execs it on every
+bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
+exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
+a newer store generation cannot refuse a live seat's refresh. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)

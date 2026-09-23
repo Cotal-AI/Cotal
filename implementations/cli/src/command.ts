@@ -110,6 +110,13 @@ function skipAutoReconcile(argv: string[]): boolean {
   if (name === "ext" && sub === "root") return true; // a side-effect-free path print: no seed noise, so `$(cotal ext root)` stays exactly one line even on first run
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
+  // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
+  // token file, exchange it, print the bearer and exit. It must not depend on or mutate the
+  // operator-global store — a newer store generation refused the boot before the token was ever read
+  // (disconnecting a live seat at its token's expiry, #1857), and a matching generation seeded every
+  // connector as a side effect of a credential exchange. The seat's env carries no
+  // COTAL_SKIP_CONNECTOR_SEED (only an operator-set one is forwarded), so the skip is by name.
+  if (name === "agent-bearer") return true;
   return false;
 }
 

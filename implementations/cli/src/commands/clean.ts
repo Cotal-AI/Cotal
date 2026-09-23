@@ -19,6 +19,7 @@ import {
   localMeshesForRoot,
   readMaintenanceJournal,
   releaseMaintenanceLock,
+  renewalRecordPath,
   removeMeshesByRoot,
   resolveRuntimeSpace,
   resolveSpace,
@@ -299,6 +300,10 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // threw, so by here the dir holds only what a raw rm owns. On a multi-space root this removes
     // ONLY this space's segment — the other tenants' material is not this reset's to touch.
     rm(spaceMaterialDir(root, space), `.cotal/${spaceSegment(space)} (this space's material)`);
+    // This space's renewal record is per-space (#1850), removed with the rest of its material. The
+    // LEGACY root-scoped `renewal.json` below stays in the list too: a pre-per-space build's copy
+    // must not survive a full local reset either.
+    rm(renewalRecordPath(root, space), `${relative(root, renewalRecordPath(root, space))} (renewal record)`);
     for (const f of [
       // The LEGACY FLAT copies of the raw P7 kinds: still present on a root no post-P7 `up` has
       // touched, and this surface must not leave old-operator $SYS material behind because the

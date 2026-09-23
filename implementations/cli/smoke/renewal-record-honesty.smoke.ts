@@ -28,6 +28,7 @@ import {
   writeRenewalRecord,
 } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
+import { spaceKey } from "@cotal-ai/workspace";
 
 let pass = 0,
   fail = 0;
@@ -75,7 +76,7 @@ function runDoctor(values: Record<string, boolean | string | undefined> = {}): P
 try {
   // ── 1. fingerprint redaction at the persistence boundary ────────────────────────────────────────
   const FAKE_FP = "a".repeat(64); // a plausible SHA-256 hex digest
-  writeRenewalRecord(root, {
+  writeRenewalRecord(root, auth.space, {
     ts: "2026-01-01T00:00:00.000Z",
     owner: "manager",
     // The in-memory result DOES carry a fingerprint (as remintDaemonCreds returns it); the writer
@@ -83,11 +84,11 @@ try {
     results: [{ file: "delivery.creds", ok: true, fingerprint: FAKE_FP }],
     adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } },
   });
-  const raw = readFileSync(renewalRecordPath(root), "utf8");
+  const raw = readFileSync(renewalRecordPath(root, auth.space), "utf8");
   check("persisted record has no `fingerprint` key", !raw.includes("fingerprint"), raw);
   check("persisted record has no 64-hex digest of any kind", !/[0-9a-f]{64}/i.test(raw), raw);
   check("the specific ephemeral fingerprint never reached disk", !raw.includes(FAKE_FP));
-  const back = readRenewalRecord(root);
+  const back = readRenewalRecord(root, auth.space);
   check("readback drops fingerprint but keeps the real result fields", back?.results[0]?.fingerprint === undefined && back?.results[0]?.file === "delivery.creds" && back?.results[0]?.ok === true, back?.results[0]);
 
   // ── 2. doctor exit status reflects the broker's verdict ─────────────────────────────────────────
@@ -98,7 +99,7 @@ try {
   check("the accepted record renders as broker-accepted", accepted.out.replace(/\[[0-9;]*m/g, "").includes("broker-accepted"), accepted.out);
 
   // 2b. broker-REFUSED renewal (same cred files, only the record flips) → exit 1 + a loud line.
-  writeRenewalRecord(root, {
+  writeRenewalRecord(root, auth.space, {
     ts: "2026-01-01T00:00:00.000Z",
     owner: "manager",
     results: [{ file: "delivery.creds", ok: true }],
@@ -120,7 +121,7 @@ try {
   writeFileSync(staged("delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
   writeFileSync(staged("membership-rw.creds"), await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 600 }), { mode: 0o600 });
   // the last renewal was refused by the broker.
-  writeRenewalRecord(root, {
+  writeRenewalRecord(root, auth.space, {
     ts: "2026-01-01T00:00:00.000Z",
     owner: "manager",
     results: [{ file: "delivery.creds", ok: true }],
@@ -130,15 +131,54 @@ try {
   check("`--fix` re-signed the expired delivery cred (the fix branch ran)", inspectCredHealth(readFileSync(staged("delivery.creds"), "utf8")).state === "healthy");
   check("`--fix` did NOT erase the broker refusal to green (exit 1)", afterFix.code === 1, `${afterFix.code} ${afterFix.out.slice(-300)}`);
   check("`--fix` verdict still names the unproven/refused state, not `auth: healthy`", !afterFix.out.includes("auth: healthy") && /not broker-accepted|refused by the broker/i.test(afterFix.out), afterFix.out);
-  const afterRec = readRenewalRecord(root);
+  const afterRec = readRenewalRecord(root, auth.space);
   check("the persisted record carries the refusal forward as an explicit unproven state", afterRec?.adoption?.ok === false && /not yet broker-proven/i.test(afterRec?.adoption?.error ?? ""), afterRec?.adoption);
 
   // negative control: with NO prior refusal, `--fix` on a fresh expired cred still reaches healthy/0
   // (it only preserves REFUSALS, it does not block every fix).
   writeFileSync(staged("delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
-  writeRenewalRecord(root, { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } } });
+  writeRenewalRecord(root, auth.space, { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } } });
   const cleanFix = await runDoctor({ fix: true });
   check("`--fix` with no prior refusal still reaches healthy (exit 0)", cleanFix.code === undefined && cleanFix.out.includes("auth: healthy"), `${cleanFix.code} ${cleanFix.out.slice(-300)}`);
+
+  // ── 4. the record is PER-SPACE: a co-resident space's verdict is not this space's (#1850) ──────
+  // A second space at the SAME root runs a refused renewal pass. Doctor for THIS space (the sole
+  // account on the root is this one) must keep reporting this space's accepted record: exit status
+  // and rendered verdict follow the space under test, never the other tenant's record.
+  writeRenewalRecord(root, auth.space, { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } } });
+  const secondSpace = `${auth.space}-b`;
+  writeRenewalRecord(root, secondSpace, {
+    ts: "2026-01-01T00:00:00.000Z",
+    owner: "manager",
+    results: [{ file: "delivery.creds", ok: true }],
+    adoption: { ok: false, error: "the broker did not accept the re-signed credential (Authorization Violation); nothing adopted" },
+  });
+  const otherSpace = await runDoctor();
+  check("a refused record written for ANOTHER space at this root does not red this space's doctor", otherSpace.code === undefined && otherSpace.out.includes("auth: healthy"), `${otherSpace.code} ${otherSpace.out.slice(-300)}`);
+  check("the two spaces' records are distinct files", renewalRecordPath(root, auth.space) !== renewalRecordPath(root, secondSpace) && renewalRecordPath(root, secondSpace).endsWith(`renewal.${spaceKey(secondSpace)}.json`), renewalRecordPath(root, secondSpace));
+  check("this space's accepted record is untouched by the other space's pass", readRenewalRecord(root, auth.space)?.adoption?.ok === true, readRenewalRecord(root, auth.space)?.adoption);
+  // The mirror: THIS space refused, the other accepted — doctor for THIS space must exit 1.
+  writeRenewalRecord(root, auth.space, {
+    ts: "2026-01-01T00:00:00.000Z",
+    owner: "manager",
+    results: [{ file: "delivery.creds", ok: true }],
+    adoption: { ok: false, error: "the broker did not accept the re-signed credential (Authorization Violation); nothing adopted" },
+  });
+  writeRenewalRecord(root, secondSpace, {
+    ts: "2026-01-01T00:00:00.000Z",
+    owner: "manager",
+    results: [{ file: "delivery.creds", ok: true }],
+    adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } },
+  });
+  const thisSpace = await runDoctor();
+  check("this space's own refused record still exits 1 beside another space's accepted pass", thisSpace.code === 1 && !thisSpace.out.includes("auth: healthy"), `${thisSpace.code} ${thisSpace.out.slice(-300)}`);
+  // A root-only legacy `renewal.json` is never read as any space's verdict — it is named, not adopted.
+  rmSync(renewalRecordPath(root, auth.space));
+  rmSync(renewalRecordPath(root, secondSpace));
+  writeFileSync(join(root, ".cotal", "renewal.json"), JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [], adoption: { ok: false, error: "legacy root-scoped refusal" } }), { mode: 0o600 });
+  const legacy = await runDoctor();
+  check("a root-only legacy renewal record is NOT read as this space's refusal (still healthy)", legacy.code === undefined && legacy.out.includes("auth: healthy"), `${legacy.code} ${legacy.out.slice(-300)}`);
+  check("the legacy record is named as a leftover, never rendered as a verdict", legacy.out.includes("pre-per-space renewal record"), legacy.out);
 
   console.log(fail === 0 ? `\nRENEWAL-RECORD HONESTY OK ✅  (${pass} passed, ${fail} failed)` : `\nRENEWAL-RECORD HONESTY FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = fail === 0 ? 0 : 1;

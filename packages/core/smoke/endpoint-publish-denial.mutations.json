@@ -32,6 +32,22 @@
       "cell": "invoke names the refused instance-rail subject"
     },
     {
+      "name": "epCast never races the publish-denial watch, so a refused cast resolves as success",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    await Promise.race([\n      nc.flush().then(() => new Promise<void>((resolve) => setImmediate(resolve))),\n      denialWatch.denied,\n    ]);",
+      "replace": "    denialWatch.denied.catch(() => {});\n    await nc.flush();",
+      "expectRed": "a denied cast is permission-denied naming the refused subject, not success",
+      "cell": "a denied cast is permission-denied naming the refused subject, not success"
+    },
+    {
+      "name": "the probe never races the publish-denial watch, so a refused publish expires into unknown",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    return await Promise.race([verdict, denialWatch.denied]);",
+      "replace": "    denialWatch.denied.catch(() => {});\n    return await verdict;",
+      "expectRed": "a denied probe is permission-denied naming the refused subject, not unknown",
+      "cell": "a denied probe is permission-denied naming the refused subject, not unknown"
+    },
+    {
       "name": "the status watch is never released, leaking one listener per call",
       "file": "packages/core/src/endpoint-verbs.ts",
       "find": "    denialWatch?.release();",
