@@ -192,6 +192,15 @@ try {
   writeFileSync(deliveryPidFile, liveDelivery);
   writeFileSync(deliveryIdentityFile, liveDeliveryIdentity);
 
+  // 2c) #1417: a refresh under --no-manager of a space whose manager is LIVE refuses rather than
+  //     silently keeping or stopping it, naming the exact `cotal down manager` remedy the same way
+  //     --runtime and --max-sessions refuse on a live manager.
+  const refused = cli("up", "--server", SERVER, "--no-manager");
+  const refusedOut = plain(refused.stdout + refused.stderr);
+  ok("a --no-manager refresh against a live manager exits non-zero", refused.status !== 0, refusedOut);
+  ok("the refusal names the `cotal down manager` remedy", /`cotal down manager` first, then `cotal up --no-manager`/.test(refusedOut), refusedOut);
+  ok("the manager the refresh refused to touch is left running", alive(pidOf(recordName(MANAGER_PIDFILE))), recordName(MANAGER_PIDFILE));
+
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
@@ -217,6 +226,33 @@ try {
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
   const openDown = cli("down");
   ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
+
+  // 4) #1417 broker-only boot: `up --detach --no-manager` starts broker + delivery daemon (auth
+  //    mode) and NO manager — no manager pidfile, no manager process, no stale slot to leave —
+  //    while the broker and the delivery daemon answer; `down` then stops what actually ran.
+  const brokerOnly = cli("up", "--detach", "--no-manager", "--server", SERVER);
+  const brokerOnlyOut = plain(brokerOnly.stdout);
+  ok("broker-only up --detach exits 0", brokerOnly.status === 0, brokerOnly.stdout + brokerOnly.stderr);
+  ok(
+    "broker-only up reports the exact running component set (no manager)",
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: cotal down$/m.test(brokerOnlyOut),
+    brokerOnly.stdout,
+  );
+  ok("broker-only boot writes no manager pidfile", !existsSync(record(MANAGER_PIDFILE)), record(MANAGER_PIDFILE));
+  ok("broker-only boot writes no delivery-aware marker", !existsSync(record(MANAGER_DELIVERY_AWARE_MARKER)), record(MANAGER_DELIVERY_AWARE_MARKER));
+  const boDeliveryPid = pidOf(recordName(DELIVERY_PIDFILE));
+  pids.push(boDeliveryPid);
+  ok("the delivery daemon is up and alive under the flag", Number.isFinite(boDeliveryPid) && alive(boDeliveryPid), boDeliveryPid);
+  ok("the broker still answers under the flag", await portOpen());
+  const brokerOnlyDown = cli("down");
+  ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
+  let boDead = false;
+  for (let i = 0; i < 24 && !boDead; i++) {
+    await sleep(500);
+    boDead = !alive(boDeliveryPid) && !(await portOpen());
+  }
+  ok("broker-only down stops broker + delivery daemon", boDead, { boDeliveryPid });
+  ok("broker-only down leaves no manager pidfile behind", !existsSync(record(MANAGER_PIDFILE)));
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
