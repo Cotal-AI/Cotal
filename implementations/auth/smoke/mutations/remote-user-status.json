@@ -22,21 +22,21 @@
     {
       "name": "userStatus loses the remote arm and answers nothing for a discovered entry",
       "file": "implementations/auth/src/provider.ts",
-      "find": "    const idpUrl = idp ? idp.url : ua!.idp.url;\n    const session = loadIdpSession(homeCotalDir(), idpUrl);",
-      "replace": "    const idpUrl = idp.url;\n    const session = loadIdpSession(homeCotalDir(), idpUrl);",
+      "find": "    const idpUrl = idp ? idp.url : ua!.idp.url;",
+      "replace": "    const idpUrl = idp ? idp.url : \"\";",
       "expectRed": "discovered space: bare status shows the signed-in subject, not a no-material refusal",
       "cell": "discovered space: bare status shows the signed-in subject, not a no-material refusal",
-      "note": "Compile-clean: the guard above still admits the registry entry (so no throw moves the failure off the named cell), but the session lookup keys on the LOCAL pin's url, which is undefined for a discovered entry — loadIdpSession misses, the row prints 'not signed in' with the undefined-keyed login command, and the cell that demands the signed-in subject goes red on its own line. This is the reachable half of the #1832 behavior (the throw variant does not typecheck against this shape).",
+      "note": "Compile-clean: the guard above still admits the registry entry (so no throw moves the failure off the named cell), but the remote arm's IdP URL becomes empty, the session lookup misses, and the login row prints 'not signed in' with an empty login command instead of the signed-in subject — the cell that demands the subject goes red on its own line.",
       "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "the components pass resolves a user-mode target to no credential, probing the authenticated broker bare",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "  if (target.mode !== \"user\") return { kind: \"static\", auth: target.auth };\n  try {",
-      "replace": "  try {",
+      "find": "  if (target.mode !== \"user\") return { kind: \"static\", auth: target.auth };",
+      "replace": "  if (target.mode !== \"user\" || target.mode === \"user\") return { kind: \"static\", auth: target.auth };",
       "expectRed": "discovered space: components probes as the signed-in login, never a raw Authorization Violation",
       "cell": "discovered space: components probes as the signed-in login, never a raw Authorization Violation",
-      "note": "Compile-clean: every target takes the static arm, and a user-mode target's auth is undefined, so the probe mints nothing and connects with no credential — the manager row prints `serve probe refused: Authorization Violation` with exit 3, the exact reported output, reddening the named cell.",
+      "note": "Compile-clean (a tautological condition, no constant to narrow): every target takes the static arm, and a user-mode target's auth is undefined, so the probe mints nothing and connects with no credential — the manager row prints `serve probe refused: Authorization Violation` with exit 3, the exact reported output, reddening the named cell.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
