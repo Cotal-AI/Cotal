@@ -421,6 +421,10 @@ export class CotalEndpoint extends EventEmitter {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   private channelWatchIter?: Awaited<ReturnType<KV["watch"]>>;
+  /** The daemon's lease-loss watch (#1596): the INTENT that survives a connection rebuild, plus the
+   *  live iterator. See {@link watchDeliveryLease}. */
+  private leaseWatchIntent?: { shardIndex: number; onEvent: (info: DeliveryLeaseInfo | undefined) => void };
+  private leaseWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
@@ -1316,6 +1320,12 @@ export class CotalEndpoint extends EventEmitter {
       if (watchChannels) await this.startChannelWatch();
     }
 
+    // Rebind the daemon's lease-loss watch onto the fresh connection (#1596). The intent survived
+    // clearConnectionScoped; a bind that completes after a stop or another rebuild found no intent
+    // and released itself. The replay re-delivers the row's current state, so a change that landed
+    // in the null window still reaches the trigger.
+    if (this.leaseWatchIntent) await this.bindDeliveryLeaseWatch();
+
     // FAIL BEFORE PRESENCE (SPEC 13.1): an AUTHED endpoint that will register on the roster or
     // bind lifecycle-keyed consumers must hold its launcher-supplied lifecycle uid BEFORE anything
     // makes it visible - a missing uid must never leave a roster ghost that could not bind (false
@@ -1444,6 +1454,7 @@ export class CotalEndpoint extends EventEmitter {
       /* already closed with the connection */
     }
     this.channelWatchIter = undefined;
+    this.stopDeliveryLeaseWatch();
     for (const sub of this.chatSubs.values()) {
       try {
         sub.unsubscribe();
@@ -1793,6 +1804,7 @@ export class CotalEndpoint extends EventEmitter {
       /* already closed */
     }
     this.channelWatchIter = undefined;
+    this.stopDeliveryLeaseWatch();
     try {
       if (this.doRegister) {
         this.status = "offline";
@@ -3722,6 +3734,55 @@ export class CotalEndpoint extends EventEmitter {
    *  under its own cred, which holds lease-bucket read but no write). */
   async readDeliveryLease(shardIndex: number): Promise<DeliveryLeaseInfo | undefined> {
     return (await this.readDeliveryLeaseEntry(shardIndex))?.info;
+  }
+
+  /** Watch THIS shard's lease key and nothing else, for the daemon's loss trigger (#1596).
+   *
+   *  A KV watch is the native JetStream push for "the row changed hands NOW": a filtered ordered
+   *  consumer on the lease bucket delivers the row's own writes the moment the broker applies them,
+   *  instead of the daemon waiting for its next renew tick to notice. The watch is a TRIGGER, never a
+   *  decision: every event is handed to `onEvent` with the row as the broker now states it (PUT) or
+   *  the fact it is gone (DEL/PURGE, `info` undefined), and the caller re-runs the SAME decision tree
+   *  its renew tick would (`leaseAction`, `mayServeOn`, `readOwnLease`-style ownership tests). An
+   *  event the daemon itself caused (its acquire, its renew, its ready flip) is an ordinary input to
+   *  that tree — the row still reads `held` by this endpoint — so it never quiesces on its own write;
+   *  no event filtering happens here.
+   *
+   *  Like the presence watch, this survives a connection rebuild as INTENT: the iterator dies with
+   *  its connection and {@link connectAndBind} rebinds it onto the fresh one, so a reconnect can
+   *  never leave the daemon blind to the row for the rest of its life. The rebind replays the
+   *  bucket's current last-per-subject state, so a change that landed during the null window is
+   *  delivered on the fresh watch. Resolves a stop handle. */
+  async watchDeliveryLease(shardIndex: number, onEvent: (info: DeliveryLeaseInfo | undefined) => void): Promise<() => void> {
+    this.leaseWatchIntent = { shardIndex, onEvent };
+    await this.bindDeliveryLeaseWatch();
+    return () => {
+      if (this.leaseWatchIntent?.onEvent !== onEvent) return; // a later watch owns the slot
+      this.leaseWatchIntent = undefined;
+      this.stopDeliveryLeaseWatch();
+    };
+  }
+
+  private stopDeliveryLeaseWatch(): void {
+    try { this.leaseWatchIter?.stop(); } catch { /* already closed with its connection */ }
+    this.leaseWatchIter = undefined;
+  }
+
+  private async bindDeliveryLeaseWatch(): Promise<void> {
+    const intent = this.leaseWatchIntent!;
+    const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
+    if (this.leaseWatchIntent !== intent) {
+      try { iter.stop(); } catch { /* already closed */ }
+      return;
+    }
+    this.leaseWatchIter = iter;
+    void (async () => {
+      for await (const e of iter) {
+        if (this.leaseWatchIter !== iter) break;
+        if (e.operation === "DEL" || e.operation === "PURGE") { intent.onEvent(undefined); continue; }
+        try { intent.onEvent(e.json<DeliveryLeaseInfo>()); } catch { intent.onEvent(undefined); }
+      }
+    })().catch((e) => this.emit("error", e as Error));
   }
 
   /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
