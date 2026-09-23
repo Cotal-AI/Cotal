@@ -510,7 +510,53 @@ try {
     assert.equal(frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_STARTED").length, 5,
       "reopened native session publishes only its new turn, never old acknowledged history");
     afterRestartProvider.unregister();
-    console.log(`pi native events sdk: ${frames.length} broker frames, four completed runs and one tool-bearing error, no fork/reload/restart replay passed`);
+    // The public SDK replacement path emits session_shutdown for the OLD session, then starts a
+    // new native session under the SAME mesh identity. No copied assistant history is replayed.
+    const switchedProvider = registerFauxProvider({ api: provider.api, provider: "pi-native-events" });
+    const makeSwitched = async ({ cwd, agentDir, sessionManager, sessionStartEvent }: {
+      cwd: string; agentDir: string; sessionManager: SessionManager;
+      sessionStartEvent?: { type: "session_start"; reason: "startup" | "reload" | "new" | "resume" | "fork"; previousSessionFile?: string };
+    }) => {
+      const services = await createAgentSessionServices({ cwd, agentDir, authStorage: identity,
+        modelRegistry: ModelRegistry.inMemory(identity),
+        settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+        resourceLoaderOptions: { extensionFactories: [cotalMesh] } });
+      return { ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
+        model: switchedProvider.getModel(), noTools: "all" })), services, diagnostics: services.diagnostics };
+    };
+    await (native as any)._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    native.dispose(); native = undefined;
+    const switched = await createAgentSessionRuntime(makeSwitched, { cwd: root, agentDir: root,
+      sessionManager: SessionManager.open(manager.getSessionFile()!, join(root, "sessions"), root) });
+    switched.setRebindSession((session) => session.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) }));
+    await switched.session.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) });
+    const firstSwitchAt = frames.length;
+    const toNew = await switched.newSession({ parentSession: manager.getSessionFile() });
+    assert.equal(toNew.cancelled, false, "native new session replacement succeeds");
+    switchedProvider.setResponses([fauxAssistantMessage("Answer on native new thread.")]);
+    await switched.session.prompt("Answer on new session.");
+    const newDeadline = Date.now() + 5_000;
+    while (!frames.slice(firstSwitchAt).flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < newDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const newThread = switched.session.sessionManager.getSessionId();
+    assert.ok(frames.slice(firstSwitchAt).length > 0 && frames.slice(firstSwitchAt).every((frame) => frame.threadId === newThread),
+      "native new session publishes on its own thread without replaying parent history");
+    const entry = switched.session.sessionManager.getEntries().find((value) => value.type === "message" && value.message.role === "user");
+    assert.ok(entry, "new session has a user entry to fork from");
+    const forkSwitchAt = frames.length;
+    await switched.fork(entry.id, { position: "before" });
+    switchedProvider.setResponses([fauxAssistantMessage("Answer on native fork thread.")]);
+    await switched.session.prompt("Answer after native fork.");
+    const forkSwitchDeadline = Date.now() + 5_000;
+    while (!frames.slice(forkSwitchAt).flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < forkSwitchDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const forkThread = switched.session.sessionManager.getSessionId();
+    assert.ok(forkThread !== newThread && frames.slice(forkSwitchAt).length > 0 &&
+      frames.slice(forkSwitchAt).every((frame) => frame.threadId === forkThread),
+      "native fork-before creates a distinct thread with no parent run replay");
+    await switched.dispose();
+    switchedProvider.unregister();
+    console.log(`pi native events sdk: ${frames.length} broker frames; tool error, new, fork-before, reload and reopen pass without history replay`);
   } finally {
     await (native as any)?._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     native?.dispose();

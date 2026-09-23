@@ -182,7 +182,8 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime.expectedSessionId = undefined;
     persistSessionId(runtime.sessionId);
     await runtime.events?.start(runtime.sessionId, context.sessionManager.getSessionFile(),
-      _event.reason === "new" || (_event.reason === "startup" && (freshManagedSession || !startupSessionId && !expectedSessionId)));
+      _event.reason === "new" || _event.reason === "fork" ||
+      (_event.reason === "startup" && (freshManagedSession || !startupSessionId && !expectedSessionId)));
     runtime.driver.onSessionStart(asContext(context));
   });
   pi.on("agent_start", async (_event, context) => {
