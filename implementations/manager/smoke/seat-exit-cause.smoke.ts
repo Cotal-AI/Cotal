@@ -87,7 +87,7 @@ writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\n-
 
 interface ManagedLike {
   id: string; name: string; lifecycleUid: string; handle: AgentHandle;
-  suppressCleanup: boolean; terminalizing: boolean; startedAt: number;
+  suppressCleanup: boolean; terminalizing: boolean; startedAt: number; spawner?: string;
 }
 
 function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<string, ManagedLike> } {
@@ -163,7 +163,7 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
   const { manager, agents } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
   agents.get("worker")!.id = "workernkey123";
   const m = manager as unknown as { opStop(a: Record<string, unknown>, c: string, b: boolean): Promise<{ ok: boolean }> };
-  const row = agents.get("worker")! as ManagedLike & { spawner?: string };
+  const row = agents.get("worker")!;
   row.spawner = "u_alice.actor";
   const { lines, ret } = await captureAsync(() => m.opStop({ name: "worker", graceful: true }, "u_alice.actor", false));
   const reply = ret;
@@ -172,6 +172,7 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
   check("…and the despawn-by-another is separable: the second principal names itself on the line", await (async () => {
     const { manager: m2, agents: a2 } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
     const r2 = a2.get("worker")!;
+    r2.id = "workernkey123";
     r2.spawner = "u_alice.actor";
     const out = await captureAsync(() => (m2 as unknown as { opStop(a: Record<string, unknown>, c: string, b: boolean): Promise<{ ok: boolean }> }).opStop({ name: "worker", graceful: true }, "u_bob.actor", true));
     const rep2 = out.ret;
@@ -193,7 +194,7 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
 {
   const { manager, agents } = managerWith(fakeHandle("child", { exitInfo: () => ({ code: 0 }) }));
   agents.get("child")!.id = "childnkey123";
-  (agents.get("child")! as ManagedLike & { spawner?: string }).spawner = "u_parent.actor";
+  agents.get("child")!.spawner = "u_parent.actor";
   const { lines } = await captureAsync(async () => {
     (manager as unknown as { reapChildrenOf(p: string): void }).reapChildrenOf("u_parent.actor");
     await new Promise((r) => setTimeout(r, 10)); // the reap frees the slot only after its awaited exit proof
