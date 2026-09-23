@@ -23,9 +23,25 @@
     "",
     "NOT PROVED HERE, named rather than implied. The mesh is OPEN, so neither authenticated branch",
     "runs and the event grant landing in allowPublish is not exercised on this path. That property is",
-    "proved for the manager by smoke:events-grant and is not proved for the CLI by anything."
+    "proved for the manager by smoke:events-grant and is not proved for the CLI by anything.",
+    "",
+    "The #1837 cells drive the REMOTE user-auth arm end to end (a synthetic remote entry, a provider",
+    "double answering postAgentProvisioning, a self-dispatched agent-bearer re-exec), so F3 mutates",
+    "the bytes those cells grade. The LOCAL arm's sentence is asserted at the per-arm choice in the",
+    "source, not end to end: staging a full local user-auth mesh is the user-spawn live suite's",
+    "surface. The double replaces the registered auth provider for the duration of the remote cells",
+    "only; no open-mesh cell observes it."
   ],
   "mutations": [
+    {
+      "name": "F3 the departure sentence promises automatic revocation on the remote user-auth arm again, which is the shipped bug (#1837)",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "      const revokeNote = remoteUserAuth\n        ? \"(actor granted by the mesh; local credential files are removed when this process exits, and the grant stays until the mesh operator revokes it)\"\n        : \"(actor granted; revoked automatically when this process exits)\";\n      console.error(c.dim(`  running as you: ${userAuth.owner}.${name} ${revokeNote}`));",
+      "replace": "      console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));",
+      "expectRed": "the remote user-auth arm does not promise automatic revocation",
+      "cell": "the remote user-auth arm does not promise automatic revocation",
+      "note": "Not a contrived mutation: it is the code as it shipped, where the remote arm's cleanup shreds only the local credential files (it holds no authority over the mesh-side row) while the sentence promised a revocation that never happens. The second sentence cell (naming the local-file removal and the operator route) goes red on the same mutation; the named cell is the first."
+    },
     {
       "name": "F1 the foreground launch drops the workspace root again, which is the shipped bug",
       "file": "implementations/cli/src/commands/spawn.ts",
