@@ -894,7 +894,11 @@ target mesh's `.cotal/agents/`; the launch flags override the file. Foreground r
 attached to your terminal; `--detach` hands the launch to the running manager. Both modes get the
 durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a foreground
 spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
-the agent's creds and broker footprint, like a manager despawn. A `--detach` spawn is an
+the agent's creds and broker footprint, like a manager despawn. On a user-auth mesh the two arms
+differ: a spawn against a mesh this machine provisioned revokes the actor row on exit, while a
+remote spawn (an enrollment or the advertised provisioning endpoint) removes only this machine's
+credential files; its grant stays until the mesh operator revokes it, and the launch line says
+which arm you are on. A `--detach` spawn is an
 **action**: the manager accepts it and returns the allocated identity at once, then the launch
 follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
 See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
