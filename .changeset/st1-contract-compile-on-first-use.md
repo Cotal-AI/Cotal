@@ -1,0 +1,5 @@
+---
+"@cotal-ai/manager": patch
+---
+
+Importing the manager package no longer compiles its service contracts at module scope. Every CLI invocation loads the module before its verb is read (`bin/run.ts` self-registers the manager surface), and the eager Ajv compile of all 41 distinct schema roots cost ~1.8 CPU-seconds paid by `cotal --version` (#1323; an empty node process costs ~28 ms). Command pairs now compile on first access — `managerCommandDefs` materializes the full table at serve registration, where the validators are needed and a compile failure surfaces with the same error class as before — and the §13.7 cluster document derives each command's digests from the source schema through the same member-free manifest construction the profile uses, so all digests stay byte-identical and describe-only readers never compile. `MANAGER_CONTRACTS`, `MANAGER_STATUS_CONTRACT`, and every other export keep their names and types. Measured on a built tree: `cotal --version` median CPU 1.819 s -> 0.867 s; the contract module's import cost 739 ms -> ~200 ms wall (the remainder is the core/cli import graphs, unchanged). Refs #1323.
