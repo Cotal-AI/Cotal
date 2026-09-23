@@ -25,6 +25,7 @@ const deliveryCommands: Command[] = [
       { name: "shards", type: "string", value: "<n>", description: "shard count (N=1 only; >1 is rejected)" },
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },
     ],
+    prepareMeshTarget: false,
     run: (args) => runDelivery(args),
   },
   {
@@ -45,6 +46,7 @@ const deliveryCommands: Command[] = [
       { name: "max-bytes", type: "string", value: "<n>", description: "max request body size in bytes (default: 65536)" },
       { name: "rate-limit", type: "string", value: "<n>", description: "max requests per tester per minute (default: 30)" },
     ],
+    prepareMeshTarget: false,
     run: (args) => runFeedbackIntake(args),
   },
 ];

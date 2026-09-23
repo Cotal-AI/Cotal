@@ -1,0 +1,136 @@
+/**
+ * Reproduce #1648: a custodian whose child has exited stays resident while an UNAUTHENTICATED
+ * socket is connected, holding ~65 MB for nothing. Stray dials accumulate one survivor each.
+ *
+ *   node --import tsx packages/seat/smoke/repro-1648.mts
+ *
+ * Exit status IS the verdict, so this fails a CI job when the defect is live:
+ *   2 = DEFECT PRESENT (the custodian never settled)
+ *   0 = defect absent
+ *   1 = inconclusive (the scenario never armed; no claim either way)
+ *
+ * A pass is gated on the unauthenticated peer still being connected when the child exits, i.e.
+ * when the settle window OPENS. Without that, a peer that dropped early lets the custodian settle
+ * for the ordinary reason (no peers at all) and the run reports "an unauthenticated peer does not
+ * hold it" having never tested one: absence of evidence and evidence of absence share an exit code
+ * otherwise. The peer is NOT required to outlive the window, because a settling custodian tears
+ * down its listener and closes this socket itself, which is the very behaviour under test — so the
+ * gate turns on the CHILD'S STATE at the moment this socket closed, not on whether it closed.
+ *
+ * The suite's own status cannot carry this signal: every seat smoke stayed green throughout the
+ * life of the bug, which is why it went unnoticed until the host ran out of memory.
+ *
+ * Run it from the repo root. Paths resolve from this file, not from the caller's cwd.
+ */
+import { connect } from "node:net";
+import { readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { makeSeatRoot } from "@cotal-ai/smoke-kit";
+import { launchSeat } from "../src/index.js";
+
+if (process.platform !== "linux") {
+  console.log(`INCONCLUSIVE: custody transport is Linux-only; nothing to reproduce on ${process.platform}`);
+  process.exit(1);
+}
+
+const here = dirname(fileURLToPath(import.meta.url));
+// NOT `mkdtemp(tmpdir())`. A seat socket is `<root>/<32 hex>/seat.sock`, which must fit 108 bytes,
+// and the operating instructions for this repo tell an agent to put TMPDIR inside its worktree. Two
+// independent reviews ran exactly this script from a review worktree, their sockets came to 121
+// bytes, and every run died before reaching a verdict. `makeSeatRoot` keeps the root short enough
+// and says on stderr when it has to fall back.
+const root = makeSeatRoot("repro-1648-");
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const state = (pid: number): string => {
+  try {
+    const s = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return s.slice(s.lastIndexOf(") ") + 2).split(" ")[0] ?? "?";
+  } catch {
+    return "gone";
+  }
+};
+const gone = (pid: number): boolean => state(pid) === "gone" || state(pid) === "Z";
+const until = async (p: () => boolean, ms: number): Promise<boolean> => {
+  const deadline = Date.now() + ms;
+  while (!p() && Date.now() < deadline) await wait(100);
+  return p();
+};
+const frame = (v: unknown): Buffer => {
+  const b = Buffer.from(JSON.stringify(v));
+  const h = Buffer.allocUnsafe(4);
+  h.writeUInt32BE(b.length, 0);
+  return Buffer.concat([h, b]);
+};
+
+let verdict = 1;
+const rec = launchSeat({
+  root,
+  name: "repro-1648",
+  spec: { command: process.execPath, args: ["-e", "setTimeout(()=>process.exit(0), 2000)"], env: { PATH: process.env.PATH ?? "" } },
+  cwd: here,
+});
+try {
+  // An adopter authenticates and leaves, so the seat is past its launch handoff and this exercises
+  // the ordinary post-adoption settle rather than the unobserved-launch path.
+  const adopter = connect(rec.socket);
+  adopter.on("error", () => {});
+  await new Promise<void>((r) => adopter.once("connect", () => r()));
+  adopter.write(frame({ id: 1, op: "hello", token: rec.token }));
+  await wait(400);
+  adopter.destroy();
+
+  // The peer under test: connected, never authenticated. It holds no session, no output
+  // subscription and no wait, so a settle owes it nothing.
+  const mute = connect(rec.socket);
+  let muteClosed = false;
+  // WHEN it closed is what matters, not THAT it closed, and the difference decides the verdict.
+  //
+  // A settling custodian tears down its own listener and closes this socket, so with the defect
+  // FIXED the close is caused by the very behaviour under test. Reading `muteClosed` after the fact
+  // cannot tell that apart from a peer that dropped on its own, and an earlier version of this file
+  // did exactly that: the fix made the custodian settle promptly, the settle closed this socket, and
+  // the script reported INCONCLUSIVE on a tree where the defect was gone. Two independent reviews
+  // recorded that INCONCLUSIVE as evidence that the fix was unproven.
+  //
+  // The child's state AT THE MOMENT OF THE CLOSE is the discriminator, and it is recorded here in
+  // the close handler rather than sampled by a poll, so no polling interval can blur it. Child still
+  // running means nothing had opened a settle window yet, so this peer left of its own accord and
+  // the scenario never armed. Child already gone means the close came from the settle.
+  let closedWhileChildAlive = false;
+  mute.on("error", () => {});
+  mute.on("close", () => {
+    muteClosed = true;
+    closedWhileChildAlive = !gone(rec.childPid);
+  });
+  await new Promise<void>((r) => mute.once("connect", () => r()));
+
+  if (!(await until(() => gone(rec.childPid), 15_000))) {
+    console.log("INCONCLUSIVE: the child never exited, so the settle path was never reached");
+  } else if (muteClosed && closedWhileChildAlive) {
+    // The peer this test is ABOUT left before the window could open, so whatever the custodian does
+    // next says nothing about it either way.
+    console.log("INCONCLUSIVE: the unauthenticated peer dropped while the child was still running, so nothing was holding the custodian");
+  } else {
+    const settled = await until(() => gone(rec.custodianPid), 30_000);
+    console.log(`custodian settled within 30s of its child exiting: ${settled}`);
+    mute.destroy();
+    const afterDrop = await until(() => gone(rec.custodianPid), 10_000);
+    console.log(`control: once the unauthenticated socket drops, it settles: ${afterDrop}`);
+    if (settled) {
+      console.log("OK: an unauthenticated peer does not keep a custodian alive");
+      verdict = 0;
+    } else if (afterDrop) {
+      // The control proves the custodian was healthy and waiting on that socket alone.
+      console.log("DEFECT PRESENT (#1648): an unauthenticated peer kept a custodian resident after its child exited");
+      verdict = 2;
+    } else {
+      console.log("INCONCLUSIVE: the custodian did not settle even after the socket dropped");
+    }
+  }
+} finally {
+  try { process.kill(rec.childPid, "SIGKILL"); } catch { /* already gone */ }
+  try { process.kill(rec.custodianPid, "SIGKILL"); } catch { /* already gone */ }
+  rmSync(root, { recursive: true, force: true });
+}
+process.exit(verdict);

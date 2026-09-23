@@ -78,7 +78,7 @@ export interface EpUnansweredDetail extends EpErrorDetail {
   kind: typeof EP_UNANSWERED;
   endpoint: string;
   command: string;
-  /** The plane the request was published on: `ep` (legacy) or `ep.v1` (issued, SPEC 13.15). */
+  /** The plane the request was published on: the legacy plane or the versioned plane (issued, SPEC 13.15). */
   rail?: string;
 }
 
@@ -89,7 +89,7 @@ export function unansweredRequest(e: unknown): boolean {
 }
 
 /** The `ep` plane an unanswered request rode, off the {@link EP_UNANSWERED} marker: `ep` for a
- *  legacy caller, `ep.v1` for an issued one (SPEC 13.15). SPEC 13.15 makes the two rails disjoint
+ *  legacy caller, the versioned plane for an issued one (SPEC 13.15). SPEC 13.15 makes the two rails disjoint
  *  subject spaces at the broker, and an endpoint is required to serve both, so silence on one rail
  *  says nothing about the other: a responder built before the versioned rail subscribes `ep` only
  *  and is invisible to an issued caller. A surface that turns silence into a reachability verdict

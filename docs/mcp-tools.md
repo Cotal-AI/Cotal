@@ -49,7 +49,7 @@ No arguments.
 
 *connection status*
 
-Report this session's mesh connection as one of six states, plus the raw facts it is derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is bound with a live transport while automatic deliveries have been queued with no progress for over ten minutes: the connection is fine and the seat is not consuming, so peer messages are piling up behind it. `degraded` is bound while the transport underneath is DOWN, so sends queue or fail until the client reconnects; this is the state that needs attention. `connecting` is a live transport whose Cotal bind has not finished. `disconnected` is neither. `stopped` means this session was shut down deliberately and is terminal, which is not a fault. Also reports the buffered inbox count and the time of the latest successful non-empty inbox drain when one has occurred. A retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as `lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live problem. Also reports how many automatic (connector-managed) deliveries are still queued, the local receive time of the oldest of those, and how long that queue has gone without committing anything, so a seat that cannot be steered can say so. Read-only and local: it reads this session's MeshAgent directly and does not call the manager or the broker.
+Report this session's mesh connection as one of six states, plus the raw facts it is derived from. `ready` is bound with a live transport AND consuming its queue. `stalled` is bound with a live transport while automatic deliveries have been queued with no progress for over ten minutes: the connection is fine and the seat is not consuming, so peer messages are piling up behind it. Progress is measured at the HEAD of the queue, so a seat that keeps committing fresh arrivals while its oldest deliveries never come off reports `stalled` rather than `ready`. `degraded` is bound while the transport underneath is DOWN, so sends queue or fail until the client reconnects; this is the state that needs attention. `connecting` is a live transport whose Cotal bind has not finished. `disconnected` is neither. `stopped` means this session was shut down deliberately and is terminal, which is not a fault. Also reports the buffered inbox count and the time of the latest successful non-empty inbox drain when one has occurred. A retained failure is reported as `connectionIssue` while it is the CURRENT reason, and as `lastConnectionIssue` on a stopped session, where it is a post-mortem rather than a live problem. Also reports how many automatic (connector-managed) deliveries are still queued, the local receive time of the oldest of those, and how long that queue has gone without committing anything, so a seat that cannot be steered can say so. Read-only and local: it reads this session's MeshAgent directly and does not call the manager or the broker.
 
 - **Side-effect:** read-only.
 - **Available:** always.
@@ -248,6 +248,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
 | `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
+| `events` | boolean | no | Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default. |
 
 ## `cotal_feedback`
 
@@ -291,7 +292,11 @@ Ask the manager to tear a teammate down: it leaves the mesh and its process/tab 
 
 *yield a run turn*
 
-Yield the run turn you were handed (the 🎯 context block) back to its workflow. You rarely need this: simply ending your session turn yields `done` automatically. Call it only when you are BLOCKED (can't make progress; say why in `note`) or HANDING OFF the turn to another agent (`status: handoff` with `to`). Applies to the oldest turn you were handed; pass `turn` (its goal id, shown in the block) only when you hold several.
+Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.
+
+Usually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{"status":"blocked","note":"<what prevents progress>"}`. To hand the assigned turn to another agent, call `{"status":"handoff","to":"<agent-name>","note":"<handoff context>"}`.
+
+When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
 
 - **Side-effect:** settles one run turn via the manager (done / blocked / handoff).
 - **Available:** always; only meaningful while a run turn is pending on you.
@@ -300,7 +305,7 @@ Yield the run turn you were handed (the 🎯 context block) back to its workflow
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `status` | `done` \| `blocked` \| `handoff` | yes | done = finished (usually implicit: just end your turn instead); blocked = can't proceed; handoff = another agent should take it. |
-| `to` | string | no | handoff only: the agent name the turn should pass to. |
+| `to` | string | no | Required for handoff: the agent name the assigned turn should pass to. |
 | `note` | string | no | Short free-text for the run: what blocked you, or what the next agent should know. |
 | `turn` | string | no | The turn's goal id, from the 🎯 block. Omit when you hold only one. |
 
@@ -308,10 +313,22 @@ Yield the run turn you were handed (the 🎯 context block) back to its workflow
 
 *run a workflow program*
 
-Write a cotal-lang program and run it durably on the mesh's manager. `start` takes the program SOURCE inline: the manager validates it (a refusal lists every problem with its line, cause and fix), mints a run id, and drives it from its own process, so the run outlives your session, survives a manager restart, and can be answered from anywhere. It returns the run id at once; the run keeps going. The run is admitted under YOUR channel scope: it may read and post in the channels your credential may and no others, and a `wait` on a channel outside that scope is refused at the effect. Use it for coordination that must survive restarts: multi-step plans, human checkpoints, timed waits, fan-out over agents. Read the `workflows` and `lang-card` docs (cotal_docs) before writing a program. `status` returns a run's record and its step journal (an open pause shows what it asks under the step key an answer takes back); `ps` lists the runs; `answer` resolves an open checkpoint or ask by its step key; `resume` takes a released or held run over from its recorded program.
+Use Cotal Lang to program multi-step coordination between agents: sequence work, run tasks in parallel, branch on results, wait for events, and request human decisions. Agents own their reasoning and conversations; the workflow specifies when they act and which outcomes determine the next step.
+
+Before writing a program, read cotal_docs pages `workflows` and `lang-card`. Hosted execution requires a running manager, the `run` capability, and static authentication with issued caller authority; open and user-auth meshes refuse hosted runs. `@cotal-ai/lang` provides validation and simulation separately; those are not verbs of this tool.
+
+START: pass `verb: "start"` and the program text in `source`. Example: `{"verb":"start","source":"await sleep(\"1s\", { name: \"first-run\" });"}`. Optional `file` labels diagnostics only; it reads nothing from disk. The manager validates before recording the run and returns a runId. Acceptance is not completion.
+
+INSPECT: use `verb: "status"` with that `runId` for state and step journal, or `verb: "ps"` to list runs. Both are read-only. Report completion only after observing state `completed`; surface failures or unresolved steps.
+
+ANSWER: first inspect status, then pass `verb: "answer"`, `runId`, the exact open `stepKey`, and, when requested, `value` matching the answer shape. An ask requires its requested record; a checkpoint can resolve without a value. `artifact` may name the evidence reviewed. Answer only with authority to make that decision; never invent an approval.
+
+RESUME: pass `verb: "resume"` and `runId` to continue a run from its recorded source. A held run appears as `released` in status. Do not start a duplicate run to continue it or resume one the manager is already driving.
+
+Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead.
 
 - **Side-effect:** starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only.
-- **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive.
+- **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Open mode exposes the tool, but hosted runs require static authentication with issued caller authority; open and user-auth meshes refuse execution ([workflow setup](workflows.md#from-an-agent-session)).
 - `start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.
 
 | Argument | Type | Required | Meaning |
@@ -320,9 +337,9 @@ Write a cotal-lang program and run it durably on the mesh's manager. `start` tak
 | `source` | string | no | start only: the cotal-lang program source, inline. Required for start. |
 | `file` | string | no | start only: a file name to attribute the source to in error messages. Diagnostic only; nothing is read from disk. |
 | `timeout` | string | no | start/resume: the default checkpoint timeout for the drive, as a duration (e.g. `1h`, `30m`). Default 1h. |
-| `runId` | string | no | status/answer/resume: the run id (`run-<32 hex>`), as `start` or `ps` returned it. |
-| `stepKey` | string | no | answer only: the open step's key as `status` prints it, e.g. `/checkpoint:approve#0`. |
-| `value` | unknown | no | answer only: the answer payload; its shape is the program's (a checkpoint takes what its schema says). |
+| `runId` | string | no | Required for status, answer and resume: the run id (`run-<32 hex>`) returned by start or ps. |
+| `stepKey` | string | no | Required for answer: copy the exact open step key from status, e.g. `/checkpoint:approve#0`. |
+| `value` | unknown | no | answer only: supply the value requested by the open checkpoint or ask and match its answer shape. A checkpoint may resolve without a value; an ask must receive its requested record. Use null only when that is the intended answer. |
 | `artifact` | string | no | answer only: a reference to what you reviewed before answering, recorded beside the answer. |
 | `endpoint` | string | no | status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts. |
 

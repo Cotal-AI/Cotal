@@ -1,0 +1,2 @@
+# A gate reached through a symlink must run and answer as it does by its real path, not exit 0 silently.
+smoke:entrypoint-guard

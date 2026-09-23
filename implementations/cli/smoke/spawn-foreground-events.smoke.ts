@@ -2,7 +2,7 @@
  * THE FOREGROUND SPAWN HANDS THE CONNECTOR THE LAUNCH AN ARMED SESSION NEEDS, and this suite exists
  * because it did not.
  *
- * `--events` arms a session's structured event plane, and a connector that publishes one needs two
+ * A session's structured event plane is armed by default, and a connector that publishes one needs two
  * things from the launch: the flag, and a workspace root for the emitter's write-ahead log. The
  * manager passed both. This path passed the flag and not the root, so `cotal spawn <persona>
  * --events` failed at launch construction for every armed session while `--detach` worked.
@@ -29,6 +29,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-events-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-fg-events-root-"));
@@ -69,10 +70,11 @@ const persona = join(root, ".cotal", "agents", "probe.md");
 writeFileSync(persona, "---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\n---\nbody\n");
 
 const port = await pickFreePort();
-const store = mkdtempSync(join(tmpdir(), "cotal-fg-events-js-"));
+const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}fg-events-js-`));
 // JetStream on: the spawn path pre-creates this agent's durable footprint before it builds the
 // launch, so a stream-less broker refuses long before the connector is reached.
 const broker = spawnProcess("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+teardownOnSignal(broker, store);
 const server = `nats://127.0.0.1:${port}`;
 // The mesh this spawn targets, recorded the way `cotal up` records one: an OPEN mesh, so neither
 // authenticated branch runs and the launch reaches the connector with nothing minted.
@@ -122,12 +124,12 @@ try {
   {
     const r = await run(["--agent", "fg-probe-emitter"]);
     check("CONTROL: an ordinary foreground launch reaches the connector", r.opts !== undefined, r.stderr.slice(0, 300));
-    check("CONTROL: and it is not armed", r.opts?.events !== true, r.opts?.events);
+    check("CONTROL: and it is armed by default", r.opts?.events === true, r.opts?.events);
     // The root is passed on EVERY foreground launch, not only an armed one, and two connectors read
     // it whether or not events are on: Codex and OpenCode root their per-agent home at it. Without
     // this cell an edit that passed it only under `--events` would leave the suite green and move
     // both of those homes back to whatever directory the operator happened to be standing in.
-    check("an UNARMED foreground launch carries the mesh root too", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
+    check("a default-armed foreground launch carries the mesh root", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
   }
 
   {
@@ -146,16 +148,26 @@ try {
   }
 
   {
-    const r = await run(["--agent", "fg-probe-silent", "--events"]);
+    const r = await run(["--agent", "fg-probe-emitter", "--no-events"]);
+    check("--no-events reaches the connector as an explicit opt-out", r.opts?.events === false, r.stderr.slice(0, 300));
+  }
+
+  {
+    const r = await run(["--agent", "fg-probe-silent"]);
     // Asserted on the MESSAGE, not on the exit code. Every other refusal in this path also exits 1,
     // so a code-only cell would pass on a missing persona, an unreachable broker, or a bad flag,
     // and would report the CLI refusing for a reason this suite is not about.
     check(
-      "--events on a connector that publishes no event plane REFUSES, by name",
-      /does not publish an AG-UI event plane/.test(r.stderr),
+      "a bare spawn on a connector that publishes no event plane REFUSES, by name and opt-out",
+      /connector "fg-probe-silent".*--no-events/.test(r.stderr),
       r.stderr.slice(0, 300),
     );
     check("and it refuses BEFORE the connector is reached", r.opts === undefined, "buildLaunch ran anyway");
+  }
+
+  {
+    const r = await run(["--agent", "fg-probe-silent", "--no-events"]);
+    check("--no-events lets a connector without an event plane launch", r.opts?.events === false, r.stderr.slice(0, 300));
   }
 } finally {
   broker.kill("SIGKILL");
@@ -164,7 +176,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 7;
+const EXPECTED = 9;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

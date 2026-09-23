@@ -26,7 +26,7 @@
 import ts from "typescript";
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isMainEntry } from "./main-entry.mjs";
 
 /**
  * Every declaration the parser can hang a JSDoc on, in source order, with whether one is bound to
@@ -158,7 +158,7 @@ if (process.argv.includes("--self-test")) {
 
 // Importing this file must not run it. `pairs` and `diffPairs` are worth reusing from another
 // checker, and a module that shells out to git the moment it is imported cannot be.
-const RUN_AS_CLI = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+const RUN_AS_CLI = isMainEntry(import.meta.url);
 if (RUN_AS_CLI) {
 
 const ref = process.argv[2];

@@ -4,7 +4,7 @@
     "implementations/runtime/src/host-starvation.ts",
     "implementations/runtime/src/mesh-handler.ts"
   ],
-  "guard": "a pause-plane deadline that elapsed while THIS PROCESS was off the CPU is evidence about the host and not about the effect: the operation is re-entered on the durable pause it already holds, so a `sleep` whose deadline passed during the starvation completes LATE rather than failing; the distinction is measured from event-loop lag AND a shortfall in the ticks the window should have contained, so neither a deadline on a running loop nor a wall clock that jumped can be read as starvation; a caller that still cannot be served after a bounded number of consecutive starved attempts fails under L4025 naming its measurement rather than hanging; and every failure that is not a client deadline is raised on the first attempt, unretried and unwrapped, still recorded as L4000",
+  "guard": "a pause-plane deadline that elapsed while THIS PROCESS was off the CPU is evidence about the host and not about the effect: the operation is re-entered on the durable pause it already holds, so a `sleep` whose deadline passed during the starvation completes LATE rather than failing; a deadline that elapsed while the loop WAS running is evidence about ONE REPLY and not about the pause either, so it is re-read with bounded exponential backoff and the parked step settles on the answer it was waiting for; the distinction between the two is measured from event-loop lag AND a shortfall in the ticks the window should have contained, so neither a deadline on a running loop nor a wall clock that jumped can be read as starvation; a caller that still cannot be served after a bounded number of consecutive starved attempts fails under L4025 naming its measurement rather than hanging, and one whose plane never answers fails under L4026 naming the plane instead, each bounded on its own count so no interleaving retries forever; and every failure that is not a client deadline is raised on the first attempt, unretried and unwrapped, still recorded as L4000",
   "command": "pnpm smoke:runtime-host-starvation",
   "completionMarker": "host-starvation.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/host-starvation.json",
@@ -32,7 +32,22 @@
     "signals were not independent: a +10s step on a healthy loop measured {elapsed 11201, lag 10003,",
     "expected 44, observed 4} and classified `starved`, while a BACKWARD step during a genuine block",
     "classified `fault`, which is #1508's own misattribution returning under an NTP correction. Both",
-    "mutations restore exactly that reading, one for the window and one for the tick."
+    "mutations restore exactly that reading, one for the window and one for the tick.",
+    "",
+    "#1619 (2026-09-17) IS THE SECOND HALF, and MP15 IS ITS PRE-FIX CONTROL. A parked `ask` over 7.5",
+    "minutes settled `failed (L4000, \"timeout\")` with 11+ minutes of its deadline unspent, while the",
+    "asks under 4.5 minutes settled `ok`. Same client deadline as #1508 and the opposite cause: the",
+    "loop was RUNNING and one JetStream reply was simply late, which the classifier answered `fault`,",
+    "so the deadline went straight out as the effect's failure. Exposure grew with the step's length",
+    "because a parked step issues roughly one 5s plane read per second for its whole duration.",
+    "",
+    "MP16 is #1619's band-aid detector, the mirror of MP7. Retrying a late reply forever is the fix a",
+    "lazy reading would have shipped, and a run that hangs on a broker that never answers is neither",
+    "alive nor dead; the bound is what makes the re-read a repair instead of a hang.",
+    "",
+    "MP17 keeps the two diagnoses APART. Reporting a late plane as L4025 sends an operator to add",
+    "capacity to a host that was never short of it, which is the same class of misattribution both",
+    "issues are about, one level up."
   ],
   "mutations": [
     {
@@ -118,7 +133,7 @@
     {
       "name": "MP9 the retry is unbounded, so a host that never recovers leaves the caller hanging instead of failing",
       "file": "implementations/runtime/src/host-starvation.ts",
-      "find": "      if (attempt >= STARVED_ATTEMPTS) {",
+      "find": "      if (starved >= STARVED_ATTEMPTS) {",
       "replace": "      if (false) {",
       "expectRed": "it ends rather than retrying forever",
       "cell": "it ends rather than retrying forever"
@@ -138,6 +153,38 @@
       "replace": "    const elapsedMs = Math.max(0, this.clock.wall() - mark.wallAt);",
       "expectRed": "and the step is visible in the skew while the window did not move with it",
       "cell": "and the step is visible in the skew while the window did not move with it"
+    },
+    {
+      "name": "MP15 the pre-fix tree: a deadline on a RUNNING loop is a fault again, so one late reply ends the parked step as the effect's failure",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "  if (!wasStarved(window)) return { condition: \"transient\", window };",
+      "replace": "  if (!wasStarved(window)) return { condition: \"fault\" };",
+      "expectRed": "and the late reply was absorbed by name: the notice says the host WAS scheduling, so the blame is the plane's",
+      "cell": "and the late reply was absorbed by name: the notice says the host WAS scheduling, so the blame is the plane's"
+    },
+    {
+      "name": "MP16 THE BAND-AID: a late reply is re-read without bound, so a plane that never answers hangs the run instead of failing it",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "        if (unanswered >= POLL_ATTEMPTS) {",
+      "replace": "        if (false) {",
+      "expectRed": "after a bounded number of reads",
+      "cell": "after a bounded number of reads"
+    },
+    {
+      "name": "MP17 the unanswered plane is reported as STARVATION, sending the operator to add capacity to a host that had plenty",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "            \"L4026\",\n            \"pause-unanswered\",",
+      "replace": "            \"L4025\",\n            \"host-starved\",",
+      "expectRed": "under L4026, which names the PLANE rather than the effect or the host",
+      "cell": "under L4026, which names the PLANE rather than the effect or the host"
+    },
+    {
+      "name": "MP18 the counts are read as CONSECUTIVE-OF-THIS-KIND and reset when the condition changes, so an alternating sequence reaches neither bound and the run hangs forever",
+      "file": "implementations/runtime/src/host-starvation.ts",
+      "find": "      const verdict = classifyPauseFailure(error, lag.since(mark));",
+      "replace": "      const verdict = classifyPauseFailure(error, lag.since(mark));\n      if (verdict.condition === \"transient\") starved = 0; else unanswered = 0;",
+      "expectRed": "an alternating sequence ENDS rather than retrying forever, which one shared counter would not",
+      "cell": "an alternating sequence ENDS rather than retrying forever, which one shared counter would not"
     },
     {
       "name": "MP14 the TICK measures its own lateness on the wall clock, so a backward step erases a real block and #1508's misattribution returns",

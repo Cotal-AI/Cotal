@@ -115,6 +115,44 @@ journal, without a live effect handler or durable store. Inspection stops before
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
 
+## From an agent session
+
+Fresh `cotal setup` defaults declare `capabilities: [spawn, run]`. On a static-auth mesh,
+that exposes `cotal_run` alongside the teammate tools. The manager must be running.
+Read `cotal_docs` pages `lang-card` and `workflows`, then try:
+
+```json
+{
+  "verb": "start",
+  "source": "await sleep(\"1s\", { name: \"first-run\" });",
+  "file": "first-run.cotal.js"
+}
+```
+
+Pass this object to `cotal_run`. `source` contains the program; `file` only labels diagnostics
+and reads nothing from disk. The response returns a run ID before execution finishes. Call
+`cotal_run` with `verb: "status"` and that `runId` to inspect the state and step journal.
+A completed timer records its sleep step as `ok`.
+
+### If `cotal_run` is missing
+
+1. Call `cotal_orientation` and check the connector version, capabilities and tool list.
+   Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+2. Have the operator add `run` to the persona's existing `capabilities` list, for example
+   `capabilities: [spawn, run]`. `spawn` alone does not expose `cotal_run`. Setup leaves existing
+   personas unchanged except for its [byte-exact legacy migration](getting-started.md).
+   Peer persona-definition tools cannot grant capabilities.
+3. Relaunch the agent through the manager from the updated persona so it receives newly issued
+   credentials and a fresh connector configuration. Editing the file or reconnecting with the
+   old credential does not grant new broker permissions. If the launch sets `COTAL_CAPABILITIES`,
+   update that override too; it takes precedence over the file.
+4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
+
+Tool visibility alone does not establish execution support. Hosted runs currently require
+static authentication with issued caller authority. Open meshes can expose the tool but refuse
+hosted runs; user-auth meshes also refuse them. A legacy credential without issued authority
+must be replaced through the current issuance path before it can start a hosted run.
+
 ## Operating a run
 
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh
@@ -168,11 +206,20 @@ whose caller had no channels can still sleep, checkpoint and turn agents; its `w
 is refused at the effect.
 
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. The admission itself is never rewritten. Every host reads the marker
+from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
+admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
 takeover or manager restart continues the run. Revoking twice is not an error, and the first
 reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
+
+`run ps --local` reads the marker beside each run record and prints `revoked` for a run that
+carries one, whatever state the record itself holds, with the revoker and the reason under the
+table. The record is display only here: a revoke writes no terminal state, because no host drove
+the run to one and the journal owns the facts. A marker the listing cannot read, whether the store
+is unreachable or the marker has a version or shape it does not know, prints `unchecked` in the
+`STATE` column. The reason and the state the record carries go to stderr, and the command exits 1
+once every row is printed. The hosted `run ps` reads the record alone.
 
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
@@ -212,7 +259,11 @@ recorded ownership flag must match its step-derived channel before registry writ
 The mediator retains endpoint-wide checkpoint rights and stream-wide leader reads as trusted
 host authority. Record reads exposed to the driver are restricted to its own run's keys. Reads
 that decide writes remain leader-served. A read of the journal uses the run's filtered replay
-durable, including the diagnostic for a journal with no run record.
+durable, including the diagnostic for a journal with no run record. That durable is named after
+the takeover, and an attempt reads it many times, so reads under one takeover run one at a time in
+the hosting process and a replay removes a durable of its own name that an interrupted earlier read
+left behind. A durable that survives a replay's own delete belongs to a reader the process cannot
+account for, and reading its tail is refused.
 
 A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open
 pause, then a second credential pinned to that token for the answer and settlement.
@@ -335,7 +386,14 @@ bringing one up is the catchable L4008, a spawn that ends without a handle gives
 and the tree is reusable the moment a holder's presence row is gone, so a discharged race loser
 or a crashed seat releases its tree with no bookkeeping. A spawn the endpoint refuses at accept
 is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity), and one whose
-seat never came up is L4002. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+seat never came up is L4002. A refusal that states the command did not run is answered
+before it gets that far. In a space served by more than one manager the resolve and the invoke
+are separate trips through the same anycast queue, so a run's call can reach an instance it did
+not resolve against, and that instance refuses ahead of any effect. The run drops its resolved
+handle, re-describes and re-issues, for a bounded number of attempts; after them the refusal
+surfaces as the effect's own failure and still states that nothing ran. A spawn that names a
+`placement` addresses one instance by name, so a refusal from it is that incarnation answering
+about itself and is never re-issued. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on. The

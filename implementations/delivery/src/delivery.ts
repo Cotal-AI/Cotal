@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -23,7 +23,7 @@ import {
   type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, FsSecretStore, authDir, deliveryCredsKey, findCotalRoot, loadSpaceAuth, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writeIdentityPin } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
@@ -271,6 +271,52 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
 // Parsing lives in the dispatcher now, driven by the `deliver` command's declared flags.
 
 /**
+ * RECORD THIS PROCESS as the space's delivery daemon, and un-record it on a clean exit (#1528).
+ *
+ * The daemon writes its OWN record because it is the only participant that always knows it is
+ * running. Until now `delivery.<space>.pid` was written ONLY by the CLI launcher
+ * (`startDeliveryDetached`), so every other route to a live daemon — a container entrypoint,
+ * systemd, an operator typing `cotal deliver --space …`, a hosted composition calling
+ * {@link runDelivery} — left whatever was on disk untouched and readers believed it. A record naming
+ * a pid that died days ago does not merely under-report: `down`'s `mayBeRunning` guard exists to
+ * fail CLOSED so `cotal down nats` cannot pull the broker out from under a live dependant, and a
+ * stale record supplies exactly the proof-of-death that guard requires.
+ *
+ * The launcher's shape is followed rather than re-invented: the CANONICAL path (never a pre-upgrade
+ * name), a provably dead pre-upgrade record reclaimed first so an upgraded root never holds both
+ * spellings, then the #969 identity pin beside it. The pin goes with the record on the way out.
+ *
+ * The removal is pid-CHECKED, like the manager's: a daemon that exits must not delete a record that
+ * already belongs to its successor (a fast restart writes the new pid before the old process has
+ * finished unwinding), so the record goes only while it still names this process.
+ *
+ * A root with no `.cotal/` is not a workstation and gets no record — a hosted composition has none,
+ * and creating one here would plant a stray workspace root wherever the daemon happened to run.
+ */
+export function recordDeliveryPid(root: string, space: string): () => void {
+  if (!existsSync(join(root, ".cotal"))) {
+    console.error(`• delivery: no ${join(root, ".cotal")} here, so this daemon is not recorded in a pidfile (nothing local will find it by pid)`);
+    return () => {};
+  }
+  const ctx = { root, space };
+  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx);
+  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx);
+  const mine = String(process.pid);
+  writeFileSync(pidPath, mine);
+  // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
+  writeIdentityPin(pidPath, process.pid);
+  return () => {
+    try {
+      if (readFileSync(pidPath, "utf8").trim() !== mine) return; // a successor's record: not ours to remove
+      removeIdentityPin(pidPath);
+      rmSync(pidPath, { force: true });
+    } catch {
+      /* already gone, or unreadable: leaving a record we cannot prove is ours is the safe error */
+    }
+  };
+}
+
+/**
  * Run the delivery daemon: the server-side Plane-3 durable backstop. A thin composition root that
  * builds a scoped `delivery` endpoint, acquires the single-flight lease, and runs the existing
  * Plane-3 loops (`startPlane3`) — which ALSO serve the `ctl.delivery` runtime durable join/leave/list
@@ -450,10 +496,17 @@ async function runStartedDelivery(
   // it is provably ours, then exit. Once the real `shutdown` is installed it REPLACES this, and
   // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both.
   let stopping = false;
+  /** Removes THIS process's liveness record, once it has one. Declared BEFORE the handlers that
+   *  call it and assigned below, so a signal landing between the two is a no-op rather than a
+   *  temporal-dead-zone throw: at that instant nothing has been written, so there is nothing to
+   *  remove. Every exit path from the acquire onward goes through one of the three closures that
+   *  call it, which is what keeps the record's lifetime equal to this daemon's. */
+  let unrecordPid: (() => void) | undefined;
   const earlyStop = (code: number): void => {
     if (stopping) return;
     stopping = true;
     setTimeout(() => process.exit(code), 2000);
+    unrecordPid?.();
     void (async () => {
       try {
         const own = await ep.readDeliveryLeaseEntry(shard);
@@ -467,6 +520,22 @@ async function runStartedDelivery(
   const earlySigterm = (): void => earlyStop(0);
   process.on("SIGINT", earlySigint);
   process.on("SIGTERM", earlySigterm);
+  // THE LIVENESS RECORD GOES HERE, AFTER THE ACQUIRE AND NOT BEFORE IT (#1528).
+  //
+  // The record answers "which process is this space's delivery daemon", and until this line this
+  // process cannot answer it: the lease is the single-flight admission, and a daemon that loses the
+  // CAS above REFUSES TO BIND and exits. Writing on entry would let such a loser overwrite the live
+  // holder's record on its way out the door — a fresh record naming a process that is about to be
+  // gone, which is the same lie this issue is about with a newer timestamp on it. The acquire is
+  // the first instant the answer is this process, so it is the first instant the record may say so.
+  //
+  // It is also written BEFORE `startPlane3`, deliberately: from the acquire onward there is a row on
+  // the broker with this daemon's name on it, so an operator's `cotal down` must be able to FIND
+  // this process even if the bind below hangs or fails. Readiness is a separate fact and the lease's
+  // own `ready` flag already carries it; the pidfile only ever claimed a process.
+  //
+  // Placed one statement after the signal handlers, so every exit path from here on can remove it.
+  unrecordPid = recordDeliveryPid(findCotalRoot(), space);
   // AND THE SAME RELEASE, REACHABLE BY AN ORDINARY `catch`. The two process-level guards below
   // only see a fault that reaches the RUNTIME. A start-up rejection on the public CLI path does
   // not: `runCli` awaits this function inside its own try/catch (cli/src/command.ts), so the
@@ -480,6 +549,7 @@ async function runStartedDelivery(
   publishReleaser(async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    unrecordPid?.(); // the record dies with the daemon it describes, including on a start-up failure
     try {
       const own = await ep.readDeliveryLeaseEntry(shard);
       if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
@@ -624,6 +694,11 @@ async function runStartedDelivery(
     stopping = true;
     clearInterval(renew);
     clearInterval(brokerWatch);
+    // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
+    // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
+    // hung is a record that outlives its process, which is this issue's defect re-entering through
+    // the exit path. `rmSync` needs no broker and cannot hang, so it runs before any of it.
+    unrecordPid?.();
     // Hard-exit fallback: a graceful release/stop talks to the broker, which may be DEAD (the broker-gone
     // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.
     setTimeout(() => process.exit(code), 2000);

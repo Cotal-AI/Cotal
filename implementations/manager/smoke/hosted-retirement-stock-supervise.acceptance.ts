@@ -171,6 +171,7 @@ import {
 } from "@cotal-ai/auth";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") throw new Error("stock hosted-retirement supervise acceptance requires Linux");
 
@@ -179,7 +180,7 @@ const cli = join(repo, "bin", "cotal.ts");
 const tsx = join(repo, "node_modules", ".bin", "tsx");
 const self = process.argv[1]!;
 const home = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-home-"));
-const hostRoot = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-host-"));
+const hostRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}stock-supervise-host-`));
 const participantRoot = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-participant-"));
 const previousHome = process.env.COTAL_HOME;
 process.env.COTAL_HOME = home;
@@ -315,6 +316,7 @@ try {
     transport: { kind: "plaintext" }, port: brokerPort, storeDir, extraAccounts: prepared.extraAccounts,
   }));
   broker = track("broker", spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" }));
+  teardownOnSignal(broker);
   let brokerReady = false;
   let connectedBrokerVersion = "";
   for (let tries = 0; tries < 60 && broker.exitCode === null; tries++) {

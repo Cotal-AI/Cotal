@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -39,7 +40,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable } = await import("@cotal-ai/core");
-const { authDir, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneStaleMeshes, recordMesh, removeMesh, saveSpaceAuth, setCurrent } = await import("@cotal-ai/workspace");
+const { authDir, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, removeMesh, saveSpaceAuth, setCurrent } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -188,13 +189,15 @@ function projectRoot(label: string): string {
 const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort)], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
 // A second broker that actually ENFORCES something, so the guided flow's auth branches (the
 // "this folder holds no credentials" recovery) are reachable at all. Password auth is enough:
 // probeEnforcement only asks whether a bare connect is refused.
 const authPort = await freePort();
 const AUTH_LIVE = `nats://127.0.0.1:${authPort}`;
-const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p"], { stdio: "ignore" });
+const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(authBroker);
 broker.on("error", () => {
   console.error("needs nats-server on PATH");
   process.exit(1);
@@ -343,10 +346,17 @@ try {
   const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
   const EXCHANGE_ISSUER = userExchangeIssuer("hosted");
   // A stand-in exchange: answers /health with its own issuer and /jwks with a key set.
+  let policyRefreshHits = 0;
+  let policyRefreshFails = false;
   const exchange = createHttpServer((req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: EXCHANGE_ISSUER }));
     if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [{ kty: "OKP" }] }));
+    if (req.url === "/.well-known/cotal-mesh") {
+      policyRefreshHits++;
+      if (policyRefreshFails) { res.statusCode = 503; return void res.end("unavailable"); }
+      return void res.end(JSON.stringify(bundleFor()));
+    }
     res.statusCode = 404;
     res.end("{}");
   });
@@ -371,6 +381,7 @@ try {
     server: AUTH_LIVE, // the broker that actually refuses a bare connect — the user-arm PASS
     tlsRequired: false, // loopback in this smoke; a real remote bundle says true
     userAuth: { provider: "cotal", idp: { url: ISSUER, issuer: ISSUER, audience: "cotal-mesh" }, endpoints: { url: exchangeUrl } },
+    policy: { events: "required" },
     sentinelCreds: SENTINEL_BLOB,
     ...over,
   });
@@ -412,6 +423,8 @@ try {
   const hostedEntry = findMesh("hosted");
   check("…marked remote, with the pinned exchange as a stated trust position",
     hostedEntry?.userAuth?.remote === true && hostedEntry?.userAuth?.endpoints?.url === exchangeUrl, hostedEntry);
+  check("…and preserves the required-events registration policy",
+    hostedEntry?.policy?.events === "required", hostedEntry);
   check("…and the record carries the sentinel PATH, never the blob",
     typeof hostedEntry?.userAuth?.sentinelCredsPath === "string" &&
       !JSON.stringify(hostedEntry).includes("sentinel-secret-material"), hostedEntry);
@@ -428,9 +441,32 @@ try {
   const hostedTarget = targetFromEntry(hostedEntry!, hostedEntry!.server, "registry");
   check("the remote entry round-trips through targetFromEntry",
     hostedTarget.mode === "user" && hostedTarget.userAuth?.remote === true && hostedTarget.server.startsWith("nats://127.0.0.1"), hostedTarget);
+  recordMesh({ ...hostedEntry!, policy: undefined, ts: new Date(0).toISOString() });
+  const { prepareCatalogCommand } = await import("../src/commands/sync.js");
+  await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  const refreshedManual = findMesh("hosted");
+  check("trusted refresh adds policy to a pre-existing manual registration without replacing it",
+    policyRefreshHits === 1 && refreshedManual?.origin === "manual" && refreshedManual.root === hostedEntry?.root && refreshedManual.policy?.events === "required", { policyRefreshHits, refreshedManual });
+  await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  check("the trusted manual policy refresh warm path makes zero requests", policyRefreshHits === 1, policyRefreshHits);
   const hostedList = await run([]);
-  check("`cotal meshes` output never contains the sentinel blob",
-    !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 200));
+  check("`cotal meshes` stays registry-local for a manual required-policy entry",
+    policyRefreshHits === 1, policyRefreshHits);
+  check("`cotal meshes` output shows the required-events policy without exposing the sentinel",
+    hostedList.out.includes("events: required") && !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 300));
+  policyRefreshFails = true;
+  recordMesh({ ...refreshedManual!, policy: undefined, policyCheckedAt: new Date(0).toISOString() });
+  let expiredRefreshError = "";
+  try {
+    await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  } catch (error) {
+    expiredRefreshError = (error as Error).message;
+  } finally {
+    policyRefreshFails = false;
+  }
+  check("an expired manual policy refresh failure names the pinned exchange and refuses",
+    expiredRefreshError.includes(exchangeUrl) && expiredRefreshError.includes("HTTP 503") && findMesh("hosted")?.policy === undefined,
+    { expiredRefreshError, entry: findMesh("hosted") });
   removeMesh("hosted");
   // A bundle missing ANY pin refuses — each of the trust fields, not just one.
   for (const strip of ["idp-url", "issuer", "audience", "endpoints", "sentinel"] as const) {
@@ -668,6 +704,34 @@ try {
     localMeshesForRoot(shared).every((m) => m.space !== "elsewhere"), localMeshesForRoot(shared));
   removeMesh("elsewhere");
 
+  // Catalog-owned records are the same non-local ownership class, but account-scoped. Local
+  // teardown, liveness pruning and a different account must never remove or overwrite them.
+  recordMesh({ space: "catalog_one", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-a", catalogSlug: "catalog_one", catalogName: "Catalog one", ts: new Date(0).toISOString() });
+  recordMesh({ space: "catalog_two", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-b", catalogSlug: "catalog_two", catalogName: "Catalog two", ts: new Date(0).toISOString() });
+  check("a liveness or mismatch prune never removes a discovered entry",
+    pruneMesh("catalog_one", "mismatch") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
+  check("a root teardown keeps discovered entries", removeMeshesByRoot(shared).length === 0 && findMesh("catalog_one") !== undefined, loadMeshes());
+  const { removeCatalogMeshes } = await import("@cotal-ai/workspace");
+  check("account cleanup removes only that account's discovered entries",
+    removeCatalogMeshes("acct-a").join(",") === "catalog_one" && findMesh("catalog_one") === undefined && findMesh("catalog_two") !== undefined && findMesh("Catalog two") === undefined,
+    loadMeshes());
+  removeMesh("catalog_two");
+
+  let catalogBrokerAttempts = 0;
+  const catalogSink = createServer((socket) => { catalogBrokerAttempts++; socket.destroy(); });
+  await new Promise<void>((r) => catalogSink.listen(0, "127.0.0.1", r));
+  const catalogServer = `nats://127.0.0.1:${(catalogSink.address() as { port: number }).port}`;
+  for (let i = 0; i < 8; i++)
+    recordMesh({ space: `catalog_${i}`, server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-fanout", catalogSlug: `catalog_${i}`, catalogName: `Catalog ${i}`, ts: new Date(0).toISOString() });
+  const discoveredList = await run([]);
+  check("meshes lists discovered entries without probing any catalog broker", discoveredList.code === 0 && catalogBrokerAttempts === 0, { catalogBrokerAttempts, out: discoveredList.out });
+  const { use } = await import("../src/commands/use.js");
+  await use({ positionals: ["catalog_3"], values: {}, raw: [] });
+  check("use selects a discovered slug without probing any catalog broker", getCurrent() === "catalog_3" && catalogBrokerAttempts === 0, catalogBrokerAttempts);
+  for (let i = 0; i < 8; i++) removeMesh(`catalog_${i}`);
+  if (getCurrent() === "catalog_3") setCurrent("remote-dead");
+  catalogSink.close();
+
   // `cotal up --space <name>` reclaims a dead holder's name. It must not reclaim a REGISTERED one:
   // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,
   // so an `up` that then fails would leave the operator with neither mesh and no way back.
@@ -687,11 +751,18 @@ try {
     liveClaimError?.message.includes("cotal meshes rm claimed-live") === true && !liveClaimError.message.includes("cotal down"),
     liveClaimError?.message);
   check("…and it survives", findMesh("claimed-live") !== undefined, loadMeshes());
+  recordMesh({ space: "claimed-catalog", server: DEAD, root, mode: "user", origin: "catalog", catalogOwner: "acct-a", ts: new Date(0).toISOString() });
+  let catalogClaimError: Error | undefined;
+  await claimSpace("claimed-catalog", LIVE, localRoot).catch((e: Error) => void (catalogClaimError = e));
+  check("`up` refuses a discovered name collision and leaves the catalog record untouched",
+    catalogClaimError?.message.includes("owned by a signed-in space catalog") === true && findMesh("claimed-catalog")?.origin === "catalog",
+    catalogClaimError?.message);
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
+  removeMesh("claimed-catalog");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability

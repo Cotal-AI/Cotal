@@ -226,9 +226,15 @@ export interface UserBundle {
   server: string;
   tlsRequired: boolean;
   userAuth: UserAuthInfo;
+  /** Closed registration policy. No other key or value is accepted. */
+  policy?: { events: "required" };
   /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
    *  the entry's root and records the PATH; the registry document never carries the blob. */
   sentinelCreds: string;
+}
+
+export function registrationEventsRequired(bundle: UserBundle): boolean {
+  return bundle.policy?.events === "required";
 }
 
 /** Validate a user-auth bundle, fail-loud on every missing pin. The `userAuth` arm goes through
@@ -246,6 +252,18 @@ export function checkUserBundle(raw: string): Check<UserBundle> {
   if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
   if (typeof doc.server !== "string" || !doc.server) return bad("✗ the user-auth bundle names no broker server");
   if (typeof doc.tlsRequired !== "boolean") return bad("✗ the user-auth bundle must state tlsRequired explicitly (true or false) - transport strictness is part of what the export pins");
+  let policy: UserBundle["policy"];
+  if ((doc as { policy?: unknown }).policy !== undefined) {
+    const value = (doc as { policy?: unknown }).policy;
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return bad("✗ the user-auth bundle policy must be an object with exactly policy.events = \"required\"");
+    const fields = Object.keys(value as Record<string, unknown>);
+    const extra = fields.find((key) => key !== "events");
+    if (extra) return bad(`✗ the user-auth bundle policy has unsupported field \"policy.${extra}\"`);
+    if ((value as { events?: unknown }).events !== "required")
+      return bad('✗ the user-auth bundle policy.events must be exactly "required"');
+    policy = { events: "required" };
+  }
   let userAuth: UserAuthInfo;
   try {
     userAuth = assertUserAuthInfo(doc.userAuth);
@@ -268,7 +286,7 @@ export function checkUserBundle(raw: string): Check<UserBundle> {
   }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
-  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, sentinelCreds: doc.sentinelCreds });
+  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, ...(policy ? { policy } : {}), sentinelCreds: doc.sentinelCreds });
 }
 
 /** Budget for the exchange trust probe — same posture as the mode probe above: run once, at
@@ -319,7 +337,7 @@ export async function pinnedFetchProbe(target: string): Promise<{ refused: boole
 }
 
 /** One hop, no downgrade, no redirect-following. */
-async function pinnedFetch(target: string, what: string): Promise<Response> {
+export async function pinnedFetch(target: string, what: string): Promise<Response> {
   const u = new URL(target);
   const bad = assertPinnedFetchUrl(u, what);
   if (bad) throw new Error(bad);
@@ -406,6 +424,7 @@ export function persistRemoteUserEntry(
     origin: "manual",
     ...(tlsRequired ? { tlsRequired: true } : {}),
     ...(overlayConsent ? { unencryptedOverlay: true } : {}),
+    ...(bundle.policy ? { policy: bundle.policy } : {}),
     userAuth: { ...bundle.userAuth, remote: true, sentinelCredsPath },
     ts: new Date().toISOString(),
   });

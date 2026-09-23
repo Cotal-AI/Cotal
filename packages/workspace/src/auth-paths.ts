@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import {
   composeSpaceAuth,
@@ -421,6 +421,139 @@ export function createManagerInstanceIdentity(root: string, space: string, candi
  *  key alone. */
 function accountFileKey(space: string): string {
   return spaceKey(space);
+}
+
+/**
+ * The per-seat WRITER GENERATION: which custody of one seat's identity is current.
+ *
+ * It is not a second identity. The seat's identity stays its `lifecycleUid`, unchanged across a
+ * move, because the durables are keyed by it and a resume must recover it. The generation says
+ * which host may write as that identity now, and it is monotonic, so it survives a clock that is
+ * wrong in a way a time-based lease does not.
+ *
+ * It lives beside {@link ManagerInstanceIdentity} and follows that file's three established rules:
+ * space-scoped by a hex key (an auth dir is a shared namespace and a raw space token can collide or
+ * case-fold), published by exclusive create, and loud on a malformed record rather than minted over,
+ * because minting over it is how a stale host would become authoritative again.
+ */
+export interface SeatWriterGeneration {
+  readonly space: string;
+  readonly name: string;
+  readonly lifecycleUid: string;
+  readonly generation: number;
+}
+
+/** One file per CLAIMED GENERATION, not one per seat. The exclusive create has to be on the
+ *  successor VALUE, or a host that legitimately takes custody twice would collide with its own
+ *  earlier claim and a fresh host would win a create that proves nothing. `<seat>.<generation>`
+ *  makes "claim generation N" the atomic act. */
+function seatGenerationFile(root: string, space: string, name: string, generation: number): string {
+  const key = Buffer.from(`${space}\u0000${name}`, "utf8").toString("hex");
+  return join(authDir(root), `seat-generation.${key}.${generation}.json`);
+}
+
+function seatGenerationPrefix(space: string, name: string): string {
+  return `seat-generation.${Buffer.from(`${space}\u0000${name}`, "utf8").toString("hex")}.`;
+}
+
+/**
+ * Claim a whole set of seat writer generations, or none of them.
+ *
+ * Each claim is its own exclusive create, so a later one can lose even when every earlier one
+ * succeeded. A claim is a create that can never be made again, so a partial set would let one
+ * refusal consume the retry over the very same input. This creates them in order and, on any
+ * failure, removes the files IT created in this call before rethrowing.
+ *
+ * The compensation is deliberately narrow. It unlinks by the exact path it wrote and nothing else,
+ * so it can never remove a generation another destination holds. An unlink that finds the file
+ * already gone is fine; any other unlink error is reported alongside the original failure rather
+ * than replacing it, because the original is why the operation is failing and the unlink error is
+ * why the tree is not clean.
+ *
+ * No lock, no retry, no fallback: a lost create still refuses the whole set.
+ */
+export function claimSeatWriterGenerations(
+  root: string,
+  claims: readonly SeatWriterGeneration[],
+): readonly SeatWriterGeneration[] {
+  const written: string[] = [];
+  for (const claim of claims) {
+    try {
+      advanceSeatWriterGeneration(root, claim);
+    } catch (error) {
+      const undoFailures: string[] = [];
+      for (const path of written) {
+        try {
+          rmSync(path);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+            undoFailures.push(`${path}: ${(e as Error).message}`);
+        }
+      }
+      if (undoFailures.length)
+        throw new Error(
+          `${(error as Error).message}; additionally, these generations claimed by this attempt could not be released and must be removed by hand: ${undoFailures.join("; ")}`,
+        );
+      throw error;
+    }
+    written.push(seatGenerationFile(root, claim.space, claim.name, claim.generation));
+  }
+  return claims;
+}
+
+/** The highest generation this host has claimed for a seat, or undefined when it never has.
+ *  A present-but-malformed record fails LOUD, for the reason {@link loadManagerInstanceIdentity}
+ *  gives: replacing it is how custody silently returns to a host that lost it. */
+export function loadSeatWriterGeneration(root: string, space: string, name: string): SeatWriterGeneration | undefined {
+  const dir = authDir(root);
+  if (!existsSync(dir)) return undefined;
+  const prefix = seatGenerationPrefix(space, name);
+  let held: SeatWriterGeneration | undefined;
+  for (const entry of readdirSync(dir)) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue;
+    const f = join(dir, entry);
+    let parsed: SeatWriterGeneration;
+    try { parsed = JSON.parse(readFileSync(f, "utf8")) as SeatWriterGeneration; }
+    catch (e) { throw new Error(`the persisted seat writer generation at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh generation over it - that is how a stale host becomes authoritative again`); }
+    if (parsed === null || typeof parsed !== "object"
+      || parsed.space !== space || parsed.name !== name
+      || typeof parsed.lifecycleUid !== "string" || parsed.lifecycleUid.length === 0
+      || !Number.isInteger(parsed.generation) || parsed.generation < 0
+      || entry !== `${prefix}${parsed.generation}.json`)
+      throw new Error(`the persisted seat writer generation at ${f} is malformed; refusing to mint a fresh generation over it - that is how a stale host becomes authoritative again`);
+    if (!held || parsed.generation > held.generation)
+      held = { space, name, lifecycleUid: parsed.lifecycleUid, generation: parsed.generation };
+  }
+  return held;
+}
+
+/**
+ * Take custody of a seat at `claim.generation` by exclusive create, before anything launches.
+ *
+ * The publication primitive is {@link createManagerInstanceIdentity}'s, and the resolution of a
+ * lost create is deliberately NOT: that helper adopts the winner on EEXIST, because two managers
+ * sharing one logical instanceId is the intended outcome there. Here a lost create means two hosts
+ * are claiming one seat, which is the condition this fence exists to stop, so it refuses. Same
+ * primitive, opposite disposition.
+ */
+export function advanceSeatWriterGeneration(
+  root: string,
+  claim: SeatWriterGeneration,
+): SeatWriterGeneration {
+  if (!Number.isInteger(claim.generation) || claim.generation < 0)
+    throw new Error(`a seat writer generation must be a non-negative integer; got ${JSON.stringify(claim.generation)}`);
+  const dir = authDir(root);
+  mkSecretDir(dir);
+  const path = seatGenerationFile(root, claim.space, claim.name, claim.generation);
+  try {
+    writeSecretFileCreateOnly(path, JSON.stringify(claim, null, 2));
+    return claim;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    throw new Error(
+      `seat-writer-generation-create-lost: generation ${claim.generation} of seat ${JSON.stringify(claim.name)} in space ${JSON.stringify(claim.space)} is already claimed; refusing to resume as a second writer`,
+    );
+  }
 }
 
 /** Read one auth-material record: the file's raw text, or undefined when absent. lstat-disciplined

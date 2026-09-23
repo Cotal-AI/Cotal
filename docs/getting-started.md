@@ -72,14 +72,18 @@ time, it walks you through:
    missing a required executable is named, and the rest are ready at spawn.
 3. **Seeds one agent.** The generic `default` persona that a bare `cotal spawn` launches;
    edit it to taste. It joins no channels at boot, but may join, create, read, and post to
-   channels on demand. `cotal setup --demo` additionally seeds a guided team to talk to:
+   channels on demand. It declares `capabilities: [spawn, run]`, so it can manage teammates
+   and start [durable workflows](workflows.md#from-an-agent-session) through `cotal_run` on a
+   static-auth mesh. `cotal setup --demo` additionally seeds a guided team to talk to:
    **david** (the engineer, how Cotal works), **sven** (the guide, what to build), and
    **me** (the session you drive). Every file setup writes is announced with a
    `→ wrote …` line.
 
    Re-running setup after an upgrade repairs the earlier untouched `default` template that had an
    empty post ACL. The repair requires a byte-for-byte match, so any persona you edited is left
-   unchanged.
+   unchanged. A default that already has wildcard post access and only `spawn` also stays
+   unchanged. To enable workflows for an existing persona, follow
+   the [capability update steps](workflows.md#if-cotal_run-is-missing).
 4. **Nothing to install for the dashboard.** `@cotal-ai/web` ships inside `cotal-ai` and is
    seeded automatically on first run (like the built-in connectors), so `cotal web` works out
    of the box and tracks your CLI version on upgrade.

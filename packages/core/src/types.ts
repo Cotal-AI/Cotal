@@ -37,6 +37,8 @@ export interface AgentCard {
   /** Cotal: free-form "what it can do" tags (A2A skill-tags, flattened) — discovery only. */
   tags?: string[];
   skills?: AgentSkill[];
+  /** Free-form advisory display metadata. Reserved flat string keys are `connector`, `model`,
+   *  `host`, `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. */
   meta?: Record<string, unknown>;
   /** Wire-contract version this participant speaks (the SPEC.md version, `"0.2"` today). A change
    *  signal, not negotiation: v0 has none, but a peer can detect a mismatch instead of silently
@@ -52,6 +54,33 @@ export interface AgentCard {
  * - `offline`: disconnected or heartbeat lapsed (derived by observers, not self-set while live)
  */
 export type PresenceStatus = "idle" | "waiting" | "working" | "offline";
+
+/** Closed, provider-neutral categories a connector may relay from its harness's native signal. */
+export type PresenceConditionCode =
+  | "rate_limit"
+  | "overloaded"
+  | "auth"
+  | "billing"
+  | "budget"
+  | "context"
+  | "model"
+  | "request"
+  | "server"
+  | "retrying"
+  | "approval"
+  | "input"
+  | "failed";
+
+/** A condition the harness reported. Connectors relay it and never infer one from absence. */
+export interface PresenceCondition {
+  code: PresenceConditionCode;
+  /** The harness's native value, preserved verbatim. */
+  source?: string;
+  /** Free-text detail reported by the harness. */
+  message?: string;
+  /** Epoch ms when this condition began. */
+  since?: number;
+}
 
 /**
  * How aggressively peer traffic interrupts an agent — chosen by the agent, orthogonal to
@@ -75,6 +104,10 @@ export interface Presence {
    *  Advisory observability, never authority (authority is the ledger/broker grants). */
   lifecycleUid?: string;
   status: PresenceStatus;
+  /** Structured condition reported by the harness. Missing means nothing was reported. */
+  condition?: PresenceCondition;
+  /** Opaque reference whose meaning belongs to the provider that issued it. */
+  environment?: string;
   /** Freeform "what I'm doing right now". */
   activity?: string;
   /** This instance's current global attention mode. Advisory, within-space observability — a peer

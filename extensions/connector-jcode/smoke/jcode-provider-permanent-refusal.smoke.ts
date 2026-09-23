@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { HarnessError } from "@1jehuang/jcode-sdk";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
 import { PERMANENT_BRIDGE_RECOVERY_CODES, permanentBridgeRecoveryFailure } from "../src/host.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -29,7 +30,7 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-permanent-refusal-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-permanent-refusal-`));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -41,6 +42,7 @@ const log = join(root, "fake.jsonl");
 const closeOnce = join(root, "first-bridge-closed");
 const sessionState = join(root, "fake-session.json");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 let child: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let passed = 0;

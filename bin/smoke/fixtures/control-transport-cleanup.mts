@@ -7,7 +7,11 @@ import { reapSmokeBrokers } from "../reap-smoke-brokers.mjs";
 
 const fixtureId = randomUUID().replaceAll("-", "");
 const pidFile = join(tmpdir(), `cotal-control-dial-pid-${fixtureId}.txt`);
-const rootPrefix = `cotal-control-dial-root-${fixtureId}-`;
+// The suite mints this root under the kit's broker token, whose value carries the SUITE's pid.
+// This fixture runs as a different process, so it cannot rebuild that token and matches the
+// tagged infix instead, exactly as the broker-store check below already does.
+const rootTag = `control-dial-root-${fixtureId}-`;
+const isRoot = (name: string) => name.startsWith("cotal-smoke-broker-") && name.includes(rootTag);
 const homePrefix = `cotal-control-dial-home-${fixtureId}-`;
 const storeTag = `-control-dial-js-${fixtureId}-`;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,7 +66,7 @@ let xdgRoots = 0;
 try {
   for (let i = 0; i < 300; i++) {
     if (suitePid === 0 && existsSync(pidFile)) suitePid = Number(readFileSync(pidFile, "utf8").trim());
-    roots = readdirSync(tmpdir()).filter((name) => name.startsWith(rootPrefix) || name.startsWith(homePrefix));
+    roots = readdirSync(tmpdir()).filter((name) => isRoot(name) || name.startsWith(homePrefix));
     brokerStores = readdirSync(tmpdir()).filter((name) =>
       name.startsWith("cotal-smoke-broker-") && name.includes(storeTag)
     );
@@ -71,7 +75,7 @@ try {
     xdgRoots = roots.filter((name) =>
       name.startsWith(homePrefix) && existsSync(join(tmpdir(), name, "xdg"))
     ).length;
-    for (const name of roots.filter((entry) => entry.startsWith(rootPrefix))) {
+    for (const name of roots.filter((entry) => isRoot(entry))) {
       const dir = join(tmpdir(), name, ".cotal", "auth");
       if (!existsSync(dir)) continue;
       for (const file of readdirSync(dir).filter((entry) => entry.endsWith(".json"))) {
@@ -108,7 +112,7 @@ try {
   }
   const ownerPids = new Set(brokerStores.map((name) => Number(/^cotal-smoke-broker-(\d+)-/.exec(name)?.[1])).filter(Number.isInteger));
   const orphanedBrokers = reapSmokeBrokers({ dryRun: true }).reaped.filter((entry) => ownerPids.has(entry.owner)).length;
-  const projectRoots = remaining.filter((name) => name.startsWith(rootPrefix)).length;
+  const projectRoots = remaining.filter((name) => isRoot(name)).length;
   const homes = remaining.filter((name) => name.startsWith(homePrefix)).length;
   const xdgs = roots.filter((name) =>
     name.startsWith(homePrefix) && existsSync(join(tmpdir(), name, "xdg"))

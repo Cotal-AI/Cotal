@@ -27,6 +27,7 @@
  * pkill nats-server). Needs nats-server on PATH. Run: pnpm smoke:user-spawn:live  (pnpm build first —
  * the pty-launched agent child imports @cotal-ai/core from dist).
  */
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]` — which, in this in-process smoke,
@@ -91,7 +92,7 @@ const { join } = await import("node:path");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-uspawn-home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-uspawn-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}uspawn-root-`));
 const cliHome = join(home, "cli-home");
 const cliConfig = join(home, "cli-config");
 mkdirSync(cliHome, { recursive: true });
@@ -235,12 +236,15 @@ const e2eCon: Connector = {
   kind: "connector",
   name: "e2e",
   requires: ["node"],
+  eventChannel,
   buildLaunch: (o: LaunchOpts): LaunchSpec => ({
     command: process.execPath,
     args: ["-e", CHILD],
     env: {
       ...launchEnv(),        // OS allow-list (PATH/HOME/TMPDIR/…) — the agent-bearer re-exec runs under tsx
       ...userAuthEnv(o),     // COTAL_OWNER / COTAL_ACTOR / COTAL_SENTINEL_CREDS / COTAL_BEARER_CMD (all-or-nothing)
+      ...(o.events !== false ? { COTAL_EVENTS: "1" } : {}),
+      ...(o.eventsRequired ? { COTAL_EVENTS_REQUIRED: "1" } : {}),
       CORE_DIST: coreDist,
       COTAL_SPACE: o.space,
       COTAL_NAME: o.name,
@@ -427,12 +431,13 @@ try {
   const jsDir = mkdtempSync(join(tmpdir(), "cotal-uspawn-js-"));
   writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   // Record the mesh mode "user" — Manager.start() cross-checks the registry against the on-disk marker.
-  recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
+  recordMesh({ space: SPACE, server: SERVER, root, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   // Personas (identity + file ACL) for the two spawns.
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   // `iota` is the never-joining seat the ps-projection cell needs, and `kappa` the one that joins
@@ -474,7 +479,7 @@ try {
 
   // ---------- B. detached user-mode spawn ----------
   console.log("B) Manager.startAgent (user mode) → managed grant + presence join as the principal");
-  manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
+  manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root, eventsRequired: true });
   await manager.start();
   const alphaPrincipal = principalKey(OWNER, "alpha").key;
   const spawnReply: ControlReply = await manager.startAgent({ name: "alpha", agent: "e2e", owner: OWNER });
@@ -484,6 +489,20 @@ try {
   const managedRowPath = rowFile("managed", OWNER, "alpha");
   try { managedRow = JSON.parse(readFileSync(managedRowPath, "utf8")); } catch { /* missing */ }
   check("a managed-actors row exists with a 64-hex tokenHash", typeof managedRow.tokenHash === "string" && /^[0-9a-f]{64}$/.test(managedRow.tokenHash), managedRow.tokenHash);
+  const alphaPid = psList(manager).find((a) => a.name === "alpha")?.pid;
+  const alphaEnv = alphaPid ? readFileSync(`/proc/${alphaPid}/environ`, "utf8").split("\0") : [];
+  const alphaRow = JSON.parse(readFileSync(managedRowPath, "utf8")) as { allowPublish?: string[] };
+  const alphaEvent = eventChannel({ owner: OWNER, actor: "alpha" });
+  check("required policy arms the real child without a launch flag",
+    alphaEnv.includes("COTAL_EVENTS=1") && alphaEnv.includes("COTAL_EVENTS_REQUIRED=1"), alphaEnv.filter((v) => v.startsWith("COTAL_EVENTS")));
+  check("required policy adds the child's own event channel to its managed grant",
+    alphaRow.allowPublish?.includes(alphaEvent) === true, alphaRow.allowPublish);
+  const optedOutRequired = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER, events: false });
+  check("required user-auth policy refuses events false by space name before provisioning",
+    optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
+  // The remaining sections exercise explicit opt-outs and unrelated authorization paths. They predate
+  // the required-policy scenario above, so return this in-process fixture to unrestricted behavior.
+  (manager as unknown as { eventsRequired: boolean }).eventsRequired = false;
   const alphaToken = readFileSync(incFiles("alpha").actorToken, "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
   const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });
@@ -529,7 +548,7 @@ try {
   // enough — the await has to survive first, or the section aborts before any cell runs and the
   // kill is illegible again. Measured twice: 10 marks, no completion marker, both times.
   const second: ControlReply = await manager
-    .startAgent({ name: "alpha", agent: "e2e", owner: OWNER })
+    .startAgent({ name: "alpha", agent: "e2e", owner: OWNER, events: false })
     .catch((e: unknown) => ({ ok: false, error: `startAgent threw: ${(e as Error)?.message ?? String(e)}` }) as ControlReply);
   // EVERY step below is gated on `accepted` and nothing in this section throws. A section that
   // aborts when its subject regresses produces an ILLEGIBLE kill: the run dies, the completion
@@ -619,7 +638,7 @@ try {
   // UNCERTAIN, but the row is in the manager's table from launch, so the state under test is
   // readable long before that reply: assert while the readiness wait is still in flight, then end
   // the wait by killing the child rather than paying its full timeout.
-  const quietPending = manager.startAgent({ name: "iota", agent: "e2e-quiet", owner: OWNER });
+  const quietPending = manager.startAgent({ name: "iota", agent: "e2e-quiet", owner: OWNER, events: false });
   const quietListed = await until(() => psList(mgr).some((a) => a.name === "iota"));
   const listed = psList(manager).find((a) => a.name === "alpha");
   const mesh = listed?.mesh ?? "absent";
@@ -636,7 +655,7 @@ try {
   // managed with its process alive while its roster status is the one value neither other row can
   // carry. Signalling rather than timing keeps the flip ordered after the manager's readiness wait
   // instead of racing it.
-  const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER });
+  const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER, events: false });
   const signalHandlersReady = await until(() => existsSync(offlineSignalReady), 5_000);
   check("precondition: kappa installed its signal handlers before the status walk", signalHandlersReady, offlineSignalReady);
   const signalPid = psList(mgr).find((a) => a.name === "kappa")?.pid;
@@ -709,7 +728,7 @@ try {
     await follower.start();
     ctlEps.push(follower);
     const t0 = Date.now();
-    const r = await follower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const r = await follower.invokeService("manager", "spawn", { name: "beta", agent: "e2e", events: false }, { deadlineMs: 20_000, follow: true });
     const elapsed = Date.now() - t0;
     const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
     // THE ASSERTION THE FIX EXISTS FOR: a real terminal, not a deadline and not a refusal to listen.
@@ -803,7 +822,7 @@ try {
   // beyond the spawner's own read ACL — the exact escalation vector) must be refused at the grant
   // write, name the operator's widening re-grant, and leave no row behind.
   const overReply: ControlReply = await manager.startAgent(
-    { name: "delta", agent: "e2e", allowSubscribe: ["general", "ops.secret"] }, `${OWNER}.cli`);
+    { name: "delta", agent: "e2e", events: false, allowSubscribe: ["general", "ops.secret"] }, `${OWNER}.cli`);
   check("an over-envelope spawn is refused (read beyond the spawner's [general])",
     overReply.ok === false && /delegation only narrows/.test(overReply.error ?? ""), overReply);
   check("…the refusal names the exact widening re-grant", /cotal actor grant cli --owner/.test(overReply.error ?? ""), overReply.error);
@@ -811,12 +830,12 @@ try {
   // The delta persona carries `role: worker` — a ROLE is receive reach on the shared task queue,
   // so it too is delegated: refused until the spawner's scope carries `role:worker`.
   const roleReply: ControlReply = await manager.startAgent(
-    { name: "delta", agent: "e2e", allowSubscribe: ["general"] }, `${OWNER}.cli`);
+    { name: "delta", agent: "e2e", events: false, allowSubscribe: ["general"] }, `${OWNER}.cli`);
   check("a persona ROLE outside the spawner's scope is refused (role = delegated capability)",
     roleReply.ok === false && /role "worker" beyond scope/.test(roleReply.error ?? ""), roleReply);
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator", lifecycleUid: cliRow0.lifecycleUid });
   const withinReply: ControlReply = await manager.startAgent(
-    { name: "delta", agent: "e2e", allowSubscribe: ["general"] }, `${OWNER}.cli`);
+    { name: "delta", agent: "e2e", events: false, allowSubscribe: ["general"] }, `${OWNER}.cli`);
   check("the same spawn within the envelope (read + role delegated) succeeds", withinReply.ok === true, withinReply);
   const deltaRow = JSON.parse(readFileSync(rowFile("managed", OWNER, "delta"), "utf8")) as { parent?: string };
   check("the delegated row records the spawner as parent", deltaRow.parent === `${OWNER}.cli`, deltaRow);
@@ -889,7 +908,7 @@ try {
   check("manager ps reports authHealth = auth-renewal-failed", psList(manager).find((a) => a.name === "alpha")?.authHealth === "auth-renewal-failed", psList(manager).find((a) => a.name === "alpha"));
 
   console.log("G) spawning with the auth service down is refused at preflight (row rolled back)");
-  const gReply = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER });
+  const gReply = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER, events: false });
   check("spawn with a dead auth service is refused at preflight (names `cotal up`)", !gReply.ok && /preflight/.test(gReply.error ?? "") && /restart it with `cotal up`/.test(gReply.error ?? ""), gReply.error);
   check("the refused spawn leaves NO managed row behind (rollback proven)", !existsSync(rowFile("managed", OWNER, "beta")), rowFile("managed", OWNER, "beta"));
 
@@ -927,7 +946,7 @@ try {
 
   // ---------- H. post-provision failure window (freelance blocker 1) ----------
   console.log("H) a spawn that provisions then FAILS at buildLaunch leaves no managed grant behind");
-  const hReply = await manager.startAgent({ name: "gamma", agent: "e2e-fail", owner: OWNER });
+  const hReply = await manager.startAgent({ name: "gamma", agent: "e2e-fail", owner: OWNER, events: false });
   check("a spawn failing after provisioning is reported not-ok", hReply.ok === false, hReply);
   // The orphan-rollback must run the USER-MODE teardown (revoke + shred), not just static durables —
   // so the managed row AND all three secret files are gone, and the grant can't mint a bearer.
@@ -1138,7 +1157,7 @@ try {
     const followErrors: string[] = [];
     adminFollower.on("error", (e: unknown) => followErrors.push((e as Error)?.message ?? String(e)));
     const t0 = Date.now();
-    const r = await adminFollower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const r = await adminFollower.invokeService("manager", "spawn", { name: "beta", agent: "e2e", events: false }, { deadlineMs: 20_000, follow: true });
     const elapsed = Date.now() - t0;
     const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
     console.log(`   [D1 observed] code=${code} elapsed=${elapsed} msg=${(r.reply.error?.message ?? "").slice(0, 140)} errs=${JSON.stringify(followErrors)}`);
@@ -1190,13 +1209,31 @@ try {
   const ownChannelRefusal = (r: Accepted): boolean =>
     r.ok === false && /another agent's event channel/.test(r.error ?? "") && (r.error ?? "").includes(VICTIM);
   const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
-  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const defaultPlane = eventChannel({ owner: OWNER, actor: "epsilon" });
+  const defaultRefusal = await (async (): Promise<Accepted> => {
+    try {
+      const r = await evtpeer.invokeService(
+        "manager",
+        "spawn",
+        { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general"] },
+        { deadlineMs: 15_000, follow: true },
+      );
+      return r.reply.ok === true
+        ? { ok: true, name: (r.reply.data as { name?: string }).name }
+        : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+    } catch (e) {
+      return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message };
+    }
+  })();
+  check("a peer-initiated bare spawn is refused by default when the spawner cannot delegate the child's event plane",
+    defaultRefusal.ok === false && /delegation only narrows/.test(defaultRefusal.error ?? "") && (defaultRefusal.error ?? "").includes(defaultPlane), defaultRefusal);
+  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
   check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is refused AT THE DOOR, naming the channel",
     ownChannelRefusal(readOverAsk), readOverAsk);
   await settle(1500);
   check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
   check("...and no live agent by that name", !psList(manager).some((a) => a.name === "epsilon"), psList(manager).map((a) => a.name));
-  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
+  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
   check("the same over-ask on the child's WRITE set is refused at the door too: publishing INTO another agent's plane is forgery, not eavesdropping",
     ownChannelRefusal(writeOverAsk), writeOverAsk);
   await settle(1500);
@@ -1206,7 +1243,7 @@ try {
   // own-channel rule takes the CONCRETE form out of the envelope's hands: the answer is the same
   // refusal, from a spawner that demonstrably holds the channel.
   const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
-  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
   check("with the peer's OWN grant widened by the operator, the identical spawn is STILL refused: the concrete form is not the envelope's to hand down",
     ownChannelRefusal(admitted), admitted);
   await settle(2500);
@@ -1216,7 +1253,7 @@ try {
   // alone. That is deliberate: the wildcard is the form an operator writes on purpose for an
   // observer, and this cell is what stops the limit being a comment nobody tests.
   const wildpeer = await ctlCaller("evtpeer3", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
-  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
   check("the WILDCARD form is left to the delegation envelope: a peer whose own grant covers it CAN hand it down", wildAdmitted.ok === true, wildAdmitted);
   await settle(2500);
   const wildRow = existsSync(rowFile("managed", OWNER, "epsilon"))
@@ -1229,7 +1266,7 @@ try {
   // refused: the envelope is still the authority for every channel that is not a concrete event
   // channel, and a rule that had swallowed it would look identical from one cell.
   const overText: ControlReply = await manager.startAgent(
-    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+    { name: "zeta", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
   check("the refusal for a concrete event channel is the OWN-CHANNEL rule, and it names the channel",
     overText.ok === false && /another agent's event channel/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
   // THE REMEDY THAT REFUSAL PRINTS, PARSED AND RUN. A confinement refusal lends its own authority
@@ -1276,7 +1313,7 @@ try {
     readerRow);
 
   const envelopeText: ControlReply = await manager.startAgent(
-    { name: "zeta", agent: "e2e", allowSubscribe: ["general", "not-mine"], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+    { name: "zeta", agent: "e2e", events: false, allowSubscribe: ["general", "not-mine"], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
   check("and an ORDINARY channel the peer does not hold is still refused by the delegation envelope, which the rule did not replace",
     envelopeText.ok === false && /delegation only narrows/.test(envelopeText.error ?? "") && (envelopeText.error ?? "").includes("not-mine"), envelopeText);
   // AND THE WILDCARD FORM IS ATTENUATED LIKE ANY OTHER PATTERN. The rule leaves it alone; that is
@@ -1284,11 +1321,11 @@ try {
   // down, on either side, and these are the cells that would notice an author exempting the
   // `events.` prefix from the containment walk to make arming "just work".
   const wildOverText: ControlReply = await manager.startAgent(
-    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+    { name: "zeta", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
   check("a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
     wildOverText.ok === false && /delegation only narrows/.test(wildOverText.error ?? "") && (wildOverText.error ?? "").includes(VICTIM_WILDCARD), wildOverText);
   const wildPubText: ControlReply = await manager.startAgent(
-    { name: "zeta", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM_WILDCARD] }, `${OWNER}.evtpeer`);
+    { name: "zeta", agent: "e2e", events: false, allowSubscribe: ["general"], allowPublish: ["general", VICTIM_WILDCARD] }, `${OWNER}.evtpeer`);
   check("and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
     wildPubText.ok === false && /delegation only narrows/.test(wildPubText.error ?? "") && (wildPubText.error ?? "").includes(VICTIM_WILDCARD), wildPubText);
 

@@ -1,5 +1,5 @@
 import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
-import { isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
+import { hasMeshTargetFlags, isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
   isExtensionStub,
@@ -12,6 +12,7 @@ import {
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { cliVersion, extensionVersions } from "./lib/version.js";
+import { prepareCatalogCommand } from "./commands/sync.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -93,6 +94,13 @@ function skipAutoReconcile(argv: string[]): boolean {
   const [name, sub] = argv;
   if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
+  // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
+  // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
+  // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
+  // combination) migrated the whole store to the invoking binary's generation and only then printed
+  // the usage refusal, leaving an older live deployment on a store it no longer matches (#1620). The
+  // planning surface reads what is installed; it never seeds to make the plan prettier.
+  if (argv.includes("--dry-run")) return true;
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
   // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,
@@ -109,6 +117,21 @@ function skipAutoReconcile(argv: string[]): boolean {
 function isArgError(e: unknown): boolean {
   const code = (e as { code?: string })?.code;
   return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS");
+}
+
+/** One dispatcher-owned catalog gate for every command that uses the shared mesh target grammar,
+ * including commands self-registered by other packages. Registry-local `meshes add/rm` stay
+ * offline. `use` takes its target positionally, and status keeps stale bytes diagnostic-only. */
+async function prepareCatalogForCommand(cmd: Command, args: ReturnType<typeof parseCommandArgs>): Promise<void> {
+  if (cmd.name === "meshes") {
+    const sub = args.positionals[0];
+    if (sub === undefined || sub === "list") await prepareCatalogCommand(args, false, "meshes");
+    return;
+  }
+  if (cmd.name === "use") return prepareCatalogCommand(args, false, "use");
+  if (cmd.name === "status") return prepareCatalogCommand(args, true);
+  if (cmd.name === "personas" && args.values.running !== true) return;
+  if (cmd.prepareMeshTarget !== false && hasMeshTargetFlags(cmd.flags)) await prepareCatalogCommand(args);
 }
 
 /** Options a composition root passes to {@link runCli}. */
@@ -194,6 +217,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
+    await prepareCatalogForCommand(cmd, parsed);
+    if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {
     // A bad flag/arg prints the command's help, not a stack trace. Trim node's verbose

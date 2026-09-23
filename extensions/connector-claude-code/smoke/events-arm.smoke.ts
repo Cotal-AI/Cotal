@@ -1,8 +1,8 @@
 /**
  * ARMING IS NOT AUTHORIZATION, AND THIS SUITE IS WHERE THE TWO ARE KEPT APART.
  *
- * A session publishes its AG-UI event plane only when the launch path ARMED it (`--events`, which
- * reaches the connector as `opts.events` and leaves as `COTAL_EVENTS`). The manager separately mints
+ * A session publishes its AG-UI event plane unless the launch explicitly opts out (`--no-events`,
+ * which reaches the connector as `opts.events = false`). The manager separately mints
  * a publish GRANT on the channel that plane lands on. Those are two different facts, and the
  * dangerous confusion is to treat the second as the first: an agent file or manifest can hand-write
  * anything it likes into `allowPublish`, so if a grant could arm the emitter, any author who could
@@ -19,7 +19,8 @@
  *
  * Run: pnpm smoke:claude-events-arm
  */
-import { eventChannel } from "@cotal-ai/core";
+import { eventChannel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { configFromEnv } from "@cotal-ai/connector-core";
 import { claudeConnector } from "../src/extension.js";
 
 let pass = 0;
@@ -36,7 +37,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const WS = "/tmp/cotal-events-arm-workspace";
 const env = (extra: Record<string, unknown>): Record<string, string> =>
-  claudeConnector.buildLaunch({ space: "s", name: "seat", ...extra } as never).env as Record<string, string>;
+  claudeConnector.buildLaunch({ space: "s", name: "seat", workspaceRoot: WS, ...extra } as never).env as Record<string, string>;
 const refusalFor = (extra: Record<string, unknown>): string | null => {
   try {
     env(extra);
@@ -48,21 +49,21 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
 
 console.log("claude connector: the event plane is armed by the launch, never by a grant");
 
-// ---- CONTROL: the default is OFF, so every positive cell below is measuring the flag ------------
+// ---- CONTROL: the default is ON -----------------------------------------------------------------
 {
-  const e = env({ workspaceRoot: WS });
-  check("CONTROL: an ordinary launch carries no COTAL_EVENTS", e.COTAL_EVENTS === undefined, e.COTAL_EVENTS);
-  check("CONTROL: an ordinary launch carries no COTAL_WORKSPACE_ROOT either", e.COTAL_WORKSPACE_ROOT === undefined, e.COTAL_WORKSPACE_ROOT);
+  const e = env({});
+  check("CONTROL: an ordinary launch carries COTAL_EVENTS", e.COTAL_EVENTS === "1", e.COTAL_EVENTS);
+  check("CONTROL: an ordinary launch carries the durable workspace root", e.COTAL_WORKSPACE_ROOT === WS, e.COTAL_WORKSPACE_ROOT);
 }
 
 // ---- ARMED: the flag, and only the flag, turns the plane on ------------------------------------
 {
-  const e = env({ events: true, workspaceRoot: WS });
+  const e = env({ events: true });
   check("--events arms the emitter (COTAL_EVENTS=1)", e.COTAL_EVENTS === "1", e.COTAL_EVENTS);
   check("an armed launch carries the workspace root the write-ahead log lives under", e.COTAL_WORKSPACE_ROOT === WS, e.COTAL_WORKSPACE_ROOT);
 }
 {
-  const e = env({ events: false, workspaceRoot: WS });
+  const e = env({ events: false });
   check("--no-events leaves the plane off", e.COTAL_EVENTS === undefined, e.COTAL_EVENTS);
 }
 
@@ -71,9 +72,9 @@ console.log("claude connector: the event plane is armed by the launch, never by 
 // agent file can. Nothing about holding it is a request to publish to it.
 const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" });
 {
-  const e = env({ workspaceRoot: WS, allowPublish: ["general", HANDWRITTEN] });
+  const e = env({ events: false, allowPublish: ["general", HANDWRITTEN] });
   check(
-    "a hand-written event-channel grant does NOT arm the emitter",
+    "a hand-written event-channel grant does NOT override an explicit opt-out",
     e.COTAL_EVENTS === undefined,
     { COTAL_EVENTS: e.COTAL_EVENTS, allowPublish: HANDWRITTEN },
   );
@@ -86,7 +87,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 
 // ---- THE WAL HOME: absent workspace root REFUSES, it does not fall back ------------------------
 {
-  const msg = refusalFor({ events: true });
+  const msg = refusalFor({ events: true, workspaceRoot: undefined });
   check("an armed launch with no workspace root refuses", msg !== null, msg);
   check(
     "and the refusal NAMES the write-ahead log, so the operator can act on it",
@@ -100,7 +101,35 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
   );
 }
 
-// ---- ONE DERIVATION: the connector's channel is core's, not a local re-derivation ---------------
+// ---- REQUIRED POLICY: launch material and env fallback both expose the arm -----------------------
+{
+  const owner = "u_abcdefghijklmnopqrstuvwxyz";
+  const channel = eventChannel({ owner, actor: "seat" });
+  const material = writeLaunchMaterial({ servers: "nats://127.0.0.1:4222", eventsRequired: true, userAuth: {
+    owner, actor: "seat", sentinelCredsPath: "/dev/null", bearerCmd: ["true"],
+  } });
+  check("required policy survives launch material", readLaunchMaterial(material).eventsRequired === true);
+  const config = configFromEnv({ COTAL_NAME: "seat", COTAL_SPACE: "s", COTAL_LAUNCH_MATERIAL: material,
+    COTAL_LIFECYCLE_UID: "abcdefghijklmnopqrstuvwxzy1234", COTAL_ALLOW_PUBLISH: channel });
+  check("required launch material reaches connector config", config.eventsRequired === true);
+}
+{
+  const owner = "u_abcdefghijklmnopqrstuvwxyz";
+  const channel = eventChannel({ owner, actor: "seat" });
+  const config = configFromEnv({
+    COTAL_NAME: "seat", COTAL_SPACE: "s", COTAL_OWNER: owner, COTAL_ACTOR: "seat",
+    COTAL_SENTINEL_CREDS: "/dev/null", COTAL_BEARER_CMD: '["true"]', COTAL_LIFECYCLE_UID: "abcdefghijklmnopqrstuvwxzy1234",
+    COTAL_ALLOW_PUBLISH: channel, COTAL_EVENTS_REQUIRED: "1",
+  });
+  check("required policy env fallback reaches connector config", config.eventsRequired === true);
+  const refused = (() => { try {
+    configFromEnv({ COTAL_NAME: "seat", COTAL_SPACE: "s", COTAL_OWNER: owner, COTAL_ACTOR: "seat",
+      COTAL_SENTINEL_CREDS: "/dev/null", COTAL_BEARER_CMD: '["true"]', COTAL_LIFECYCLE_UID: "abcdefghijklmnopqrstuvwxzy1234",
+      COTAL_ALLOW_PUBLISH: "general", COTAL_EVENTS_REQUIRED: "1" }); return "";
+  } catch (error) { return (error as Error).message; } })();
+  check("required session refuses when its grant misses the event channel", refused.includes(channel) && refused.includes("actor grant"), refused);
+}
+
 // The manager grants what `eventChannel` returns and the session publishes to what it derives from
 // its own endpoint. If the connector sanitized, lowercased, or otherwise rebuilt the string here,
 // the two would disagree for exactly the principals a display-name sanitizer mangles, and the
@@ -126,7 +155,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 // A regression that makes `buildLaunch` throw on every input does not fail those cells, it deletes
 // them, and the run still prints a summary. Change the cases above and change this number
 // deliberately.
-const EXPECTED = 13;
+const EXPECTED = 17;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED,

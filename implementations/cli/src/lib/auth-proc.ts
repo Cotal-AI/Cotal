@@ -156,8 +156,9 @@ function startAuthServiceDetached(space: string, server: string, command: string
   if (slot === undefined) return 0;
   if ("livePid" in slot) return slot.livePid;
   try {
-    const fd = openSync(LOG_PATH(space), "a");
+    // Before the log is opened, for the reason startManagerDetached states (#1629).
     const [node, ...self] = selfArgv();
+    const fd = openSync(LOG_PATH(space), "a");
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
     const child = spawn(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {

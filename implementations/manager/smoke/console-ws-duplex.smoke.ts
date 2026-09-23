@@ -22,6 +22,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -33,7 +34,7 @@ const brokerPort = await freePort(), wsPort = await freePort(), consolePort = aw
 const SERVER = `nats://127.0.0.1:${brokerPort}`;
 const space = `wsduplex-${mintLifecycleUid().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-wsduplex-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wsduplex-`));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -48,6 +49,7 @@ registry.register(echoCon);
 const kids: ChildProcess[] = [];
 let mgr: InstanceType<typeof Manager> | undefined;
 const srv = spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(srv);
 kids.push(srv);
 
 try {
@@ -57,7 +59,7 @@ try {
   mgr = new Manager({ space, servers: SERVER, runtime: "pty", workspaceRoot, wsPort, consolePort });
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2500;
   await mgr.start();
-  await mgr.startAgent({ name: "echo1", agent: "echo" }); // cat: a clean line-echo pty
+  await mgr.startAgent({ name: "echo1", agent: "echo", events: false }); // cat: a clean line-echo pty
   // The console URL carries the credential in the FRAGMENT, which is how the browser is handed it;
   // the page reads it from `location.hash` and presents it on the routes that need it. Do the same:
   // the mint route is credentialed, and without the token this POST gets a 401 (before the merge it

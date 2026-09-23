@@ -18,6 +18,7 @@ import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
+import { ConnectRefusal, isWorkspaceTargetError, type ControlTarget } from "@cotal-ai/workspace";
 import { legacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
@@ -139,18 +140,24 @@ async function reconcileCurrent(
   target: Record<string, unknown>,
   finish: (reconciled: boolean) => number,
 ): Promise<number> {
+  // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
+  // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
+  // `update --self` against a mesh that predates this release's authority stores rewrote the store
+  // and only then failed its `running manager continuity check`, leaving the machine migrated by a
+  // run that refused to proceed (#1620). The continuity check is a pure read of the running manager
+  // and the selected target; nothing may be written until it has answered.
+  try {
+    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
+  } catch (e) {
+    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
+    return finish(false);
+  }
+
   rt.out(c.bold("Built-in connectors"));
   try {
     await rt.reconcile();
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
-    return finish(false);
-  }
-
-  try {
-    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
-  } catch (e) {
-    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
     return finish(false);
   }
 
@@ -219,18 +226,37 @@ async function reconcileCurrent(
   }
 }
 
+/** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
+ *  down with none selected. Either way no manager is running. A mesh selected with `--space` or
+ *  from inside its project, a named space, a broken record, or a dead broker each still names a
+ *  manager this command was asked about. */
+function isNoMeshRefusal(e: unknown): boolean {
+  return e instanceof ConnectRefusal && isWorkspaceTargetError(e.cause) && e.cause.code === "no-meshes";
+}
+
 async function reportRunningManager(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
-  const target = await resolveControlTarget({
-    ...(typeof flags.space === "string" ? { space: flags.space } : {}),
-    ...(typeof flags.server === "string" ? { server: flags.server } : {}),
-    ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
-  }, "control-caller-admin");
+  let target: ControlTarget;
+  try {
+    target = await resolveControlTarget({
+      ...(typeof flags.space === "string" ? { space: flags.space } : {}),
+      ...(typeof flags.server === "string" ? { server: flags.server } : {}),
+      ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
+    }, "control-caller-admin", undefined, { onRefusal: "throw" });
+  } catch (e) {
+    // No running manager means no custody to preserve and nothing this update could interrupt. Only
+    // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
+    // with none selected. A selected mesh that is down, a named space that is not running, a broken
+    // record, or a dead broker each still names a manager this command was asked about, and stays a
+    // refusal.
+    if (isNoMeshRefusal(e)) return "none";
+    throw e;
+  }
   const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
   if (!status.ok) {
     // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
     // core's answer-provenance marker; the headline beside it is operator prose and is now scoped to
     // the rail the caller rode (#1630), so this call, which runs under an issued control caller, saw
-    // `no manager answered on the ep.v1 rail` and threw instead of reporting "none". The string test
+    // the headline naming the versioned rail and threw instead of reporting "none". The string test
     // was redundant the day it was written: this call passes no `--on`, so an unanswered reply here
     // can only ever be the unpinned verdict.
     if (status.unanswered) return "none";

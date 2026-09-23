@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-hermes",
   "description": "Cotal connector for the Hermes (Nous Research) agent.",
-  "version": "0.49.0",
+  "version": "0.50.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -33,6 +33,7 @@
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",
     "zod": "^4.4.3"

@@ -255,7 +255,11 @@ try {
 
   // ---- 3. a REAL authed broker that trusts ONLY the live chain -----------------------------------
   const storeDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}authroot-js-`));
-  const conf = join(base, "server.conf");
+  // The conf lives in the TOKENED store dir, not under `base`. The reaper reads argv and nothing
+  // else, and argv here is `-c <conf>`: a tokened store dir named only INSIDE the conf file is
+  // invisible to it, so this broker was unclaimable despite minting a token correctly. `base` is a
+  // discovered cotal root rather than scratch, so it cannot carry the token itself.
+  const conf = join(storeDir, "server.conf");
   writeFileSync(conf, serverConfig(live, [live], { transport: { kind: "plaintext" }, port: PORT, storeDir, host: "127.0.0.1" }));
   const broker = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
   kids.push(broker);
@@ -332,7 +336,7 @@ try {
   process.chdir(rootLive);
   try {
     await cmd("spawn").run(
-      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
+      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
     );
   } finally {
     process.chdir(prevCwd);

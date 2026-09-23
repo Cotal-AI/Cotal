@@ -11,7 +11,7 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-08-24. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-09-22. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.5 binding revision: workflow runs.** A deployment MAY host **durable workflow runs**: programs
@@ -335,6 +335,8 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | --- | --- | --- | --- |
 | `card` | `AgentCard` | MUST | identity record |
 | `status` | `PresenceStatus` | MUST | `idle`, `waiting`, `working`, or `offline` |
+| `condition` | `PresenceCondition` | MAY | harness-reported structured condition. Missing means nothing was reported. A connector relays the harness signal and MUST NOT infer a condition itself |
+| `environment` | string | MAY | opaque reference whose meaning belongs to the provider that issued it. Core MUST NOT parse it |
 | `activity` | string | MAY | freeform current activity |
 | `attention` | `AttentionMode` | MAY | global attention mode: `open` \| `dnd` \| `focus`. Advisory observability; `open`/absent ⇒ receives everything. Reset: `open` published on `SessionStart`, removed on the offline sweep |
 | `lifecycleUid` | string | MUST in auth mode from v0.4 | the current managed-lifecycle UID (§13.1); distinguishes a live instance from a same-name successor. Advisory for display; authority checks use the trusted lifecycle mapping, not presence |
@@ -352,7 +354,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata; reserved keys include `connector` (host harness name), `model` (pinned model), and `host` (the machine the session runs on, self-reported by that machine), all advisory only |
+| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -363,6 +365,17 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 `offline` presence record. Observers MUST also derive `offline` from stale timestamps and
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
+Readers MUST drop a record whose `card.id` differs from its KV key and SHOULD report the
+rejection on their recoverable diagnostic path.
+
+`PresenceCondition`:
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `code` | `PresenceConditionCode` | MUST | `rate_limit` \| `overloaded` \| `auth` \| `billing` \| `budget` \| `context` \| `model` \| `request` \| `server` \| `retrying` \| `approval` \| `input` \| `failed` |
+| `source` | string | MAY | harness-native value, relayed verbatim |
+| `message` | string | MAY | free text from the harness |
+| `since` | number | MAY | epoch ms when the condition began |
 
 ---
 
@@ -750,6 +763,9 @@ exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry 
 client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
 every connect: the callout then mints the connection as the named elevated profile (Appendix B:
 `admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
+On a public exchange face, only `channel-writer` and `channel-purger` MAY be issued, still
+re-authorized against ledger scope `admin`; `admin`, `purger`, `deployer`, and `manager-service`
+MUST remain loopback-only. A managed-agent secret exchange MUST still refuse every view.
 
 ---
 
@@ -4158,8 +4174,12 @@ single-function profiles, each granting only the verbs its function needs and no
   root, so passing that store explicitly names the real operator layout without an ambient coordinate. Uninjected `--creds`
   that names one real workstation while process cwd resolves another is refused at start, because
   membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
-  case. A manager whose remint store diverges is refused before that remint, including a daemon that
-  bound after manager start; and `evictPrincipal`, force-drop of a denied principal's live
+  case. A manager whose remint store diverges is not that daemon's renewal owner: it starts and
+  serves the space and skips the remint rather than being refused, including a daemon that bound
+  after manager start. Matching that store identity is necessary but NOT sufficient to own the
+  renewal, since the comparison carries no holder and no tiebreak and every manager sharing one
+  store satisfies it; the owner is the manager that also holds the space's renewal lease, so a
+  daemon's credentials have exactly one renewal owner at a time. And `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement
   minted to the `supervisor` profile **and to the trusted auth path** (§9/§10), which is the

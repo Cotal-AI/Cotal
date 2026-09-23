@@ -63,6 +63,7 @@ import type {
   Part,
   Presence,
   PresenceStatus,
+  PresenceCondition,
   AttentionMode,
   ChannelMode,
   CotalMessage,
@@ -115,6 +116,7 @@ import {
   leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
+  MANAGER_RENEWAL_LEASE_KEY,
   managerLeaseKey,
   chatWildcard,
   assertValidChannel,
@@ -424,6 +426,10 @@ export class CotalEndpoint extends EventEmitter {
   private aclKv?: KV;
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
+  /** Our revision of the per-space daemon-credential renewal lease (#1634), or undefined when we do
+   *  not hold it. Cleared with the bound KV handle: a revision from a dead connection is not a lease
+   *  we can prove we still hold. */
+  private daemonRenewalLeaseRevision?: number;
   private membershipFeedKv?: KV;
   /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
    *  connection-scoped and are stopped/re-created around the epoch swap. */
@@ -544,6 +550,11 @@ export class CotalEndpoint extends EventEmitter {
   private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
+  private condition?: PresenceCondition;
+  /** Advances on every condition change so an older in-flight put cannot be the final KV state. */
+  private conditionRevision = 0;
+  /** Read once at construction. Core publishes this opaque provider reference and never parses it. */
+  private readonly environment?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
    *  endpoint never reads these back into delivery — they exist only to broadcast. */
   private attentionMode?: AttentionMode;
@@ -596,6 +607,8 @@ export class CotalEndpoint extends EventEmitter {
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
+  /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key. */
+  private presenceBindingDrops = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
@@ -607,6 +620,11 @@ export class CotalEndpoint extends EventEmitter {
    *  Pull it, or listen for `split-recovered` — the event can be missed, the count cannot. */
   get splitRecoveryCount(): number {
     return this.splitsRecovered;
+  }
+
+  /** Mis-keyed presence rows this reader rejected. The warning event may be missed; the count cannot. */
+  get presenceBindingDropCount(): number {
+    return this.presenceBindingDrops;
   }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
@@ -717,6 +735,7 @@ export class CotalEndpoint extends EventEmitter {
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
     this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
+    this.environment = process.env.COTAL_ENVIRONMENT?.trim() || undefined;
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
@@ -786,8 +805,44 @@ export class CotalEndpoint extends EventEmitter {
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
+      // Two refusals, answering different questions, and both of them are about protecting what is
+      // ALREADY held. So both are scoped to there BEING something held, which is the same set as
+      // `!initial` but names the thing the rules actually depend on: on the first fetch there is no
+      // cache to lose, `start()` has to come up on whatever the source has, and the pre-dial guard
+      // in {@link bindConnection} is what speaks for a dead first token.
+      const expiryMs = bearerExpiryMs(bearer);
+      const held = this.currentBearer;
+      if (held !== undefined) {
+        // ALREADY DEAD, whatever else is true of it. Advancement is deliberately not part of this
+        // test: a candidate expiring at now-5s does advance a held one that died at now-60s, so an
+        // advance-only rule adopts it - overwriting the cache with material nothing can dial,
+        // skipping the recoverable warning because the fetch did not throw, and arming the next
+        // read off a non-positive delay. The creds path draws its line on expiry alone too, in
+        // {@link presentableCreds} (#1572).
+        if (expiryMs <= Date.now())
+          throw new Error("the bearer source returned a token that has already expired - nothing adopted");
+        // THE SAME BYTES BACK AGAIN from a source whose token cannot carry the next cycle: the
+        // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
+        // returns that same token - a 5s loop against the auth service for the rest of its life,
+        // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
+        // nothing new (#1561).
+        //
+        // The test is byte identity, not expiry, and not advancement. `exp` carries one second of
+        // resolution, so a key rotation re-signing the same claims under a new key - and a healthy
+        // short-TTL source read twice inside one wall-clock second - both hand back a token whose
+        // `exp` has not moved. That is genuinely re-issued material, which an advancement test
+        // refuses and this one adopts. It is the question the creds path asks with
+        // `credsFingerprint`: did the source re-issue ANYTHING (#1572).
+        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)
+          throw new Error("the bearer source re-served the token already held and it cannot carry another cycle (the auth service has not issued a fresh one) - nothing adopted");
+      }
       this.currentBearer = bearer;
-      this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
+      // A non-positive delay is NOT clamped to BEARER_RETRY_MS. A deployment whose whole token TTL
+      // sits inside the margin is legitimate - `expiry-renewal` mints 5s bearers against the 60s
+      // margin - and for it the 5s floor IS the renewal cadence. Backing that source off to 15s
+      // leaves a 5s token dead for two thirds of every cycle. What made #1561 a pointless loop was
+      // the source returning nothing new, which is refused above, not the cadence itself.
+      this.armBearerRefresh(expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     } catch (e) {
       if (initial) throw e;
       this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
@@ -1446,6 +1501,7 @@ export class CotalEndpoint extends EventEmitter {
     this.membershipFeedKv = undefined;
     this.deliveryKv = undefined;
     this.managerLeaseKv = undefined;
+    this.daemonRenewalLeaseRevision = undefined;
     // Handles that armDeliveryControl created on a previous connection: null them so a rebind
     // does not carry a dead protocol's subs forward. Best-effort unsubscribe first (the sub is
     // dead with its connection either way; unsubscribing an already-dead sub is a noop).
@@ -1582,6 +1638,7 @@ export class CotalEndpoint extends EventEmitter {
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
+      this.daemonRenewalLeaseRevision = undefined;
       // This is an application-requested epoch teardown, not a transient nats.js blip. The old
       // status iterator is now stale by construction and its close is epoch-dropped, so this line is
       // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
@@ -2385,6 +2442,13 @@ export class CotalEndpoint extends EventEmitter {
 
   async setStatus(status: PresenceStatus): Promise<void> {
     this.status = status;
+    await this.publishPresence();
+  }
+
+  /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.condition = condition ?? undefined;
+    this.conditionRevision++;
     await this.publishPresence();
   }
 
@@ -3682,6 +3746,52 @@ export class CotalEndpoint extends EventEmitter {
     }
     return this.managerLeaseKv;
   }
+  /** Take or keep the per-SPACE daemon-credential renewal lease (#1634), returning whether THIS
+   *  instance now holds it. One atomic CAS `create` per pass: it succeeds for whoever arrives first
+   *  and throws for everyone else, so exactly one manager remints even when several share the
+   *  daemon's store. The holder re-`update`s its own key by revision, which both keeps it and proves
+   *  it never lost it. Losing the CAS is an ordinary outcome (a peer holds it) and returns false; it
+   *  never fails a start. A crashed holder's key TTL-expires with the bucket, so the next pass hands
+   *  the lease to a survivor with no operator step. */
+  async holdDaemonRenewalLease(instanceId: string): Promise<boolean> {
+    const kv = await this.managerLeaseRegistry();
+    const held = this.daemonRenewalLeaseRevision;
+    if (held !== undefined) {
+      try {
+        this.daemonRenewalLeaseRevision = await kv.update(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId), held);
+        return true;
+      } catch {
+        // The revision moved (our key TTL-expired and a peer took it). Re-contend below rather than
+        // keep reminting on a lease we no longer hold.
+        this.daemonRenewalLeaseRevision = undefined;
+      }
+    }
+    try {
+      this.daemonRenewalLeaseRevision = await kv.create(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId));
+      return true;
+    } catch {
+      return false; // another manager holds it: exactly one owner is the point
+    }
+  }
+
+  /** Release the renewal lease on a clean stop so a peer takes over at once rather than at the TTL.
+   *  CAS-guarded, so a lease we already lost is never deleted out from under its new holder. */
+  async releaseDaemonRenewalLease(): Promise<void> {
+    const held = this.daemonRenewalLeaseRevision;
+    this.daemonRenewalLeaseRevision = undefined;
+    if (held === undefined) return;
+    try {
+      await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
+    } catch {
+      // Best-effort, like releaseManagerLease: a moved revision means it is not ours, and a broker
+      // failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+    }
+  }
+
+  private encodeDaemonRenewalLease(instanceId: string): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ instanceId, since: Date.now() }));
+  }
+
   private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
     return new TextEncoder().encode(JSON.stringify(info));
   }
@@ -5288,6 +5398,8 @@ export class CotalEndpoint extends EventEmitter {
       // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
       ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
       status: this.status,
+      condition: this.condition,
+      environment: this.environment,
       activity: this.activity,
       attention: this.attentionMode,
       channelModes: this.channelModes,
@@ -5304,6 +5416,7 @@ export class CotalEndpoint extends EventEmitter {
     // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
     // refusal on the connection that just published successfully.
     const epoch = this.presenceEpoch;
+    const conditionRevision = this.conditionRevision;
     try {
       await this.kv.put(this.card.id, JSON.stringify(record));
     } catch (e) {
@@ -5326,6 +5439,13 @@ export class CotalEndpoint extends EventEmitter {
     // timeout, so that overlap is routine rather than a corner, and the next failing put re-plants
     // the record with a fresh `since`. Tracked in #1461, not repaired here.
     if (epoch !== this.presenceEpoch || this.stopped) return;
+    // Presence writes may overlap. If this put carried an older condition, repair the KV with the
+    // latest local state before returning so a late failure publish cannot resurrect after a new
+    // turn cleared it. The revision is condition-specific; unrelated heartbeat overlap is unchanged.
+    if (conditionRevision !== this.conditionRevision) {
+      await this.publishPresence();
+      return;
+    }
     this.clearPresenceWriteFailure();
   }
 
@@ -5495,9 +5615,9 @@ export class CotalEndpoint extends EventEmitter {
    *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
    *
    *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
-   *  empty bucket under it means the bucket was wiped since its last heartbeat (the netcup
+   *  empty bucket under it means the bucket was wiped since its last heartbeat (the stream
    *  recreation), and the same wipe took every peer's record: their absence says the bucket is
-   *  new, not that they left. rev-1421-gpt reproduced the previous behaviour at default timing:
+   *  new, not that they left. a reviewer reproduced the previous behaviour at default timing:
    *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
    *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
    *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
@@ -5562,7 +5682,11 @@ export class CotalEndpoint extends EventEmitter {
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
     // mis-keyed record even if a broad writer slips one in under another agent's key.
-    if (raw.card?.id !== id) return;
+    if (raw.card?.id !== id) {
+      this.presenceBindingDrops++;
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(id)}: card.id ${JSON.stringify(raw.card?.id)} does not match its KV key`));
+      return;
+    }
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
     // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
@@ -5604,6 +5728,8 @@ export class CotalEndpoint extends EventEmitter {
       prev.lifecycleUid === p.lifecycleUid &&
       prev.status === p.status &&
       prev.activity === p.activity &&
+      sameCondition(prev.condition, p.condition) &&
+      prev.environment === p.environment &&
       prev.attention === p.attention &&
       sameChannelModes(prev.channelModes, p.channelModes)
     ) {
@@ -5655,7 +5781,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
       this.emitPresenceViewIfChanged();
       // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
-      // the transport is up and the watch's own consumer is what died. Measured on netcup
+      // the transport is up and the watch's own consumer is what died. Measured on a live deployment
       // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
       // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
       // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client
@@ -5833,6 +5959,13 @@ function sameChannelModes(
   const bk = b ? Object.keys(b) : [];
   if (ak.length !== bk.length) return false;
   return ak.every((k) => a![k] === b?.[k]);
+}
+
+function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | undefined): boolean {
+  return a?.code === b?.code
+    && a?.source === b?.source
+    && a?.message === b?.message
+    && a?.since === b?.since;
 }
 
 /** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a

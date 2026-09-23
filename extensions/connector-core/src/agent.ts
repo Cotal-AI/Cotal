@@ -22,6 +22,7 @@ import {
   partsToText,
   type MessageMeta,
   type Presence,
+  type PresenceCondition,
   type PresenceStatus,
   type TransportState,
   type AttentionMode,
@@ -319,6 +320,14 @@ export class MeshAgent extends EventEmitter {
    *  13.8 hours. A progress mark that counts a pull-only drain as progress would have reported that
    *  seat as making progress, which is the exact lie this field exists to refuse. */
   private _lastAutomaticDrainedAt?: number;
+  /** The latest commit that took the OLDEST automatic delivery then queued (#1526).
+   *
+   *  Distinct from {@link _lastAutomaticDrainedAt}, and the distinction is the defect: any automatic
+   *  commit used to count, so a seat that kept committing fresh arrivals over a head it could not
+   *  deliver reset its own stall clock on every turn and reported `ready` indefinitely, while the
+   *  entries at the front of its queue aged past two hours. A queue drains when its head moves; a
+   *  queue that serves only its newest arrivals is not draining, it is skipping. */
+  private _lastAutomaticHeadDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
@@ -475,14 +484,48 @@ export class MeshAgent extends EventEmitter {
     return this._lastAutomaticDrainedAt;
   }
 
+  /** The latest drain that committed the automatic delivery that was then at the FRONT of the queue
+   *  (#1526). This is the fact {@link automaticQueueStalledForMs} measures progress by; the looser
+   *  {@link lastAutomaticDrainedAt} is still reported beside it, because the two disagreeing is
+   *  precisely the shape of a wedged head being served around. */
+  get lastAutomaticHeadDrainedAt(): number | undefined {
+    return this._lastAutomaticHeadDrainedAt;
+  }
+
+  /** The receive key of the oldest still-queued automatic delivery: the queue's head, and the entry
+   *  whose commit counts as progress. */
+  private oldestAutomaticKey(): string | undefined {
+    let head: Pending | undefined;
+    for (const pending of this.inbox) {
+      if (pending.pullOnly) continue;
+      if (head === undefined || pending.receivedAt < head.receivedAt) head = pending;
+    }
+    return head?.item.recvKey;
+  }
+
+  /** Record head progress when this batch takes the current head of the automatic queue. Call
+   *  BEFORE the batch leaves {@link inbox}, since the head is read from the live queue. */
+  private noteAutomaticHeadProgress(selected: readonly Pending[]): void {
+    const head = this.oldestAutomaticKey();
+    if (head === undefined) return;
+    if (selected.some((p) => !p.pullOnly && p.item.recvKey === head)) this._lastAutomaticHeadDrainedAt = Date.now();
+  }
+
   /**
    * How long a non-empty automatic queue has been making no progress, or `undefined`.
    *
-   * PROGRESS, not depth. The queue is not stalled because it is deep; it is stalled because nothing
-   * has come off it. The clock therefore starts at the later of the last automatic commit and the
-   * arrival of the oldest still-queued delivery, so a seat that is steadily committing keeps
-   * resetting it however busy it is, and a seat that has committed nothing since its queue formed
-   * accrues from the moment that queue formed.
+   * PROGRESS AT THE HEAD, not depth and not throughput. The queue is not stalled because it is deep;
+   * it is stalled because the entries at the front of it are not coming off. The clock therefore
+   * starts at the later of the arrival of the oldest still-queued delivery and the last commit that
+   * took the queue's head, so a seat that is steadily draining keeps resetting it however busy it
+   * is, and a seat that has not moved its head since that queue formed accrues from the moment it
+   * formed.
+   *
+   * Keyed on the HEAD rather than on any automatic commit (#1526). The reported session held 96
+   * deliveries with the oldest over two hours old and reported `ready` throughout: it was committing
+   * fresh arrivals, and under a looser measure each of those reset the clock for the backlog behind
+   * them. A seat that serves only its newest traffic is skipping its queue, not draining it, and the
+   * messages that are actually undelivered are the ones the measure must speak for.
    *
    * Measured from the oldest ARRIVAL rather than from session start so a session that never drained
    * anything is still measurable — that is precisely the shape of a seat whose first soft interrupt
@@ -491,7 +534,7 @@ export class MeshAgent extends EventEmitter {
   automaticQueueStalledForMs(now = Date.now()): number | undefined {
     const oldest = this.oldestAutomaticReceivedAt();
     if (oldest === undefined) return undefined;
-    const since = Math.max(oldest, this._lastAutomaticDrainedAt ?? 0);
+    const since = Math.max(oldest, this._lastAutomaticHeadDrainedAt ?? 0);
     const held = now - since;
     return held > 0 ? held : 0;
   }
@@ -957,6 +1000,9 @@ export class MeshAgent extends EventEmitter {
     const eligible = this.inbox.filter((p) => this.inScope(p, scope));
     const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
     const selected = eligible.slice(0, n);
+    // Head progress is read from the LIVE queue, so it must be recorded while the batch is still in
+    // it (#1526).
+    this.noteAutomaticHeadProgress(selected);
     // Remove by OBJECT IDENTITY, not by a set of wire ids (#624): the id-less entries share "", so
     // an id set would remove every id-less neighbor beyond the limit and outside the scope while
     // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
@@ -983,6 +1029,7 @@ export class MeshAgent extends EventEmitter {
     const requested = [...new Set(keys)];
     const wanted = new Set(requested);
     const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));
+    this.noteAutomaticHeadProgress(selected);
     const present = new Set(selected.map((p) => p.item.recvKey));
     const pullOnly = new Map(selected.map((p) => [p.item.recvKey, p.pullOnly]));
     for (const id of requested) {
@@ -1379,13 +1426,13 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }): Promise<ControlReply> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
@@ -1785,6 +1832,7 @@ export class MeshAgent extends EventEmitter {
     await this.requireConnected();
     const prev = this._status;
     try {
+      if (prev !== "working" && status === "working") await this.ep.setCondition(null);
       await this.publishStatus(status, activity);
     } finally {
       // The transition is a fact about the SEAT, not about whether its presence row was written:
@@ -1821,6 +1869,11 @@ export class MeshAgent extends EventEmitter {
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
+  }
+
+  /** Relay a harness-reported condition into presence, or clear it. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    await this.ep.setCondition(condition);
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the

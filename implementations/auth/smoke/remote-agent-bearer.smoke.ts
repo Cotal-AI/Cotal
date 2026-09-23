@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, wr
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Self-reexec: the smoke drives the real registered auth-service and agent-bearer commands.
 const SUBCOMMAND = process.argv[2] ?? "";
@@ -52,7 +53,7 @@ const run = (command: string, args: string[], cwd?: string) => {
 };
 
 const home = mkdtempSync(join(tmpdir(), "cotal-rab-home-"));
-const serverRoot = mkdtempSync(join(tmpdir(), "cotal-rab-server-"));
+const serverRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rab-server-`));
 const clientRoot = mkdtempSync(join(tmpdir(), "cotal-rab-client-"));
 mkdirSync(join(serverRoot, ".cotal"), { recursive: true });
 mkdirSync(join(clientRoot, ".cotal"), { recursive: true });
@@ -166,6 +167,7 @@ try {
     transport: { kind: "plaintext" }, port: brokerPort, storeDir: jsDir, extraAccounts: prepared.extraAccounts,
   }));
   broker = spawn("nats-server", ["-c", join(serverRoot, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   for (let i = 0; i < 50 && !(await isReachable(SERVER)); i++) await wait(100);
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   grantActor(serverDir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], lifecycleUid });
@@ -286,10 +288,13 @@ try {
     const argv = bearerArgv().filter((v, i, a) => v !== "--exchange-url" && a[i - 1] !== "--exchange-url"); argv.push("--dir", clientDir);
     const result = await execBearer(argv); assert.notEqual(result.code, 0); assert.match(result.stderr, /auth service.*not running/i);
   });
-  cell("plain HTTP is refused for attacker names AND genuine loopback literals — there is no exception", async () => {
-    for (const base of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com",
-      "http://127.0.0.1:9", "http://0177.0.0.1:9", "http://2130706433:9", "http://[::ffff:127.0.0.1]:9"]) {
+  cell("plain HTTP is refused for attacker names and accepted only for loopback literals", async () => {
+    for (const base of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com", "http://localhost:9"]) {
       const result = await execBearer(bearerArgv(base)); assert.notEqual(result.code, 0); assert.match(result.stderr, /must be https/i);
+    }
+    for (const base of ["http://127.0.0.1:9", "http://0177.0.0.1:9", "http://2130706433:9", "http://[::ffff:127.0.0.1]:9"]) {
+      const result = await execBearer(bearerArgv(base)); assert.notEqual(result.code, 0);
+      assert.doesNotMatch(result.stderr, /must be https/i); assert.match(result.stderr, /did not answer|fetch failed|ECONNREFUSED/i);
     }
   });
 

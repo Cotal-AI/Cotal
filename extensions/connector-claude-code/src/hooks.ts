@@ -11,10 +11,12 @@
  * binds them to the real MCP server. The behaviour lives here so `smoke/wake-path.smoke.ts`
  * drives the SHIPPED code rather than a copy of it.
  */
-import type { PresenceStatus } from "@cotal-ai/core";
+import type { PresenceCondition, PresenceConditionCode, PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
   fmtFrom,
+  fmtChannel,
+  fmtKind,
   channelMeta,
   type MeshAgent,
   type InboxItem,
@@ -69,6 +71,34 @@ function stopFailure(ev: HookEvent): { message: string; code?: string } | undefi
   return {
     message: detail || `claude turn ended on ${code ?? "an unreported error"}`,
     ...(code ? { code } : {}),
+  };
+}
+
+const CLAUDE_FAILURE_CONDITIONS: Record<string, PresenceConditionCode> = {
+  rate_limit: "rate_limit",
+  overloaded: "overloaded",
+  authentication_failed: "auth",
+  oauth_org_not_allowed: "auth",
+  cloud_credential_error: "auth",
+  account_on_hold: "billing",
+  billing_error: "billing",
+  invalid_request: "request",
+  model_not_found: "model",
+  server_error: "server",
+  max_output_tokens: "context",
+  unknown: "failed",
+};
+
+/** Relay Claude Code's closed StopFailure vocabulary without reclassifying absent or unknown input. */
+function failureCondition(ev: HookEvent): PresenceCondition | undefined {
+  if (ev.hook_event_name !== "StopFailure") return undefined;
+  const source = typeof ev.error === "string" && ev.error ? ev.error : undefined;
+  const message = typeof ev.error_details === "string" && ev.error_details.trim() ? ev.error_details.trim() : undefined;
+  return {
+    code: source === undefined ? "failed" : (CLAUDE_FAILURE_CONDITIONS[source] ?? "failed"),
+    ...(source ? { source } : {}),
+    ...(message ? { message } : {}),
+    since: Date.now(),
   };
 }
 
@@ -217,6 +247,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
+  const safeCondition = async (agent: MeshAgent, condition: PresenceCondition | null): Promise<void> => {
+    try {
+      await agent.setCondition(condition);
+    } catch {
+      /* best-effort */
+    }
+  };
+
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
   const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent): string | undefined => {
     const items = agent.peekInbox("automatic");
@@ -311,6 +349,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
             ? `${pendingTool.name}${pendingTool.detail ? `: ${pendingTool.detail}` : ""}`
             : msg;
           await safeStatus(agent, "waiting", activity);
+          const notificationType = typeof ev.notification_type === "string" ? ev.notification_type : undefined;
+          if (notificationType === "permission_prompt" || notificationType === "agent_needs_input")
+            await safeCondition(agent, {
+              code: notificationType === "permission_prompt" ? "approval" : "input",
+              source: notificationType,
+              ...(msg ? { message: msg } : {}),
+              since: Date.now(),
+            });
           return {};
         }
         case "Stop":
@@ -331,6 +377,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // for which signals count and why. `RUN_ERROR` closes the run on its own, so there is no
           // second terminal to follow it.
           closeEvents(Date.now(), stopFailure(ev));
+          if (event === "StopFailure") await safeCondition(agent, failureCondition(ev) ?? null);
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
           // wake one turn so its UserPromptSubmit surfaces the batch. (Ack sites are two: the
@@ -463,7 +510,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
     const content = pullHint
       ? `📨 ${pullHint}`
       : item
-      ? `📨 New ${item.kind}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
+      ? `📨 New ${fmtKind(item.kind)}${item.mentionsMe ? " — you were mentioned" : ""} from ${fmtFrom(item)} — delivering your Cotal inbox now.`
       : `📨 ${n} Cotal message${n === 1 ? "" : "s"} waiting — delivering your inbox now.`;
     void notify({ content, meta: item ? channelMeta(item) : { kind: "batch" } }).then(
       () => {
@@ -496,7 +543,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   // Focus-only: a channel @mention was acked-and-dropped (not buffered) but still wakes us to PULL it
   // — F4=B (wake-only). Its body isn't injected; cotal_inbox recalls it.
   agent.on("mention-wake", (item: InboxItem) => {
-    const hint = `You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — pull it with cotal_inbox.`;
+    const hint = `You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — pull it with cotal_inbox.`;
     pendingMentionWake = { item, hint }; // remembered BEFORE the push, so a rejection is retryable
     nudge(item, hint, true);
   });

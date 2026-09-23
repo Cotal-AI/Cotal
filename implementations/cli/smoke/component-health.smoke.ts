@@ -47,6 +47,7 @@ import {
   writeServiceStatus,
 } from "@cotal-ai/core";
 import { webProbeTarget } from "../src/commands/status.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -54,7 +55,7 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const HOLDER = join(import.meta.dirname, "component-health-holder.mjs");
 const SPACE = "component-health";
 const INSTANCE = "h".repeat(26);
-const root = mkdtempSync(join(tmpdir(), "cotal-component-health-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-component-health-home-"));
 const store = join(root, "jetstream");
 mkdirSync(join(root, ".cotal"), { recursive: true });
@@ -273,6 +274,7 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
       agentCount: 0,
       uptimeMs: 1,
       connectors: [],
+      classSpawn: true,
       staticReconciliation: {
         state: "failed",
         failures: [{
@@ -340,6 +342,7 @@ let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
 try {
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+  teardownOnSignal(broker);
   for (let i = 0; i < 100 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture broker started", await portOpen(port));
 

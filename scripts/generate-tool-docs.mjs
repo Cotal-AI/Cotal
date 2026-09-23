@@ -116,7 +116,7 @@ const ANNOTATIONS = {
   cotal_run: {
     effect: "starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only",
     availability:
-      "capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive",
+      "capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Open mode exposes the tool, but hosted runs require static authentication with issued caller authority; open and user-auth meshes refuse execution ([workflow setup](workflows.md#from-an-agent-session))",
     notes:
       "`start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.",
   },

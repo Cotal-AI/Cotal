@@ -16,8 +16,10 @@ what is (not) defended**.
 - The broker, operator, account signing key holder, and any `admin` credential are trusted.
 - On a per-user-auth mesh, ledger scope `admin` is the same trust grade as an `admin`
   credential: it unlocks the elevated views (the whole-space read tap, history and channel
-  purges, channel-registry writes, cross-owner control), so grant it as operator authority,
-  not as a convenience ([identity & auth](identity-and-auth.md)).
+  purges, channel-registry writes, cross-owner control). The public exchange serves only
+  `channel-writer` and `channel-purger` from that set; god-view and space-history purge stay
+  loopback-only. Grant `admin` as operator authority, not as a convenience
+  ([identity & auth](identity-and-auth.md)).
 - Agents are not trusted to self-report sender identity, channel permissions, or DM access.
 
 ## Adversaries

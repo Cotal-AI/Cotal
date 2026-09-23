@@ -5,11 +5,12 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -30,7 +31,7 @@ async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | 
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-host-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-host-`));
 // Control sockets are AF_UNIX. Keep them under a short root so long case names cannot put the path
 // over sun_path (104/107) and replace the startup outcome under test with a control-listen error.
 const sockRoot = mkdtempSync(join("/tmp", "cjh-"));
@@ -44,6 +45,7 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 const hosts: ChildProcess[] = [];
 
 function spawnHost(opts: SpawnOptions): ChildProcess {
@@ -431,6 +433,28 @@ try {
     );
   }
 
+  // #1625: the relay socket used to sit at the top level of the shared temp directory, so anything
+  // that swept that directory — a periodic cleaner, or a self-test whose recursive cleanup escaped
+  // its own root — unlinked the control path of every live seat at once, and the host kept serving
+  // a listener nothing could reach. It now lives in a private per-launch directory, and a deletion
+  // of the path costs one poll interval rather than a respawn.
+  const relayDir = dirname(relaySocket);
+  check(
+    "the tool relay socket is not at the top level of the shared temp directory",
+    relayDir !== tmpdir() && relayDir !== "/tmp" && (statSync(relayDir).mode & 0o777) === 0o700,
+    { relaySocket, relayDir, tmp: tmpdir() },
+  );
+  rmSync(relaySocket, { force: true });
+  await operator.multicast("relay survives socket deletion", { channel: "team" });
+  await sleep(100);
+  await waitFor("relay socket re-bind", () => (existsSync(relaySocket) ? true : undefined), 15_000).catch(() => undefined);
+  const afterUnlink = await callJcodeMcp(peerHome, relaySocket, relayToken, {});
+  check(
+    "a deleted relay socket is re-bound and the next cotal_* call still reaches the host",
+    !afterUnlink.isError && afterUnlink.text.includes("relay survives socket deletion"),
+    afterUnlink,
+  );
+
   await operator.unicast(peerId!, "mesh-wake");
   const turn = await waitFor(
     "Harness API turn",
@@ -467,6 +491,13 @@ try {
 
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
+  // The per-launch directory is the containment, so it has to be removed with the launch or the
+  // shared temp directory fills with one abandoned directory per seat instead (#1625).
+  check(
+    "a retired launch leaves no relay socket or private relay directory behind",
+    !existsSync(relaySocket) && !existsSync(relayDir),
+    { relaySocket, relayDir },
+  );
 
   // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
   // verify the provider route that will receive the effort instead of treating the provider default
@@ -1157,6 +1188,7 @@ try {
     );
   check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });
   outageNats = spawn("nats-server", ["-js", "-p", String(outagePort), "-sd", join(root, "outage-js")], { stdio: "ignore" });
+  teardownOnSignal(outageNats);
   for (let i = 0; i < 100 && !(await isReachable(outageServers)); i++) await sleep(50);
   await seedChannelRegistry({ servers: outageServers, space: "jcodeoutage", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   outageOperator = new CotalEndpoint({ space: "jcodeoutage", servers: outageServers, card: { name: "outageoperator", kind: "agent", id: "outageoperator" }, channels: ["team"] });

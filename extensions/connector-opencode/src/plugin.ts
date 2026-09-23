@@ -44,6 +44,7 @@ import {
   startControlServer,
   formatInjection,
   fmtFrom,
+  fmtChannel,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
@@ -245,7 +246,7 @@ export const cotal: Plugin = async () => {
       (runId: string) => mapper?.forgetOpenRun(runId),
     );
   }
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) events = newEventHolder();
+  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired) events = newEventHolder();
 
   /**
    * Give this principal's event WAL lock back, ONCE, at the final event teardown.
@@ -1122,7 +1123,7 @@ export const cotal: Plugin = async () => {
     // `pendingForWake() === 0` and no parked override, so no later drive carries it and the seat is
     // never told to look. Handing it to `drive` unconditionally is what makes the guard cost a
     // retry instead of the wake: a refused call parks it in the slot and the next turn end drives it.
-    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`);
+    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`);
   });
   agent.on("wake", () => {
     if (!busy) void drive();

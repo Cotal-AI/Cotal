@@ -88,6 +88,15 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// Namespace, for the same reason as mutation-proof.selftest.mjs: a tree without the #1625 cleanup
+// guard must still RUN this suite (it grades the scanner's cells, not the guard) rather than die at
+// link time on an export that tree does not have.
+import * as safety from "./mutation-command-safety.mjs";
+
+const removeSelfTestDir = (dir, dirBase, created) =>
+  typeof safety.removeSelfTestDir === "function"
+    ? safety.removeSelfTestDir(dir, dirBase, created)
+    : rmSync(dir, { recursive: true, force: true });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCANNER = join(HERE, "check-operator-literals.mjs");
@@ -883,20 +892,20 @@ const INLINE_CELLS = [
 /**
  * A working directory the scanner's self-execute guard can survive.
  *
- * The guard is ``import.meta.url === `file://${process.argv[1]}` ``, comparing a real URL against a
- * string built by concatenation. Those agree only for paths needing no URL escaping, so TWO host
- * conditions silently break it, and each makes a spawned copy exit 0 having run NOTHING:
+ * The guard used to be ``import.meta.url === `file://${process.argv[1]}` ``, comparing a real URL
+ * against a string built by concatenation. Those agree only for paths needing no URL escaping, so
+ * TWO host conditions silently broke it, and each made a spawned copy exit 0 having run NOTHING:
  *   symlinked TMPDIR   `import.meta.url` resolves symlinks, `process.argv[1]` does not
  *   a space in TMPDIR  the URL percent-encodes it, the concatenated string does not
  * Neither was found by reading. The first was caught by the untampered-copy control below, the
  * second by an adversarial reviewer who set TMPDIR to a directory containing a space.
  *
- * The scanner is the product and this suite does not modify it, so the workdir is chosen to avoid
- * both conditions: realpath'd, then REJECTED outright when its URL form differs from the naive
- * concatenation. The repository is the fallback base, since a checkout needing escaping would
- * already be breaking the scanner in production. If no usable base exists this THROWS with the
- * reason, because one accurate sentence is a better report than a cascade of confusing cell
- * failures that all share a cause the reader cannot see.
+ * The scanner now asks `isMainEntry`, which resolves both sides to a real path, so neither
+ * condition can disable a copy today. The workdir is still realpath'd and still REJECTED outright
+ * when its URL form differs from the naive concatenation, and that is deliberate rather than
+ * leftover: it is the one place a regression of that guard turns into a single named refusal
+ * instead of sixty-six spawned copies reporting phantom reds whose cause no reader can see. The
+ * repository is the fallback base. If no usable base exists this THROWS with the reason.
  */
 const guardSafe = (path) => pathToFileURL(path).href === `file://${path}`;
 
@@ -911,8 +920,8 @@ const makeWorkdir = () => {
       rejected.push(`${base}: ${error.message}`);
       continue;
     }
-    if (guardSafe(candidate)) return candidate;
-    rmSync(candidate, { recursive: true, force: true });
+    if (guardSafe(candidate)) return { dir: candidate, base, created: candidate };
+    removeSelfTestDir(candidate, base, candidate);
     rejected.push(`${candidate}: needs URL escaping, so the scanner's self-execute guard cannot fire there`);
   }
   throw new Error(
@@ -920,7 +929,15 @@ const makeWorkdir = () => {
   );
 };
 
-const workdir = makeWorkdir();
+const workspace = makeWorkdir();
+const workdir = workspace.dir;
+
+// The scanner imports `./main-entry.mjs`, so a copy needs that sibling next to it or every spawned
+// copy dies on module resolution instead of grading anything. Copied once, untampered: the tampers
+// below are edits to the scanner's own source and none of them touches this file. A copy that
+// arrives without it fails the untampered-copy control loudly, which is where that control earns
+// its place.
+writeFileSync(join(workdir, "main-entry.mjs"), readFileSync(join(HERE, "main-entry.mjs"), "utf8"));
 
 /**
  * GRADE THE TWO FUNCTIONS THAT CHOOSE WHERE EVERY TAMPER RUNS.
@@ -1849,7 +1866,9 @@ try {
     );
   }
 } finally {
-  rmSync(workdir, { recursive: true, force: true });
+  // The cleanup may only remove the directory mkdtemp handed `makeWorkdir`, and only beneath the
+  // base it was created in. A mutant that makes that helper return a parent must not delete it.
+  removeSelfTestDir(workdir, workspace.base, workspace.created);
 }
 
 const total = passed + failures.length;

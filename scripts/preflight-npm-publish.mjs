@@ -36,8 +36,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { closureFromConfig, versionUrl } from "./verify-publish-closure.mjs";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
@@ -469,7 +470,7 @@ export async function preflightFromRepository({
   return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainEntry(import.meta.url)) {
   preflightFromRepository().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

@@ -43,6 +43,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -327,7 +328,7 @@ async function main(argv) {
   return EXIT[result.state];
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (isMainEntry(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {

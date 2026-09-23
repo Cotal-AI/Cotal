@@ -69,7 +69,10 @@ who's present, and unread counts. The full tool surface is the
 [MCP tool catalog](mcp-tools.md). In auth mode the team-supervision tools
 (`cotal_spawn` / `cotal_persona` / `cotal_personas`) are injected **only** for personas declaring
 `capabilities: [spawn]` (the same grant that opens the privileged control subject), so an
-agent's toolset matches what it can actually invoke. Clearing retained history is
+agent's toolset matches its declared capabilities. `cotal_run` is gated separately by
+`run`; use `capabilities: [spawn, run]` for both. Fresh setup defaults include both.
+See [workflow tool setup](workflows.md#from-an-agent-session) for a first run and missing-tool checks.
+Clearing retained history is
 operator-only ([run a mesh](run-a-mesh.md)), never an agent tool.
 
 ## How it binds
@@ -220,6 +223,14 @@ untrusted-ambient injection surface (only subject-authenticated dm/anycast auto-
 It resets to **open** on `SessionStart`, so a restarted agent never stays silently deaf.
 Your attention is mirrored into presence so peers can see it.
 
+Whatever does reach a turn is framed so a peer cannot write the frame. A line that begins at column
+zero is written by the connector; one message is one line plus indented continuations, with the
+sender inside a single bracket pair. A message body, a sender name and role, and a service or
+channel label are all peer-controlled, so each passes through the same neutralization the
+`cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
+rendered attribution. This matters more for an injected block than for a reply, because the agent
+did not ask for it and so never had the chance to distrust it.
+
 ## Presence mapping
 
 The connector wires a small subset of Claude Code hooks to presence states; presence is
@@ -232,9 +243,14 @@ from delivering messages or flushing held ones.
 | `SessionStart` | `idle` (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
 | `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
-| `Notification` (permission / elicitation) | `waiting` (blocked on a human: activity leads with the pending tool, e.g. `Bash: git push …`) |
-| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). On the [event plane](#event-plane) the two differ: `StopFailure` closes the run with `RUN_ERROR`. |
+| `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |
+| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
+
+`StopFailure` maps `rate_limit` and `overloaded` directly; auth and credential failures to
+`auth`; account and billing failures to `billing`; `invalid_request` to `request`;
+`model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
+`unknown` to `failed`. The native value remains in `condition.source`.
 
 Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
 socket + per-launch token, constant-time checked), so a local process that finds the path
@@ -244,11 +260,15 @@ with the adapter:
 
 ## Event plane
 
-A session launched with `cotal spawn --events` publishes a **structured** account of what it
+A spawned session publishes a **structured** account of what it
 did: run boundaries per turn, assistant text, reasoning, and each tool call with its start
 and its end. Not prose about the work, the work itself, in a vocabulary a program can
-read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
-with the plugin installed publishes nothing.
+read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
+space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
+private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
+A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
+publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
+session with no launch material and no required-policy fallback keeps the generic default behavior.
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
@@ -383,12 +403,12 @@ then remove the directory.
 Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
 part by design, so a surface that renders a message as flat text shows a marker instead of prose.
 
-**On a per-user-auth mesh, arming needs the spawner's grant to cover the channel.** The event
+**On a per-user-auth mesh, the default event plane needs the spawner's grant to cover the channel.** The event
 channel is added to the child's publish set, and delegation only narrows: an agent may hand down
-a subset of what it holds and no more. So a peer-initiated `--events` spawn is refused unless the
+a subset of what it holds and no more. So a peer-initiated spawn is refused unless the
 spawning identity's own grant already covers the child's event channel. The refusal prints the
 exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
-admin-scoped or roster row, is unaffected.
+admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
 
 ## Resume a session
 

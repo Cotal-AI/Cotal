@@ -14,6 +14,7 @@
  * can disagree with this one.
  */
 export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "./broker-teardown.js";
+export { EXEMPT_MARKER, enumerateSpawnSites, inScope, isAdopted, type SpawnSite } from "./spawn-sites.js";
 export {
   assertSmokeSandboxDown,
   assertSmokeSandboxTargetDown,
@@ -22,6 +23,7 @@ export {
   type SmokeSandboxAnchor,
 } from "./sandbox-guard.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
+export { SEAT_MAX_SOCKET_PATH, SEAT_SOCKET_OVERHEAD, makeSeatRoot, rootFits } from "./seat-root.js";
 export {
   SENTINEL_PREFIX,
   countedAssert,

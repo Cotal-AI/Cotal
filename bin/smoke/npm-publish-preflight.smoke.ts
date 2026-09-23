@@ -1637,6 +1637,287 @@ check(
   ambiguousFlowTarget.why,
 );
 
+// ---- THE LADDER'S ARMS, GRADED AGAINST THE VERDICTS IT PRODUCES --------------------------------
+// Everything above grades what the verdict READS. Nothing above grades what the ladder DOES with
+// the verdict it computed, and that gap was measurable: deleting the `incomplete` arm whole left
+// this suite at 148 passed, 0 failed, exit 0.
+//
+// That arm cannot be closed by a fixture, and the triage on #1584 measured why over 1364 census
+// combinations: with no unknown rows, zero present rows forces absent === rows.length, which the
+// earlier all-absent rung has already claimed, so no input reaches it. A verdict with no reachable
+// input still has a reachable DELETION, and the consequence of one is not cosmetic: a verdict with
+// no arm falls through into the credential stage and returns a publish-ready state.
+//
+// So the claim here is a JOIN and not a text match: enumerate the verdicts the ladder's own
+// expression can PRODUCE, enumerate the verdicts an arm beneath it HANDLES, and require the two to
+// agree up to the one deliberate fall-through. Deleting an arm removes a handler while leaving the
+// producer, so the sets diverge and the detector reds by name.
+//
+// What the DETECTOR does on a legitimate refactor, measured on the shipped file rather than
+// asserted: removing the `incomplete` verdict from the producer AND its arm together leaves the
+// detector cell GREEN, because nothing then produces the state and nothing needs to guard it. The
+// SUITE still reds on that refactor, on the skeleton/shipped agreement cell below, which is the
+// same bargain the bucket-predicate skeleton above already makes: a change to the ladder's SHAPE
+// is required to restate the stand-in beside it. Verified in both directions -- the pre-existing
+// cell reds identically when a fourth bucket rung is added, which is a shape change in ITS
+// dimension. Recorded because the first version of this comment claimed the whole suite stays
+// green on that refactor, and running it showed otherwise: the detector stays green, the
+// agreement cell does not.
+type LadderArms =
+  | { produced: string[]; handled: string[]; why: null }
+  | { produced: null; handled: null; why: string };
+function ladderVerdictArms(source: string): LadderArms {
+  const parsed = ts.createSourceFile(CHECKED_MODULE_FILENAME, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const located = soleTopLevelFunction(parsed, "preflightNpmPublish");
+  if (located.fn === null) return { produced: null, handled: null, why: located.why };
+  // The ladder's own statement list, for the same reason the data-flow reading above uses it: an
+  // arm nested in a block or in another function is not what this scope's verdict flows through.
+  const statements = [...located.fn.body!.statements];
+  const declared = statements.flatMap((statement) =>
+    ts.isVariableStatement(statement)
+      ? statement.declarationList.declarations.filter(
+          (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "registryVerdict",
+        )
+      : []);
+  if (declared.length !== 1) {
+    return {
+      produced: null,
+      handled: null,
+      why: `registryVerdict: ${declared.length} declarations found in the ladder's own scope, and exactly 1 is required`
+        + ` (0 means this reading grades nothing; 2 or more means which one the arms see is ambiguous)`,
+    };
+  }
+  const initializer = declared[0].initializer;
+  if (!initializer) {
+    return { produced: null, handled: null, why: "registryVerdict: the sole declaration has no initialiser, so it produces no verdict to grade" };
+  }
+  // Every value the conditional chain can yield, proved from the syntax alone. A branch result the
+  // syntax does not pin to a string literal is a REFUSAL and not a guess, for the same reason the
+  // return enumerator refuses an identifier: a producer this reading cannot enumerate is a producer
+  // whose arms it cannot grade, and reporting "nothing unguarded" about it would be a lie.
+  const produced: string[] = [];
+  const unpinned: string[] = [];
+  const collectProduced = (node: ts.Expression): void => {
+    if (ts.isParenthesizedExpression(node)) { collectProduced(node.expression); return; }
+    if (ts.isConditionalExpression(node)) { collectProduced(node.whenTrue); collectProduced(node.whenFalse); return; }
+    if (ts.isStringLiteral(node)) { if (!produced.includes(node.text)) produced.push(node.text); return; }
+    unpinned.push(`${ts.SyntaxKind[node.kind]} ${JSON.stringify(node.getText(parsed))}`);
+  };
+  collectProduced(initializer);
+  if (unpinned.length > 0) {
+    return {
+      produced: null,
+      handled: null,
+      why: `registryVerdict: ${unpinned.join("; ")} -- the syntax does not pin these branch results to a verdict literal,`
+        + ` so which states this ladder produces cannot be enumerated`,
+    };
+  }
+  // An arm is an `if (registryVerdict === "<verdict>")` reachable from the ladder's own scope
+  // whose consequent ENDS in a throw or a return. Requiring the terminator is what keeps this from
+  // being satisfied by an arm someone gutted: an `if` that prints a census and then falls out of the
+  // block leaves the verdict continuing into the credential stage exactly as a deleted arm would, so
+  // a reading that counted it as handled would bless the same defect in a quieter shape.
+  //
+  // ELSE BRANCHES ARE FOLLOWED, and that is a correction rather than a first choice. The first
+  // version read only the ladder's top-level statement list, which is the right scope for a chain
+  // of sibling `if`s and the wrong one the moment anybody writes the same arms as an if/else-if
+  // chain. Measured on the shipped file: joining the inconclusive and mixed arms with `else if` is
+  // behaviour-preserving, and the cell reddened with `unguarded: [mixed]` because the second arm had
+  // moved into an else branch this walk never entered. That is a FALSE POSITIVE -- a red on a clean
+  // refactor -- and a pin that forbids a legitimate restatement of the same logic is a pin that will
+  // be deleted rather than satisfied. An else-if chain is the same guard written differently, so the
+  // walk follows the else chain while still refusing to descend into a nested block or another
+  // function, which are not this scope's arms.
+  const handled: string[] = [];
+  const nonTerminal: string[] = [];
+  const collectArm = (statement: ts.Statement): void => {
+    if (!ts.isIfStatement(statement)) return;
+    const test = statement.expression;
+    const elseBranch = statement.elseStatement;
+    if (ts.isBinaryExpression(test)
+      && test.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+      && ts.isIdentifier(test.left) && test.left.text === "registryVerdict"
+      && ts.isStringLiteral(test.right)) {
+      const consequent = statement.thenStatement;
+      const last = ts.isBlock(consequent)
+        ? consequent.statements[consequent.statements.length - 1]
+        : consequent;
+      if (last === undefined || !(ts.isThrowStatement(last) || ts.isReturnStatement(last))) {
+        nonTerminal.push(test.right.text);
+      } else if (!handled.includes(test.right.text)) {
+        handled.push(test.right.text);
+      }
+    }
+    // The `else` of an if/else-if chain is the next arm, so it is followed. A plain `else { ... }`
+    // block is not an arm and contributes nothing, which is why only a further IfStatement recurses.
+    if (elseBranch !== undefined) collectArm(elseBranch);
+  };
+  for (const statement of statements) collectArm(statement);
+  if (nonTerminal.length > 0) {
+    return {
+      produced: null,
+      handled: null,
+      why: `${nonTerminal.join(", ")}: the arm does not end in a throw or a return, so the verdict falls out of the arm`
+        + ` and into the credential stage exactly as a deleted arm would`,
+    };
+  }
+  return { produced, handled, why: null };
+}
+
+// The one verdict that deliberately carries no arm: `all-absent` is the clean release and falls
+// through to the credential stage on purpose. It is named in ONE constant so the exemption stays a
+// single line a reviewer can see, rather than a list that grows by one entry every time an arm is
+// removed. The cell after the detector pins that this name still describes a real branch.
+const LADDER_FALLTHROUGH_VERDICT = "all-absent";
+const shippedArms = ladderVerdictArms(preflightSource);
+const unguardedVerdicts = (shippedArms.produced ?? []).filter(
+  (verdict) => verdict !== LADDER_FALLTHROUGH_VERDICT && !(shippedArms.handled ?? []).includes(verdict),
+);
+check(
+  "every verdict the shipped ladder produces has an arm beneath it that throws or returns, apart from the named all-absent fall-through, so an arm cannot be deleted while its verdict is still produced",
+  shippedArms.produced !== null && shippedArms.produced.length > 0 && unguardedVerdicts.length === 0,
+  { produced: shippedArms.produced, handled: shippedArms.handled, unguarded: unguardedVerdicts, refusal: shippedArms.why },
+);
+check(
+  "the shipped ladder still produces the all-absent fall-through and still gives it no arm, so the exemption above names a real branch rather than covering for an arm that went missing",
+  (shippedArms.produced ?? []).includes(LADDER_FALLTHROUGH_VERDICT)
+    && !(shippedArms.handled ?? []).includes(LADDER_FALLTHROUGH_VERDICT),
+  { produced: shippedArms.produced, handled: shippedArms.handled, refusal: shippedArms.why },
+);
+
+// CONTROLS ON THE INSTRUMENT, on synthetic sources, for the reason every other control in this file
+// runs on one: the shipped tree is graded by the two cells above, and a control that rebuilt its
+// input by substituting a shipped line would rot under the very mutation it exists to grade. A
+// reading that answered "nothing unguarded" for every input would pass those two cells for free, so
+// it is shown able to say both answers here.
+const ARM_BODIES: Record<string, string> = {
+  inconclusive: "    printPublishCensus(rows, log);\n    throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);\n",
+  mixed: "    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n",
+  incomplete: "    printPublishCensus(rows, log);\n    throw new Error(\"the packages that would publish are not the complete fixed group\");\n",
+  "all-present": "    printPublishCensus(rows, log);\n    return { state: \"nothing-to-publish\", rows };\n",
+};
+const ARMED_VERDICTS = ["inconclusive", "mixed", "incomplete", "all-present"] as const;
+const armSkeleton = (arms: readonly string[], bodies: Record<string, string> = ARM_BODIES): string =>
+  "export async function preflightNpmPublish(rows) {\n"
+  + cleanLines.join("")
+  + SKELETON_VERDICT
+  + arms.map((verdict) => `  if (registryVerdict === "${verdict}") {\n${bodies[verdict]}  }\n`).join("")
+  + "  return { state: \"ready\", rows };\n"
+  + "}\n";
+const cleanArms = ladderVerdictArms(armSkeleton(ARMED_VERDICTS));
+check(
+  "positive control: the fully armed skeleton reads as five produced verdicts with four handled, so the detector below runs on an instrument that can say every arm is present",
+  cleanArms.produced !== null
+    && JSON.stringify([...cleanArms.produced].sort()) === JSON.stringify(["all-absent", "all-present", "incomplete", "inconclusive", "mixed"])
+    && JSON.stringify([...cleanArms.handled].sort()) === JSON.stringify(["all-present", "incomplete", "inconclusive", "mixed"]),
+  { produced: cleanArms.produced, handled: cleanArms.handled, refusal: cleanArms.why },
+);
+// THE TIE TO REALITY for the synthetic verdict this skeleton carries. If the shipped ladder grows a
+// rung, loses one, or renames a state, the two readings diverge and this reds, so the detector
+// beneath cannot quietly drift into grading a ladder that no longer ships. It compares READINGS and
+// not text, which is why an arm deletion reds the shipped cell above rather than rotting this one.
+check(
+  "the skeleton and the shipped module produce the same verdict set, so the arm controls below grade a stand-in that still matches the ladder that ships",
+  cleanArms.produced !== null
+    && shippedArms.produced !== null
+    && JSON.stringify([...cleanArms.produced].sort()) === JSON.stringify([...shippedArms.produced].sort()),
+  { skeleton: cleanArms.produced, shipped: shippedArms.produced },
+);
+for (const verdict of ARMED_VERDICTS) {
+  const withoutArm = ladderVerdictArms(armSkeleton(ARMED_VERDICTS.filter((name) => name !== verdict)));
+  const unguarded = (withoutArm.produced ?? []).filter(
+    (name) => name !== LADDER_FALLTHROUGH_VERDICT && !(withoutArm.handled ?? []).includes(name),
+  );
+  check(
+    `detector control: deleting the ${verdict} arm whole leaves its verdict produced and unhandled, which is the deletion the shipped cell above refuses`,
+    JSON.stringify(unguarded) === JSON.stringify([verdict]),
+    { produced: withoutArm.produced, handled: withoutArm.handled, unguarded, refusal: withoutArm.why },
+  );
+  // The quieter shape of the same defect: the arm is still written, still matches by text, and no
+  // longer stops anything. A reading that only asked whether an `if` mentioning the verdict exists
+  // would call this handled.
+  const gutted = ladderVerdictArms(armSkeleton(ARMED_VERDICTS, { ...ARM_BODIES, [verdict]: "    printPublishCensus(rows, log);\n" }));
+  check(
+    `detector control: a ${verdict} arm that prints the census and then falls out of its block is refused, so an arm that stopped refusing is not counted as one`,
+    gutted.produced === null
+      && gutted.why.startsWith(`${verdict}: the arm does not end in a throw or a return`),
+    gutted.why,
+  );
+}
+// THE FALSE-POSITIVE DIRECTION, which is the half a detector-only control cannot see. Every cell
+// above asks whether the reading catches a missing arm. This one asks whether it accuses a clean
+// one, and it exists because the first version of this reading did: the arms written as an
+// if/else-if chain are the same guards with the same behaviour, and reading only the top-level
+// statement list lost every arm after the first `else`. Measured on the shipped file at the time,
+// the detector cell reddened with `unguarded: [mixed]` on a refactor that changed nothing.
+//
+// It is graded on the SKELETON rather than by editing the shipped file, for the reason the other
+// controls here are: the shipped tree is graded by the detector cell above, and a control that
+// rewrites shipped text rots under the mutants that also rewrite it.
+const chainedArmSkeleton = "export async function preflightNpmPublish(rows) {\n"
+  + cleanLines.join("")
+  + SKELETON_VERDICT
+  + ARMED_VERDICTS.map((verdict, index) =>
+      `${index === 0 ? "  if" : " else if"} (registryVerdict === "${verdict}") {\n${ARM_BODIES[verdict]}  }`).join("")
+  + "\n  return { state: \"ready\", rows };\n"
+  + "}\n";
+const chainedArms = ladderVerdictArms(chainedArmSkeleton);
+const chainedUnguarded = (chainedArms.produced ?? []).filter(
+  (name) => name !== LADDER_FALLTHROUGH_VERDICT && !(chainedArms.handled ?? []).includes(name),
+);
+check(
+  "positive control: the chained skeleton really writes the arms as one if/else-if chain, so the cell below is not grading the sibling-if form again",
+  chainedArmSkeleton !== armSkeleton(ARMED_VERDICTS)
+    && chainedArmSkeleton.includes("} else if (registryVerdict === \"mixed\")"),
+  { chained: chainedArmSkeleton.includes("} else if (registryVerdict === \"mixed\")") },
+);
+check(
+  "arms written as an if/else-if chain are all found and none is reported unguarded, so a behaviour-preserving restatement of the same guards is not accused of deleting one",
+  chainedArms.produced !== null
+    && JSON.stringify([...chainedArms.handled].sort()) === JSON.stringify(["all-present", "incomplete", "inconclusive", "mixed"])
+    && chainedUnguarded.length === 0,
+  { produced: chainedArms.produced, handled: chainedArms.handled, unguarded: chainedUnguarded, refusal: chainedArms.why },
+);
+// And the detector still bites through a chain: deleting one arm OUT of the chain is still caught,
+// so following else branches widened what the reading sees without softening what it refuses.
+const chainedMinusIncomplete = ladderVerdictArms(
+  "export async function preflightNpmPublish(rows) {\n"
+  + cleanLines.join("")
+  + SKELETON_VERDICT
+  + ARMED_VERDICTS.filter((verdict) => verdict !== "incomplete").map((verdict, index) =>
+      `${index === 0 ? "  if" : " else if"} (registryVerdict === "${verdict}") {\n${ARM_BODIES[verdict]}  }`).join("")
+  + "\n  return { state: \"ready\", rows };\n"
+  + "}\n",
+);
+check(
+  "deleting the incomplete arm out of an if/else-if chain is still reported unguarded, so following else branches did not soften the detector",
+  JSON.stringify((chainedMinusIncomplete.produced ?? []).filter(
+    (name) => name !== LADDER_FALLTHROUGH_VERDICT && !(chainedMinusIncomplete.handled ?? []).includes(name),
+  )) === JSON.stringify(["incomplete"]),
+  { produced: chainedMinusIncomplete.produced, handled: chainedMinusIncomplete.handled, refusal: chainedMinusIncomplete.why },
+);
+// The refusals for this reading, graded rather than assumed to carry over from the enumerators
+// above. An ambiguous producer and a producer the syntax cannot pin are both refusals, and a
+// refusal reds the shipped cell because its `produced` is null.
+const ambiguousArmVerdict = ladderVerdictArms(
+  armSkeleton(ARMED_VERDICTS).split("  const registryVerdict").join("  const registryVerdict = \"all-absent\";\n  const registryVerdict"),
+);
+check(
+  "two registryVerdict declarations in the ladder's own scope red as ambiguous for the arm reading too, and the refusal carries the count",
+  ambiguousArmVerdict.produced === null
+    && ambiguousArmVerdict.why.includes("2 declarations found in the ladder's own scope"),
+  ambiguousArmVerdict.why,
+);
+const unpinnedArmVerdict = ladderVerdictArms(
+  armSkeleton(ARMED_VERDICTS).split("          : \"incomplete\";").join("          : deriveVerdict(rows);"),
+);
+check(
+  "a branch result the syntax cannot pin to a verdict literal is refused rather than enumerated as nothing, so a computed verdict cannot pose as a ladder with no unguarded states",
+  unpinnedArmVerdict.produced === null
+    && unpinnedArmVerdict.why.includes("the syntax does not pin these branch results to a verdict literal"),
+  unpinnedArmVerdict.why,
+);
+
 const incomplete = await scenario({ workspacePackages: workspace.filter((pkg) => pkg.name !== "@cotal-ai/seat") });
 check(
   "one fixed-group package missing from the recursive publish set refuses",

@@ -182,6 +182,7 @@ try {
   server.kill("SIGKILL");
   await awaitExit(server); // the restart reuses PORT — the old broker must fully exit + free the socket first
   server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(server);
   let back = false;
   for (let i = 0; i < 50; i++) {
     if (await isReachable(SERVERS)) {

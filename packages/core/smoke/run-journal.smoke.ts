@@ -47,11 +47,13 @@ import {
   type RunJournalRecord,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "wfjrun";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfj-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfj-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;
@@ -663,6 +665,77 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("and the loser is told to read again, not that the journal is broken",
     loser?.reason instanceof ActivationRaced || loser?.reason instanceof StaleLeaseToken ||
     loser?.reason instanceof ActivationNotAuthorized, `${(loser?.reason as Error)?.name}`);
+}
+
+// ── 5m2) ONE takeover id, MANY replays: the shape a live drive has ───────────────────────────
+//
+// A takeover id is minted once per attempt, and the attempt then replays its journal at every
+// effect and at every poll of a parked pause. So the interesting number is not "two takeovers" but
+// "one takeover, many reads", and both ways that breaks are here.
+//
+// CONCURRENT: two of the driver's own readers on one id. `RunScopeAuthority` serializes the reads
+// it makes itself; `activateRun`, the no-record diagnostic and a `RunHost.status` handed the
+// drive's lease id are on the driver's connection and join no chain. Sharing one durable, `add`
+// hands the second the first's half-read consumer.
+//
+// LEFT BEHIND: the same durable surviving one replay. A replay is interrupted by whatever ends its
+// connection, its delete is the part that does not land, and every later replay on that takeover id
+// then reads its own leftover as another driver's tail. That is a fault reported to a healthy run
+// about a rival that does not exist.
+{
+  const a = await activateRun(js, jsm, startRun("r-5m2", "d1", 1));
+  for (let n = 0; n < 16; n += 1) await a.append({ n }, n);
+  const shared = tid();
+  const read = (t: string) => replayRunJournal(js, jsm, SPACE, "r-5m2", t)
+    .then((r) => `ok(${r.records.length})`, (e: unknown) => (e as Error).name);
+
+  const pair = await Promise.all([read(shared), read(shared)]);
+  c("two replays fired together on ONE takeover id both read the whole run",
+    pair.every((r) => r === "ok(17)"), pair.join(", "));
+
+  // Eight is where every way it breaks shows up at once. Measured on base: a torn fetch
+  // (`JetStreamStatusError`, one replay's delete ending another's), `RunJournalReplayRaced`, and
+  // `ok(0)`, which is the bad one because a caller cannot see it: a run reporting no history.
+  const eight = await Promise.all(Array.from({ length: 8 }, () => read(shared)));
+  c("eight of them on one id read the whole run too, none of them a silent empty prefix",
+    eight.every((r) => r === "ok(17)"), eight.join(","));
+
+  // The leftover, made the way the code makes one: a delete that failed for a reason the replay
+  // does not swallow leaves the durable standing, holding everything it delivered.
+  const stuck = tid();
+  const deafDelete = {
+    ...jsm,
+    consumers: {
+      ...jsm.consumers,
+      add: jsm.consumers.add.bind(jsm.consumers),
+      delete: async () => { throw Object.assign(new Error("insufficient resources"), { code: 10023 }); },
+    },
+  } as unknown as typeof jsm;
+  let interrupted: unknown;
+  try { await replayRunJournal(js, deafDelete, SPACE, "r-5m2", stuck); } catch (e) { interrupted = e; }
+  const left = await jsm.consumers.info(STREAM, runJournalConsumerConfig(SPACE, "r-5m2", stuck).durable_name as string)
+    .then((i) => i.delivered.consumer_seq, () => -1);
+  c("an interrupted replay leaves its own durable behind holding what it delivered",
+    interrupted instanceof Error && left === 17, `${(interrupted as Error)?.name} delivered=${left}`);
+  const after = await read(stuck);
+  c("and the next replay on that same takeover id reads the whole run rather than reporting a rival",
+    after === "ok(17)", after);
+
+  // NOT the guard widened. A durable of the name that survives the replay's own delete is someone
+  // this process cannot account for, and reading its tail is the thing the guard exists to refuse.
+  const foreign = tid();
+  const noDelete = {
+    ...jsm,
+    consumers: { ...jsm.consumers, add: jsm.consumers.add.bind(jsm.consumers), delete: async () => true },
+  } as unknown as typeof jsm;
+  await jsm.consumers.add(STREAM, runJournalConsumerConfig(SPACE, "r-5m2", foreign));
+  const held = await js.consumers.get(STREAM, runJournalConsumerConfig(SPACE, "r-5m2", foreign).durable_name as string);
+  for await (const m of await held.fetch({ max_messages: 17, expires: 2_000 })) m.ack();
+  await wait(150);
+  let stillRaced: unknown;
+  try { await replayRunJournal(js, noDelete, SPACE, "r-5m2", foreign); } catch (e) { stillRaced = e; }
+  c("a durable that outlives the replay's own delete is still refused by name",
+    stillRaced instanceof RunJournalReplayRaced, `${(stillRaced as Error)?.name}`);
 }
 
 // ── 5n) `expect` is CHECKED, not merely typed ────────────────────────────────────────────────
