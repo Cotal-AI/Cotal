@@ -1621,7 +1621,7 @@ export class Manager {
 
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
-   *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
+   *  delivery-admin rail and persist the audit record (`.cotal/renewal.<spaceKey>.json`) that `cotal doctor auth`
    *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
    *  (no responder) is recorded honestly: each daemon's own 75% renewal timer remains the adoption backstop.
    *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
@@ -1674,7 +1674,7 @@ export class Manager {
       // A non-owner (#1634) re-signed nothing, so it writes no record: an empty one renders in
       // `doctor auth` as a pass that never ran.
       if (this.daemonRenewalOwner)
-        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+        writeRenewalRecord(this.workspaceRoot, this.space, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       this.warnOnSystemCredExpiry();
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
