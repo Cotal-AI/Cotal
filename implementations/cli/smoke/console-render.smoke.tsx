@@ -31,6 +31,22 @@ function check(label: string, cond: boolean, extra?: unknown): void {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const strip = (s: string): string => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
 
+/** Wait for a frame containing `marker`, and return the paint up to and including it. The deadline
+ *  is a backstop for a paint that will never come (the cell then fails on the returned paint, which
+ *  names what WAS painted), not the thing the wait settles on: the loop returns the moment the
+ *  frame lands, so a late frame extends the runtime instead of defeating the assertion. This is the
+ *  same shape the other console PTY suites use (`_console-pty.ts`'s `waitFor`): settle on marker
+ *  presence, never on elapsed time. */
+async function waitForFrame(frames: string[], marker: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const paint = frames.join("\n");
+    if (paint.includes(marker)) return paint;
+    await wait(25);
+  }
+  return frames.join("\n");
+}
+
 /** Mount one element, let Ink paint, return the painted text with CSI stripped. */
 async function paint(el: React.ReactElement, cols = 200): Promise<string> {
   let buf = "";
@@ -180,16 +196,15 @@ console.log("4. every send waits for the same participant start, and a refusal r
   await wait(200);
   check("a concurrent send waits instead of bypassing the in-flight participant start", ep.sent.length === 0, ep.sent);
   refuseStart(new Error("participant-start-refused"));
-  let refusedPaint = "";
-  const refusalDeadline = Date.now() + 2_000;
-  while (Date.now() < refusalDeadline) {
-    refusedPaint = frames.join("\n");
-    if (refusedPaint.includes("participant-start-refused")) break;
-    await wait(25);
-  }
   check("both waiting messages are withheld when participant startup is refused", ep.sent.length === 0, ep.sent);
+  // Gate on the FRAME the refusal must paint, never on the clock: the other four console PTY suites
+  // settle on marker presence (a late frame extends the run instead of failing a cell), and a fixed
+  // deadline here is what failed on the Windows runner — the loop exited on its "" initializer and
+  // reported "no frames captured" instead of grading the paint. The paint is only "not refused
+  // visible" once a frame has actually landed; until then there is nothing to assert on.
+  const refusedPaint = await waitForFrame(frames, "participant-start-refused", 5_000);
   check("the participant refusal remains visible", refusedPaint.includes("participant-start-refused"), refusedPaint.slice(-300));
-  check("send success is not painted over the refusal", !refusedPaint.includes("\n → #general\n"), refusedPaint.slice(-300));
+  check("send success is not painted over the refusal", refusedPaint.includes("participant-start-refused") && !refusedPaint.includes("\n → #general\n"), refusedPaint.slice(-300));
   stdin.write(":");
   await wait(100);
   stdin.write("msg retry");
