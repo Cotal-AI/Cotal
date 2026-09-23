@@ -57,6 +57,7 @@ import {
   spaceFlag,
   userAuthStateDir,
   workspaceSecretStore,
+  refreshRegistrationPolicy,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -390,7 +391,14 @@ async function spawnDetached(
     "control-caller-privileged",
     on,
   );
-  const eventsRequired = t.policy?.events === "required";
+  let policy: typeof t.policy;
+  try {
+    policy = await refreshRegistrationPolicy(t);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  const eventsRequired = policy?.events === "required";
   if (eventsRequired && events === false) {
     console.error(c.red(`✗ space "${t.space}" requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
@@ -564,7 +572,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
   // selected `current` mesh, a local project, or the registry's only running mesh.
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
-  const eventsRequired = target.policy?.events === "required";
+  let policy: typeof target.policy;
+  try {
+    policy = await refreshRegistrationPolicy(target);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  const eventsRequired = policy?.events === "required";
   if (eventsRequired && values["no-events"]) {
     console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
