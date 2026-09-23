@@ -1,5 +1,30 @@
 # @cotal-ai/core
 
+## 0.51.0
+
+### Minor Changes
+
+- db18070: Apply a signed-in account's space catalog to the registry under the provider's catalog lock, and
+  record in the cache whether the snapshot was applied in full. A command that dies or is stopped
+  while applying no longer leaves a partial registry that fresh and not-modified refreshes accept:
+  the next command applies the cached snapshot again first. `prepareSpaceCatalogs` and
+  `syncSpaceCatalogAfterLogin` now take the consumer's `apply`.
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- ade42d5: A complete observer scan that matches no connection answers verified-gone without loading or dialling the evictor credential. A live match still requires it, and an incomplete scan stays unverified (#1808).
+- 4f153ab: Report transport and connection down when a post-connect endpoint bind fails and closes its partial connection. Fixes #1449.
+- eb65c9b: Add the hosted environment provider contract types, validated HTTPS bearer sources, bounded nonsecret environment records, checkpoint read-out shapes, lifetime extension capabilities, and host enrollment facts. The provider facts type carries no engine (host enrollment facts are authoritative for it) and leaves volumeId optional, absent meaning the provider did not report it.
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- a0c8a59: Discover a signed-in account's advertised spaces lazily, cache validated snapshots, and add `cotal sync` for explicit refreshes.
+- c18c055: A manager whose boot inventory has no available connector no longer takes unpinned `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this instance's `inst` rail, so a sibling that can launch them can win the queue, and a caller that pins this instance still gets a named harness refusal. `describe` still lists the commands. Manager `status` reports `classSpawn` for that skip (cluster revision 15). A partial inventory keeps the class rail; a harness refusal there names `--on`, because the standing serve credential cannot read sibling inventories.
+- f178611: Preload every persisted per-space auth-callout account when a shared broker starts, and refuse incomplete user-auth state before writing its resolver config.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+
 ## 0.50.1
 
 ### Patch Changes

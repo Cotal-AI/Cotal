@@ -1,5 +1,23 @@
 # @cotal-ai/connector-claude-code
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 0a03e3e: Wait for a forked Claude session's transcript before the first event read. Claude copies the parent
+  transcript into the fork's own file after its SessionStart hook, so the connector's first flush could
+  open a file that did not exist yet and silence the session's event plane for good. The fork path now
+  waits for the file with the startup path's bounded deadline and still adopts at the copied history's
+  end.
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+
 ## 0.50.1
 
 ## 0.50.0
