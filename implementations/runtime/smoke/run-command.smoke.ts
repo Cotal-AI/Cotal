@@ -150,6 +150,20 @@ const holdAtCheckpoint = async (): Promise<{ rid: string; open: boolean; driven:
   return { rid, open, driven };
 };
 
+/** Answer a checkpoint the way the cells above do, with one bounded retry on the arming race: the
+ *  journal's pending row can be readable before the checkpoint's KV spec record is, and an answer
+ *  that lands in that window is refused with "no record on endpoint" rather than accepted. The
+ *  record is the driver's own write and lands within milliseconds, so a single retry after a beat
+ *  resolves it; a pause that genuinely never armed keeps refusing and fails the cell. */
+const answerCheckpoint = async (rid: string): Promise<true | Error> => {
+  for (let attempt = 0; ; attempt += 1) {
+    const r = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+    if (r === undefined) return true;
+    if (attempt >= 5 || !r.message.includes("no record on endpoint")) return r;
+    await wait(200);
+  }
+};
+
 // ── 1) start: a pure program completes through the command, under a minted id ────────────────
 let P = "";
 {
@@ -489,7 +503,7 @@ let P = "";
   // recorded decision; the edit is the recorded source verbatim, so every step survives it.
   reset();
   const { rid, open: paused, driven } = await holdAtCheckpoint();
-  const answered = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => true, (e: Error) => e);
+  const answered = await answerCheckpoint(rid);
   const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "held")]);
   c("the run the admissible edit migrates completed with its decision recorded", paused && answered === true && outcome === "completed", { answered: String(answered), outcome });
   const migrated = await wf(["migrate", rid], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
@@ -509,7 +523,7 @@ let P = "";
   // then the edit removes the checkpoint line entirely — the orphan is L5004 with the step named.
   const { rid: rid2, open: paused2, driven: driven2 } = await holdAtCheckpoint();
   void paused2;
-  await wf(["answer", rid2, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
+  await answerCheckpoint(rid2).catch(() => undefined);
   await Promise.race([driven2, wait(15_000)]);
   const DROP = join(sd, "migrate-drop.cotal.js");
   writeFileSync(DROP, 'log("nothing left");\n');
