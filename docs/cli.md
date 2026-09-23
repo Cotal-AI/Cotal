@@ -974,8 +974,10 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   may all be up.
 
   A listing that could not reach every instance is not a listing of the space, so it does not end
-  like one. When a registered instance does not report its seats, whether it stayed silent or
-  answered with a refusal, `ps` prints one line naming how many instances did not report and exits
+  like one. When a registered instance does not report its seats, whether it stayed silent,
+  answered with a refusal, or answered with a reply the scatter could not count (an invalid frame,
+  or one from an incarnation that restarted or re-registered while the listing ran), `ps` prints
+  one line naming how many instances did not report and exits
   non-zero. The per-instance rows are printed either way, so nothing is hidden; what changes is
   that a script can no longer read the result as a full census. An instance that answers with no
   seats has reported, and does not make the listing partial. The line goes to stderr in both

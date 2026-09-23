@@ -327,7 +327,7 @@ export function psCensus(instances: readonly { reachable: boolean; error?: strin
 export function psCensusNotice(census: PsCensus, pinned: { instanceId: string; input: string; output: string }): string[] {
   if (census.silent === 0) return [];
   const lines = [
-    `✗ partial listing: ${census.silent} of ${census.total} manager instance${census.total === 1 ? "" : "s"} did not report its seats, so any seat they host is missing here`,
+    `✗ partial listing: ${census.silent} of ${census.total} manager instance${census.total === 1 ? "" : "s"} did not report ${census.silent === 1 ? "its" : "their"} seats, so any seat ${census.silent === 1 ? "it hosts" : "they host"} is missing here`,
   ];
   if (census.contractSplit)
     lines.push(

@@ -14,7 +14,10 @@
     "refusal code, and the code has to travel from the scatter to the renderer for the operator to",
     "see it at all, which only the live run crosses.",
     "No build step is needed: the suite imports the CLI from src, and nothing here mutates a package",
-    "that resolves through dist."
+    "that resolves through dist.",
+    "The later six hold the #1637 review: invalid and superseded replies are rows the census counts,",
+    "a counted reply is not doubled by a stray, an empty refusal message stays a refusal, the notice",
+    "agrees in number, and the pinned pair prints input before output."
   ],
   "mutations": [
     {
@@ -56,11 +59,65 @@
     {
       "name": "the scatter stops carrying the refusal code to the renderer",
       "file": "implementations/cli/src/lib/control.ts",
-      "find": "          ...(ar.reply.error?.code !== undefined ? { code: ar.reply.error.code } : {}),",
+      "find": "      ...(ar.reply.error?.code !== undefined ? { code: ar.reply.error.code } : {}),",
       "replace": "",
       "expectRed": "naming the contract split once, with the pin, off the code the scatter carried",
       "cell": "...and naming the contract split once, with the pin, off the code the scatter carried",
       "note": "The census keys on the code, so dropping it in the scatter leaves the operator with the per-row SPEC citation and no statement of the condition."
+    },
+    {
+      "name": "an instance whose only answer was an invalid frame drops out of the projection again",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "    instances.push({ instanceId, reachable: true, error: `answered with an invalid reply: ${message}`, code: \"invalid-reply\" });",
+      "replace": "",
+      "expectRed": "an instance whose only answer was an INVALID frame is a row that did not report its seats",
+      "cell": "an instance whose only answer was an INVALID frame is a row that did not report its seats",
+      "note": "The #1637 review's blocking case: core marks the scatter incomplete for an invalid frame, and the census can only count the rows it is handed."
+    },
+    {
+      "name": "a slot whose reply was voided by re-registration drops out of the projection again",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  for (const { instanceId, reason } of result.churn) {",
+      "replace": "  for (const { instanceId, reason } of [] as typeof result.churn) {",
+      "expectRed": "an instance that re-registered mid-listing did not report either",
+      "cell": "an instance that re-registered mid-listing did not report either",
+      "note": "Registration churn drops a slot's counted reply, so the slot is uncovered; projecting only replies and missing lost it."
+    },
+    {
+      "name": "a stray epoch-churn reply beside a counted one adds a second row for the same instance",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  for (const { instanceId, reason } of result.churn) {\n    if (seen.has(instanceId)) continue;",
+      "replace": "  for (const { instanceId, reason } of result.churn) {",
+      "expectRed": "a stray reply from another epoch BESIDE a counted one leaves that instance reported, once",
+      "cell": "...but a stray reply from another epoch BESIDE a counted one leaves that instance reported, once",
+      "note": "Core keeps a valid reply at the frozen epoch counted despite a stray from another incarnation; the projection must not turn that instance into a missing one."
+    },
+    {
+      "name": "a refusal with an empty message reads as an answer that reported",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "      error: ar.reply.error?.message || ar.reply.error?.code || \"error\",",
+      "replace": "      error: ar.reply.error?.message ?? ar.reply.error?.code ?? \"error\",",
+      "expectRed": "a refusal with an EMPTY message is still a refusal",
+      "cell": "a refusal with an EMPTY message is still a refusal",
+      "note": "With ?? an empty message survives as the error, which the census counts and the renderer, reading by truthiness, does not."
+    },
+    {
+      "name": "the partial-listing notice stops agreeing in number",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "did not report ${census.silent === 1 ? \"its\" : \"their\"} seats",
+      "replace": "did not report its seats",
+      "expectRed": "that names how many instances did not report, in the plural",
+      "cell": "...that names how many instances did not report, in the plural",
+      "note": "Every review of the first head read the notice as ungrammatical for two or more instances."
+    },
+    {
+      "name": "the split line prints the pinned digest pair reversed",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "${pinned.input}/${pinned.output} from its describe",
+      "replace": "${pinned.output}/${pinned.input} from its describe",
+      "expectRed": "and a second line naming the split, the pinned digests, and the instance they came from",
+      "cell": "...and a second line naming the split, the pinned digests, and the instance they came from",
+      "note": "The first head's cell asserted each digest's presence, not their order, and a review's reversed-pair mutant survived it."
     }
   ]
 }

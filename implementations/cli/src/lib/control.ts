@@ -23,6 +23,7 @@ import {
   type ControlReply,
   type EpCaller,
   type EpInstanceLiveness,
+  type EpScatterResult,
   type EpVerbTarget,
   type Profile,
 } from "@cotal-ai/core";
@@ -534,6 +535,61 @@ export function scatterProbeMaterial(
   return { kind: "as-is" };
 }
 
+/** Project one scatter's classification onto the per-instance slots `cotal ps` renders and counts.
+ *
+ * EVERY FROZEN SLOT CORE ACCOUNTS FOR GETS A ROW, because `psCensus` only counts the rows it is
+ * handed. A counted reply is a row, and so is a slot that never answered (unreachable, with what the
+ * liveness probe established). A slot that DID answer, but with nothing core could count, is a
+ * row too: an `invalid` frame (unparseable, mis-attributed, a success payload that fails the pinned
+ * output schema) or a `churn` reply from a superseded incarnation. Core already marks the scatter
+ * incomplete for both; projecting only `replies` and `missing` dropped them, so an instance whose
+ * one answer was an invalid frame vanished from the listing and from the census, and `cotal ps`
+ * exited 0 over half a space (#1637 review). They render as answers that carried no seats.
+ *
+ * A slot that has a counted reply keeps it: an epoch-churn stray from another incarnation beside a
+ * valid reply at the frozen epoch does not make that instance's seats missing.
+ */
+export function scatterSlots(
+  result: Pick<EpScatterResult, "replies" | "missing" | "invalid" | "churn">,
+  livenessOf: (instanceId: string) => ScatterInstanceLiveness,
+): ScatterInstanceReply[] {
+  const instances: ScatterInstanceReply[] = [];
+  const seen = new Set<string>();
+  for (const [instanceId, ar] of result.replies) {
+    seen.add(instanceId);
+    if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
+    else instances.push({
+      instanceId, reachable: true,
+      // `||`, not `??`: an empty message is still a refusal, and the renderer reads `error` by truthiness.
+      error: ar.reply.error?.message || ar.reply.error?.code || "error",
+      ...(ar.reply.error?.code !== undefined ? { code: ar.reply.error.code } : {}),
+    });
+  }
+  // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
+  // (pin 3) — and carries WHY it is silent, as far as this command could establish it.
+  for (const instanceId of result.missing) {
+    if (seen.has(instanceId)) continue;
+    seen.add(instanceId);
+    instances.push({ instanceId, reachable: false, liveness: livenessOf(instanceId) });
+  }
+  for (const { instanceId, message } of result.invalid) {
+    if (seen.has(instanceId)) continue;
+    seen.add(instanceId);
+    instances.push({ instanceId, reachable: true, error: `answered with an invalid reply: ${message}`, code: "invalid-reply" });
+  }
+  for (const { instanceId, reason } of result.churn) {
+    if (seen.has(instanceId)) continue;
+    seen.add(instanceId);
+    instances.push({
+      instanceId, reachable: true, code: "superseded-reply",
+      error: reason === "epoch"
+        ? "answered from a different process epoch than the one this listing addressed"
+        : "re-registered while this listing ran, so its answer no longer counts",
+    });
+  }
+  return instances;
+}
+
 /** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default).
  *
  * TWO connections, because a connection's permissions are fixed at authentication and this command
@@ -623,19 +679,7 @@ async function askManagerScatterEp(
         reconcileDeadlineMs: 3_000,
         probeLiveness,
       });
-      const instances: ScatterInstanceReply[] = [];
-      for (const [instanceId, ar] of result.replies) {
-        if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-        else instances.push({
-          instanceId, reachable: true,
-          error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error",
-          ...(ar.reply.error?.code !== undefined ? { code: ar.reply.error.code } : {}),
-        });
-      }
-      // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
-      // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.
-      for (const instanceId of result.missing)
-        instances.push({ instanceId, reachable: false, liveness: livenessOf(instanceId) });
+      const instances = scatterSlots(result, livenessOf);
       // The pin every slot above was addressed under, read off the SAME resolved surface
       // `scatterCommand` stamped onto the request rather than re-derived. The command is present:
       // `scatterCommand` refuses an absent one before any of this runs.

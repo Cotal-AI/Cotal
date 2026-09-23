@@ -42,17 +42,18 @@ import {
   openRecordsBucket, registerServiceInstance, writeServiceStatus, authorizeServeGrant,
   serveEndpoint, ensureContractStore, contractStoreContext, publishContractArtifact,
   contractArtifactCanonicalBytes, freezeExpectedSet, resolveService, scatterCommand,
-  SERVICE_READY,
-  type EpCaller, type EpCommandDef, type EpIssuanceBarrier, type ServiceNameAuthority, type ServiceSpec,
+  SERVICE_READY, EP_ENVELOPE_V,
+  type EpAttributedReply, type EpCaller, type EpCommandDef, type EpIssuanceBarrier, type ServiceNameAuthority, type ServiceSpec,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
 import { ps, psCensus, psCensusNotice } from "../src/commands/agents.js";
+import { scatterSlots } from "../src/lib/control.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const EXPECTED_CELLS = 24;
+const EXPECTED_CELLS = 29;
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
@@ -173,14 +174,9 @@ try {
     pinned.instanceId === IID_OLD || pinned.instanceId === IID_NEW, pinned.instanceId);
   const result = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000, reconcileDeadlineMs: 2_000 });
 
-  // Built exactly as implementations/cli/src/lib/control.ts builds it, so what the census grades is
-  // the shape the renderer sees.
-  const instances: { instanceId: string; reachable: boolean; data?: unknown; error?: string; code?: string }[] = [];
-  for (const [instanceId, ar] of result.replies) {
-    if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-    else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? "error", code: ar.reply.error?.code });
-  }
-  for (const instanceId of result.missing) instances.push({ instanceId, reachable: false });
+  // The CLI's own projection, not a copy of it, so what the census grades is the shape the renderer
+  // sees. A copy had already drifted from it once.
+  const instances = scatterSlots(result, () => "unknown");
 
   const refusals = instances.filter((i) => i.error !== undefined);
   const answered = instances.filter((i) => i.reachable && i.error === undefined);
@@ -205,9 +201,9 @@ try {
   const notice = psCensusNotice(census, pinned);
   const line = (i: number): string => notice[i] ?? "";
   check("a partial census produces a notice", notice.length === 2, notice);
-  check("...that names how many instances did not report", /partial listing: 2 of 3 manager instances did not report/.test(line(0)), line(0));
+  check("...that names how many instances did not report, in the plural", /partial listing: 2 of 3 manager instances did not report their seats, so any seat they host/.test(line(0)), line(0));
   check("...and a second line naming the split, the pinned digests, and the instance they came from",
-    line(1).includes(pinned.instanceId) && line(1).includes(pinned.input) && line(1).includes(pinned.output)
+    line(1).includes(pinned.instanceId) && line(1).includes(`${pinned.input}/${pinned.output}`)
     && /do not all serve the same command contract/.test(line(1)), line(1));
 
   console.log("3. controls: what must NOT produce a notice, and what must not claim a split");
@@ -224,6 +220,28 @@ try {
   const prose = psCensus([{ reachable: true, error: "pinned digests do not match the served contract; a member that cannot honor a pinned digest rejects, never coerces (SPEC 13.7)" }]);
   check("...and a refusal whose MESSAGE reads like a mismatch but carries no code is not one either",
     prose.contractSplit === false && prose.silent === 1, prose);
+
+  console.log("3b. slots that answered, but with nothing the scatter could count");
+  // A normal responder cannot send these (the serve boundary refuses an output that fails its own
+  // schema), so they are graded on the projection directly: an invalid frame and a reply from a
+  // superseded incarnation are the classifications core marks incomplete that a projection of only
+  // `replies` and `missing` dropped, taking the instance out of the census with them.
+  const slotReply = (instanceId: string, reply: { ok: true; data: unknown } | { ok: false; error: { code: string; message: string } }): EpAttributedReply =>
+    ({ reply: { v: EP_ENVELOPE_V, id: "r", ...reply }, responder: { endpoint: EP, instanceId, epoch: EPOCH } });
+  const valid = slotReply(IID_OLD, { ok: true, data: [] });
+  const invalidOnly = scatterSlots({ replies: new Map([[IID_OLD, valid]]), missing: [], invalid: [{ instanceId: IID_NEW, epoch: EPOCH, message: "unparseable body" }], churn: [] }, () => "unknown");
+  const invalidCensus = psCensus(invalidOnly);
+  check("an instance whose only answer was an INVALID frame is a row that did not report its seats",
+    invalidOnly.length === 2 && invalidCensus.silent === 1 && invalidOnly.some((i) => i.instanceId === IID_NEW && i.code === "invalid-reply"), invalidOnly);
+  check("...and its notice speaks of one instance, in the singular",
+    /partial listing: 1 of 2 manager instances did not report its seats, so any seat it hosts/.test(psCensusNotice(invalidCensus, pinned)[0] ?? ""), psCensusNotice(invalidCensus, pinned));
+  const reRegistered = psCensus(scatterSlots({ replies: new Map([[IID_OLD, valid]]), missing: [], invalid: [], churn: [{ instanceId: IID_NEW, epoch: EPOCH, reason: "registration" }] }, () => "unknown"));
+  check("an instance that re-registered mid-listing did not report either", reRegistered.total === 2 && reRegistered.silent === 1, reRegistered);
+  const strayBesideValid = psCensus(scatterSlots({ replies: new Map([[IID_OLD, valid]]), missing: [], invalid: [], churn: [{ instanceId: IID_OLD, epoch: EPOCH + 1, reason: "epoch" }] }, () => "unknown"));
+  check("...but a stray reply from another epoch BESIDE a counted one leaves that instance reported, once",
+    strayBesideValid.total === 1 && strayBesideValid.silent === 0, strayBesideValid);
+  const emptyMessage = psCensus(scatterSlots({ replies: new Map([[IID_OLD, slotReply(IID_OLD, { ok: false, error: { code: "internal", message: "" } })]]), missing: [], invalid: [], churn: [] }, () => "unknown"));
+  check("a refusal with an EMPTY message is still a refusal", emptyMessage.silent === 1, emptyMessage);
 
   console.log("4. and the command itself, run against this space");
   // THE HALF ONLY A SCRIPT SEES. Everything above grades the decision; this grades the wiring, by

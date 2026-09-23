@@ -14,9 +14,10 @@ the listing was complete either way. Measured on a live fixture: six seats runni
 exit 0.
 
 `ps` now counts the instances that did not report their seats and, when there is at least one, names
-how many of how many did not, then exits non-zero. A silent registration and a refusal count the
-same way, because the seats behind either are equally absent from the listing and the operator's
-question has one answer for both. An instance that answers with no seats has reported, so a healthy
+how many of how many did not, then exits non-zero. A silent registration, a refusal, and an answer
+the scatter could not count (an invalid frame, or a reply from an incarnation that restarted or
+re-registered mid-listing) count the same way, because the seats behind each are equally absent from
+the listing and the operator's question has one answer for all of them. An instance that answers with no seats has reported, so a healthy
 multi-manager space is unchanged. The per-instance rows are printed as before, and the notice goes
 to stderr in both presentations, so `--json` stdout stays one JSON object per seat per line.
 
