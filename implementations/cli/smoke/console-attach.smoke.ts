@@ -108,7 +108,10 @@ let session: ConsoleSession | undefined;
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   await mgr.start();
-  const r1 = await mgr.startAgent({ name: "echo", agent: "echo", cwd: repoRoot });
+  // The echo connector publishes no AG-UI event plane (main turns the plane on by default, #1758),
+  // and this seat exists to be ATTACHED to, not observed; events:false is the explicit opt-out the
+  // manager's fail-fast check names for exactly this case.
+  const r1 = await mgr.startAgent({ name: "echo", agent: "echo", cwd: repoRoot, events: false });
   check("fixture: the echo pty seat launched (uncertain readiness, kept managed)", r1.ok === false && /uncertain/i.test(String(r1.error)), r1);
 
   console.log("1. attach → type through → detach → repaint");
