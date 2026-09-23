@@ -53,6 +53,9 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   /** ALL mutation runs on this chain. Hook events arrive concurrently on the control socket, so
    *  without it two flushes could read the source at the same cursor. */
   private chain: Promise<void> = Promise.resolve();
+  /** One shared wait for the endpoint's next live signal, while a queued step is holding for it.
+   *  A single listener serves every waiter, and the field clears when it fires. */
+  private liveWait?: Promise<void>;
 
   /**
    * @param startEmitter Builds and starts the emitter for an adopted path. `context` is the opaque
@@ -69,11 +72,19 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *   holder that reached into it would be a second place that decides what a run is. Without it a
    *   mapper that still believes the run is open would emit under a `runId` the published stream has
    *   already closed, and the emitter would refuse the batch.
+   * @param waitLive Rides out a transient endpoint rebuild window before a step pumps or closes a
+   *   run. Called once per queued step that needs the broker (a flush, or a close with something
+   *   open); it resolves when the endpoint's event plane is live, or rejects to make the whole
+   *   step fail terminally exactly as any other emitter failure does. This is the seam the
+   *   connectors' `MeshAgent`-adjacent wiring owns: the holder knows WHEN to publish, the caller
+   *   knows HOW to observe liveness. Without it, a rebuild window between two pumps reads
+   *   `max_payload` off a connection that is not there and kills the seat (#1868).
    */
   constructor(
     private readonly startEmitter: (path: string, context: StartContext | undefined) => Promise<AguiEmitter<T>>,
     private readonly onError: (e: Error) => void,
     private readonly onRunClosed?: (runId: string) => void,
+    private readonly waitLive?: () => Promise<void>,
   ) {}
 
   /** True once an emitter is running here. False while a start is still in flight — it reports what
@@ -146,6 +157,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     this.enqueue(async () => {
       const emitter = await this.ensureStarted(path);
       if (!emitter || emitter.stopped) return;
+      await this.holdForLive();
       await emitter.pump();
     });
   }
@@ -177,6 +189,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     this.enqueue(async () => {
       const emitter = this.emitter;
       if (this.dead || !emitter || emitter.stopped) return;
+      await this.holdForLive();
       const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });
       // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
       // the published stream has closed, and an error close closes it exactly as a finish does.
@@ -262,6 +275,20 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     if (this.dead) return;
     this.dead = e;
     this.onError(e);
+  }
+
+  /** Wait for the endpoint to be live, if the caller supplied a wait. SHARED: while one step
+   *  waits, every later step joins the same promise, so a burst of flushes during one outage
+   *  produces one listener and one release, and the steps still run one at a time on the chain
+   *  (each step's `await` happens inside its own serialized slot, so this sharing cannot
+   *  reorder anything). A wait that rejects fails the step, which is the existing terminal path:
+   *  liveness-waiting must never swallow an error the emitter would have surfaced. */
+  private holdForLive(): Promise<void> {
+    if (!this.waitLive) return Promise.resolve();
+    this.liveWait ??= this.waitLive().finally(() => {
+      this.liveWait = undefined;
+    });
+    return this.liveWait;
   }
 
   private enqueue(step: () => Promise<void>): void {

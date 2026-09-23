@@ -340,5 +340,106 @@ const B = "/tmp/session-b.jsonl";
   c("hook:the-failure-still-arrived-at-the-sink", r.errors.length === 1, r.errors.length);
 }
 
+// ---- WAIT-LIVE (#1868) ----------------------------------------------------------------------
+//
+// A flush landing in a mesh rebuild window measured max_payload off a connection that was not
+// there and killed the seat. The holder's answer is the optional waitLive parameter: the step
+// holds BEFORE it touches the emitter, and publishes once the caller says the plane is live.
+// These cells grade the holder's side of that seam only — WHEN the wait runs, what it never
+// swallows, and that absent the parameter nothing changes. The jcode suite grades the seat.
+{
+  // A wait that is pending holds the pump; releasing it lets exactly one pump through.
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  const r = rig();
+  const holder = new AguiEmitterHolder<unknown>(
+    async () => r.emitter as unknown as AguiEmitter<unknown>,
+    (e) => r.errors.push(e),
+    undefined,
+    () => gate,
+  );
+  holder.flush(A);
+  await new Promise((r2) => setTimeout(r2, 20));
+  c("waitlive:a-pending-wait-HOLDS-the-pump", r.emitter.pumps === 0, r.emitter.pumps);
+  release!();
+  await holder.settled();
+  c("waitlive:releasing-the-wait-lets-EXACTLY-one-pump-through", r.emitter.pumps === 1, r.emitter.pumps);
+  c("waitlive:a-held-then-released-flush-reports-NO-error", r.errors.length === 0, r.errors.map((e) => e.message));
+}
+
+{
+  // The wait runs BEFORE closeRun touches the emitter, so a close held through a window cannot
+  // read max_payload off a dead connection either. The stand-in records the close rather than
+  // publishing: this cell grades WHEN the wait released, not what a real emitter sends.
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  const emitter = new FakeEmitter();
+  const closedRuns: string[] = [];
+  const errors: Error[] = [];
+  (emitter as unknown as { closeRun: () => Promise<string | null> }).closeRun = async () => "run-a";
+  const holder = new AguiEmitterHolder<unknown>(
+    async () => emitter as unknown as AguiEmitter<unknown>,
+    (e) => errors.push(e),
+    (runId) => closedRuns.push(runId),
+    () => gate,
+  );
+  holder.adopt(A);
+  await holder.settled();
+  holder.closeRun(1);
+  await new Promise((r2) => setTimeout(r2, 20));
+  c("waitlive:a-closeRun-is-HELD-by-a-pending-wait", closedRuns.length === 0, closedRuns);
+  release!();
+  await holder.settled();
+  c("waitlive:a-closeRun-waits-for-live-and-still-reports-the-run", closedRuns.length === 1 && closedRuns[0] === "run-a", closedRuns);
+  c("waitlive:a-held-close-reports-NO-error", errors.length === 0, errors.map((e) => e.message));
+}
+
+{
+  // A REJECTING wait is a failing step: it reaches the terminal sink with the original error.
+  // Liveness-waiting must never swallow what the emitter would have surfaced.
+  const boom = new Error("wait rejected: endpoint stopped");
+  const r = rig();
+  const holder = new AguiEmitterHolder<unknown>(
+    async () => r.emitter as unknown as AguiEmitter<unknown>,
+    (e) => r.errors.push(e),
+    undefined,
+    () => Promise.reject(boom),
+  );
+  holder.flush(A);
+  await holder.settled();
+  c("waitlive:a-REJECTING-wait-is-terminal-with-the-original-error", r.errors[0] === boom, r.errors[0]?.message);
+  c("waitlive:a-rejected-wait-pumps-NOTHING", r.emitter.pumps === 0, r.emitter.pumps);
+}
+
+{
+  // CONCURRENT steps SHARE one in-flight wait: a burst of flushes during one outage is one
+  // wait, one release, and still exactly one pump per flushed path-record (the emitter stand-in
+  // counts calls; the chain serializes them after the shared gate).
+  let waits = 0;
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((r) => (release = r));
+  const r = rig();
+  const holder = new AguiEmitterHolder<unknown>(
+    async () => r.emitter as unknown as AguiEmitter<unknown>,
+    (e) => r.errors.push(e),
+    undefined,
+    () => {
+      waits++;
+      return gate;
+    },
+  );
+  holder.adopt(A);
+  await holder.settled();
+  holder.flush(A);
+  await new Promise((r2) => setTimeout(r2, 10)); // the first flush's wait is now in flight
+  holder.flush(A);
+  holder.flush(A);
+  await new Promise((r2) => setTimeout(r2, 20));
+  c("waitlive:concurrent-steps-SHARE-one-wait-while-in-flight", waits === 1, waits);
+  release!();
+  await holder.settled();
+  c("waitlive:after-the-shared-release-every-flush-still-pumped", r.emitter.pumps === 3, r.emitter.pumps);
+}
+
 console.log(`agui-holder smoke: ${ok} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
