@@ -297,7 +297,7 @@ for (const renderer of manifest.renderers) {
 
 const sharedStatusBadgeAnchor = 'return c.green("● working · progress unknown");';
 const connectorHonestStatusAnchor = 'status === "working" ? "working · progress unknown" : status;';
-const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? "working · progress unknown" : p.status;';
+const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
 const inkRosterProgressAnchor = 'return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";';
 const webMonitorProgressAnchor = 'const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
@@ -320,13 +320,15 @@ for (const entry of manifest.entries) {
   assert.ok(!entryKeys.has(key), `manifest duplicates candidate ${entry.path}: ${entry.anchor}`);
   entryKeys.add(key);
   const body = readFileSync(join(root, entry.path), "utf8");
-  assert.equal(body.split(entry.anchor).length - 1, 1, `manifest anchor must exist exactly once in ${entry.path}: ${entry.anchor}`);
+  const anchorCount = body.split(entry.anchor).length - 1;
+  assert.equal(anchorCount, 1, `manifest anchor must exist exactly once in ${entry.path} but occurs ${anchorCount} time(s) (an anchor that is a substring of another entry's anchor, or that a source change duplicated, reads above 1; narrow it to the minimal span unique to its site): ${entry.anchor}`);
   assert.ok(candidateKeys.has(key), `manifest entry is stale or no longer an AST census candidate: ${entry.path}: ${entry.anchor}`);
   counts[entry.class]++;
   if (entry.class === "honest-text") {
     assert.ok(entry.proof, `honest-text entry lacks output/shared-renderer proof: ${entry.path}: ${entry.anchor}`);
     const proofBody = readFileSync(join(root, entry.proof!.path), "utf8");
-    assert.equal(proofBody.split(entry.proof!.anchor).length - 1, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
+    assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
     if (entry.proof!.path.includes("/smoke/")) assert.ok(/assert|check|ok\(/.test(entry.proof!.anchor), `smoke proof is not an output assertion: ${entry.proof!.path}: ${entry.proof!.anchor}`);
     else assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
   } else assert.equal(entry.proof, undefined, `${entry.class} entry must not carry honest-text proof: ${entry.path}: ${entry.anchor}`);
