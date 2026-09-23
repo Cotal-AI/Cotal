@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
@@ -168,6 +169,39 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     ok(!JSON.stringify(events).includes("private"), "mixed-authorship user content and tool output never enter the event plane");
     ok((await source.read(read.cursor)).records.length === 0, "the durable cursor never rereads an acknowledged native message");
     ok((await new PiSessionSource(path).read(undefined)).records.length === 0, "an existing resumed transcript begins at its end, not old history");
+    const boundaryMap = createPiMapper("resumed");
+    ok(boundaryMap({ type: "message", id: "orphan", message: { role: "toolResult", toolCallId: "old-call" } }) === null,
+      "a result for a call before the adopted boundary is not emitted as an orphan tool end");
+    const failedMap = createPiMapper("failed");
+    const failure = failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
+      role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "err-tool", name: "bash" }], stopReason: "error",
+    } });
+    ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_ERROR",
+      "failed assistant closes native tool brackets before the run error");
+    const recovered = failedMap({ type: "message", id: "later", timestamp: "2026-01-01T00:00:01.000Z", message: {
+      role: "assistant", timestamp: 1_767_225_601_000, content: [{ type: "text", text: "later answer" }], stopReason: "stop",
+    } });
+    ok(recovered?.events[0]?.type === "RUN_STARTED" && recovered.events.at(-1)?.type === "RUN_FINISHED",
+      "a native error does not silence the next completed turn");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-fork-source-"));
+  try {
+    const original = SessionManager.create(root, join(root, "sessions"));
+    const sourcePath = original.getSessionFile()!;
+    original.appendMessage({ role: "user", content: "copied user-only history", timestamp: Date.now() });
+    ok(!existsSync(sourcePath), "Pi defers user-only session file before assistant persistence");
+    // Pi's cross-project fork requires a physical source, which a user-only session has not yet
+    // written. A native branch is the relevant deferred-file path for that history.
+    const userEntry = original.getEntries().find((entry) => entry.type === "message");
+    assert.ok(userEntry);
+    original.createBranchedSession(userEntry.id);
+    ok(original.getSessionFile() !== sourcePath, "Pi native branch gives copied user-only history a new session path");
+    ok(!existsSync(original.getSessionFile()!), "Pi branch with copied user-only history also defers its file");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

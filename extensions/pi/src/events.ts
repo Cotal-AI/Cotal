@@ -14,30 +14,43 @@ export class PiEvents {
   private sessionId?: string;
   private path?: string;
   private pending: Promise<void> = Promise.resolve();
+  private closing = false;
+  private dead = false;
 
   constructor(private readonly mesh: MeshAgent, private readonly space: string) {}
 
-  async start(sessionId: string, path: string | undefined): Promise<void> {
-    if (!path) throw new Error("Pi AG-UI: persistent native session file is required");
-    const existedAtHook = existsSync(path);
+  start(sessionId: string, path: string | undefined, freshSession = false, oldEntryIds: readonly string[] = []): void {
+    if (this.closing || this.dead) return;
+    if (!path) {
+      this.fail(new Error("Pi AG-UI: persistent native session file is required"));
+      return;
+    }
     const step = this.pending.then(async () => {
       if (this.sessionId === sessionId && this.path === path) return; // reload of the same native session
       await this.release();
       this.sessionId = sessionId;
       this.path = path;
-      const existed = existedAtHook;
-      const holder = this.newHolder(sessionId, path, !existed);
+      const existed = existsSync(path);
+      const holder = this.newHolder(sessionId, path, !existed && freshSession, oldEntryIds);
       this.holder = holder;
       holder.adopt(path);
       await holder.settled();
       if (holder.failure) throw holder.failure;
+      if (existsSync(path)) {
+        holder.flush(path);
+        await holder.settled();
+        if (holder.failure) throw holder.failure;
+      }
     });
     this.pending = step.catch((error: Error) => this.fail(error));
-    await step;
   }
 
-  async flush(sessionId: string, path: string | undefined): Promise<void> {
-    if (!path) throw new Error("Pi AG-UI: persistent native session file is required");
+  flush(sessionId: string, path: string | undefined): void {
+    if (this.closing || this.dead) return;
+    if (!path) {
+      this.fail(new Error("Pi AG-UI: persistent native session file is required"));
+      return;
+    }
     const step = this.pending.then(async () => {
       if (this.sessionId !== sessionId || this.path !== path) throw new Error("Pi AG-UI: turn belongs to an unadopted session");
       if (!this.holder) throw new Error("Pi AG-UI: no emitter was adopted before the turn");
@@ -46,12 +59,14 @@ export class PiEvents {
       if (this.holder.failure) throw this.holder.failure;
     });
     this.pending = step.catch((error: Error) => this.fail(error));
-    await step;
   }
 
   async shutdown(): Promise<void> {
+    this.closing = true;
     await this.pending;
     await this.release();
+    this.closing = false;
+    this.dead = false;
   }
 
   private async release(): Promise<void> {
@@ -65,9 +80,11 @@ export class PiEvents {
     this.path = undefined;
   }
 
-  private newHolder(sessionId: string, path: string, freshFile: boolean): AguiEmitterHolder<PiSessionEntry> {
+  private newHolder(sessionId: string, path: string, freshFile: boolean, oldEntryIds: readonly string[]): AguiEmitterHolder<PiSessionEntry> {
     return new AguiEmitterHolder<PiSessionEntry>(async () => {
       await this.mesh.waitUntilConnected();
+      if (!freshFile && !existsSync(path))
+        throw new Error("Pi AG-UI: resumed native session file does not exist; refusing to classify copied history as a fresh turn");
       const workspaceRoot = resolveEventsStateRoot(process.env);
       const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
       const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId: sessionId });
@@ -85,15 +102,19 @@ export class PiEvents {
           await wal.advanceCursorOnly(boundary.cursor);
         }
       }
+      const map = createPiMapper(sessionId, wal.brackets?.run, wal.brackets?.tools);
+      const oldIds = wal.frontier.seq === 0 ? new Set(oldEntryIds) : new Set<string>();
       return AguiEmitter.start({
         endpoint: this.mesh.ep, wal, subjectFrontier,
         source: new PiSessionSource(path),
-        map: createPiMapper(sessionId, wal.brackets?.run),
+        map: (entry) => entry.id && oldIds.has(entry.id) ? null : map(entry),
       });
     }, (error) => this.fail(error));
   }
 
   private fail(error: Error): void {
+    if (this.dead) return;
+    this.dead = true;
     console.error(`Pi AG-UI emitter stopped: ${error.message}`);
   }
 }

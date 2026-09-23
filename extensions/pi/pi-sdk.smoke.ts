@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, DEV_OWNER, eventChannel } from "@cotal-ai/core";
-import { isAguiFramePart, parseAguiFrame } from "@cotal-ai/connector-core";
+import { resolve } from "node:path";
+import { isReachable } from "@cotal-ai/core";
+import { pickFreePort } from "../../packages/core/smoke/_free-port.js";
+import { CotalEndpoint, DEV_OWNER, eventChannel, principalKey } from "@cotal-ai/core";
+import { acquirePrincipalLock, eventWalLocation, isAguiFramePart, parseAguiFrame } from "@cotal-ai/connector-core";
 import { fauxToolCall } from "@earendil-works/pi-ai";
 import cotalMesh from "./src/extension.js";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
@@ -262,9 +267,14 @@ try {
   rmSync(temp, { recursive: true, force: true });
 }
 
-// Optional real-broker cell: PI_EVENTS_TEST_SERVER points at an isolated test broker. It drives
-// the actual Pi extension and SDK, replacing only the paid provider with Pi's faux provider.
-if (process.env.PI_EVENTS_TEST_SERVER) {
+// The default suite owns a real JetStream broker. PI_EVENTS_TEST_SERVER may instead point at an
+// isolated existing test broker. Only the provider is replaced by Pi's deterministic faux API.
+{
+  const brokerRoot = process.env.PI_EVENTS_TEST_SERVER ? undefined : mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const port = brokerRoot ? await pickFreePort() : undefined;
+  const server = process.env.PI_EVENTS_TEST_SERVER ?? `nats://127.0.0.1:${port}`;
+  const broker = brokerRoot ? spawn("nats-server", ["-js", "-p", String(port), "-sd", join(brokerRoot, "jetstream")], { stdio: "ignore" }) : undefined;
+  const releaseBroker = broker && brokerRoot ? teardownOnSignal(broker, brokerRoot) : undefined;
   const root = mkdtempSync(join(tmpdir(), "cotal-pi-events-sdk-"));
   const keys = ["COTAL_SPACE", "COTAL_NAME", "COTAL_ID", "COTAL_SERVERS", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT"] as const;
   const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -272,10 +282,10 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
   const actor = `pi_${randomUUID().replace(/-/g, "")}`;
   Object.assign(process.env, {
     COTAL_SPACE: space, COTAL_NAME: "pi-events-sdk", COTAL_ID: actor,
-    COTAL_SERVERS: process.env.PI_EVENTS_TEST_SERVER, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root,
+    COTAL_SERVERS: server, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root,
   });
   const observer = new CotalEndpoint({
-    space, servers: process.env.PI_EVENTS_TEST_SERVER,
+    space, servers: server,
     card: { name: "pi-events-observer", kind: "endpoint", id: `observer_${randomUUID().replace(/-/g, "")}` },
   });
   const frames: ReturnType<typeof parseAguiFrame>[] = [];
@@ -290,6 +300,12 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
   const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [cotalMesh] });
   let native: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {
+    if (broker) {
+      const deadline = Date.now() + 5_000;
+      while (!(await isReachable(server)) && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.ok(await isReachable(server), "owned Pi smoke broker started");
+    }
     await observer.start();
     await observer.joinChannel(eventChannel({ owner: DEV_OWNER, actor }));
     await resources.reload();
@@ -299,6 +315,7 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
       settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
     }));
     await native.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) });
+    assert.ok(!existsSync(manager.getSessionFile()!), "first Pi session JSONL is absent at extension startup");
     provider.setResponses([
       fauxAssistantMessage([fauxToolCall("bash", { command: "printf pi-native-events" }, { id: "pi-test-call" })], { stopReason: "toolUse" }),
       fauxAssistantMessage("Pi persisted its completed answer."),
@@ -310,7 +327,33 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
     const types = frames.flatMap((frame) => frame.events.map((event) => event.type));
     assert.deepEqual(types, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"]);
     assert.ok(frames.every((frame) => frame.threadId === manager.getSessionId()));
+    provider.setResponses([
+      fauxAssistantMessage([fauxToolCall("bash", { command: "printf skipped" }, { id: "pi-failed-call" })],
+        { stopReason: "error", errorMessage: "deterministic provider error" }),
+    ]);
+    await native.prompt("Trigger a failed tool-bearing assistant message.");
+    const errorDeadline = Date.now() + 5_000;
+    while (!frames.flatMap((frame) => frame.events).some((event) => event.type === "RUN_ERROR") && Date.now() < errorDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const errorEvents = frames.flatMap((frame) => frame.events).slice(types.length).map((event) => event.type);
+    assert.deepEqual(errorEvents, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "RUN_ERROR"],
+      "failed native assistant closes its abandoned tool call before RUN_ERROR");
     const priorSession = manager.getSessionId();
+    const lockPath = eventWalLocation({ workspaceRoot: root, space, principal: principalKey(DEV_OWNER, actor).key,
+      threadId: priorSession }).lockPath;
+    const heldLock = await acquirePrincipalLock(lockPath);
+    assert.ok(existsSync(lockPath), "Pi event writer holds its principal lock while publishing");
+    const challenger = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
+      `import { acquirePrincipalLock } from ${JSON.stringify(resolve(import.meta.dirname, "../connector-core/src/agui-wal-path.ts"))};` +
+      `await acquirePrincipalLock(${JSON.stringify(lockPath)});`], { stdio: ["ignore", "ignore", "pipe"] });
+    let refusal = "";
+    challenger.stderr.on("data", (data: Buffer) => { refusal += data.toString(); });
+    const challenged = await new Promise<number | null>((done) => {
+      const timer = setTimeout(() => { challenger.kill("SIGKILL"); done(null); }, 5_000);
+      challenger.once("exit", (code) => { clearTimeout(timer); done(code); });
+    });
+    assert.notEqual(challenged, 0, "a second process cannot acquire an active Pi principal lock");
+    assert.match(refusal, /holds this principal's emitter/, "refusal names the live lock owner");
     await native.reload();
     assert.equal(manager.getSessionId(), priorSession, "reload keeps the native session identity");
     const afterReloadProvider = registerFauxProvider({ api: provider.api, provider: "pi-native-events" });
@@ -320,13 +363,47 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
     while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 2 && Date.now() < nextDeadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
     const afterReload = frames.flatMap((frame) => frame.events.map((event) => event.type));
-    assert.equal(afterReload.filter((type) => type === "RUN_STARTED").length, 2, "reload publishes one new run without replaying the old one");
+    assert.equal(afterReload.filter((type) => type === "RUN_STARTED").length, 3, "reload publishes one new run without replaying the old one");
     assert.equal(afterReload.filter((type) => type === "RUN_FINISHED").length, 2, "both native turns close once");
     assert.ok(frames.every((frame) => frame.threadId === priorSession), "reload preserves AG-UI thread identity");
     afterReloadProvider.unregister();
     await (native as any)._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    assert.ok(!existsSync(lockPath), "session shutdown releases the held Pi principal lock");
+    const releasedLock = await acquirePrincipalLock(lockPath);
+    assert.notEqual(releasedLock, heldLock, "new runtime acquires a fresh lock after shutdown");
+    await releasedLock.release();
     native.dispose();
     native = undefined;
+    const historic = SessionManager.forkFrom(manager.getSessionFile()!, root, join(root, "sessions"));
+    assert.ok(existsSync(historic.getSessionFile()!), "Pi fork with assistant history creates a native transcript");
+    const beforeHistoric = frames.length;
+    const historicResources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [cotalMesh] });
+    await historicResources.reload();
+    const historicProvider = registerFauxProvider({ api: provider.api, provider: "pi-native-events" });
+    let historicSession: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+    try {
+      ({ session: historicSession } = await createAgentSession({
+        cwd: root, agentDir: root, model: historicProvider.getModel(), resourceLoader: historicResources,
+        authStorage: identity, modelRegistry: ModelRegistry.inMemory(identity), sessionManager: historic,
+        settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+      }));
+      await historicSession.bindExtensions({ mode: "print", onError: (error) => assert.fail(String(error)) });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(frames.length, beforeHistoric, "forked native transcript never replays old assistant runs on adoption");
+      historicProvider.setResponses([fauxAssistantMessage("New fork answer only.")]);
+      await historicSession.prompt("Answer on forked native session.");
+      const forkDeadline = Date.now() + 5_000;
+      while (!frames.slice(beforeHistoric).flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < forkDeadline)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.ok(frames.slice(beforeHistoric).flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED"),
+        "forked native Pi turn publishes a completed run");
+      assert.ok(frames.slice(beforeHistoric).every((frame) => frame.threadId === historic.getSessionId()),
+        "forked Pi session publishes only its new turn on a distinct native thread");
+    } finally {
+      await (historicSession as any)?._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      historicSession?.dispose();
+      historicProvider.unregister();
+    }
     const resumed = SessionManager.open(manager.getSessionFile()!, join(root, "sessions"), root);
     assert.equal(resumed.getSessionId(), priorSession, "new Pi SDK runtime opens the same native session");
     const restartResources = new DefaultResourceLoader({ cwd: root, agentDir: root, extensionFactories: [cotalMesh] });
@@ -341,12 +418,12 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
     afterRestartProvider.setResponses([fauxAssistantMessage("Only the third completed answer appears after restart.")]);
     await native.prompt("Third native turn in reopened process.");
     const restartDeadline = Date.now() + 5_000;
-    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 3 && Date.now() < restartDeadline)
+    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 4 && Date.now() < restartDeadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_STARTED").length, 3,
+    assert.equal(frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_STARTED").length, 5,
       "reopened native session publishes only its new turn, never old acknowledged history");
     afterRestartProvider.unregister();
-    console.log(`pi native events sdk: ${frames.length} broker frames, three completed runs, tool/text ordering and no reload/restart replay passed`);
+    console.log(`pi native events sdk: ${frames.length} broker frames, four completed runs and one tool-bearing error, no fork/reload/restart replay passed`);
   } finally {
     await (native as any)?._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     native?.dispose();
@@ -357,5 +434,8 @@ if (process.env.PI_EVENTS_TEST_SERVER) {
       else process.env[key] = prior[key];
     }
     rmSync(root, { recursive: true, force: true });
+    if (broker) await killAndAwaitExit(broker);
+    releaseBroker?.();
+    if (brokerRoot) rmSync(brokerRoot, { recursive: true, force: true });
   }
 }

@@ -18,14 +18,18 @@ export interface PiSessionEntry {
 }
 
 /** Pi persists completed messages, not live deltas. User messages have no separable peer authorship. */
-export function createPiMapper(threadId: string, resumedRun?: string): RecordMapper<PiSessionEntry> {
+export function createPiMapper(threadId: string, resumedRun?: string, resumedTools: readonly string[] = []): RecordMapper<PiSessionEntry> {
   let open = resumedRun;
+  const tools = new Set(resumedTools);
   return (entry) => {
     if (entry.type === "message" && entry.message?.role === "toolResult") {
-      if (!open || !entry.message.toolCallId) throw new Error("Pi AG-UI: persisted tool result has no open run or native tool call id");
+      const callId = entry.message.toolCallId;
+      // A resumed transcript can begin after an old call but before its result. Its start was
+      // never published here, so do not invent a matching end for an unknown call.
+      if (!open || !callId || !tools.delete(callId)) return null;
       const ts = entry.message.timestamp ?? Date.parse(entry.timestamp ?? "");
       if (!Number.isFinite(ts)) throw new Error("Pi AG-UI: tool result has no valid timestamp");
-      return { runId: open, events: [toolCallEnd({ toolCallId: entry.message.toolCallId, timestamp: ts })] };
+      return { runId: open, events: [toolCallEnd({ toolCallId: callId, timestamp: ts })] };
     }
     if (entry.type !== "message" || entry.message?.role !== "assistant") return null;
     if (!entry.id || !Array.isArray(entry.message.content))
@@ -46,13 +50,17 @@ export function createPiMapper(threadId: string, resumedRun?: string): RecordMap
         events.push(textMessageEnd({ messageId, timestamp: ts }));
       } else if (part.type === "toolCall") {
         if (!part.id || !part.name) throw new Error(`Pi AG-UI: tool call in ${entry.id} lacks native id/name`);
+        tools.add(part.id);
         events.push(toolCallStart({ toolCallId: part.id, toolCallName: part.name, timestamp: ts }));
       }
     }
     if (entry.message.stopReason === "error" || entry.message.stopReason === "aborted") {
+      for (const toolCallId of tools) events.push(toolCallEnd({ toolCallId, timestamp: ts }));
+      tools.clear();
       events.push(runError({ message: entry.message.errorMessage || entry.message.stopReason, timestamp: ts }));
       open = undefined;
     } else if (entry.message.stopReason === "stop" || entry.message.stopReason === "length") {
+      if (tools.size) throw new Error(`Pi AG-UI: terminal assistant entry ${entry.id} has unclosed native tool calls`);
       events.push(runFinished({ threadId, runId, timestamp: ts }));
       open = undefined;
     } else if (entry.message.stopReason !== "toolUse") {
