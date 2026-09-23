@@ -52,9 +52,9 @@
       "expectRed": "the refusal names sessions_unwritable, the path, and EACCES"
     },
     {
-      "name": "M4 refuse a first launch whose sessions directory does not exist yet",
+      "name": "M4 refuse every launch, including a first launch with no sessions directory yet",
       "file": "extensions/connector-jcode/src/stored-sessions.ts",
-      "find": "  try {\n    accessSync(inspection.path, constants.W_OK);\n    return undefined;\n  } catch (error) {\n    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? \"unknown\" };\n  }",
+      "find": "  const probe = join(inspection.path, `${WRITE_PROBE_PREFIX}${process.pid}`);\n  try {\n    const fd = openSync(probe, \"wx\", 0o600);\n    closeSync(fd);\n    unlinkSync(probe);\n    return undefined;\n  } catch (error) {\n    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? \"unknown\" };\n  }",
       "replace": "  return { path: inspection.path, code: \"EACCES\" };",
       "expectRed": "an empty sessions directory still starts a fresh session"
     },
@@ -69,7 +69,7 @@
       "name": "M6 revert to a directory permission test, missing the mode-0200 create failure",
       "file": "extensions/connector-jcode/src/stored-sessions.ts",
       "find": "  const probe = join(inspection.path, `${WRITE_PROBE_PREFIX}${process.pid}`);\n  try {\n    const fd = openSync(probe, \"wx\", 0o600);\n    closeSync(fd);\n    unlinkSync(probe);\n    return undefined;\n  } catch (error) {\n    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? \"unknown\" };\n  }",
-      "replace": "  try {\n    accessSync(inspection.path, constants.W_OK);\n    return undefined;\n  } catch (error) {\n    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? \"unknown\" };\n  }",
+      "replace": "  const stats = lstatSync(inspection.path);\n  if (stats.mode & 0o200) return undefined;\n  return { path: inspection.path, code: \"EACCES\" };",
       "expectRed": "the write-only sessions directory refuses before the harness is asked"
     },
     {
