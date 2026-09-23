@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/dry-run-no-seed.smoke.ts"
   ],
-  "guard": "a dry run plans and prints without writing the operator-global seed store, manifest or npm prefix, whether it goes on to render a plan or to reject the invocation",
+  "guard": "a dry run plans and prints without writing the operator-global seed store, manifest or npm prefix, whether it goes on to render a plan or to reject the invocation; `agent-bearer`, the per-refresh machine helper, passes the same gate without reconciling (no generation refusal, no store write)",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/dry-run-no-seed.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/dry-run-no-seed.json",
   "why": [
@@ -20,6 +20,17 @@
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/dry-run-no-seed.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "note": "Compile-clean: the surrounding --help and update skips stay live, so only the dry-run promise regresses. Restores the exact incident: the store is migrated, then the invocation is refused."
+    },
+    {
+      "name": "let agent-bearer fall through to the boot-gate seed reconcile",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (name === \"agent-bearer\") return true;\n",
+      "replace": "",
+      "expectRed": "a newer-generation stamp does not gate `agent-bearer`",
+      "cell": "a newer-generation stamp does not gate `agent-bearer`: its own usage refusal answers",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/dry-run-no-seed.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "Compile-clean: every other skip stays live, so only the machine helper regresses. Restores the exact #1857 incident: the staged 99.0.0 stamp refuses the boot before the token file is read, and the cell that demands the helper's own usage refusal goes red instead."
     }
   ]
 }

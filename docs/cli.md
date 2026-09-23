@@ -1804,7 +1804,9 @@ a default, so a persona that pins its harness still wins over it. An `--agent` n
 connector fails loud with the exact
 `cotal ext add` to restore it. Set `COTAL_SKIP_CONNECTOR_SEED=1` to turn off the automatic first-run
 seed/refresh entirely (for a controlled or offline setup that manages connectors by hand); `cotal ext
-seed` still runs on request.
+seed` still runs on request. `cotal agent-bearer` never takes the seed at all: it is exec'd by
+spawned seats on every bearer refresh, so it neither reconciles nor is refused by the store's
+generation (see [Plumbing](#plumbing)).
 
 ## completion
 
@@ -1904,5 +1906,8 @@ spawn-time secret; you never run it directly either. Its local arm uses `--dir` 
 capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
 `--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
 pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS
-URL because the actor token is the credential in the request body. (`cotal start` is a removed tombstone: it
+URL because the actor token is the credential in the request body. Because a seat execs it on every
+bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
+exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
+a newer store generation cannot refuse a live seat's refresh. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)
