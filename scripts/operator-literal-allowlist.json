@@ -146,15 +146,5 @@
       "count": 1,
       "reason": "attribution scrubber fixture"
     }
-  },
-  "scripts/feedback-remote.mjs": {
-    "public-ipv4": {
-      "count": 2,
-      "reason": "feedback service endpoint default"
-    },
-    "home-path": {
-      "count": 2,
-      "reason": "feedback service remote root default"
-    }
   }
 }
