@@ -1,0 +1,18 @@
+{
+  "suite": [
+    "implementations/delivery/smoke/delivery-broker-coupling.smoke.ts",
+    "packages/core/smoke/delivery-lease.smoke.ts"
+  ],
+  "command": "pnpm smoke:delivery-broker-coupling && pnpm smoke:delivery-lease:auth",
+  "mutations": [
+    {
+      "name": "the daemon never reacts to a lease watch event (the loss window reverts to the renew period)",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "    if (info !== undefined && ep.ownsDeliveryLease(info)) return;",
+      "replace": "    return;",
+      "expectRed": "L4 and the daemon's log names the watch-driven loss rather than a renew failure",
+      "cell": "L4 and the daemon's log names the watch-driven loss rather than a renew failure",
+      "note": "The watch trigger's own-write/foreign-write branch removed: every event, including the daemon's own acquire/renew/ready writes, is ignored. The loser still exits via the renew tick, so L5 can stay green while the loss window is back to ~15s; the cells that die are L3 (the 5s bound) and L4 (the watch-named loss line). Measured at the base shape: 14588ms."
+    }
+  ]
+}

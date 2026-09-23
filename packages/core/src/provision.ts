@@ -2485,8 +2485,17 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     ...kvRead(PKV), ...kvRead(CHKV), ...kvRead(MKV), ...kvRead(AKV),
     // Members-KV WRITE — the daemon is the durable-membership authority (join/leave/activate/catch-up).
     `$KV.${membersBucket(space)}.>`,
-    // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys.
+    // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys. The
+    // CONSUMER.* rows are kv.watch's ordered consumer for the lease-loss watch (#1596) — the same
+    // read axis the other kvRead buckets carry, on the bucket this cred already reads point-wise:
+    // a watch is a READ of the row's changes, never a write. CONSUMER.DELETE rides with it for the
+    // same reason it does on every watched bucket: an ordered consumer rebuilds by deleting its
+    // predecessor, and a refused delete strands consumers on every rebuild (measured on the
+    // presence bucket; the comment there carries the full story).
     `$JS.API.STREAM.INFO.${DKV}`, `$JS.API.STREAM.MSG.GET.${DKV}`,
+    `$JS.API.CONSUMER.CREATE.${DKV}.>`,
+    `$JS.API.CONSUMER.INFO.${DKV}.>`,
+    `$JS.API.CONSUMER.DELETE.${DKV}.>`,
     `$KV.${deliveryBucket(space)}.lease.*`,
     // The timer writer (SPEC 13.2): the daemon hosts the pump that turns `.schedule` requests into
     // the authoritative `.armed` publishes — without it no workflow pause on the space ever
