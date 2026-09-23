@@ -288,13 +288,16 @@ npm install -g cotal-ai@0.49.0
 #    burns its full timeout before telling you.
 LOG=.cotal/manager.<spaceKey>.log
 OFF=$( [ -f "$LOG" ] && wc -c < "$LOG" || echo 0 )
-cotal up --detach --host 0.0.0.0 --space <space>
+cotal up --detach --host 0.0.0.0 --space <space> --no-manager
 
-# 3a. SPLIT TOPOLOGY ONLY, and do not skip it: there is no broker-only mode,
-#     so the line above ALSO starts a local manager on the broker host. Wait
-#     for the log to show the manager is up, then stop it, or you finish the
-#     upgrade with two managers and the one you did not intend is the one
-#     nobody is watching.
+# 3a. SPLIT TOPOLOGY ONLY: `--no-manager` above boots the broker (and the
+#     delivery daemon) with NO local manager on the broker host, so there is
+#     no wait-and-stop step on a current cotal-ai. The rest of this step is
+#     the OLDER-host recipe, kept because the flag is refused there and that
+#     refusal is your signal you are on it: without the flag the `up` also
+#     starts a local manager, and you must wait for the log to show it is up,
+#     then stop it, or you finish the upgrade with two managers and the one
+#     you did not intend is the one nobody is watching.
 #     A bare `grep -q` does NOT wait: it reads once and exits 1 immediately
 #     if the line has not been written yet. Bound the wait instead, so a
 #     manager that never comes up fails loudly rather than reading as ready.
@@ -309,6 +312,9 @@ timeout 60 bash -c \
 #     This manager is 0.49.0 and publishes its own spare-capability file, so
 #     the bare stop below is NOT the refusal case from step 1.
 cotal down manager                                      # broker + delivery remain
+#     On a current cotal-ai the two commands above are unnecessary (nothing
+#     to wait for, nothing to stop) and `cotal down manager` simply reports
+#     no manager to stop.
 
 # 4. verify the mesh is whole again before touching the fleet.
 #    Do NOT compare `cotal ps` against ps.before yet: step 1 ended the agent
