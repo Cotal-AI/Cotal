@@ -101,7 +101,8 @@ channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by defa
 `--no-events` to opt out on an unrestricted space. A required registration carries
 `eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
 personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
-cover the principal-keyed event channel or the connector refuses before joining.
+cover the principal-keyed event channel or the connector refuses before joining. The emitter starts
+once the mesh link is up, so a session created before the first bind still publishes.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 

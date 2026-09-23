@@ -442,12 +442,16 @@ try {
   check("the remote entry round-trips through targetFromEntry",
     hostedTarget.mode === "user" && hostedTarget.userAuth?.remote === true && hostedTarget.server.startsWith("nats://127.0.0.1"), hostedTarget);
   recordMesh({ ...hostedEntry!, policy: undefined, ts: new Date(0).toISOString() });
-  const { prepareCatalogCommand } = await import("../src/commands/sync.js");
-  await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  // The refresh runs where a launch, a join, or a manager start consumes the policy, never as a
+  // dispatcher pre-step: `status` and `meshes` stay read-only, and a launch site calls it after its
+  // own local refusals. The shipped function takes the resolved target.
+  const { refreshRegistrationPolicy } = await import("@cotal-ai/workspace");
+  const refreshHosted = () => refreshRegistrationPolicy({ space: "hosted" });
+  await refreshHosted();
   const refreshedManual = findMesh("hosted");
   check("trusted refresh adds policy to a pre-existing manual registration without replacing it",
     policyRefreshHits === 1 && refreshedManual?.origin === "manual" && refreshedManual.root === hostedEntry?.root && refreshedManual.policy?.events === "required", { policyRefreshHits, refreshedManual });
-  await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+  await refreshHosted();
   check("the trusted manual policy refresh warm path makes zero requests", policyRefreshHits === 1, policyRefreshHits);
   const hostedList = await run([]);
   check("`cotal meshes` stays registry-local for a manual required-policy entry",
@@ -458,7 +462,7 @@ try {
   recordMesh({ ...refreshedManual!, policy: undefined, policyCheckedAt: new Date(0).toISOString() });
   let expiredRefreshError = "";
   try {
-    await prepareCatalogCommand({ values: { space: "hosted" }, positionals: [], raw: [] } as never);
+    await refreshHosted();
   } catch (error) {
     expiredRefreshError = (error as Error).message;
   } finally {
@@ -467,6 +471,15 @@ try {
   check("an expired manual policy refresh failure names the pinned exchange and refuses",
     expiredRefreshError.includes(exchangeUrl) && expiredRefreshError.includes("HTTP 503") && findMesh("hosted")?.policy === undefined,
     { expiredRefreshError, entry: findMesh("hosted") });
+  // A read-only command never pays for the refresh: `meshes` lists the expired entry with the
+  // exchange still refusing, and makes no request doing so.
+  policyRefreshFails = true;
+  const hitsBeforeList = policyRefreshHits;
+  const expiredList = await run([]);
+  policyRefreshFails = false;
+  check("`cotal meshes` lists a pre-policy manual entry without refreshing it, even when its exchange refuses",
+    expiredList.code === 0 && expiredList.out.includes("hosted") && policyRefreshHits === hitsBeforeList,
+    { code: expiredList.code, hits: policyRefreshHits - hitsBeforeList });
   removeMesh("hosted");
   // A bundle missing ANY pin refuses — each of the trust fields, not just one.
   for (const strip of ["idp-url", "issuer", "audience", "endpoints", "sentinel"] as const) {

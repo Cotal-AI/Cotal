@@ -19,7 +19,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { findMesh } from "@cotal-ai/workspace";
+import { findMesh, refreshRegistrationPolicy, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
@@ -120,8 +120,14 @@ export async function join(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
-    const registered = findMesh(space);
-    if (registered?.policy?.events === "required") {
+    let registeredPolicy: MeshEntry["policy"];
+    try {
+      registeredPolicy = await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+    if (registeredPolicy?.events === "required") {
       console.error(c.red(`✗ space "${space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
       process.exit(1);
     }
@@ -140,7 +146,14 @@ export async function join(args: ParsedArgs): Promise<void> {
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
-    if (target.policy?.events === "required") {
+    let policy: typeof target.policy;
+    try {
+      policy = await refreshRegistrationPolicy(target);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+    if (policy?.events === "required") {
       console.error(c.red(`✗ space "${target.space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
       process.exit(1);
     }

@@ -111,7 +111,7 @@
       "reason": "illustrative address in user-facing guidance"
     }
   },
-  "implementations/cli/src/lib/join-target.ts": {
+  "packages/workspace/src/join-target.ts": {
     "shared-ipv4": {
       "count": 3,
       "reason": "shared address range and user-facing examples, including a range boundary constant closing a sentence in a comment"

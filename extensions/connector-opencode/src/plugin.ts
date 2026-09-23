@@ -192,6 +192,14 @@ export const cotal: Plugin = async () => {
     // work must not run for a session that never emits.
     return new AguiEmitterHolder<OpenCodeRecord>(
       async (id: string) => {
+        // WAIT FOR THE MESH FIRST. This factory runs off the first `session.created` on the bus,
+        // and the shim creates that session before the mesh link binds, so `AguiEmitter.start`
+        // reached an endpoint that had not started and the holder died terminally for the rest of
+        // the session with one stderr line as the only record. Measured live on a hosted mesh:
+        // "AG-UI emitter stopped: endpoint not started" landed before "connected to" every time,
+        // with or without a boot prompt. The same wait the Claude Code connector takes; past its
+        // window it fails into the holder's terminal error rather than hanging the bus handler.
+        await agent.whenConnected(20_000);
         // Throws rather than defaulting to the working directory: a write-ahead log written
         // somewhere no later start looks for is a silent loss.
         const workspaceRoot = resolveEventsStateRoot(process.env);

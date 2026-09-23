@@ -38,7 +38,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createServer as createNetServer, connect as netConnect } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -145,6 +145,24 @@ oc.listen(0, "127.0.0.1");
 await once(oc, "listening");
 const ocPort = (oc.address() as { port: number }).port;
 
+// THE PLUGIN'S MESH LINK IS GATED, AND THE GATE OPENS AFTER THE FIRST EVENT. On a hosted mesh the
+// link binds hundreds of milliseconds after boot and the shim's first event beats it; on a local
+// broker the bind wins by a wide margin and a harness that connects directly cannot reach the
+// window, so the boot cell below would pass with the wait deleted. This proxy is listened only once
+// the first event is in flight: the plugin's first attempt is refused, its retry lands on the next
+// cadence, and the order the live seat saw is reached on purpose rather than by luck.
+const LINK = await freePort();
+const link = createNetServer((socket) => {
+  const upstream = netConnect(PORT, "127.0.0.1");
+  socket.pipe(upstream).pipe(socket);
+  socket.on("error", () => upstream.destroy());
+  upstream.on("error", () => socket.destroy());
+});
+const openLink = async (): Promise<void> => {
+  link.listen(LINK, "127.0.0.1");
+  await once(link, "listening");
+};
+
 // The plugin reads its identity from COTAL_* env. Scrub what this process inherited: a live seat's
 // creds would point these cells at someone else's broker.
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -152,7 +170,7 @@ Object.assign(process.env, {
   COTAL_NAME: "Otto",
   COTAL_ID: "otto",
   COTAL_SPACE: SPACE,
-  COTAL_SERVERS: servers,
+  COTAL_SERVERS: `nats://127.0.0.1:${LINK}`,
   COTAL_ROLE: "generalist",
   COTAL_EVENTS: "1",
   COTAL_WORKSPACE_ROOT: join(dir, "ws"),
@@ -184,11 +202,18 @@ try {
     (await probe.listChannels()).find((x: { channel: string; messages?: number }) => x.channel === CHANNEL)?.messages ?? 0;
 
   hooks = await bootPlugin();
-  await sleep(1_500);
   const fire = (event: unknown): Promise<void> => (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
   const part = (sessionID: string): Promise<void> => fire({ type: "message.part.updated", properties: { part: { sessionID } } });
 
   // ---- The first session. Its run is left OPEN on purpose: the drain below is what must close it.
+  //
+  // AND ITS FIRST EVENT LANDS BEFORE THE MESH LINK BINDS. Fired straight after boot with no wait:
+  // the shim creates the native session before the plugin's endpoint has bound, so on a live seat
+  // the holder started its emitter against an endpoint that had not started, died terminally, and
+  // the seat published nothing for its whole life with one stderr line as the record. Measured on a
+  // hosted mesh with and without a boot prompt: "AG-UI emitter stopped: endpoint not started" landed
+  // before "connected to" every time. The emitter has to wait for the link, and this cell holds the
+  // process to that order; every cell below then grades a plane that survived its own boot.
   //
   // AND THE PROCESS BOOTS ON AN ORDINARY EVENT, NOT ON A CREATE. OpenCode attaches to sessions that
   // already exist, so a create is not guaranteed to be the first thing a run sees; `ours()` adopts
@@ -204,8 +229,11 @@ try {
   // second thread, `ours` stops a foreign event speaking for the owned one. The staged turn below
   // is what makes the difference visible, because a spurious pump publishes it EARLY.
   content.set(A, []);
-  await part(A); // parks the cursor on the near-empty session, as a live one does
-  await sleep(1_500);
+  await part(A); // parks the cursor on the near-empty session, as a live one does; the link is still refused
+  await openLink();
+  await sleep(6_000); // the plugin's retry cadence is 3s; the bind lands on it and the emitter must have waited
+  check("boot:the first event arrives before the mesh link binds, and the emitter waits for the link instead of dying",
+    !logs.some((l) => l.includes("emitter stopped")), logs.filter((l) => l.includes("emitter stopped")));
 
   // Staged and deliberately NOT pumped, so the only thing that can put it on the wire is a pump.
   content.set(A, turn(A, 1));
@@ -398,13 +426,14 @@ try {
     !seen.some((e) => e.thread === CHILD), seen.filter((e) => e.thread === CHILD).length);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 20;
+  const EXPECTED = 21;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
   console.log(`opencode-events-reset smoke: ${pass} passed, ${fail} failed`);
 } finally {
   await hooks?.dispose?.();
+  link.close();
   await probe.stop().catch(() => {});
   oc.close();
   broker.kill("SIGKILL");

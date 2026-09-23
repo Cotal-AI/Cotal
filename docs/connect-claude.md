@@ -287,8 +287,10 @@ immediately. Once a socket has connected, a broken exchange is not retried: the 
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
 new startup waits up to five seconds for that file with capped backoff, and the same deadline bounds
-one stalled file read; expiry fails loud instead of silently losing the first run. Retained-history
-starts and recovered cursors still require their existing source at once.
+one stalled file read; expiry fails loud instead of silently losing the first run. A forked session
+gets the same wait, because Claude copies the parent transcript into the fork's own file after the
+hook, and then adopts at the end of that copy. Resumed, cleared and compacted starts and recovered
+cursors still require their existing source at once.
 
 Tool arguments (`TOOL_CALL_ARGS`) and tool results (`TOOL_CALL_RESULT`) are not republished
 onto this channel. The durable emitter drops those events before they are written to the

@@ -182,9 +182,11 @@ The user-auth registration document may include one closed policy object:
 
 No other key under `policy` and no other value for `policy.events` is accepted. The registry preserves
 this field for manual, discovered, and enrollment-created entries. A pre-policy manual entry is
-refreshed from its own pinned exchange origin before launch; the returned space, broker, transport,
-IdP, issuer, audience, and exchange pins must all match before only the policy is added. A failed
-expired refresh refuses the operation. The five-second warm window makes no request.
+refreshed from its own pinned exchange origin by the command that consumes the policy, a spawn, a
+join, or a manager start, after that command's own local refusals; the returned space, broker,
+transport, IdP, issuer, audience, and exchange pins must all match before only the policy is added.
+A failed expired refresh refuses that operation. Read-only commands such as `status` and `meshes`
+never refresh. The five-second warm window makes no request.
 
 Every registration is also bound to the proved account. Its IdP URL must match the account and its
 issuer must match the exact JWT `iss` pin. Its exchange, provisioning, and manager-authority
