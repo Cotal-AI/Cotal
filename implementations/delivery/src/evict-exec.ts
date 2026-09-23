@@ -154,11 +154,13 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
 
 /**
  * The delivery daemon's LIVE-EVICTION executor (D5 slice 6, on the privileged delivery-admin rail):
- * force-drop a denied principal's live connections via the core scan→KICK→verify primitive. The two
- * $SYS creds are the real gate — the KICK-only evictor and the CONNZ observer, both minted only at a
- * fresh `up` — and core opens them PER CALL (eviction is a rare repair/flip step, never a standing
- * $SYS connection in the daemon). A space provisioned before the evictor existed refuses loudly with
- * the regeneration step — deny-new-only (durable reauth) remains its honest posture.
+ * force-drop a denied principal's live connections via the core scan, KICK, verify primitive.
+ * The observer is loaded first and is enough for a complete scan that matches nothing: that answer
+ * is verified-gone, and the evictor credential is not read. The evictor is loaded and dialled only
+ * when the scan finds a live match. A live match with no evictor still refuses with the
+ * provisioning message. Deny-new-only (durable reauth) stays the caller's posture for that refusal,
+ * never a choice the executor makes. Core opens each cred per call. Eviction is a rare repair step,
+ * never a standing $SYS connection in the daemon.
  */
 export async function executeEviction(server: string, target: ScanTarget, principal: string): Promise<EvictionResult> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
