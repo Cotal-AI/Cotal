@@ -167,8 +167,11 @@ export interface AuthProvider extends Extension {
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's
    * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state
-   * here, not a thrown one. Throws only when the space has no user-auth material in `store`/`dir`
-   * (there is nothing to report status about).
+   * here, not a thrown one. The IdP pins come from `dir` when the space was provisioned locally,
+   * or from the registry entry bound to that `dir` when it is a remote registration (a `meshes
+   * add --from` entry or catalog discovery) — in which case `grant` stays absent, since the ledger
+   * runs where the space was provisioned. Throws only when neither position exists (there is
+   * nothing to report status about).
    */
   userStatus(opts: { store: SecretStore; dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
   /**

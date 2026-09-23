@@ -779,6 +779,15 @@ stale with the last successful snapshot timestamp and the refresh error. It neve
 synchronized or online. If a selected discovered space vanishes from a successful snapshot, the
 selection is cleared and the command reports that no default is selected.
 
+For a user-auth mesh the selected-mesh section reports the login `status` works as: the signed-in
+subject when this machine holds a cached session for the entry's pinned IdP, or the exact `cotal
+login --idp <url>` line when it does not, with no network round trip either way. A locally
+provisioned space also shows the actor grant row; a discovered or registered remote entry reports
+the grant as not checkable on this machine, because the ledger runs where the space was
+provisioned. `--components` on a user-mode target probes as that same signed-in login (`ps`'s
+credential), never a static mint; when the login cannot supply a credential, the row says why
+instead of printing the broker's refusal of an unauthenticated probe.
+
 Persona rows name the catalog they describe. If this folder and the selected mesh use different
 catalogs, status names both and marks which one spawn launches from. A green `default` means the file
 passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.

@@ -457,22 +457,32 @@ export const cotalAuthProvider: AuthProvider = {
 
   /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
    *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
-   *  status` must be able to say "not signed in" without becoming a connect. */
+   *  status` must be able to say "not signed in" without becoming a connect.
+   *
+   *  A space with no LOCAL pin may still be a REMOTE registration (a `meshes add --from` entry, or
+   *  catalog discovery): its IdP pins live in the registry entry itself, exactly where
+   *  {@link remoteUserCredentials} reads them. The remote arm answers the same offline questions
+   *  from the entry — with `grant` absent, because the ledger that holds the row runs where the
+   *  space was provisioned, and the renderer already says "grant not checkable on this machine
+   *  (no local ledger)" for that shape. No entry either is the one state that stays a refusal. */
   async userStatus({ store, dir, space, actor }) {
     const idp = loadPinnedIdp(dir);
-    if (!idp)
+    const ua = idp ? undefined : remoteUserAuthEntry(dir, space);
+    if (!idp && !ua)
       throw new Error(
-        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space`,
+        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space, or where the discovered/registered entry for it lives`,
       );
-    const session = loadIdpSession(homeCotalDir(), idp.url);
-    if (!session?.sub) return { idpUrl: idp.url };
+    const idpUrl = idp ? idp.url : ua!.idp.url;
+    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    if (!session?.sub) return { idpUrl };
     const login = { sub: session.sub, expiresAt: session.expiresAt };
+    if (!idp) return { idpUrl, login };
     const secret = await loadOwnerSecret(store, space);
-    if (!secret) return { idpUrl: idp.url, login };
+    if (!secret) return { idpUrl, login };
     const owner = deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
     const row = findInteractiveActor(dir, owner, actor);
     return {
-      idpUrl: idp.url,
+      idpUrl,
       login,
       owner,
       grant: row
@@ -604,6 +614,25 @@ function managerAuthorityUrl(base: string, space: string): string {
   return u.toString();
 }
 
+/** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
+ *  way {@link remoteUserCredentials} binds it: `dir` derives from the resolved target's root, so an
+ *  entry for the same space under a different root must not answer for it. `undefined` when the
+ *  registry holds no such remote entry. This is the ONE read of the entry's pins — connect and the
+ *  offline status read consume the same trust position, so they cannot drift. */
+function remoteUserAuthEntry(
+  dir: string,
+  space: string,
+): (UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) | undefined {
+  const entry = findMesh(space);
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  const bound =
+    ua?.remote === true &&
+    typeof ua.endpoints?.url === "string" &&
+    typeof ua.sentinelCredsPath === "string" &&
+    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
+  return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
+}
+
 /** Client side of a REMOTE user mesh: the registry entry `cotal meshes add --from` recorded is
  *  the whole trust position (IdP pins, public exchange URL, sentinel path) - registration pinned
  *  it, connect consumes it, nothing is discovered here. The flow mirrors the local arm exactly
@@ -617,20 +646,11 @@ async function remoteUserCredentials(
   actor: string,
   view?: string,
 ): Promise<{ bearer: string; sentinelCreds: string }> {
-  const entry = findMesh(space);
-  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
-  // Bind the registry entry to the CALLER'S state dir: `dir` was derived from the target's root,
-  // so an entry for the same space under a different root must not answer for it.
-  const bound =
-    ua?.remote === true &&
-    typeof ua.endpoints?.url === "string" &&
-    typeof ua.sentinelCredsPath === "string" &&
-    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
-  if (!bound)
+  const remote = remoteUserAuthEntry(dir, space);
+  if (!remote)
     throw new Error(
       `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\` and sign in with \`cotal login --idp <idp-url>\``,
     );
-  const remote = ua as UserAuthInfo & { endpoints: { url: string }; sentinelCredsPath: string };
   let sentinelCreds: string;
   try {
     sentinelCreds = readFileSync(remote.sentinelCredsPath, "utf8");
