@@ -97,9 +97,9 @@
       "file": "implementations/cli/src/lib/control.ts",
       "find": "      error: ar.reply.error?.message || ar.reply.error?.code || \"error\",",
       "replace": "      error: ar.reply.error?.message ?? ar.reply.error?.code ?? \"error\",",
-      "expectRed": "a refusal with an EMPTY message is still a refusal",
-      "cell": "a refusal with an EMPTY message is still a refusal",
-      "note": "With ?? an empty message survives as the error, which the census counts and the renderer, reading by truthiness, does not."
+      "expectRed": "a refusal with an EMPTY message is still a refusal, to the census and the renderer alike",
+      "cell": "a refusal with an EMPTY message is still a refusal, to the census and the renderer alike",
+      "note": "With ?? an empty message survives as the error: the census still counts it, but the renderer reads error by truthiness and prints the slot as an answer."
     },
     {
       "name": "the partial-listing notice stops agreeing in number",

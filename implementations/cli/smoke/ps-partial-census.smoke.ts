@@ -240,8 +240,11 @@ try {
   const strayBesideValid = psCensus(scatterSlots({ replies: new Map([[IID_OLD, valid]]), missing: [], invalid: [], churn: [{ instanceId: IID_OLD, epoch: EPOCH + 1, reason: "epoch" }] }, () => "unknown"));
   check("...but a stray reply from another epoch BESIDE a counted one leaves that instance reported, once",
     strayBesideValid.total === 1 && strayBesideValid.silent === 0, strayBesideValid);
-  const emptyMessage = psCensus(scatterSlots({ replies: new Map([[IID_OLD, slotReply(IID_OLD, { ok: false, error: { code: "internal", message: "" } })]]), missing: [], invalid: [], churn: [] }, () => "unknown"));
-  check("a refusal with an EMPTY message is still a refusal", emptyMessage.silent === 1, emptyMessage);
+  // The census tests `error === undefined` and the renderer tests `error` by truthiness, so an
+  // empty message has to reach both as a non-empty error or they disagree about the same slot.
+  const emptySlots = scatterSlots({ replies: new Map([[IID_OLD, slotReply(IID_OLD, { ok: false, error: { code: "internal", message: "" } })]]), missing: [], invalid: [], churn: [] }, () => "unknown");
+  check("a refusal with an EMPTY message is still a refusal, to the census and the renderer alike",
+    psCensus(emptySlots).silent === 1 && Boolean(emptySlots[0]?.error), emptySlots);
 
   console.log("4. and the command itself, run against this space");
   // THE HALF ONLY A SCRIPT SEES. Everything above grades the decision; this grades the wiring, by
