@@ -171,7 +171,7 @@ try {
   ok("driver (MeshAgent) connected", driver.connected);
   {
     const t0 = Date.now();
-    const reply = await driver.spawn("slowpoke", undefined, { agent: "slow-e2e" });
+    const reply = await driver.spawn("slowpoke", undefined, { agent: "slow-e2e", events: false });
     const elapsed = Date.now() - t0;
     ok("MeshAgent.spawn succeeds on the REAL join outcome", reply.ok === true, reply);
     ok(`...which arrived past the old 5s default (${elapsed}ms, window ${SPAWN_TIMEOUT_MS}ms)`, elapsed > 5_000 && elapsed < SPAWN_TIMEOUT_MS, elapsed);
@@ -187,7 +187,7 @@ try {
       apiVersion: "cotal-launch/v1",
       space: SPACE,
       runId,
-      agents: [{ name: "slowlaunch", agent: "slow-e2e", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
+      agents: [{ name: "slowlaunch", agent: "slow-e2e", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
     }),
   );
   ep = new CotalEndpoint({
@@ -226,7 +226,7 @@ try {
           apiVersion: "cotal-launch/v1",
           space: SPACE,
           runId: jcodeRun,
-          agents: [{ name: "jcodeslow", agent: "jcode-slow-e2e", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
+          agents: [{ name: "jcodeslow", agent: "jcode-slow-e2e", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
         }),
       );
       const t0 = Date.now();
@@ -276,7 +276,7 @@ try {
           apiVersion: "cotal-launch/v1",
           space: SPACE,
           runId: ghostRun,
-          agents: [{ name: "ghost", agent: "ghost-e2e", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
+          agents: [{ name: "ghost", agent: "ghost-e2e", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
         }),
       );
       const t0 = Date.now();

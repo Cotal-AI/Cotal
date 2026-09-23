@@ -37,11 +37,11 @@
     {
       "name": "the status is assigned before its presence write, so a failed write swallows the boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const prev = this._status;\n    try {\n      await this.publishStatus(status, activity);\n    } finally {",
-      "replace": "    const prev = this._status;\n    this._status = status;\n    await this.publishStatus(status, activity);\n    if (prev === \"working\" && status === \"idle\") this.onTurnBoundary();\n    if (false) {",
+      "find": "    const prev = this._status;\n    try {\n      if (prev !== \"working\" && status === \"working\") await this.ep.setCondition(null);\n      await this.publishStatus(status, activity);\n    } finally {",
+      "replace": "    const prev = this._status;\n    if (prev !== \"working\" && status === \"working\") await this.ep.setCondition(null);\n    this._status = status;\n    await this.publishStatus(status, activity);\n    if (prev === \"working\" && status === \"idle\") this.onTurnBoundary();\n    if (false) {",
       "expectRed": "a failed presence write does not swallow the boundary",
       "cell": "a failed presence write does not swallow the boundary",
-      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a failed presence write does not swallow the boundary"
+      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a failed presence write does not swallow the boundary Re-anchored 2026-09-22 after a condition-clearing call was added inside the try; the replace carries that call unchanged so the mutation still isolates the ordering alone."
     },
     {
       "name": "the seat discards every pull refusal in silence",

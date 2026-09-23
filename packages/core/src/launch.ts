@@ -28,6 +28,9 @@ export interface MeshLaunchAgent {
    *  connector exactly like the imperative `--prompt`. Part of the launch form: re-submitted on
    *  every (re)start under this entry, and hash-covered so a change marks a running agent stale. */
   prompt?: string;
+  /** Explicit event-plane choice. Absent means on when the connector declares an event channel;
+   *  `false` is the manifest equivalent of `--no-events`. */
+  events?: boolean;
   capabilities?: string[];
   /** Effective merged read set — the sole creds authority (not re-read from any file). */
   subscribe: string[];

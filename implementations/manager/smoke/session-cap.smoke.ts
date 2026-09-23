@@ -127,7 +127,7 @@ try {
   const iid = M.managerInstanceId;
   check("fixture: the manager took the configured cap", M.sessionPlane.maxSessions === CAP, M.sessionPlane.maxSessions);
 
-  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-cap" });
+  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-cap", events: false });
   check("fixture: an agent is running to attach to", spawned.ok === true, spawned);
 
   // Count the §13.1 credential family: a minted per-session SERVING credential lands here, so an

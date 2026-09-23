@@ -129,7 +129,7 @@ try {
     retiring: Map<string, unknown>;
   };
 
-  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-ss" });
+  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-ss", events: false });
   check("fixture: the agent spawned with a materialized static credential", spawned.ok === true, spawned);
   const a = M.agents.get("worker")!;
   const credsPath = a.secretPaths?.creds;

@@ -36,6 +36,9 @@ export interface MeshEntry {
    *  broker truth: it lives under the user's protected registry dir and is trusted the way the
    *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
   userAuth?: UserAuthInfo;
+  /** Closed space policy carried by a user-auth registration. Absent preserves the generic launch
+   *  behavior; `events: "required"` forbids a connector session from joining without its event plane. */
+  policy?: { events: "required" };
   /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
    *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
    *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind
@@ -87,7 +90,20 @@ export interface MeshEntry {
    *  not `cotal down` / `cotal clean all` sweeping a shared root, and not a `cotal up` REFRESH that
    *  merely found a broker already answering (it starts nothing, so it keeps the origin). A `cotal
    *  up` for that space anywhere else refuses outright rather than reclaim the name. */
-  origin?: "up" | "manual";
+  origin?: "up" | "manual" | "catalog";
+  /** Opaque account key for a catalog-owned record. Present iff `origin === "catalog"`; it keeps
+   *  two signed-in accounts at one IdP separate without persisting the subject in the registry. */
+  catalogOwner?: string;
+  /** Provider catalog metadata used only for display and snapshot reconciliation. */
+  catalogId?: string;
+  catalogSlug?: string;
+  catalogName?: string;
+  catalogKind?: string;
+  catalogRole?: string;
+  catalogFetchedAt?: string;
+  catalogError?: string;
+  /** Last successful or attempted trusted policy refresh for a pre-policy manual user registration. */
+  policyCheckedAt?: string;
   /** Present and true when the operator EXPLICITLY accepted registering an overlay address that
    *  this build cannot encrypt (`--allow-unencrypted-overlay`). Recorded rather than inferred: the
    *  address class is re-derivable from `server`, but CONSENT is not, and a dial that happens long
@@ -270,7 +286,7 @@ export type PruneReason = "gone" | "mismatch";
 
 export function pruneMesh(space: string, reason: PruneReason = "gone"): boolean {
   const m = findMesh(space);
-  if (!m || m.origin === "manual") return false;
+  if (!m || m.origin === "manual" || m.origin === "catalog") return false;
   if (reason === "gone") return false;
   removeMesh(space);
   return true;
@@ -311,7 +327,7 @@ export function meshesForRoot(root: string): MeshEntry[] {
 export function removeMeshesByRoot(root: string): string[] {
   const removed: string[] = [];
   for (const m of meshesForRoot(root)) {
-    if (m.origin === "manual") continue;
+    if (m.origin === "manual" || m.origin === "catalog") continue;
     removeMesh(m.space);
     if (getCurrent() === m.space) clearCurrent();
     removed.push(m.space);
@@ -324,7 +340,20 @@ export function removeMeshesByRoot(root: string): string[] {
  *  mesh still live" asks about its OWN mesh: a hand-registered record co-rooted here points at a
  *  broker on another machine, which the operator cannot stop and must not be blocked by. */
 export function localMeshesForRoot(root: string): MeshEntry[] {
-  return meshesForRoot(root).filter((m) => m.origin !== "manual");
+  return meshesForRoot(root).filter((m) => m.origin !== "manual" && m.origin !== "catalog");
+}
+
+/** Remove only the discovered entries owned by one proved account. Manual and local entries with
+ *  the same root or IdP are never included. Returns removed names and clears a matching selection. */
+export function removeCatalogMeshes(ownerKey: string): string[] {
+  const removed: string[] = [];
+  for (const m of loadMeshes()) {
+    if (m.origin !== "catalog" || m.catalogOwner !== ownerKey) continue;
+    removeMesh(m.space);
+    if (getCurrent() === m.space) clearCurrent();
+    removed.push(m.space);
+  }
+  return removed.sort();
 }
 
 /** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —

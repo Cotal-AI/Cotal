@@ -170,12 +170,12 @@ const credsDir = agentCredsDir(workspaceRoot, space);
 try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
-  // 1 — events ON + an emitting connector: the grant names the ALLOCATED principal.
+  // 1 — default events + an emitting connector: the grant names the ALLOCATED principal.
   let armedName = "";
   let armedChannel = "";
   {
-    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", events: true });
-    check("spawn with events succeeds", reply.ok === true, reply);
+    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter" });
+    check("bare spawn with an event-capable connector succeeds", reply.ok === true, reply);
     const data = (reply.ok ? reply.data : {}) as { lifecycleUid?: string; name?: string; id?: string };
     const uid = String(data.lifecycleUid ?? "");
     armedName = String(data.name ?? "");
@@ -221,24 +221,39 @@ try {
     );
   }
 
-  // 2 — events OFF: nothing is granted. Without this, a grant added unconditionally passes cell 1.
+  // 2 — explicit opt-out: nothing is granted. Without this, a grant added unconditionally passes cell 1.
   {
-    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter" });
-    check("spawn without events succeeds", reply.ok === true, reply);
+    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", events: false });
+    check("spawn with events explicitly disabled succeeds", reply.ok === true, reply);
     const data = (reply.ok ? reply.data : {}) as { lifecycleUid?: string; name?: string };
     const pub = pubAcl(join(credsDir, `${String(data.name)}.${String(data.lifecycleUid)}.creds`));
-    check("no event channel is granted when events are off", !pub.map(channelOf).some((c) => c.startsWith("events.")), pub);
-    check("and the launch is not armed either", lastLaunchEvents !== true, lastLaunchEvents);
+    check("no event channel is granted after the explicit opt-out", !pub.map(channelOf).some((c) => c.startsWith("events.")), pub);
+    check("and the launch is explicitly unarmed", lastLaunchEvents === false, lastLaunchEvents);
   }
 
-  // 3 — events ON + a connector that cannot emit: refuse, never a silently-skipped grant.
+  // 3 — the default + a connector that cannot emit: refuse and name the opt-out.
   {
     const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
-    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-silent", events: true });
-    check("events on a non-emitting connector fails loud", reply.ok === false && /does not publish an AG-UI event plane/.test(reply.error ?? ""), reply);
+    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-silent" });
+    check("bare spawn on a non-emitting connector fails loud", reply.ok === false && /connector "smoke-silent".*--no-events/.test(reply.error ?? ""), reply);
     // The refusal runs after the name is reserved, so it has to give the name back. A leaked reserve
     // is silent: it costs the next spawn its un-suffixed name and nothing reports why.
     check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
+  }
+  // 3b — registration policy makes the arm non-optional and names the space on every refusal.
+  {
+    const required = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot, eventsRequired: true });
+    (required as unknown as { auth: unknown }).auth = auth;
+    (required as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
+    (required as unknown as { ep: Record<string, unknown> }).ep = {
+      ref: () => ({ id: "required-mgr" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, getRoster: () => [],
+    };
+    const optOut = await required.startAgent({ name: "quiet-bot", agent: "smoke-emitter", events: false });
+    check("required policy refuses --no-events by space name", optOut.ok === false && (optOut.error ?? "").includes(space) && /--no-events/.test(optOut.error ?? ""), optOut);
+    const silent = await required.startAgent({ name: "quiet-bot", agent: "smoke-silent" });
+    check("required policy refuses a connector without an event plane by connector and space", silent.ok === false && (silent.error ?? "").includes(space) && /smoke-silent/.test(silent.error ?? ""), silent);
+    const built = emitterCon.buildLaunch({ space, name: "required-probe", events: true, eventsRequired: true } as never);
+    check("required policy arms an ordinary supported launch", lastLaunchEvents === true && built.command === "true", { built, lastLaunchEvents });
   }
 
 
@@ -384,10 +399,10 @@ try {
       { allowPublish: entry?.launch.allowPublish, expected: armedChannel },
     );
     check("the persisted copy carries it too", captured[0]?.agents.find((a) => a.name === armedName)?.launch.events === true, captured[0]?.agents.length);
-    // And the unarmed sibling stays unarmed across the same round trip, so the flag is being carried
+    // And the opted-out sibling stays unarmed across the same round trip, so the flag is being carried
     // per agent rather than set for the whole inventory.
     const sibling = plan.inventory.agents.find((a) => a.name !== armedName);
-    check("an unarmed agent stays unarmed in the same inventory", sibling !== undefined && sibling.launch.events === false, sibling?.launch);
+    check("an opted-out agent stays unarmed in the same inventory", sibling !== undefined && sibling.launch.events === false, sibling?.launch);
   }
 
   // 6 — the record an OLDER manager wrote. An upgrade restarts the manager against an inventory
@@ -605,7 +620,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 41;
+const EXPECTED = 44;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

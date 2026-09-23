@@ -297,7 +297,7 @@ try {
 
   manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const spawned = await manager.startAgent({ name: SEAT, agent: "rc-seat", cwd: repoRoot });
+  const spawned = await manager.startAgent({ name: SEAT, agent: "rc-seat", cwd: repoRoot, events: false });
   if (!spawned.ok) throw new Error(`seat did not start: ${JSON.stringify(spawned)}`);
 
   // ---------------------------------------------------------------------------------------------
@@ -495,7 +495,7 @@ try {
     // the manager ends it.
     const QUIET = "rcquiet";
     writeFileSync(join(root, ".cotal", "agents", `${QUIET}.md`), `---\nname: ${QUIET}\nrole: worker\n---\n`);
-    const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot });
+    const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot, events: false });
     if (!q.ok) throw new Error(`quiet seat did not start: ${JSON.stringify(q)}`);
     // The manager's own accounting, read off the plane the ceiling is enforced against.
     const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;

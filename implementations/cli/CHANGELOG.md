@@ -1,5 +1,246 @@
 # @cotal-ai/cli
 
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- ba91ad5: Attach on an open-mode mesh, which never has a local seed
+
+  `cotal attach` refused every seat on a mesh started with `cotal up --open`, saying it needed this
+  space's local seed to redeem the session grant. An open-mode mesh has no seed by design, so the
+  refusal fired on exactly the configuration attach exists to serve, and its remedy pointed at
+  re-registering a root the mesh had already resolved correctly.
+
+  How a session grant is redeemed is now the recorded mesh contract, carried as a value rather than
+  inferred from whether a credential happens to be present. An open mesh redeems over the same bare
+  connection the control round trip already used, and nothing is minted or synthesised for it. A
+  static-auth mesh still mints a session-scoped credential from the seed at the root the mesh
+  resolved to, and a static-auth mesh whose seed is missing still refuses, now naming
+  restore-at-checkout rather than a re-registration that would change nothing. A user-auth mesh still
+  refuses loud: two-step user-mode redemption is not wired.
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- 44cdcc2: Make the delivery daemon own its liveness record
+
+  `delivery.<space>.pid` was written only by the CLI launcher, so a daemon started by any other route,
+  a container entrypoint, systemd, or an operator running `cotal deliver --space <space>`, left
+  whatever was on disk untouched and every reader believed it. On a reporting mesh the record named a
+  pid that had been dead for four days while the daemon ran under a different one.
+
+  That is not only an under-report. `cotal down` decides what to stop from the same record, and
+  `mayBeRunning` is the guard that must fail closed so `cotal down nats` cannot take the broker away
+  from a live dependant. A record naming a dead pid satisfies that guard: it supplies the
+  proof-of-death the guard asks for, so a live delivery daemon reads as clear and the broker goes out
+  from under it.
+
+  The daemon now writes its own record and removes it, with the identity pin, when it exits. The write
+  happens once the single-flight shard lease is held, and not before: a daemon that loses that lease
+  refuses to bind and exits, so writing on entry would let a loser overwrite the live holder's record
+  on its way out. It is written before the Plane-3 bind so an operator can still stop a daemon whose
+  bind hangs; readiness is a separate fact the lease's own flag already carries.
+
+  Readers no longer believe a pid merely because it is alive. The delivery record's liveness gains the
+  `foreign` state the manager's already had, for the same reason: a record that outlived its daemon is
+  eventually re-pointed at an unrelated process by pid reuse, and `kill(pid, 0)` alone reports that
+  stranger as a healthy daemon forever. A live pid is trusted only once its command line has been read
+  and names the daemon, and `cotal down` never signals a live process that is provably not one.
+  Attribution only downgrades on proof, so a platform with no argv source, an unreadable process, or
+  one that exits during the read all behave exactly as before.
+
+- 6cc504b: Report an unbound delivery responder instead of a healthy-looking daemon
+
+  A delivery daemon whose `ctl.delivery` responder has not bound blocks spawn, retirement and join,
+  but no operator-facing surface said so. `cotal status` printed `delivery  running (pid N)` off the
+  pidfile alone, which is the identical line it prints when delivery is fully healthy. The daemon's
+  own readiness lease already distinguished the two, and `cotal status --components` already read it,
+  but that pass is opt-in, so an operator watching the ordinary surfaces saw a green control plane
+  while every lifecycle operation failed. The boot path made the same conflation from the other side:
+  when the readiness wait elapsed, `cotal up` logged one info line promising that boot durable joins
+  would reconcile and then reported success, so its caller could not tell a bound responder from an
+  absent one.
+
+  Bare `cotal status` now reads the same readiness lease `--components` reads, and reports the
+  responder as bound, not bound, or unchecked. An unbound responder names its consequence in the same
+  line: no spawn, no retirement, no join until it binds. Bare status remains a broad, recovery
+  oriented diagnostic and still exits 0, and where the lease cannot be read it says the axis was not
+  checked and points at `--components` rather than implying health.
+
+  Readiness is judged against the daemon that is supposed to be serving, not merely against the flag.
+  A daemon that dies without releasing its lease leaves its `ready` record in the bucket until the
+  lease TTL expires it, so for that window a restarted or crashed mesh could still report a bound
+  responder off the previous daemon's record. Both surfaces now compare the lease holder against the
+  daemon this workspace launched and report a leftover record as not bound, naming it as a dead
+  daemon's record that clears on its own. Where the holder genuinely cannot be known, such as an
+  adopted daemon this process did not start, the holder is not checked and behaviour is unchanged.
+
+  `cotal up` either binds the responder or states that it did not and what that prevents; the promise of a reconcile stays, but as
+  a statement that the wait is open ended and that agents do not need respawning, rather than as the
+  only thing said. A denied join now names the delivery daemon as a possible cause alongside
+  credentials, instead of sending an operator holding valid credentials after the wrong hypothesis.
+
+  `cotal doctor auth` no longer reports a healthy fleet as broken. When a daemon re-mints an agent's
+  credential, the previous incarnation's file stays on disk, expired, and every one of those was
+  reported as `EXPIRED - the broker denies this credential` with the remedy `respawn the agent`.
+  Following that remedy destroys live sessions to repair nothing, because the running agent is already
+  using its successor. Superseded incarnations are now recognised from the credential family that
+  names them, reported as leftover files with a cleanup that is explicitly not a respawn, and excluded
+  from the verdict, while a credential that genuinely has no successor is still a problem. The remedy
+  for a recoverable credential now says that a running manager re-mints it and that the agent adopts
+  the new file without being restarted; `respawn` is reserved for material no renewal pass can rescue.
+  The doctor also names an unbound delivery responder when the recorded renewal pass hit one, so the
+  surface an operator reaches for when credentials look wrong can say that credentials are not the
+  fault.
+
+- fc6f0b1: Scope an unanswered endpoint verdict to the rail the request rode
+
+  A CLI whose caller carries an issued generation rides the versioned `ep.v1` rail. SPEC 13.15 makes
+  that rail a separate subject space from the legacy `ep` rail and requires an endpoint to serve
+  both, so a manager built before the versioned rail serves `ep` alone and never receives the
+  request. The describe waited out its whole budget and every hosted `cotal run` verb reported that
+  no manager answered on the endpoint rails, asked whether one was running, and offered `--local`,
+  against a manager that was up, on the roster and answering `cotal ps` throughout. `--local` drives
+  the run from the calling process and names the caller as the run's answerer, so an operator who
+  took the suggestion would submit an answer under the wrong identity.
+
+  The unanswered marker now carries the `ep` plane the request was published on, and `describe`
+  names it in its own refusal. `cotal ps` and the other manager verbs state the reachability verdict
+  against that rail instead of against the mesh, and say what silence on a versioned rail does not
+  establish. `cotal run`'s hosted verbs do the same and drop both the question and the `--local`
+  suggestion there, since neither follows from what was observed. On the legacy rail every message is
+  unchanged: there is no second rail its silence could be hiding a manager on.
+
+  No fallback describe is issued on the other rail. A caller holds broker rows for its own rail only,
+  so the request would be refused at publish rather than answered.
+
+- f4ddd02: Refuse to re-exec a detached daemon from an entry that is not the CLI
+
+  `selfArgv()` builds the argv every detached re-exec is spawned with: `[node, ...loaderFlags,
+process.argv[1]]`, plus a cotal subcommand the caller appends. It took `process.argv[1]` on trust.
+  Under tsx that is whatever file was run, so a process started from something other than the `cotal`
+  entry spawned a child that re-ran THAT file with `supervise`, `deliver` or `ext add` appended, which
+  the file does not read. A test fixture reaching `ensureControlPlane` therefore spawned a copy of
+  itself as its own manager, and the copy reached the same call and spawned the next: 970 detached
+  generations over 4.7 hours on a persistent host, each holding a nats-server and a delivery holder.
+  The guard cannot live in the test harness, because `startManagerDetached` unrefs its child on
+  purpose and nothing can adopt it.
+
+  `selfArgv()` now refuses unless the entry is the CLI's own composition root: `bin/cotal.ts` in a
+  source checkout, `dist/cotal.js` in an install, or a bare `cotal`, which is what `npm i -g` leaves
+  in `process.argv[1]` because it publishes the bin as a symlink. The refusal names the entry, says
+  what a child spawned from it would actually run, and names the remedy. It is a throw rather than a
+  skipped spawn: a re-exec that silently does not happen reports a healthy control plane over nothing.
+
+  The manager, delivery and auth starters now build that argv before they open the daemon logfile, so
+  a refused start leaves the mesh root exactly as it found it instead of creating a log and leaking
+  its descriptor.
+
+- 56afdaf: A seat is reported as not found only when every reachable manager instance answered for itself
+
+  `cotal stop`, `cotal attach` and `cotal input` locate a seat by asking every registered manager
+  instance which one hosts it, because a single manager answers `not-found` both for a seat it does
+  not host and for a name that exists nowhere. That search concluded absence from every instance the
+  scatter called reachable. An instance that answered with a REFUSAL is reachable, and it stated
+  nothing about which seats it hosts; an instance that never answered at all was left out of the
+  count entirely. So an incomplete search printed a definite negative that named the instance count,
+  which is the shape a reader believes: a seat that `cotal ps` listed as running the whole time was
+  reported as being on none of the reachable managers, and the same command with `--on <instance>`
+  succeeded first time.
+
+  Absence is now concluded only from instances that answered for themselves. When any registered
+  instance stayed silent or refused the read, the verbs report that the seat's location could not be
+  established, name those instances, and state that this is not a report that the seat is gone, so an
+  operator or a retry loop pins with `--on` instead of concluding the seat is already gone. A search
+  in which every instance answered still reports the seat as absent, unchanged.
+
+### Patch Changes
+
+- 5e23b1d: Keep the versioned rail's subject token out of source comments
+
+  The issued-profile census scans every shipped source for the versioned rail's subject token and
+  allows only core's subject and grant builders to spell it. Five comments in core, the CLI and the
+  runtime spelled the token and failed that cell on main. They now say "the versioned rail" or "the
+  versioned plane". No code changes.
+
+- 1112755: Give fresh setup defaults the run capability alongside spawn. Document workflow tool setup, credential refresh for existing personas, and supported authentication modes.
+- 504e78f: Observe before writing: no seed store rewrite during parse, validation or a dry run
+
+  `runCli` ran the connector-seeding boot gate before command lookup, flag parsing and the command
+  body, so a newer staged binary invoked as `cotal down --preserve-state --dry-run` against a live
+  older deployment rewrote the operator-global seed store, manifest and npm prefix to the new version
+  and only then printed the usage refusal for the unsupported flag combination. No service stopped,
+  yet the operator's next command from the older CLI failed on version skew: the machine was migrated
+  by a run that refused to do anything. A `--dry-run` invocation now skips the auto-reconcile, so a
+  run that promises to plan and print writes nothing, whether it goes on to render a plan or to
+  reject the invocation.
+
+  `executeUpdate` had the same shape one level down. `reconcileCurrent` ran `runSeed({force: true})`
+  before `reportRunningManager`, so `cotal update --self` rewrote the store before it had read whether
+  a manager was running or which mesh was the target; on a machine whose mesh predates this release's
+  authority stores the run then failed its running-manager continuity check with the store already
+  rewritten. The continuity check is a pure read of the running manager and the selected target, and
+  now runs first: a failed or legacy verdict refuses with the seed store untouched.
+
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes

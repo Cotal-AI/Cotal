@@ -35,6 +35,8 @@ export interface MeshTarget {
    *  the dangerous default, because a client with none still connects to a TLS broker and looks
    *  fine, while remaining downgradeable by a forged plaintext INFO. */
   tlsRequired: boolean;
+  /** Required session behavior from the selected registration. */
+  policy?: MeshEntry["policy"];
   /** Trust material, for a STATIC-auth mesh only — undefined for open AND for user mode (a
    *  user-mode root may still hold `auth.json` on disk; deliberately not loaded here so no caller
    *  can drift into minting static creds for a user-auth space). */
@@ -244,6 +246,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     space: m.space,
     mode: m.mode,
     tlsRequired: m.tlsRequired === true,
+    ...(m.policy ? { policy: m.policy } : {}),
     auth,
     ...(userAuth ? { userAuth } : {}),
     ...(m.origin ? { origin: m.origin } : {}),

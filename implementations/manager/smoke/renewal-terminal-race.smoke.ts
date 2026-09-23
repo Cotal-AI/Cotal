@@ -259,7 +259,7 @@ try {
   for (const scenario of SCENARIOS) {
     const { name } = scenario;
     console.log(`\n${name}: ${scenario.renewal} renewal then ${scenario.terminal}`);
-    const spawned = await mgr.startAgent({ name, agent: "smoke-race" });
+    const spawned = await mgr.startAgent({ name, agent: "smoke-race", events: false });
     check(`${name}: spawn succeeds`, spawned.ok, spawned);
     const agent = M.agents.get(name);
     check(`${name}: the spawned lifecycle is managed`, agent !== undefined);

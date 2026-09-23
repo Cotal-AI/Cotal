@@ -22,9 +22,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, jetstream } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
-  replayRunJournal, openRecordsBucket, readRunRecord,
+  replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
@@ -80,6 +81,17 @@ const asOperator = async <T>(runId: string, use: (planes: { nc: Awaited<ReturnTy
 const record = (runId: string) => asOperator(runId, async ({ nc }) => readRunRecord(await openRecordsBucket(nc, SPACE), EP, runId));
 const journal = (runId: string) => asOperator(runId, async ({ nc, takeoverId }) =>
   replayRunJournal(jetstream(nc), await jetstreamManager(nc), SPACE, runId, takeoverId));
+/** A revocation marker written RAW, under the same one-shot `run-admitter` profile `revoke` mints.
+ *  The exported writer validates what it writes, so a marker the reader cannot read has to be
+ *  created past it. The marker key is create-only and never removed (SPEC 14.8), so it stays. */
+const writeMarker = async (runId: string, value: unknown): Promise<void> => {
+  const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId } });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const kv = await new Kvm(nc).open(admissionBucket(SPACE));
+    await kv.create(revocationKey(EP, runId), new TextEncoder().encode(JSON.stringify(value)));
+  } finally { await nc.drain().catch(() => {}); }
+};
 // The registered mesh the command resolves: this space's trust material under a scratch root.
 const root = mkdtempSync(join(tmpdir(), "cotal-wfjcmd-root-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
@@ -91,9 +103,20 @@ const LOGS: string[] = [];
 const origLog = console.log;
 console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
 const captured = () => LOGS.join("\n");
-const reset = () => { LOGS.length = 0; process.exitCode = undefined; };
+/** What a command wrote to stderr, captured only while `withStderr` runs it, so the suite's own
+ *  `✗ FAIL` lines keep reaching the terminal. */
+const ERRS: string[] = [];
+const withStderr = async <T>(run: () => Promise<T>): Promise<T> => {
+  const origError = console.error;
+  console.error = (...a: unknown[]) => { ERRS.push(a.map(String).join(" ")); };
+  try { return await run(); } finally { console.error = origError; }
+};
+const reset = () => { LOGS.length = 0; ERRS.length = 0; process.exitCode = undefined; };
 /** The minted id, read from the `starting run <id>` line exactly as an operator would. */
 const startedId = () => /starting run (run-[0-9a-f]+) on endpoint/.exec(captured())?.[1];
+/** One run's `ps` row, and its STATE column read the way `awk '{print $3}'` reads it. */
+const psRow = (runId: string) => captured().split("\n").find((l) => l.startsWith(runId)) ?? "";
+const stateOf = (row: string) => row.split(/\s+/)[2];
 
 /** One command invocation, as the dispatcher would hand it over. A local start is admitted under
  *  the ceiling the operator names (SPEC 14.8); these programs touch no channel, so it is `none`. */
@@ -106,6 +129,26 @@ const CHECKPOINT = join(sd, "checkpoint.cotal.js");
 writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
 const ASKING = join(sd, "asking.cotal.js");
 writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = await ask(a, { name: "size", schema: { estimate: "number" } });\nlog("estimate", v.estimate);\n');
+
+/** Start the checkpoint program and wait for its pause to open, so the run's record genuinely reads
+ *  `running` while a cell reads it. The drive comes back unsettled: the caller answers it. */
+const holdAtCheckpoint = async (): Promise<{ rid: string; open: boolean; driven: Promise<unknown> }> => {
+  const driven = wf(["start"], { file: CHECKPOINT }).catch(() => undefined);
+  let R: string | undefined;
+  for (let i = 0; i < 100 && R === undefined; i += 1) { await wait(50); R = startedId(); }
+  const rid = R ?? "";
+  let open = false;
+  for (let i = 0; i < 100 && !open; i += 1) {
+    await wait(200);
+    const back = await journal(rid).catch(() => undefined);
+    for (const r of back?.records ?? []) {
+      if (r.record.kind !== "step") continue;
+      const e = r.record.entry as JournalEntry;
+      if (e.kind === "checkpoint" && e.state === "pending") open = true;
+    }
+  }
+  return { rid, open, driven };
+};
 
 // ── 1) start: a pure program completes through the command, under a minted id ────────────────
 let P = "";
@@ -324,9 +367,117 @@ let P = "";
   c("and the concurrent drives did drive: activations advanced past the original", tokens.length > 2, tokens);
 }
 
+// ── 9) revoke: the table learns what the admission store already knows ───────────────────────
+//
+// A revocation is a create-only marker in the admission store, and nothing rewrites the run record
+// (SPEC 14.8). The record is written only by a driver, so a driver that dies mid-run leaves
+// `running` behind with nothing left to write anything else. `resume` reads the marker and
+// refuses; the table read the record alone and listed a revoked run as live for as long as it
+// existed, which an operator counting capacity from it counts as capacity.
+//
+// Driven against a run that is genuinely mid-flight rather than a completed one: the checkpoint
+// program holds it open, so the record really does say `running` while these cells read it, and
+// the control below is a live `running` row rather than an arranged one.
+{
+  reset();
+  const { rid, open: openPause, driven } = await holdAtCheckpoint();
+  c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
+
+  // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
+  // table, one read before the marker exists.
+  reset();
+  await wf(["ps"]);
+  const before = captured().split("\n").find((l) => l.startsWith(rid)) ?? "";
+  c("ps prints running for the run before it is revoked", before.includes("running"), before);
+
+  reset();
+  await wf(["revoke", rid], { by: "smoke-operator", reason: "broker outage" });
+  c("revoke acknowledges with the revoker and the reason",
+    captured().includes("revoked by smoke-operator (broker outage)"), captured());
+  c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
+    captured().includes(`run ps now lists ${rid} as revoked`), captured());
+
+  reset();
+  await wf(["ps"]);
+  const after = captured().split("\n").find((l) => l.startsWith(rid)) ?? "";
+  c("ps prints revoked for it afterwards, whatever the record says",
+    after.includes("revoked") && !after.includes("running"), after);
+  c("...with the revoker and the reason under the table, since the columns carry neither",
+    captured().includes(`${EP}/${rid}: revoked by smoke-operator (broker outage)`), captured());
+  // THE CONTROL for block 10's exit status: every marker on this table was read, so the listing is
+  // complete and the command leaves the exit code alone.
+  c("a listing whose every marker was read leaves the exit code alone", process.exitCode === undefined, process.exitCode);
+
+  // NO TERMINAL FACT. A revoke must not make a run `failed` or `released`: no host drove it there,
+  // the journal owns the facts, and the change above is display.
+  const revokedRec = await record(rid);
+  c("and the run record is untouched, so no host is credited with an outcome it never wrote",
+    revokedRec?.status?.value.state === "running", revokedRec?.status?.value.state);
+
+  // Settle the held driver so the suite leaves no drive behind it. Bounded, and its result is not
+  // a cell: what a revoked run's answer does is decided at the effect, and is graded elsewhere.
+  await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
+  await Promise.race([driven, wait(15_000)]);
+}
+
+// ── 10) a marker ps could not read: the STATE column says so, and so does the exit status ─────
+//
+// A marker this command cannot read says nothing about whether the run was revoked. A row that
+// keeps the record's own word and exits 0 hands `awk '{print $3}'` the `running` #1621 was filed
+// about for a held run, and `grep running` counts that run as live, with the caveat on a line
+// neither reader looks at.
+//
+// The marker is written raw once and kept by the store: a version this reader does not know,
+// which is what a newer revoker leaves, on a run held open so its record reads `running`.
+{
+  reset();
+  const held = await holdAtCheckpoint();
+  const uid = held.rid;
+  const heldRec = await record(uid);
+  c("the run with an unreadable marker is open and held, so its record reads running",
+    held.open && uid !== "" && heldRec?.status?.value.state === "running", heldRec?.status?.value.state);
+  await writeMarker(uid, { version: 2, runId: uid, reason: "from a newer revoker", by: "smoke-operator", revokedAt: Date.now() });
+
+  reset();
+  const listed = await withStderr(() => wf(["ps"])).then(() => undefined, (e: Error) => e);
+  const row = psRow(uid);
+  c("ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
+    stateOf(row) === "unchecked" && !row.includes("running"), row);
+  c("...and no stdout line names that run beside running, so `grep running` does not count it as live",
+    !captured().split("\n").some((l) => l.includes(uid) && l.includes("running")), captured());
+  c("...gives the failed read and the record's own state on stderr",
+    ERRS.includes(`${EP}/${uid}: revocation marker could not be read (run revocation is malformed); its record reads running`), ERRS);
+  c("...still lists every other run, so one unreadable marker hides nothing",
+    listed === undefined && stateOf(psRow(P)) === "completed", listed ?? psRow(P));
+  c("...and exits 1, because the listing is incomplete", process.exitCode === 1, process.exitCode);
+
+  // Settle the held driver, bounded, as block 9 does; its outcome is not this block's claim.
+  await wf(["answer", uid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
+  await Promise.race([held.driven, wait(15_000)]);
+}
+
+// ── 11) a revoke that names nobody and no reason is refused before it writes ─────────────────
+//
+// The argument parser hands `--by ""` and `--reason ""` through as empty strings, and a marker
+// written from them renders as `revoked by  ()`. The marker is permanent, so the refusal belongs
+// at the writer, before the create.
+{
+  reset();
+  await wf(["start"], { file: PURE });
+  const eid = startedId() ?? "";
+  const refused = await wf(["revoke", eid], { by: "", reason: "" }).then(() => undefined, (e: Error) => e);
+  c("revoke refuses an empty --by and --reason",
+    eid !== "" && refused !== undefined && refused.message.includes("by and reason must be non-empty"), refused?.message ?? captured());
+
+  reset();
+  await withStderr(() => wf(["ps"])).catch(() => undefined);
+  c("...and writes no marker, so ps lists that run by its record and never as `revoked by  ()`",
+    stateOf(psRow(eid)) === "completed" && !captured().includes(`${EP}/${eid}: revoked by`), captured());
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 29;
+const DECLARED = 45;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

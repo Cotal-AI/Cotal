@@ -436,7 +436,7 @@ try {
   console.log("B) user-mode spawn of the predecessor");
   manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("predecessor spawn ok", r1.ok === true, r1);
   const fp1 = await footprint();
   check("predecessor footprint exists (row + dm + dlv + acl)",
@@ -499,7 +499,7 @@ try {
   // the incidental numbered-name refusal that follows once the reservation releases.
   rmSync(join(root, "child-connected"), { force: true });
   const namesBeforeProbe = listNames();
-  const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   const probeDelta = listNames().filter((n) => !namesBeforeProbe.includes(n));
   check("BARRIER: the alias is not reassignable while the predecessor's cleanup is pending",
     !probeDelta.includes(AGENT), { probeReply: probe, probeDelta });
@@ -544,7 +544,7 @@ try {
   let r2: ControlReply | undefined;
   do {
     const before = listNames();
-    r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+    r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
     const delta = listNames().filter((n) => !before.includes(n));
     if (r2.ok === true && delta.includes(AGENT)) break;
     for (const n of delta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);

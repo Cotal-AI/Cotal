@@ -1,5 +1,84 @@
 # @cotal-ai/delivery
 
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 44cdcc2: Make the delivery daemon own its liveness record
+
+  `delivery.<space>.pid` was written only by the CLI launcher, so a daemon started by any other route,
+  a container entrypoint, systemd, or an operator running `cotal deliver --space <space>`, left
+  whatever was on disk untouched and every reader believed it. On a reporting mesh the record named a
+  pid that had been dead for four days while the daemon ran under a different one.
+
+  That is not only an under-report. `cotal down` decides what to stop from the same record, and
+  `mayBeRunning` is the guard that must fail closed so `cotal down nats` cannot take the broker away
+  from a live dependant. A record naming a dead pid satisfies that guard: it supplies the
+  proof-of-death the guard asks for, so a live delivery daemon reads as clear and the broker goes out
+  from under it.
+
+  The daemon now writes its own record and removes it, with the identity pin, when it exits. The write
+  happens once the single-flight shard lease is held, and not before: a daemon that loses that lease
+  refuses to bind and exits, so writing on entry would let a loser overwrite the live holder's record
+  on its way out. It is written before the Plane-3 bind so an operator can still stop a daemon whose
+  bind hangs; readiness is a separate fact the lease's own flag already carries.
+
+  Readers no longer believe a pid merely because it is alive. The delivery record's liveness gains the
+  `foreign` state the manager's already had, for the same reason: a record that outlived its daemon is
+  eventually re-pointed at an unrelated process by pid reuse, and `kill(pid, 0)` alone reports that
+  stranger as a healthy daemon forever. A live pid is trusted only once its command line has been read
+  and names the daemon, and `cotal down` never signals a live process that is provably not one.
+  Attribution only downgrades on proof, so a platform with no argv source, an unreadable process, or
+  one that exits during the read all behave exactly as before.
+
+- 840e641: Stop the delivery daemon from removing itself when the host is busy. The daemon is coupled to the broker and exits when the broker is gone, but it decided that from elapsed wall-clock time alone, and a clock cannot tell "the broker is gone" from "this process did not get scheduled". Under local CPU starvation the two are indistinguishable: the poll's interval does not fire, so the window ages with no probe having failed; and when a probe does run, a process that cannot get scheduled cannot complete a handshake, so a live server reads as a dead one. Plane-3 therefore went away exactly when load was highest, which is when messages queue up and operators are coordinating.
+
+  The exit predicate now depends only on evidence the daemon actually gathered. It measures the gap between consecutive firings of its own timer and credits the excess back as local scheduler lag rather than counting it against the broker; it counts probes that ran to completion and refused within the time the server was actually given, instead of time that merely passed; it reads its own still-open connection to that broker as positive evidence WITHIN the hard backstop, since a fresh handshake that cannot complete to an address it is currently connected to says nothing about the server, but that socket is cached client state that can stay open for minutes after a broker dies silently, so it defers nothing once the bound is reached; and a probe that rejects is recorded as an unanswered question rather than swallowed. On a starvation diagnosis the daemon reports degraded, keeps serving, and clears the state when the broker answers again.
+
+  Judging a probe needed two rules, because starvation reaches a probe in two shapes. The loud one is an answer so far past its own deadline that the deadline plainly was not enforced against the server, which is what the incident captured directly: a refusal at 2554ms against a 1000ms budget, with the broker answering immediately either side of it. The quiet one is the shape a busy host actually produces most of the time, and it is invisible to a clock: the process issues a connect, is taken off the CPU, and its deadline timer fires the instant it is scheduled again, so the elapsed time looks like an ordinary prompt timeout while the server was given a fraction of its second. Each probe therefore watches a short timer's own lateness for its duration and subtracts the time this process spent off the runqueue before the refusal is judged, because a refusal is only evidence about the server if the server had the time the deadline promised it.
+
+  That subtraction is bounded so it cannot become a blanket excuse. A dead port answers in about a millisecond, so it never reaches its budget at all and stays a plain negative however starved the host is. The two readings differ only in whether the answer beat the budget, which is what keeps "this host is busy" from turning into "no refusal counts".
+
+  The guarantees that made the exit worth having are unchanged. A genuinely dead broker still ends the daemon on the same window and just as fast, because a dead port refuses immediately and the daemon's own connection to it closes. The starvation credit is bounded by a hard backstop that is consulted first and cannot be deferred by any other signal, so the repair can never become a daemon that outlives its broker.
+
+  A failed lease renewal is likewise a question rather than a verdict now. The daemon re-reads the key: another daemon's row means it exits, a missing row is repaired by an atomic create that arbitrates on its own terms, and its own row means it carries on. What it does NOT do is keep serving while it works that out. Whether the process should live and whether it may serve are separate questions with different answers, and conflating them would replace an availability bug with a worse one: a compare-and-swap keeps one lease row, not one server, so a daemon still consuming the fan-out durable and answering `ctl.delivery` across that arbitration can share both with the replacement that just won the shard. It therefore unbinds fan-out, the inbox reader and both control responders BEFORE asking, withdraws its readiness claim while it is quiet, and re-arms only on proof, its own row on a re-read, or a won create. A broker that cannot be asked leaves it alive and silent, because not being able to ask is not permission to keep acting. Those quiet periods are recoverable under the daemon's own power: the evidence that ends them is the same evidence that proves they were unnecessary.
+
+  Two smaller defects were found while grading that path rather than by reading it. A re-acquired lease was never flipped back to ready, so a daemon that had recovered served correctly while every readiness waiter in the space timed out against a permanently not-ready row. And the ownership re-read reported the daemon's cached revision rather than the broker's, under a comment asserting the record carries none; it does, and a renew whose write landed with only its reply lost left that token permanently one behind, refusing every later compare-and-swap over a sequence the daemon had moved itself.
+
+  A daemon could not prove its own lease row was its own. The ownership test compared the row against the bare connection key while the endpoint rewrites the card id to its principal dot-form and stamps THAT, so the "this row is mine" answer was unreachable: a daemon re-reading after a failed renew did not recognise its own record, exited naming itself as the thief, and since that path drops the revision the release freed nothing. Comparing principals instead is also wrong, and the suite caught it where reading did not: the daemon's cred is a file every restart re-reads, so a replacement presents the SAME principal as the process it replaced, and a displaced daemon would read its successor's row as its own, keep serving a shard it had lost, and release the live holder's row on the way out. A row is now proven ours by holder AND a per-run incarnation, so a successor's row is never adopted.
+
+  An ordinary stop could strand the shard, with no starvation and no broker fault involved. The daemon creates its lease row early in start-up and used to register its signal handlers only after binding Plane-3, flipping the row ready, and awaiting the membership feed and timer writer. A stop signal in between took the default action: immediate death, no release, the row claiming the shard with no process behind it until the bucket TTL expired, after which the next `cotal up` was refused outright and the shard was unservable by anyone. This was previously masked by a readiness wait that did not name whose readiness it was waiting for; correcting that wait made `cotal up` return the instant the row appears, and exposed it. Handlers are now armed the statement after the shard becomes the daemon's, a start-up fault in the same window releases the shard while still reporting the error and a non-zero exit, and shutdown releases against the broker's revision rather than the token the process happened to be holding, which a readiness write is enough to leave one step behind.
+
+  `smoke:delivery-broker-coupling` was carried as untriaged debt and was grading nothing. It spawned the daemon without a `$SYS` observer cred and from a working directory whose root walk climbed out of the repo, so the daemon refused during startup, and that refusal satisfied the suite's own "exits when the broker is gone" assertion. It is now provisioned, pinned to a scratch workspace, required to name the reason it exited rather than merely to exit, and gated in CI.
+
+### Patch Changes
+
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes
