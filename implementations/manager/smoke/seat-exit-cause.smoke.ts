@@ -116,12 +116,14 @@ function capture(fn: () => void): string[] {
 }
 
 /** Same instrument across an await: the stop doors free the slot on a microtask after the door's
- *  own `await`s, so a sync capture closes before the line prints. */
+ *  own `await`s, so a sync capture closes before the line prints. Its swallow is spelled
+ *  differently from `capture`'s on purpose: the mutation control anchors that original line, and
+ *  a second copy would make this anchor non-unique. */
 async function captureAsync<T>(fn: () => Promise<T>): Promise<{ lines: string[]; ret: T }> {
   const real = console.error;
   const lines: string[] = [];
-  // same swallow as `capture`, on its own line so each half of the instrument is addressable
-  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  const swallow = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  console.error = swallow;
   let ret!: T;
   try { ret = await fn(); } finally { console.error = real; }
   return { lines, ret };
