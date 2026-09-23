@@ -95,6 +95,19 @@ export const WAL_REAPED = "opencode-wal-reaped";
  *  This is the token the reaping cell grades, because the lifetime is the claim and the deletion is
  *  only the easy half of it. */
 export const WAL_KEPT = "opencode-wal-kept";
+export async function verifyServerModel(serverUrl: string, serverAuth: string, selectedModel: string): Promise<void> {
+  const response = await fetch(`${serverUrl}/provider`, {
+    headers: { authorization: serverAuth },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`opencode connector: server /provider returned HTTP ${response.status} while checking model ${selectedModel}`);
+  const listing = await response.json() as { all?: Array<{ id?: string; models?: Record<string, unknown> }> };
+  const slash = selectedModel.indexOf("/");
+  const provider = selectedModel.slice(0, slash);
+  const model = selectedModel.slice(slash + 1);
+  if (slash < 1 || !model || !listing.all?.some((entry) => entry.id === provider && Object.hasOwn(entry.models ?? {}, model)))
+    throw new Error(`${selectedModel}: CLI opencode models --pure --verbose may list it; server /provider does not. Refusing before join`);
+}
 /**
  * How long one swap step may hold the chain, or a teardown may hold the process, before it is
  * abandoned out loud rather than waited on forever.
@@ -143,8 +156,21 @@ export const cotal: Plugin = async () => {
   if (!serverUrl || !serverPassword) throw new Error("opencode connector: missing COTAL_OPENCODE_SERVER_URL/OPENCODE_SERVER_PASSWORD");
   const serverAuth = `Basic ${Buffer.from(`${serverUsername}:${serverPassword}`).toString("base64")}`;
 
+  const selectedModel = process.env.COTAL_MODEL?.trim();
+  const modelReady = (async () => {
+    if (!selectedModel) return;
+    await verifyServerModel(serverUrl, serverAuth, selectedModel);
+  })();
+
   const agent = new MeshAgent(config);
-  agent.start(); // background connect with retry — never blocks startup
+  // OpenCode lazily loads plugins while answering /provider. Awaiting that request in this
+  // plugin's initializer would deadlock the server. Return hooks first, but do not join or
+  // create a session until the server has answered. This is a managed serve process: on a
+  // refusal, exit it so the shim reports the failure instead of waiting for a handshake.
+  void modelReady.then(() => agent.start(), (error: Error) => {
+    log(error.message);
+    process.exit(1);
+  });
 
   /**
    * Publishes this session's activity as AG-UI events on `events.<owner>.<actor>`, iff COTAL_EVENTS
@@ -795,6 +821,7 @@ export const cotal: Plugin = async () => {
    *  can't be picked. Awaited by ensureSession before the first drive. */
   const sessionReady: Promise<string | undefined> = (async () => {
     try {
+      await modelReady;
       const res = await opencodeApi<{ id?: string }>("/session", {
         method: "POST",
         body: JSON.stringify({ title: `cotal:${config.space}:${config.name}` }),

@@ -71,6 +71,14 @@
   ],
   "mutations": [
     {
+      "name": "server model readiness gate is skipped, so a catalog-only model boots a session",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "  if (slash < 1 || !model || !listing.all?.some((entry) => entry.id === provider && Object.hasOwn(entry.models ?? {}, model)))\n",
+      "replace": "  if (false)\n",
+      "expectRed": "catalog/server model mismatch refuses before mesh join",
+      "cell": "catalog/server model mismatch refuses before mesh join"
+    },
+    {
       "name": "the boot drive is dropped, so the prompt is carried over the env and then never submitted",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    await drive();\n",
