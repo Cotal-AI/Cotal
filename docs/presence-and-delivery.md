@@ -32,6 +32,11 @@ window, the honest output is that the *view* is stale, not that every peer died 
 `activity` string rides along ("what I'm doing right now"), and a peer's **attention**
 preference is mirrored here too (below). Each instance writes *only its own* key; presence
 is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
+The optional `condition` beside status relays a harness-reported cause such as `rate_limit`,
+`approval`, or `input`; missing means the harness reported none. A condition is cleared when a
+normal next turn starts. The optional `environment` is an opaque provider reference. Core publishes
+it and never interprets it. Readers reject a row whose `card.id` does not match its KV key and report
+that rejection through the recoverable warning path.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
@@ -41,6 +46,16 @@ and `stale` means the watch has been silent past its liveness window. Both unsaf
 `fresh: false`, so an older consumer degrades instead of treating a partial reconnect refill as a
 complete roster. `waitForPresenceSnapshot()` returns `snapshot` or `timeout`; a timeout is a bounded
 give-up, not proof that the snapshot completed.
+
+A stale view under a live connection is not left to stand. The endpoint rebinds its presence watch
+from the bucket's current state once per liveness window and reports the rebind as a `warning`
+naming the silent interval; a held link's rebind fails or stays silent and the view stays stale. A
+rebind that is still awaiting the broker when the endpoint stops or rebuilds its connection installs
+nothing. A rebind that lands on a bucket with no keys is current knowledge for an observer that
+does not register (nobody is present), and a wipe for one that does (its own key is missing too):
+the latter re-publishes itself and lets the delivery of that record make the view current.
+`cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
+manager reports a view that is not `current` ([cli.md](cli.md)).
 
 ## Three delivery modes
 

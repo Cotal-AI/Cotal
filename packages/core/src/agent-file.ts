@@ -113,10 +113,20 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
   return doc as Record<string, unknown>;
 }
 
+/** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
+const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+
+/** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
+export const PROMPT_FRONTMATTER = "prompt-frontmatter";
+
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). */
 export function loadAgentFile(path: string): AgentDef {
-  const src = readFileSync(path, "utf8");
-  const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(src);
+  return parseAgentFileSource(readFileSync(path, "utf8"), path);
+}
+
+/** Parse an agent-file document already in memory. `path` is only for error text. */
+export function parseAgentFileSource(src: string, path: string): AgentDef {
+  const m = AGENT_FILE_FENCE.exec(src);
   if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
@@ -285,6 +295,96 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   const body = def.persona ? `${def.persona.trim()}\n` : "";
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `---\n${frontmatter}\n---\n\n${body}`);
+}
+
+/** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
+export type WirePersonaArgs = {
+  name: string;
+  owner: string;
+  prompt: string;
+  model?: string;
+  role?: string;
+  agent?: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+};
+
+/**
+ * Split a `cotal_persona` prompt that is already a complete agent file into one frontmatter
+ * block plus body. A prompt that does not start with `---` is prose. A prompt that starts with
+ * `---` but is not a closed, valid block fails with {@link PROMPT_FRONTMATTER} rather than being
+ * wrapped. The tool `name` wins over any `name:` inside the prompt.
+ */
+export function parseLeadingPromptFrontmatter(prompt: string, fallbackName: string): { body: string; def?: AgentDef } {
+  if (!prompt.startsWith("---")) return { body: prompt };
+  const m = AGENT_FILE_FENCE.exec(prompt);
+  if (!m) throw new Error(`${PROMPT_FRONTMATTER}: prompt starts with --- but is not a closed YAML frontmatter block`);
+  let fm = m[1] ?? "";
+  const rest = m[2] ?? "";
+  if (!/^\s*name\s*:/m.test(fm)) fm = `name: ${fallbackName}\n${fm}`;
+  try {
+    const def = parseAgentFileSource(`---\n${fm}\n---\n${rest}`, "<prompt>");
+    def.name = fallbackName;
+    return { body: rest.trim(), def };
+  } catch (e) {
+    const detail = (e as Error).message;
+    if (detail.startsWith(`${PROMPT_FRONTMATTER}:`)) throw e;
+    throw new Error(`${PROMPT_FRONTMATTER}: ${detail}`);
+  }
+}
+
+function dropWireDefaultIfScoped(def: AgentDef): void {
+  if (def.meta?.scope_source === "wire-default" && def.subscribe?.length) {
+    const { scope_source: _dropped, ...rest } = def.meta;
+    def.meta = Object.keys(rest).length ? rest : undefined;
+  }
+}
+
+/**
+ * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
+ * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
+ * `capabilities` and `owner` from the prompt never do. The result is always one frontmatter block
+ * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
+ * file's policy is preserved) except where an explicit tool argument names a field.
+ */
+export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): AgentDef {
+  const parsed = parseLeadingPromptFrontmatter(args.prompt, args.name);
+  const fromPrompt = parsed.def;
+  if (existing) {
+    const def: AgentDef = { ...existing };
+    if (args.model !== undefined) def.model = args.model;
+    if (args.role !== undefined) def.role = args.role;
+    if (args.agent !== undefined) def.agent = args.agent;
+    if (args.subscribe !== undefined) def.subscribe = args.subscribe;
+    if (args.allowSubscribe !== undefined) def.allowSubscribe = args.allowSubscribe;
+    if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
+    def.persona = parsed.body;
+    dropWireDefaultIfScoped(def);
+    return def;
+  }
+  const authored = fromPrompt !== undefined || args.subscribe !== undefined;
+  const subscribe = args.subscribe ?? fromPrompt?.subscribe ?? [];
+  const def: AgentDef = {
+    name: args.name,
+    owner: args.owner,
+    persona: parsed.body,
+    model: args.model ?? fromPrompt?.model,
+    role: args.role ?? fromPrompt?.role,
+    agent: args.agent ?? fromPrompt?.agent,
+    subscribe,
+    allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
+    allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
+    description: fromPrompt?.description,
+    tags: fromPrompt?.tags,
+    variant: fromPrompt?.variant,
+    quiet: fromPrompt?.quiet,
+    muted: fromPrompt?.muted,
+    launchOptions: fromPrompt?.launchOptions,
+    meta: authored ? fromPrompt?.meta : { scope_source: "wire-default" },
+  };
+  dropWireDefaultIfScoped(def);
+  return def;
 }
 
 /** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on

@@ -4,6 +4,7 @@ export {
   Manager,
   READINESS_TIMEOUT_MS,
   type ManagerOptions,
+  type ManagerStopOptions,
   type ManagerMaintenanceState,
   type ManagerResumeIdentity,
   type ManagerResumeAgent,

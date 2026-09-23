@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/transport-liveness-broker.smoke.ts"
+  ],
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:transport-liveness:broker",
+  "mutations": [
+    {
+      "name": "F1 the catch in publishPresence records unconditionally, so a put that outlives its epoch writes presence-refusal state belonging to a later connection: held across stop() it re-plants the record on the stopped endpoint, and held across a rebuild it plants one on the connection that replaced it (heartbeat 2s against a ~5s put timeout, so a rebuild finishing inside that window is the common case, not a corner). This suite imports @cotal-ai/core, which resolves to dist/, so the command builds core first and afterRestore rebuilds it: without that rebuild the tree keeps a dist/ compiled FROM THE MUTANT after the source is restored, and dist/ is gitignored so git cannot be the recovery.",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      const superseded = (this.presencePutSettled ?? 0) > generation;\n      this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);\n      if (epoch === this.presenceEpoch && !this.stopped && !superseded) {\n        this.presenceWriteFailingSince ??= Date.now();\n        this.lastPresenceWriteError = (e as Error)?.message ?? String(e);\n      }\n",
+      "replace": "      this.presenceWriteFailingSince ??= Date.now();\n      this.lastPresenceWriteError = (e as Error)?.message ?? String(e);\n",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a presence put that settles AFTER stop() does not resurrect the record on the stopped endpoint"
+    },
+    {
+      "name": "F2 the success arm in publishPresence clears the refusal record without the same-epoch settle ordering, so an earlier put that succeeds after a later put's rejection erases the refusal while the bucket still refuses writes. Heartbeats run every 2s against a ~5s JetStream put timeout, so two puts sharing one live epoch is the routine shape, not a corner: the record then says the bucket is healthy while the newest evidence says it refuses every write. Same dist/ note as F1: this suite imports @cotal-ai/core, which resolves to dist/, so the command builds core first and afterRestore rebuilds it after the source is restored.",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const superseded = (this.presencePutSettled ?? 0) > generation;\n    this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);\n    if (epoch !== this.presenceEpoch || this.stopped || superseded) return;\n",
+      "replace": "    if (epoch !== this.presenceEpoch || this.stopped) return;\n",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "an OLDER put succeeding late does not clear a newer same-epoch refusal record"
+    }
+  ]
+}

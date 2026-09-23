@@ -8,8 +8,8 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
-import { digest, requestId, stepKeyString, type KeyScope, type ScopeKind, type StepKey } from "./keys.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf, stackOf } from "./errors.js";
+import { digest, requestId, stepKeyString, type KeyScope, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { PRIMITIVES, type EffectKind } from "./primitives.js";
@@ -55,6 +55,51 @@ export interface EffectFrame {
 
 export function option(bag: unknown, key: string): unknown {
   return bag === null || typeof bag !== "object" ? undefined : (bag as Record<string, unknown>)[key];
+}
+
+/**
+ * Is this value a `spawn` placement: an `{ endpoint, instanceId }` pair of non-empty strings?
+ *
+ * THE VALUE, NOT THE BAG. {@link option} answers `undefined` when the BAG is null or is not an
+ * object, which is the right guard for a missing option bag and no guard at all on what the bag
+ * holds: `{ placement: null }` is a perfectly good object whose `placement` is `null`, and it
+ * came back as `null`, passed a `!== undefined` test, and was dereferenced.
+ *
+ * An array is refused along with every other non-record: `typeof [] === "object"`, so an array
+ * reaches `.endpoint` as `undefined` rather than as an error, and `["manager", "i1"]` is exactly
+ * the shape an author writes when they have guessed the pair is positional.
+ *
+ * Emptiness is part of the shape rather than a separate rule, and it matches what the runtime
+ * already refuses at mesh-handler (L4000, "must name both an endpoint and an instanceId"): an
+ * empty string names no instance, and a placement that names no instance cannot pin a seat.
+ */
+function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: string } {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.endpoint === "string" && r.endpoint.length > 0
+    && typeof r.instanceId === "string" && r.instanceId.length > 0;
+}
+
+/**
+ * How a malformed placement is named back to its author.
+ *
+ * `JSON.stringify` alone is not enough: it answers `undefined` for `undefined` and for a function,
+ * so the message would read "it was given undefined" for three different mistakes and would
+ * interpolate the literal word into the sentence. Each wrong shape is named as what it IS, and a
+ * record is shown with the keys it actually carried, because the commonest case is a pair with one
+ * half missing and the author needs to see which half.
+ */
+function describePlacement(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return `an array (${JSON.stringify(v)}); placement is a record, not a positional pair`;
+  if (typeof v === "function") return "a function";
+  if (typeof v !== "object") return `the ${typeof v} ${JSON.stringify(v) ?? String(v)}`;
+  const r = v as Record<string, unknown>;
+  const names = Object.keys(r);
+  const missing = ["endpoint", "instanceId"].filter((k) => typeof r[k] !== "string" || (r[k] as string).length === 0);
+  return names.length === 0
+    ? "an empty record, which names neither an endpoint nor an instanceId"
+    : `${JSON.stringify(r)}, which is missing ${missing.join(" and ")}`;
 }
 
 /**
@@ -292,10 +337,17 @@ export async function performEffect(
     const raised = (e as { code?: unknown } | null | undefined)?.code;
     const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
     const recorded = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-    const error: EntryError =
-      recorded !== undefined
+    // THE STACK IS THE ONLY FIELD THAT NAMES THE HOST CODE. A handler fault happens outside both the
+    // program and the language, so `message` alone ("timeout") is the symptom with no origin, and
+    // the durable entry is usually the only look anyone gets at it. Read defensively, by the same
+    // rule as `messageOf` one line up: a primitive throw carries no stack and none is recorded.
+    const stack = stackOf(e);
+    const error: EntryError = {
+      ...(recorded !== undefined
         ? recorded.error
-        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
+        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+      ...(stack !== undefined ? { stack } : {}),
+    };
     await host.journal.settle(key, { status: "failed", error }, endedAt);
     frame.clock.advance(endedAt);
     // THE CALLER AND THE RECORD SAY THE SAME THING. Rethrowing the handler's own error unchanged is
@@ -311,11 +363,243 @@ export async function performEffect(
 }
 
 /**
+ * `waitUntil`: the durable wait on something that is not a mesh event.
+ *
+ * IT DOES NOT GO THROUGH {@link performEffect}, and that is the whole point rather than an
+ * exemption. `performEffect` is built around a single dispatch whose outcome SETTLES the entry, and
+ * `lookup` serves a settled entry by handing `result` back with no handler call at all. Run a
+ * poll through that and the first observation becomes the step's answer forever: measured on this
+ * exact shape before this function existed, a run that observed `"pending"` once replayed
+ * `"pending"` on every later activation, for a resource that had since completed, and the handler
+ * was never called again. That is #1459's sharp half, and no amount of care inside a handler can
+ * reach it, because the handler is not invited.
+ *
+ * So the durable shape is different in one specific way: a NON-TERMINAL observation is appended to
+ * the entry with {@link Journal.observe} and the entry STAYS PENDING. `lookup` answers `pending`
+ * for it, which routes to the live path, so a resumed run OBSERVES AGAIN. Only the terminal
+ * observation settles, because only that one is an answer. Everything else about the entry is the
+ * ordinary contract: it begins before the first observation, it carries the request id a handler
+ * waits under, and the two failure domains stay separate.
+ *
+ * WHO OWNS WHAT. The program owns the probe and the predicate; the runtime owns the cadence and
+ * the deadline. A program that hand-rolled this with `sleep` in a loop owns all four, which is the
+ * duplication §6 complains about, and it still could not re-observe: its `sleep` and its poll are
+ * two settled steps, so the poll's recorded answer is replayed exactly as before.
+ */
+async function performWaitUntil(
+  host: EffectHost,
+  name: string,
+  hashedInput: unknown,
+  probe: (frame: EffectFrame) => Promise<unknown>,
+  terminal: ((frame: EffectFrame, observation: unknown) => Promise<unknown>) | undefined,
+  every: string,
+  deadline: string,
+  frame: Frame,
+): Promise<unknown> {
+  const key = frame.keys.nextEffect("waitUntil", name);
+  const inputHash = digest(hashedInput ?? null);
+  const verdict = host.journal.lookup(key, inputHash);
+
+  switch (verdict.verdict) {
+    // A SETTLED `waitUntil` replays like any other step, and it must: what settled it was the
+    // TERMINAL observation, which IS an answer, and re-observing a wait that already finished
+    // would re-ask a question the run has answered. Only the unfinished ones re-observe.
+    case "replay":
+      if (verdict.entry.endedAt !== undefined) frame.clock.advance(verdict.entry.endedAt);
+      return verdict.entry.result;
+    case "replay-failed": {
+      if (verdict.entry.endedAt !== undefined) frame.clock.advance(verdict.entry.endedAt);
+      const e = verdict.entry.error as EntryError;
+      throw new EffectError(e.code, e.kind, e.message, e.detail);
+    }
+    case "replay-cancelled":
+      throw new Cancelled("this branch was cancelled on the recorded run");
+    case "diverged":
+      throw new RunDivergence(stepKeyString(key), verdict.recordedHash, verdict.programHash);
+    case "refused":
+    case "pending":
+    case "miss":
+      break;
+  }
+
+  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? "cancelled");
+  const stop = host.options.shouldStop?.();
+  if (stop !== undefined) throw new RunReleased(stop);
+
+  host.effectCount += 1;
+  if (host.effectCount > host.ceiling) {
+    throw new RuntimeFault(
+      "L4009",
+      `this run has performed more than ${host.ceiling} effects, which means a loop is not terminating. Add an exit condition or a permit.`,
+    );
+  }
+
+  const recorded = verdict.verdict === "pending" ? verdict.entry : undefined;
+  const reqId = recorded?.requestId ?? requestId(host.options.runId, key, inputHash);
+  if (verdict.verdict === "miss" || verdict.verdict === "refused") {
+    await host.journal.begin(key, inputHash, host.options.handler.now(), reqId);
+    if (frame.signal.cancelled) {
+      await host.journal.settle(key, { status: "cancelled" }, host.options.handler.now());
+      throw new Cancelled(frame.signal.reason ?? "cancelled");
+    }
+  }
+
+  // THE DEADLINE IS ABSOLUTE AND IT IS READ BACK, never recomputed from a clock that has moved.
+  // Recomputing `now + deadline` on every activation is how an hour-long wait becomes immortal:
+  // each crash would hand it a fresh hour, and a run that should have given up at 11:00 goes on
+  // waiting forever, which is the same class of defect as the one this primitive fixes. The
+  // entry's own `startedAt` is the epoch, and it survives because the entry does.
+  const startedAt = host.journal.get(key)?.startedAt ?? host.options.handler.now();
+  const deadlineAt = startedAt + parseDuration(deadline);
+
+  let attempt = (recorded?.observations ?? []).length;
+  for (;;) {
+    const ctx: EffectContext = {
+      key,
+      signal: frame.signal,
+      requestId: reqId,
+      attempt,
+      ...(recorded?.external !== undefined ? { resume: recorded.external } : {}),
+      bind: async (external) => {
+        assertCrossable(external, `the binding of ${stepKeyString(key)}`);
+        await host.journal.bind(key, external);
+      },
+    };
+
+    // EACH OBSERVATION GETS ITS OWN KEY NAMESPACE, and this is the half of the fix that is easy
+    // to miss. The probe reaches the world by performing effects, and those effects allocate keys
+    // in the frame it runs in. Share one namespace across observations and observation 2's probe
+    // allocates the key observation 1's probe already settled: the journal answers `replay`, the
+    // probe is handed back the FIRST look's result, and the wait re-observes while its probe does
+    // not. The re-observation would be a ritual. A per-observation branch makes each look a
+    // namespace nothing has written to, so a resumed wait's next look runs live.
+    const observing = frame.branch("waitUntil", name, key.occurrence, String(attempt));
+
+    // THE CADENCE IS THE HANDLER'S, and the first observation skips it: a wait that sleeps before
+    // it has ever looked is a wait that cannot notice a predicate which already holds, and the
+    // canonical use ("are the checks done") is very often already true by the time the run asks.
+    // The request carries the cadence either way and `attempt` is what says to skip it, so the
+    // fact never has to go missing to be communicated.
+    let inTime: boolean;
+    try {
+      inTime = await host.options.handler.observe({ name, every, deadlineAt, deadline, attempt }, ctx);
+    } catch (e) {
+      const endedAt = host.options.handler.now();
+      if (e instanceof JournalAppendRejected) throw e;
+      // A refusal is not a failure here either: nothing was observed, so the entry settles
+      // `refused` and a capable host picks the wait up exactly where it stands, with the
+      // observations it has already made intact.
+      if (e instanceof EffectRefused) {
+        await host.journal.settle(
+          key,
+          { status: "refused", error: { code: e.code, kind: "refused", message: e.message } },
+          endedAt,
+        );
+        throw new RunHeld(stepKeyString(key), e.message);
+      }
+      if (e instanceof Cancelled) {
+        await host.journal.settle(key, { status: "cancelled" }, endedAt);
+        throw e;
+      }
+      const raised = (e as { code?: unknown } | null | undefined)?.code;
+      const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
+      const rec = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
+      // The same rule as the effect site above: the probe is other people's code too.
+      const stack = stackOf(e);
+      const error: EntryError = {
+        ...(rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+        ...(stack !== undefined ? { stack } : {}),
+      };
+      await host.journal.settle(key, { status: "failed", error }, endedAt);
+      frame.clock.advance(endedAt);
+      throw rec?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
+    }
+
+    if (!inTime) {
+      // THE DEADLINE, and it is CATCHABLE with its own code, exactly as `turn`'s L4003 is. A wait
+      // that gave up is a fact about the world the program asked about, so the program decides
+      // what to do next; it is not a fault of the run's. The failure settles the entry, carrying
+      // how many times it looked, because "I observed 60 times over an hour and it never held" is
+      // the sentence whoever reads this needs.
+      const endedAt = host.options.handler.now();
+      const looked = (host.journal.get(key)?.observations ?? []).length;
+      const error: EntryError = {
+        code: "L4023",
+        kind: "wait-until-deadline",
+        message:
+          `L4023 \`waitUntil\` deadline elapsed\n\n  step  ${stepKeyString(key)}   ${looked} observation${looked === 1 ? "" : "s"} over ${deadline}\n\n`
+          + `The predicate never held: every observation this wait made was non-terminal, and the deadline passed.\n\n`
+          + `Options\n  catch it: \`e.code === "L4023"\` and chase, escalate, or proceed degraded\n  raise \`deadline\`, or widen \`terminal\` if a state you meant to accept is being read as still-pending`,
+        detail: { observations: looked, deadline, every },
+      };
+      await host.journal.settle(key, { status: "failed", error }, endedAt);
+      frame.clock.advance(endedAt);
+      throw new EffectError(error.code, error.kind, error.message, error.detail);
+    }
+
+    // THE PROBE IS THE PROGRAM'S OWN CODE, called by the runtime. Its answer is refused here if it
+    // has no canonical form, with its own code: it is about to be journalled AND handed back to
+    // the program, so the two things a recorded value must be able to do are exactly what it
+    // cannot do. Blamed as L4024 rather than L3041 because nothing crossed a boundary at a CALL —
+    // a function the runtime invoked answered the wrong shape, and the repair differs.
+    const observation = await probe(observing);
+    try {
+      assertCrossable(observation, `the observation of ${stepKeyString(key)}`);
+    } catch (e) {
+      if (!(e instanceof NotCrossable)) throw e;
+      throw new RuntimeFault(
+        "L4024",
+        `this \`waitUntil\`'s probe answered with a value that cannot be recorded: ${e.message}. Every observation is journalled as history and handed to \`terminal\`, so it has to be data. Return what you read (a status string, a record of counts), not the object you read it from.`,
+      );
+    }
+
+    // THE PREDICATE IS THE PROGRAM'S TOO, and it decides the ONE thing the runtime cannot: whether
+    // this observation is an answer. Absent, any observation that is not `null` is terminal, which
+    // makes the no-predicate form mean "wait until there is something", and a probe that answers
+    // null while it waits is the idiom that shape serves.
+    const decided = terminal === undefined ? observation !== null : await terminal(observing, observation);
+    if (typeof decided !== "boolean") {
+      throw new RuntimeFault(
+        "L4024",
+        `this \`waitUntil\`'s \`terminal\` answered ${JSON.stringify(decided) ?? "undefined"} rather than true or false. It decides whether an observation ENDS the wait, so a value that is merely truthy is not enough: a predicate that accidentally returns a record would end every wait on its first look. Return a comparison.`,
+      );
+    }
+
+    const at = host.options.handler.now();
+    // The wait's own clock carries what its observations awaited: an observation is an effect this
+    // step performed, so the time it consumed is time this step consumed.
+    frame.clock.join([observing.clock]);
+    if (decided) {
+      // THE TERMINAL OBSERVATION IS THE ANSWER, so it settles, and it is recorded in BOTH places
+      // on purpose. `result` is what a later activation replays, which is correct now that the
+      // wait is over; `observations` keeps the whole history, so the record says how long the
+      // world took to get there rather than only where it ended up.
+      await host.journal.observe(key, observation, at);
+      await host.journal.settle(key, { status: "ok", result: deepFreeze(observation) }, at);
+      frame.clock.advance(at);
+      return observation;
+    }
+
+    // NOT AN ANSWER: recorded as HISTORY, and the entry stays PENDING. This single line is what
+    // #1459 asks for. A resume finds a pending entry, `lookup` answers `pending`, the live path
+    // runs, and the world is observed again — instead of the recorded "pending" being handed back
+    // as though it were still true.
+    await host.journal.observe(key, observation, at);
+    frame.clock.advance(at);
+    attempt += 1;
+  }
+}
+
+/**
  * Dispatch one non-scope primitive from evaluated argument VALUES: the crossability refusals, the
  * freeze on share, and the per-primitive hashed projection, ending in {@link performEffect}. The
  * scope-openers never come here: their branches must stay unevaluated.
+ *
+ * It takes a full {@link Frame} rather than an {@link EffectFrame} because `waitUntil` gives each
+ * observation its own key namespace, which needs `branch`. Both engines already pass a real frame;
+ * declaring what is actually required is what keeps that a checked fact rather than a cast.
  */
-export async function dispatchPrimitive(host: EffectHost, name: string, args: unknown[], frame: EffectFrame): Promise<unknown> {
+export async function dispatchPrimitive(host: EffectHost, name: string, args: unknown[], frame: Frame): Promise<unknown> {
   const spec = PRIMITIVES[name];
   if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
   // Every argument crosses the effect boundary: it is hashed, recorded, or handed to the handler,
@@ -323,8 +607,27 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
   // written, with the argument named: `undefined`, a non-finite number and an opaque object are
   // L3041, a function is L3042. The result of the effect is held to the same rule in
   // {@link Interpreter.performEffect}.
+  //
+  // THE PROBE IS THE ONE EXEMPTION, and it is an exemption from the RULE'S PREMISE rather than a
+  // hole in the rule. The premise is "this value crosses to a handler or a journal", and a probe
+  // does neither: it is program code the INTERPRETER calls, in the program's own compartment, and
+  // what crosses is the observation it returns, which is held to the full rule at every
+  // observation. A `fanOut`'s branch function is the same shape and avoids this loop only because
+  // a scope-opener never reaches it. Driven by `probeAt` from the table, so a second primitive
+  // taking a probe cannot arrive with the exemption silently missing or silently wrong.
   args.forEach((arg, i) => {
+    if (spec.probeAt === i) return;
     try {
+      // A bag holding a declared function option is checked KEY BY KEY, so every other key in it
+      // still answers to the rule whole: exempting the bag wholesale would let a stray function
+      // anywhere inside it through, which is the loophole rather than the exemption.
+      if (i === spec.optionsAt && spec.functionOptions !== undefined && arg !== null && typeof arg === "object") {
+        for (const [k, v] of Object.entries(arg as Record<string, unknown>)) {
+          if (spec.functionOptions.includes(k)) continue;
+          assertCrossable(v, `\`${k}\` of \`${name}\``);
+        }
+        return;
+      }
       assertCrossable(arg, `argument ${i + 1} of \`${name}\``);
     } catch (e) {
       if (e instanceof NotCrossable) throw new RuntimeFault(e.why === "function" ? "L3042" : "L3041", e.message);
@@ -358,6 +661,32 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           `spawn names no persona: its first argument is ${JSON.stringify(spawnSubject) ?? "undefined"}, and a spawn takes a persona name or a record carrying one`,
         );
       const persona = named;
+      // PLACEMENT IS VALIDATED HERE, BEFORE ANYTHING READS INTO IT.
+      //
+      // `option()` guards the BAG being null, not the VALUE, so `option(bag, "placement")` answers
+      // `null` for `placement: null` and the `!== undefined` test below FORWARDS it. The identity
+      // projection further down then reads `req.placement.endpoint`, and that is a raw `TypeError`
+      // out of the interpreter: no code, no effect kind, no journal entry, and a stack trace handed
+      // to an author where the runtime's own named refusal (mesh-handler's L4000 "placement must
+      // name both an endpoint and an instanceId") was written to speak. The runtime's refusal is
+      // correct and stays; it simply never ran, because the value died one layer earlier.
+      //
+      // ALL FOUR MALFORMED SHAPES ARE REFUSED, not just the one that crashed. A primitive, an empty
+      // record and a half-filled record did NOT throw: they projected `endpoint: undefined,
+      // instanceId: undefined` into the step identity and travelled on. That is the worse half of
+      // the defect — `undefined` has no canonical form (§4.4), so what got hashed was a placement
+      // the program never named, and the crash at least stopped. Refusing the shape rather than the
+      // null is what makes the hash mean the target again.
+      //
+      // It is a call-shape refusal (L3xxx) and it is raised BEFORE the step key is minted, so a
+      // malformed placement writes nothing to the journal: there is no entry to replay, and the
+      // fix is an edit to the program rather than a migration.
+      const placementValue = option(bag, "placement");
+      if (placementValue !== undefined && !isPlacementPair(placementValue))
+        throw new RuntimeFault(
+          "L3048",
+          `spawn(${persona}) placement must name BOTH an endpoint and an instanceId, each a non-empty string: it was given ${describePlacement(placementValue)}. A host-local seat is pinned to one manager instance, and the target is hashed into this step's identity, so a half-named target would record a placement the program never asked for. Pass placement: { endpoint: "manager", instanceId: "<the instance's id>" }.`,
+        );
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
       // Every accepted option is forwarded, including the three that are policy rather than
@@ -369,6 +698,11 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         persona,
         ...(model !== undefined ? { model } : {}),
         ...(variant !== undefined ? { variant } : {}),
+        ...(option(bag, "cwd") !== undefined ? { cwd: option(bag, "cwd") as string } : {}),
+        // The VALIDATED value, not a second `option()` read cast into the pair type. The cast was
+        // the whole defect: it asserted the shape the projection then relied on, and TypeScript
+        // erases at run time, so the assertion was a comment that looked like a check.
+        ...(placementValue !== undefined ? { placement: placementValue } : {}),
         ...(option(bag, "worktree") !== undefined ? { worktree: option(bag, "worktree") as string } : {}),
         ...(option(bag, "role") !== undefined ? { role: option(bag, "role") as string } : {}),
         ...(option(bag, "join") !== undefined ? { join: option(bag, "join") as ChannelHandleValue[] } : {}),
@@ -390,6 +724,23 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           persona,
           model: model ?? null,
           variant: variant ?? null,
+          // #1616 item 3, identity half: placement and `cwd` are hashed WHEN PRESENT and contribute
+          // NO KEY AT ALL when omitted, which is the same rule `req` above already follows. The
+          // first cut of this wrote `cwd: req.cwd ?? null` and `placement: ... ?? null`
+          // unconditionally, and that is a REPLAY COMPATIBILITY BREAK, not a cosmetic difference: a
+          // legacy spawn that never mentioned either option hashed a six-key object, and hashing an
+          // eight-key object carrying two nulls it never had changes its `inputHash` — so every
+          // recorded pre-#1616 spawn step diverges on resume. `digest` canonicalizes (RFC 8785), so
+          // the key SET is what the hash is over and a present-but-null key is a different set.
+          //
+          // Absent contributes nothing; PRESENT IS HASHED. Not hashing placement at all would also
+          // restore the legacy hash, and would be wrong for the other direction: replaying a step
+          // against a different manager instance must DIVERGE as a migration rather than silently
+          // reuse the resolution that was taken against the old instance.
+          ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
+          ...(req.placement !== undefined
+            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }
+            : {}),
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
@@ -578,6 +929,77 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         frame,
       );
     }
+    case "waitUntil": {
+      // THE PROBE IS A FUNCTION, so it is the one primitive argument that does NOT cross the
+      // effect boundary as data: it is program code the runtime calls, repeatedly, and the
+      // crossability loop above has already refused every other argument. It is validated
+      // statically (L3045) and again here, because a computed callee is only knowable now.
+      const probeArg = args[0];
+      if (typeof probeArg !== "function") {
+        throw new RuntimeFault(
+          "L3045",
+          `\`waitUntil\` takes a PROBE as its first argument: a function the runtime calls on its own cadence to observe something outside the run. It was given ${JSON.stringify(probeArg) ?? "undefined"}. Pass a function: waitUntil(() => checks(sha), { name: "checks", every: "1m", deadline: "1h" }).`,
+        );
+      }
+      const every = option(bag, "every") as string | undefined;
+      const deadline = option(bag, "deadline") as string | undefined;
+      // BOTH ARE REQUIRED, and neither gets a default. A default cadence is a guess about how
+      // expensive someone else's resource is to poll, and a default deadline is a wait that hangs
+      // a run forever on a resource that never arrives. The validator refuses this statically too;
+      // this is the computed-bag case it cannot see.
+      if (every === undefined || deadline === undefined) {
+        throw new RuntimeFault(
+          "L3046",
+          `\`waitUntil\` needs both \`every\` (how often to observe) and \`deadline\` (when to give up)${every === undefined ? ", and \`every\` is missing" : ""}${deadline === undefined ? ", and \`deadline\` is missing" : ""}. Neither has a default: a default cadence guesses how expensive someone else's resource is to poll, and a default deadline is a run that waits forever.`,
+        );
+      }
+      // Fail at the CALL rather than inside the wait, exactly as `sleep` does with its duration:
+      // a malformed cadence discovered an hour in is a wait that was never going to work.
+      const everyMs = parseDuration(every);
+      const deadlineMs = parseDuration(deadline);
+      // ZERO IS REFUSED BEFORE THE COMPARISON, because `0 > deadline` is false and a bare ordering
+      // test therefore ACCEPTS the one cadence that is not a cadence at all. A wait that pauses for
+      // nothing between looks is a busy loop against a resource the run does not own, and every
+      // turn of it appends to a journal that is rewritten whole. This is the computed-bag case the
+      // validator cannot see.
+      if (everyMs <= 0) {
+        throw new RuntimeFault(
+          "L3047",
+          `this \`waitUntil\` observes every ${every}, which is no pause at all: it would poll the resource as fast as the run can turn and journal an observation each time. Give \`every\` a real interval, the slowest one that still notices in time.`,
+        );
+      }
+      if (everyMs > deadlineMs) {
+        throw new RuntimeFault(
+          "L3047",
+          `this \`waitUntil\` observes every ${every} but gives up after ${deadline}, so it would make its first observation and then fail without ever looking again. Either shorten \`every\` below \`deadline\`, or use \`sleep\` then a single check if one look is what you meant.`,
+        );
+      }
+      const terminalArg = option(bag, "terminal");
+      if (terminalArg !== undefined && typeof terminalArg !== "function") {
+        throw new RuntimeFault(
+          "L3045",
+          `\`waitUntil\`'s \`terminal\` decides whether an observation ENDS the wait, so it must be a function; it was given ${JSON.stringify(terminalArg)}. Pass a predicate: terminal: (o) => o.state !== "pending".`,
+        );
+      }
+      // BOTH are called in the WALKER's convention, `(frame, args)`, which is what the engine
+      // adapts its own closures into as well. Calling them any other way would hand a program
+      // function the frame as its first real argument. The frame handed over is the OBSERVATION's,
+      // not this call's: the probe's own effects belong to the look that made them.
+      const call = (fn: unknown, f: EffectFrame, xs: unknown[]) =>
+        (fn as (f: EffectFrame, a: unknown[]) => Promise<unknown>)(f, xs);
+      return await performWaitUntil(
+        host,
+        stepName as string,
+        // The probe is a function and cannot be hashed, so what identifies this step is its name
+        // and the two durations that STOP OBSERVATION. See the table's note.
+        { every, deadline },
+        async (f) => await call(probeArg, f, []),
+        terminalArg === undefined ? undefined : async (f, o: unknown) => await call(terminalArg, f, [o]),
+        every,
+        deadline,
+        frame,
+      );
+    }
     case "notify": {
       const agents = deepFreeze(args[0]) as AgentHandleValue[];
       const fact = deepFreeze(args[1]) as { decision: string; outcome: string };
@@ -668,7 +1090,7 @@ export interface Frame {
   readonly clock: RunClock;
   readonly signal: BranchSignal;
   readonly depth: number;
-  branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): Frame;
+  branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): Frame;
 }
 
 /**
@@ -987,10 +1409,21 @@ export async function performScope(
     // effect path hands it one. That asymmetry predates this rule (measured with a plain throw on
     // both paths) and it is recorded as a finding rather than repaired here, because repairing it
     // moves the spec, the walker and the engine together.
+    //
+    // A `RuntimeFault` KEEPS ITS OWN CODE (#1519). It is a classified refusal the LANGUAGE raised
+    // (`L3021` for a fanOut with no stable key), and flattening it to `L4000` wrote a code the spec
+    // says an UNCLASSIFIED failure carries, with the real sentence still inside the message. The
+    // record and the rethrow then disagreed with every resume, which replayed the recorded `L4000`
+    // as an `EffectError` while the live run had thrown the `RuntimeFault` itself. The kind is
+    // `runtime`, the kind a program's `catch` already binds for this class on both engines'
+    // `toProgramError` (a fault the PROGRAM caused), so a reader branching on `kind` reads the same
+    // verdict from the record that the program read live.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
-        : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
+        : reason instanceof RuntimeFault
+          ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
+          : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
     await host.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {

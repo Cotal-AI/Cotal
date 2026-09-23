@@ -10,6 +10,7 @@ import {
   parseEpSubject,
   respondedButUnbound,
   unansweredRequest,
+  unansweredRail,
   registryReadFailed,
   renderLifecycleBlocked,
   submitAndFollowGoal,
@@ -228,7 +229,9 @@ export function onInstanceOrExit(on: string | undefined, verb: string): string |
  *    reachability verdict "no manager reachable" is stated here and only here, and only unpinned:
  *    an unanswered PINNED call names the instance instead, since three managers may be answering
  *    while the one the operator typed is not there, and "no manager reachable" sends them to the
- *    broker for a typo. Measured on a live three-manager mesh during review.
+ *    broker for a typo. Measured on a live three-manager mesh during review. The verdict is also
+ *    scoped to the RAIL ({@link unansweredRail}): on the versioned rail it names that rail and says what the
+ *    silence does not establish, because SPEC 13.15 keeps the two rails disjoint at the broker.
  *  - a REGISTRY READ on this side failed ({@link registryReadFailed}: the scatter's freeze or its
  *    reconcile). The managers were not the failure and may all be up; a verdict on them here sent
  *    the operator to the managers for a broker read.
@@ -243,11 +246,27 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
+    // The verdict is SCOPED TO THE RAIL the request rode (SPEC 13.15). The legacy and versioned rails are
+    // disjoint subject spaces at the broker and an endpoint is required to serve both, so a manager
+    // built before the versioned rail subscribes `ep` alone and an issued caller can never see it.
+    // "No manager reachable" is then a claim about the mesh drawn from silence on one half of it,
+    // and #1630 measured it against a manager that was up, idle on the roster and starting runs the
+    // whole time. On the legacy rail there is no other half, so the verdict stands as it was.
+    const rail = unansweredRail(e);
+    const versioned = rail !== undefined && rail !== "ep" ? rail : undefined;
+    // TWO CAUSES, BOTH NAMED. Silence on a versioned rail is consistent with no manager at all AND
+    // with one older than the rail, and this side cannot tell them apart: the registry records no
+    // package version. An earlier wording named only the skew, which sent an operator whose manager
+    // was simply down to go and check a version.
+    const skew = versioned === undefined ? "" :
+      ` The ${versioned} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${versioned}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, its version.`;
     return {
       ok: false, unanswered: true,
       error: instanceId !== undefined
-        ? `manager instance ${instanceId} did not answer (${detail})`
-        : `no manager reachable on the ep rails (${detail})`,
+        ? `manager instance ${instanceId} did not answer${versioned === undefined ? "" : ` on the ${versioned} rail`} (${detail})${skew}`
+        : versioned === undefined
+          ? `no manager reachable on the ep rails (${detail})`
+          : `no manager answered on the ${versioned} rail (${detail})${skew}`,
     };
   }
   if (registryReadFailed(e))
@@ -480,6 +499,32 @@ const SCATTER_PROFILE: Profile = "control-caller-privileged";
  *  well inside the gather. */
 const PROBE_DEADLINE_MS = 5_000;
 
+/**
+ * Whether the scatter's liveness probe rides a BARE connection, a freshly minted pinned instrument,
+ * or nothing at all. The sixth seed reach on the attach path, made explicit.
+ *
+ * Named and exported so it is GRADABLE, because it is the one site on this path that still answers
+ * "is this an open mesh?" from the absence of a credential. That inference is issue #1205 itself,
+ * and it is only tolerable here because of what this answer is allowed to DO: it selects whether a
+ * frozen instance's liveness is probed, so a wrong answer downgrades a row to `not-probed` and
+ * never refuses an attach. A caller that ever turns this into a refusal must change this function,
+ * which is the point of it having a name.
+ *
+ *   bare   — no credential and no bearer: an open mesh, whose connection can already publish.
+ *   mint   — a sealed mesh that holds its seed AND arrived on a credential: re-mint pinned.
+ *   as-is  — everything else (a user bearer, a raw off-registry cred, a sealed mesh with no seed):
+ *            keep the credential it arrived with and probe nothing, which is the pre-existing
+ *            behaviour and prints `not-probed` rather than degrading silently.
+ */
+export function scatterProbeMaterial(
+  auth: ControlAuth,
+  spaceAuth: SpaceAuth | undefined,
+): { kind: "bare" } | { kind: "mint"; auth: SpaceAuth } | { kind: "as-is" } {
+  if (!auth.creds && !auth.bearer) return { kind: "bare" };
+  if (spaceAuth && auth.creds) return { kind: "mint", auth: spaceAuth };
+  return { kind: "as-is" };
+}
+
 /** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default).
  *
  * TWO connections, because a connection's permissions are fixed at authentication and this command
@@ -533,19 +578,24 @@ async function askManagerScatterEp(
     return { ok: false, error: error ?? "error" };
   }
 
-  // ---- the LOCAL pinned re-mint. An OPEN mesh has no credential system, so its bare connection can
-  // already publish anywhere and needs no mint to probe; an auth mesh with the space seed re-mints;
-  // anything else keeps the credential it arrived with and does not probe.
-  const openMesh = !auth.creds && !auth.bearer;
+  // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.
+  // This is the SIXTH place the attach path reaches for a seed (attach → pinForTarget → locateSeat
+  // → scatterManager → here), and it is named as such because its answer is still derived from the
+  // ABSENCE of a credential, which is the inference issue #1205 was about. It is safe here and it
+  // is NOT safe by accident: this site only decides whether to PROBE LIVENESS, so its worst outcome
+  // is a `not-probed` row, never a refusal to attach. It is extracted anyway so a future caller
+  // that starts making a REFUSAL out of this answer has to pass through a named decision that says
+  // so, instead of re-deriving openness from a nullable field for the second time in one path.
+  const material = scatterProbeMaterial(auth, spaceAuth);
   let probeAuth = auth;
   let caller = auth.epCaller!;
-  let probed: ReadonlySet<string> = openMesh ? new Set(pinnedIds) : new Set();
-  if (spaceAuth && auth.creds) {
+  let probed: ReadonlySet<string> = material.kind === "bare" ? new Set(pinnedIds) : new Set();
+  if (material.kind === "mint") {
     const identity = newIdentity();
     const uid = mintLifecycleUid();
     probeAuth = {
       ...auth,
-      creds: await mintCreds(spaceAuth, identity, SCATTER_PROFILE, {
+      creds: await mintCreds(material.auth, identity, SCATTER_PROFILE, {
         lifecycleUid: uid,
         endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", pinnedIds),
       }),

@@ -1,0 +1,5 @@
+# A crashed manager leaves its custodied seat running outside every manager. The successor's
+# terminal reaps that process by the custody reference the slot recorded, verified by start
+# identity, before the lifecycle retires. Real managers on the custodial pty runtime, real
+# custodian + child, ephemeral auth broker.
+smoke:orphan-seat-reap

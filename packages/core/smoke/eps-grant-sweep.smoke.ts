@@ -120,6 +120,8 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "run-mediator": via("run-mediator", { runMediator: { endpoint: EP, runId: "run-sweep", takeoverId: "tk000003", instanceId: IID, epoch: EPOCH } }),
   "run-operator": via("run-operator", { runOperator: { endpoint: EP, runId: "run-sweep", takeoverId: "tk000002" } }),
   "endpoint-evictor": via("endpoint-evictor"),
+  issuer: via("issuer"),
+  "run-admitter": via("run-admitter", { runAdmitter: { endpoint: EP, runId: "run-sweep" } }),
 };
 
 // ── exhaustiveness: the table's key set IS the profile set, proven at runtime ──────────────────

@@ -2,7 +2,7 @@
   "suite": [
     "packages/core/smoke/dm-history-subject.smoke.ts"
   ],
-  "guard": "history drain rejects SPEC §5 from.id mismatches and fail-closes on shape without full CotalMessage validation; surviving DMs take recipient from the subject; god-view keeps the viewer's own send; public-API data:undefined still surfaces",
+  "guard": "history drain rejects SPEC §5 from.id mismatches and fail-closes on shape without full CotalMessage validation; a row missing a member the public HistoryMessage type promises (from.name, finite ts, space, parts) is dropped, never returned with it undefined; surviving DMs take recipient from the subject; god-view keeps the viewer's own send; a pre-#1404 keyless data part row still surfaces",
   "command": "pnpm smoke:dm-history-subject",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/dm-history-subject.json",
   "why": [
@@ -12,14 +12,15 @@
     "Matching from.id still rewrites recipient from the subject so thread injection cannot land.",
     "isHistoryDrainEnvelope is the parent isRecord triple under a named type predicate. There is no stored row that one admits and the other drops; reverting the name to an inline triple is a compile change, not a behavioural one. Recorded unkillable. The load-bearing behavioural difference is refusing full isCotalMessage.",
     "JSON null as a message object is unreachable against the current guard: isHistoryDrainEnvelope(null) is already false via isRecord. Recorded unkillable rather than manufactured red.",
-    "A public unicast with parts [{kind:\"data\", data: undefined}] serializes without a data key and must still appear in dmHistory. Full isCotalMessage validation dropped that row."
+    "A public unicast with parts [{kind:\"data\", data: undefined}] serializes without a data key and must still appear in dmHistory. Full isCotalMessage validation dropped that row.",
+    "#1413: a stored row carrying only id + object from used to be returned as CotalMessage with ts, space, parts and from.name undefined. The drain now checks every member HistoryMessage promises before returning the row (isVerifiedHistoryRow) and drops the row when one is missing; parts stay held to readable, not to isMessagePart, so the pre-fix keyless row still surfaces."
   ],
   "mutations": [
     {
-      "name": "history drain returns the payload and discards SPEC §5",
+      "name": "history drain returns the payload and discards SPEC §5 and the #1413 shape gate",
       "file": "packages/core/src/endpoint.ts",
-      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
-      "replace": "  return raw as CotalMessage;",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);\n  if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;\n  if (raw.from.id !== parsed.sender) return undefined;\n  return authenticatedMessage(raw, parsed);",
+      "replace": "  return raw as HistoryMessage;",
       "expectRed": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
       "cell": "spoofed payload is ABSENT from history (SPEC §5 reject, not rewrite)",
       "completionMarker": "dm-history-subject smoke:"
@@ -43,12 +44,21 @@
       "completionMarker": "dm-history-subject smoke:"
     },
     {
-      "name": "history drain uses full isCotalMessage and drops public-API data:undefined",
+      "name": "history drain uses full isCotalMessage and drops the pre-fix keyless data part",
       "file": "packages/core/src/endpoint.ts",
-      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;",
+      "find": "  if (!isVerifiedHistoryRow(raw)) return undefined;",
       "replace": "  if (!isCotalMessage(raw) || !isUsableMessageId(raw.id)) return undefined;",
-      "expectRed": "public-API data part with undefined data still appears in dmHistory",
-      "cell": "public-API data part with undefined data still appears in dmHistory",
+      "expectRed": "pre-fix keyless data part row is still surfaced by dmHistory",
+      "cell": "pre-fix keyless data part row is still surfaced by dmHistory",
+      "completionMarker": "dm-history-subject smoke:"
+    },
+    {
+      "name": "history drain skips the #1413 member checks and returns the partial row under the full type",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);",
+      "replace": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  const parsed = parseSubject(m.subject);",
+      "expectRed": "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
+      "cell": "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
       "completionMarker": "dm-history-subject smoke:"
     }
   ],

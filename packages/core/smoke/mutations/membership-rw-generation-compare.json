@@ -1,0 +1,32 @@
+{
+  "suite": [
+    "packages/core/smoke/membership-rw-renewal.smoke.ts"
+  ],
+  "guard": "the membership feed refuses an un-re-signed rw generation by GENERATION, not by envelope bytes",
+  "command": "pnpm smoke:membership-rw-renewal",
+  "completionMarker": "MEMBERSHIP-RW RENEWAL",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-rw-generation-compare.json",
+  "why": [
+    "The refusal is a two-conjunct predicate, and a mutation against the DELAY conjunct can report a clean",
+    "kill while the equality conjunct stays entirely ungraded. This fixture flips the equality conjunct",
+    "back to the byte comparison it used to be, so the cell that reddens is the one about generations.",
+    "Scenario 5 serves one exact string and stays GREEN under the mutation: byte equality and generation",
+    "equality agree there, which is why it could never have caught this.",
+    "Scenario 9 serves a byte-DISTINCT envelope on every read for the same reason at one remove: a fixed",
+    "reformatted string lets the byte-comparing mutant arrest itself after a single adoption, and the read",
+    "count then lands inside the bound the fixed code produces.",
+    "The sibling cell asserting the refusal MESSAGE cannot grade this either, and is kept for what it",
+    "documents rather than for what it discriminates."
+  ],
+  "mutations": [
+    {
+      "name": "the missed-remint refusal compares envelope bytes again",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "    if (credsFingerprint(candidate) === credsFingerprint(currentRwCreds) && delay <= 0)",
+      "replace": "    if (candidate === currentRwCreds && delay <= 0)",
+      "expectRed": "the refusal keeps the 60s backoff \u2014 no 1s re-read of the source (#1563)",
+      "cell": "the refusal keeps the 60s backoff \u2014 no 1s re-read of the source (#1563)",
+      "note": "Exactly the pre-fix line: the tree compiles and scenario 5 still passes, because byte equality and generation equality agree on the one exact string it serves. Graded on the READ COUNT, not on the refusal message. Under the mutation every read is a new generation by bytes, so each adoption floors the next tick to 1s and the source is re-read every second; the fixed code refuses all of them and keeps the 60s backoff. The read count is the only signal that separates the two."
+    }
+  ]
+}

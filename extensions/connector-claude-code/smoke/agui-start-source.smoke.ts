@@ -3,7 +3,8 @@
  *
  * `source: "startup"` is Claude's explicit statement that this is a new session, so a virgin event
  * WAL reads from byte zero. Every retained-history source (`resume`, `fork`, `clear`, `compact`)
- * keeps the generic adopt-at-current-boundary rule. A DEFINED cursor always wins over either mode:
+ * keeps the generic adopt-at-current-boundary rule; `fork` additionally waits for its copied file,
+ * which Claude creates after the hook. A DEFINED cursor always wins over either mode:
  * crash recovery resumes after what the WAL folded and never replays from zero.
  *
  * This is the source-policy half of `smoke:claude-run-error`, whose real broker arm proves the same
@@ -137,6 +138,43 @@ try {
     );
   }
 
+  // A fork is retained history in a NEW file that Claude copies after SessionStart. The source waits
+  // for that copy like a startup does, then adopts at its end: none of the copied records replay,
+  // and the fork's first own record is still readable from the adopt cursor.
+  const forkLate = file("fork-late");
+  const forkOutcome = createClaudeTranscriptSource(forkLate, "fork")
+    .read(undefined)
+    .then((read) => ({ read }), (error: unknown) => ({ error: error as Error }));
+  await new Promise<void>((resolve) =>
+    setTimeout(() => {
+      writeFileSync(forkLate, line(14) + line(15));
+      resolve();
+    }, 75),
+  );
+  const forkResult = await forkOutcome;
+  let forkNext: number[] = [];
+  if ("read" in forkResult) {
+    appendFileSync(forkLate, line(16));
+    forkNext = (await createClaudeTranscriptSource(forkLate, "fork").read(forkResult.read.cursor)).records.map((r) => r.value.id);
+  }
+  check(
+    "fork:a-SessionStart-before-the-copied-transcript-exists-waits-for-it-and-adopts-at-its-end",
+    "read" in forkResult && forkResult.read.records.length === 0 && forkNext.join(",") === "16",
+    "error" in forkResult ? forkResult.error.message : { adopted: forkResult.read.records.length, next: forkNext },
+  );
+
+  let forkMissing: Error | undefined;
+  try {
+    await createClaudeTranscriptSource(file("fork-never"), "fork", { startupFileWaitMs: 60 }).read(undefined);
+  } catch (error) {
+    forkMissing = error as Error;
+  }
+  check(
+    "fork:a-copy-that-never-appears-fails-loud-after-the-same-bounded-wait",
+    forkMissing?.message.includes("did not appear within 60ms") === true,
+    forkMissing?.message,
+  );
+
   // Crash recovery: a startup-labelled process can restart with an existing WAL. The defined cursor
   // is the authority; replay-from-zero applies only to an actually virgin frontier.
   const recovery = file("recovery");
@@ -164,7 +202,7 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 15, { ran: pass + fail, expected: 15 });
+  check("every cell ran", pass + fail === 17, { ran: pass + fail, expected: 17 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {

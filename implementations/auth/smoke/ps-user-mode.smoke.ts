@@ -19,10 +19,10 @@
  * label-and-exit-0 shape. That is a product decision to be made on its own evidence; a red here
  * demanding a human look at it is then the correct behaviour, not a defect in this file.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -65,6 +65,7 @@ const check = (n: string, v: boolean, x?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let SERVER!: string;
+let PUBLIC_EXCHANGE_PORT!: number;
 const SPACE = `psuser-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
@@ -204,6 +205,7 @@ try {
   sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   ({ establishIdpSession } = await import("../src/index.js"));
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
+  PUBLIC_EXCHANGE_PORT = await pickFreePort();
 
   idpSrv = createServer((req, res) => handler!(req, res));
   // The listen-failure listener is REMOVED on success. Left installed, it outlives the Promise it
@@ -281,7 +283,8 @@ try {
   check("...and therefore outranks any ancestor", captor === null, captor);
   if (captor) { process.exitCode = 1; throw new Error(`anchor missing: ${root} resolves to ${captor}`); }
   upAttempted = true;
-  const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE]);
+  const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE,
+    "--exchange-public-port", String(PUBLIC_EXCHANGE_PORT)]);
   // Attribute HOW `up` ended before reading its status: a signalled or timed-out `up` reports
   // `status: null`, which reads only as "non-zero" and loses why.
   mustHaveRun(up, "`cotal up`");
@@ -303,6 +306,187 @@ try {
   check("user-mode ps exits 0 (C: ep.one path)", ps.status === 0, ps.status);
   check("user-mode ps does not die on STREAM.INFO (would mean it still scattered)",
     !/STREAM\.INFO/.test(ps.out), ps.out.slice(-200));
+
+  console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
+  const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
+  const { findMesh, removeMesh, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { loadCalloutAuth } = await import("../src/index.js");
+  const original = findMesh(SPACE);
+  if (!original?.userAuth) throw new Error("fixture has no user-auth registry entry to advertise");
+  const callout = await loadCalloutAuth(workspaceSecretStore(root), SPACE);
+  if (!callout) throw new Error("fixture has no callout sentinel credential");
+  let catalogFails = false;
+  let catalogRequests = 0;
+  let includeJoining = false;
+  let includeListed = false;
+  let includeWorkflow = false;
+  let includeSupervise = false;
+  const originalHandler = handler!;
+  handler = (async (req, res) => {
+    const url = new URL(req.url!, origin);
+    if (url.pathname === "/exchange") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const upstream = await fetch(`http://127.0.0.1:${PUBLIC_EXCHANGE_PORT}/exchange`, {
+        method: req.method,
+        headers: { "content-type": req.headers["content-type"] ?? "application/json" },
+        body: Buffer.concat(chunks),
+      });
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      return void res.end(Buffer.from(await upstream.arrayBuffer()));
+    }
+    if (url.pathname === "/catalog") {
+      catalogRequests++;
+      if (catalogFails) return void res.writeHead(503).end();
+      res.writeHead(200, { "content-type": "application/json", etag: '"ps-catalog-v1"' });
+      const registration = (space: string) => ({
+        space,
+        server: original.server,
+        tlsRequired: false,
+        userAuth: { ...original.userAuth, endpoints: { url: origin }, sentinelCredsPath: undefined },
+        sentinelCreds: callout.sentinelCreds,
+      });
+      return void res.end(JSON.stringify({
+        v: 1,
+        account: { idpUrl: base, issuer: origin, sub },
+        spaces: [{
+          id: "catalog-space",
+          slug: SPACE,
+          name: "Shared project",
+          kind: "local-test",
+          role: "admin",
+          registration: registration(SPACE),
+        },
+        ...(includeJoining ? [{ id: "joining-space", slug: "joining", name: "Joining project", kind: "local-test", role: "admin", registration: registration("joining") }] : []),
+        ...(includeListed ? [{ id: "listed-space", slug: "listed", name: "Listed project", kind: "local-test", role: "admin", registration: registration("listed") }] : []),
+        ...(includeWorkflow ? [{ id: "workflow-space", slug: "workflow_new", name: "Workflow new", kind: "local-test", role: "admin", registration: registration("workflow_new") }] : []),
+        ...(includeSupervise ? [{ id: "supervise-space", slug: "supervise_new", name: "Supervise new", kind: "local-test", role: "admin", registration: registration("supervise_new") }] : []),
+        ],
+      }));
+    }
+    if (url.pathname === "/api/auth/token") {
+      const capture = { writeHead: res.writeHead.bind(res) };
+      const old = res.writeHead.bind(res);
+      res.writeHead = ((status: number, headers?: Record<string, string>) => old(status, {
+        ...headers,
+        link: `<${origin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`,
+      })) as typeof res.writeHead;
+      void capture;
+    }
+    return originalHandler(req, res);
+  }) as typeof handler;
+  removeMesh(SPACE);
+  const catalogCache = join(home, "space-catalogs.json");
+  rmSync(catalogCache, { force: true });
+  await prepareCatalogTargets({ idpUrl: base, force: true });
+  execFileSync("pnpm", ["--filter", "@cotal-ai/auth", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
+  execFileSync("pnpm", ["--filter", "@cotal-ai/cli", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
+  check("the empty registry was repopulated as a discovered user-mode target", findMesh(SPACE)?.origin === "catalog", findMesh(SPACE));
+  check("the display name is not a registry key", findMesh("Shared project") === undefined && findMesh(SPACE)?.catalogName === "Shared project", findMesh(SPACE));
+  check("the discovered entry resolves through the ordinary synchronous target path", targetFromEntry(findMesh(SPACE)!, original.server, "registry").mode === "user");
+  const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
+  const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
+  check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
+  check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
+  // #1832: a discovered user-mode space's user-auth material is the REGISTRY ENTRY (origin
+  // "catalog", userAuth.remote + pins + sentinel file), not a local provisioning, so the login
+  // `ps` uses must answer status too. The verbatim base behaviour is recorded in the lane notes:
+  // the login row said "no user-auth material on this machine", the live snapshot said "needs a
+  // signed-in, granted login", and `--components` printed `serve probe refused: Authorization
+  // Violation` with exit 3.
+  check("discovered space: bare status shows the signed-in subject, not a no-material refusal",
+    discoveredStatus.status === 0 && discoveredStatus.out.includes("session until") && !discoveredStatus.out.includes("no user-auth material"),
+    discoveredStatus.out.slice(-600));
+  // The live snapshot needs a GRANTED login, and the grant is a ledger row: for a discovered space
+  // the ledger runs where the space was provisioned, so the honest row is "grant not checkable"
+  // and the snapshot defers. Asserting a roster here would demand status connect on an ungranted
+  // bearer, which the renderer deliberately does not do.
+  check("discovered space: bare status names the grant as not checkable (no local ledger) rather than demanding a login",
+    discoveredStatus.out.includes("grant not checkable on this machine (no local ledger)") && !discoveredStatus.out.includes("no user-auth material"),
+   discoveredStatus.out.slice(-600));
+  const discoveredComponents = await cotal(["status", "--space", SPACE, "--components"], 30_000);
+  console.log(`   #1832 status --components on the discovered space (exit=${discoveredComponents.status}):\n` +
+    discoveredComponents.out.split("\n").filter((l) => /Component Health|^  (manager|delivery|web|broker) /.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n").slice(0, 1200));
+  check("discovered space: components probes as the signed-in login, never a raw Authorization Violation",
+    !/Authorization Violation/i.test(discoveredComponents.out),
+    discoveredComponents.out.slice(-600));
+  check("discovered space: components manager row answers the real service probe (serving: live fixture manager)",
+    /^  manager {9,}serving /m.test(discoveredComponents.out.replace(/\x1b\[[0-9;]*m/g, "")),
+    discoveredComponents.out.slice(-600));
+  // Signed-out machine, same registry shape: a MANUAL remote entry (the `meshes add --from`
+  // registration path) is subject to no catalog gate, so removing the session grades the status
+  // login row alone. The discovered entry stays untouched; the manual entry pins the same IdP and
+  // the same broker, so the only difference from the cells above is the missing login session —
+  // exactly the state under test.
+  const sessionsFile = join(home, "idp-sessions.json");
+  const sessionsBytes = existsSync(sessionsFile) ? readFileSync(sessionsFile) : Buffer.from("{}");
+  const { persistRemoteUserEntry } = await import("../../cli/src/commands/meshes-add.js");
+  const signedOutSpace = `${SPACE}-signedout`;
+  persistRemoteUserEntry(signedOutSpace, original.server, root, {
+    space: signedOutSpace,
+    server: original.server,
+    tlsRequired: false,
+    userAuth: {
+      provider: "cotal",
+      idp: { url: base, issuer: origin, audience: origin },
+      endpoints: { url: origin },
+    },
+    sentinelCreds: callout.sentinelCreds,
+  }, false, false);
+  (await import("../src/index.js")).deleteIdpSession(home, base);
+  try {
+    const signedOutStatus = await cotal(["status", "--space", signedOutSpace], 30_000);
+    console.log(`   #1832 signed-out bare status (exit=${signedOutStatus.status}):\n` +
+      signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
+    check("discovered space, signed out: status says not signed in with the exact login command",
+      signedOutStatus.status === 0 &&
+        signedOutStatus.out.includes("not signed in -") &&
+        signedOutStatus.out.includes(`login --idp ${base}`) &&
+        !signedOutStatus.out.includes("no user-auth material"),
+      signedOutStatus.out.slice(-600));
+  } finally {
+    if (sessionsBytes !== undefined) writeFileSync(sessionsFile, sessionsBytes);
+    removeMesh(signedOutSpace);
+  }
+  includeJoining = true;
+  const beforeUseRefresh = catalogRequests;
+  const discoveredUse = await cotal(["use", "joining"], 20_000);
+  check("use refreshes a positional catalog miss inside the freshness window and selects its slug",
+    discoveredUse.status === 0 && catalogRequests === beforeUseRefresh + 1 && findMesh("joining")?.origin === "catalog",
+    { out: discoveredUse.out, catalogRequests, beforeUseRefresh });
+  includeWorkflow = true;
+  const beforeRunRefresh = catalogRequests;
+  const discoveredRun = await cotal(["run", "ps", "--space", "workflow_new"], 20_000);
+  check("a self-registered target-bearing command receives dispatcher catalog preparation",
+    catalogRequests === beforeRunRefresh + 1 && findMesh("workflow_new")?.origin === "catalog" && !discoveredRun.out.includes('no mesh named "workflow_new"'),
+    { status: discoveredRun.status, out: discoveredRun.out.slice(-400), catalogRequests, beforeRunRefresh });
+  includeSupervise = true;
+  const beforeSuperviseRefresh = catalogRequests;
+  const discoveredSupervise = await cotal(["supervise", "--space", "supervise_new", "--server", "nats://127.0.0.1:1"], 20_000);
+  check("a copied target-flag command receives dispatcher catalog preparation",
+    catalogRequests === beforeSuperviseRefresh + 1 && findMesh("supervise_new")?.origin === "catalog" &&
+      discoveredSupervise.out.includes('does not match registered space "supervise_new"') && !discoveredSupervise.out.includes("neither hosting"),
+    { status: discoveredSupervise.status, out: discoveredSupervise.out.slice(-400), catalogRequests, beforeSuperviseRefresh });
+  const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+  recordMesh({ space: "manual-current", server: original.server, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  setCurrent("manual-current");
+  includeListed = true;
+  await wait(5_100);
+  const beforeMeshesRefresh = catalogRequests;
+  const discoveredMeshes = await cotal(["meshes"], 20_000);
+  check("meshes refreshes discovery despite a manual current and local root",
+    discoveredMeshes.status === 0 && catalogRequests === beforeMeshesRefresh + 1 && discoveredMeshes.out.includes("listed") && findMesh("listed")?.origin === "catalog",
+    { out: discoveredMeshes.out.slice(-600), catalogRequests, beforeMeshesRefresh });
+  catalogFails = true;
+  await wait(5_100);
+  const beforeLocalRm = catalogRequests;
+  const localRm = await cotal(["meshes", "rm", "ghost"], 20_000);
+  check("meshes rm stays registry-local during a stale catalog outage",
+    localRm.status === 1 && localRm.out.includes('no mesh named "ghost" is registered') && catalogRequests === beforeLocalRm,
+    { out: localRm.out, catalogRequests, beforeLocalRm });
+  const expired = await cotal(["ps", "--space", SPACE], 20_000);
+  check("an expired discovered target refuses ps when its required refresh fails",
+    expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });
 
   console.log("4) kill manager — ps must fail loud, not empty-success");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness
@@ -369,7 +553,7 @@ try {
             : `. Nothing was started.`),
       );
     }
-    const down = await cotal(["down"], 60_000);
+    const down = await cotal(["down", "--with-agents"], 60_000);
     // The same standard the graded cells get: `cotal()` resolves for a timeout, a signal death and a
     // launch failure alike, so an unchecked `await` treats every one of those as a successful stop.
     mustHaveRun(down, "`cotal down`");

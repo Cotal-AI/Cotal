@@ -35,7 +35,7 @@ import {
   AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epgateKey, epAuthBucket,
   epRequestSubject, epCallerReplyFilter, parseEpSubject,
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
-  mintCreds, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
+  mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -249,7 +249,7 @@ try {
   console.log("B. the green path (a current serving instance retires a live lifecycle; repeat = idempotent)");
   const uid1 = mintLifecycleUid();
   await ensureRootCredential(wreg, { owner: OWNER, actor: "w1", lifecycleUid: uid1, managerInstance: "smoke" });
-  const op1 = "a".repeat(26);
+  const op1 = managedRetirementOpId(uid1);
   const r1 = await request(MGR, { owner: OWNER, actor: "w1", lifecycleUid: uid1 }, { opId: op1 });
   check("a current serving instance's request RETIRES the lifecycle end-to-end (the plane's own barrier + sealed scanner)",
     r1 !== "no-reply" && r1.ok === true && (r1.data as { retired?: boolean })?.retired === true, r1);
@@ -262,7 +262,7 @@ try {
   console.log("C. the refusal faces (rail-time serve-grant re-check + closed shapes)");
   const uid2 = mintLifecycleUid();
   await ensureRootCredential(wreg, { owner: OWNER, actor: "w2", lifecycleUid: uid2, managerInstance: "smoke" });
-  const op2 = "b".repeat(26);
+  const op2 = managedRetirementOpId(uid2);
   // SUPERSEDED (P2 item 3 3b-3 — the red-first deposed-predecessor fence): the gate advanced to a NEWER
   // epoch (a restart re-registered the SAME instanceId), so a request declaring the OLD epoch is a
   // deposed predecessor and is refused. Against the old name-derived lease-holder check this PASSED (the
@@ -280,7 +280,8 @@ try {
     r3 !== "no-reply" && r3.ok === false && (r3.error ?? "").includes("no manager instance currently holds") && (r3.error ?? "").includes("cotal supervise"), r3);
   await putGate(MGR_INST, SERVE_EPOCH); // restore the current gate at the default epoch (the superseded test bumped it) for the stale-uid test below
   // Stale uid: the trigger names a previous incarnation.
-  const r4 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: mintLifecycleUid() }, { opId: op2 });
+  const staleUid2 = mintLifecycleUid();
+  const r4 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: staleUid2 }, { opId: managedRetirementOpId(staleUid2) });
   check("a STALE incarnation refuses naming the current one (never retires the wrong lifecycle)",
     r4 !== "no-reply" && r4.ok === false && (r4.error ?? "").includes("stale incarnation") && (r4.error ?? "").includes(uid2), r4);
   // RE-POINTED (#350), not deleted. On `ctl` the caller CHOSE its reply target, so the listener had
@@ -291,7 +292,7 @@ try {
   {
     const uidRep = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wrep", lifecycleUid: uidRep, managerInstance: "smoke" });
-    const rRep = await request(MGR, { owner: OWNER, actor: "wrep", lifecycleUid: uidRep }, { opId: "p".repeat(26) }, { bogusReplyHeader: true });
+    const rRep = await request(MGR, { owner: OWNER, actor: "wrep", lifecycleUid: uidRep }, { opId: managedRetirementOpId(uidRep) }, { bogusReplyHeader: true });
     check("a BOGUS reply header is INERT: the reply still arrives on the DERIVED subject (the confused-deputy boundary is structural, not a check)",
       rRep !== "no-reply" && rRep.ok === true && (rRep.data as { retired?: boolean })?.retired === true, rRep);
   }
@@ -346,13 +347,13 @@ try {
     // POSITIVE CONTROL FIRST, on a lifecycle we then leave alone: the normal path answers.
     const uidE2 = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wecho2", lifecycleUid: uidE2, managerInstance: "smoke" });
-    const rOk = await request(MGR, { owner: OWNER, actor: "wecho2", lifecycleUid: uidE2 }, { opId: "e".repeat(26) });
+    const rOk = await request(MGR, { owner: OWNER, actor: "wecho2", lifecycleUid: uidE2 }, { opId: managedRetirementOpId(uidE2) });
     check("POSITIVE CONTROL: a reply whose id ECHOES the request is accepted (the cell is not passing by never answering)",
       rOk !== "no-reply" && rOk.ok === true, rOk);
     // Now demand an id the responder will never send. The responder answers correctly; the caller
     // must REFUSE that answer. A cell that only asserted "no reply" would pass against a dead rail,
     // so the head is checked too: the retirement DID happen server-side, and was still not accepted.
-    const rWrong = await request(MGR, { owner: OWNER, actor: "wecho", lifecycleUid: uidE }, { opId: "g".repeat(26) }, { wrongEchoProbe: true });
+    const rWrong = await request(MGR, { owner: OWNER, actor: "wecho", lifecycleUid: uidE }, { opId: managedRetirementOpId(uidE) }, { wrongEchoProbe: true });
     check("a reply whose id does NOT echo the request is REFUSED by the caller (a wrong-id ok:true cannot clear a hold)",
       rWrong === "no-reply", rWrong);
     check("...and the refusal is the CALLER's, not a dead rail: the responder DID process it (the head reads retired)",
@@ -378,7 +379,7 @@ try {
     const foreignInst = mintLifecycleUid();
     await epKv.put(epgateKey("manager", foreignInst), new TextEncoder().encode(JSON.stringify(
       { state: "open", generation: 1, processEpoch: SERVE_EPOCH, registrationRevision: 1, nameAuthorityRevision: 1, principal: "local.someoneelse" })));
-    const rF = await request(MGR, { owner: OWNER, actor: "wforeign", lifecycleUid: uidF }, { opId: "f".repeat(26), serveInstanceId: foreignInst });
+    const rF = await request(MGR, { owner: OWNER, actor: "wforeign", lifecycleUid: uidF }, { opId: managedRetirementOpId(uidF), serveInstanceId: foreignInst });
     // WHICH refusal, by name: the principal cross-check - not a grammar rejection, not an arity
     // mismatch, not a no-responder timeout, each of which would satisfy a naive "it was refused".
     check("a caller naming a FOREIGN principal's serve registration is REFUSED BY THE PRINCIPAL CROSS-CHECK (pre-cut this was ADMITTED)",
@@ -388,7 +389,7 @@ try {
     check("...and the refusal is a COMPLETE no-op: the target lifecycle is still active",
       (await readLifecycleHeadForOperation(wreg, OWNER, "wforeign"))?.mapping.state === "active");
     // INVERSE CONTROL: without it, the cell above is satisfied by a rail that refuses EVERYTHING.
-    const rOwn = await request(MGR, { owner: OWNER, actor: "wforeign", lifecycleUid: uidF }, { opId: "f".repeat(26) });
+    const rOwn = await request(MGR, { owner: OWNER, actor: "wforeign", lifecycleUid: uidF }, { opId: managedRetirementOpId(uidF) });
     check("INVERSE CONTROL: the SAME caller naming its OWN serve registration SUCCEEDS (the cell grades the principal comparison, not a rail that refuses everything)",
       rOwn !== "no-reply" && rOwn.ok === true && (rOwn.data as { retired?: boolean })?.retired === true, rOwn);
   }
@@ -412,7 +413,7 @@ try {
     const target = { owner: OWNER, actor: "wdiverge", lifecycleUid: uidD };
     // Same manager, same live registration, same epoch: the ONLY difference from the green path is
     // which of its own identities the caller triple carries.
-    const rEp = await request({ owner: DEV_OWNER, actor: MGR_ENDPOINT.id, uid: MGR.uid }, target, { opId: "d".repeat(26) });
+    const rEp = await request({ owner: DEV_OWNER, actor: MGR_ENDPOINT.id, uid: MGR.uid }, target, { opId: managedRetirementOpId(uidD) });
     check("a manager speaking as its ENDPOINT identity is REFUSED against its own serve registration (both principals named, both derived, not literals)",
       rEp !== "no-reply" && rEp.ok === false
       && rEp.error?.includes(MGR_KEY) === true
@@ -422,7 +423,7 @@ try {
       (await readLifecycleHeadForOperation(wreg, OWNER, "wdiverge"))?.mapping.state === "active");
     // INVERSE CONTROL, on the SAME target and the SAME registration: the SERVE identity is accepted.
     // Without it the cell above is satisfied by a rail that refuses every nkey-shaped principal.
-    const rServe = await request(MGR, target, { opId: "d".repeat(26) });
+    const rServe = await request(MGR, target, { opId: managedRetirementOpId(uidD) });
     check("INVERSE CONTROL: the SERVE identity, on the same target and the same registration, IS authorized and retires it",
       rServe !== "no-reply" && rServe.ok === true && (rServe.data as { retired?: boolean })?.retired === true, rServe);
   }
@@ -430,20 +431,20 @@ try {
   check("after every refusal face the target lifecycle is STILL active (refusals are complete no-ops)",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w2"))?.mapping.state === "active");
 
-  console.log("D. coordinate-bound single-flight (audit #1): a same-opId join for a DIFFERENT lifecycle is a full no-op while the first is in flight, never a false success");
+  console.log("D. target-derived concurrency: different lifecycles cannot share an operation identity or flight");
   {
     const uidA = mintLifecycleUid();
     const uidB = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wcolla", lifecycleUid: uidA, managerInstance: "smoke" });
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wcollb", lifecycleUid: uidB, managerInstance: "smoke" });
-    const shared = "c".repeat(26); // ONE opId, deliberately reused across two DIFFERENT lifecycles
-    // Park A's retirement inside its barrier (its flight live in barrierFlight), then fire B with the
-    // SAME opId. The overlap is the WHOLE point: the false-join hole only exists while A's promise is
-    // live, so gate engagement is MANDATORY — a run that fails to park A must FAIL, never silently
-    // weaken to the post-settlement durable-intent fence (which would refuse B even on a broken bind).
+    const opA = managedRetirementOpId(uidA);
+    const opB = managedRetirementOpId(uidB);
+    // Park A's retirement inside its barrier, then send B with ITS OWN target-derived operation while
+    // A is in flight. The terminal rail rejects a body opId that differs from the broker-pinned target
+    // before this single-flight map, so cross-lifecycle op reuse is now structurally unreachable here.
     const enteredP = new Promise<void>((res) => { gateEntered = res; });
     gateArmed = true;
-    const aP = request(MGR, { owner: OWNER, actor: "wcolla", lifecycleUid: uidA }, { opId: shared });
+    const aP = request(MGR, { owner: OWNER, actor: "wcolla", lifecycleUid: uidA }, { opId: opA });
     // Keep A releasable on any failure path so a non-engaging run cannot hang the suite.
     let engaged = true;
     try {
@@ -457,15 +458,15 @@ try {
       check("the coordinate-bind regression achieved its required in-flight overlap (A parked in barrier)", false, (e as Error).message);
     }
     if (engaged) {
-      // A is parked in its barrier RIGHT NOW. B: same opId, DIFFERENT lifecycle — must be refused as a
-      // full no-op, never inherit A's in-flight success. Assert directly, BEFORE releasing A.
-      const rB = await request(MGR, { owner: OWNER, actor: "wcollb", lifecycleUid: uidB }, { opId: shared });
+      // A is parked in its barrier RIGHT NOW. B carries its own target-derived opId. It must run as a
+      // disjoint flight and complete without joining or waiting for A.
+      const rB = await request(MGR, { owner: OWNER, actor: "wcollb", lifecycleUid: uidB }, { opId: opB });
       const bSuccess = rB !== "no-reply" && rB.ok === true && ((rB.data as { retired?: boolean })?.retired === true || (rB.data as { alreadyRetired?: boolean })?.alreadyRetired === true);
-      check("B (same opId, different lifecycle) is REFUSED while A is in flight (full no-op, names A's lifecycle)",
-        rB !== "no-reply" && rB.ok === false && /different lifecycle/i.test(rB.error ?? "") && /FULL no-op/i.test(rB.error ?? ""), rB);
-      check("B never inherits A's in-flight success (no retired:true / alreadyRetired for B)", !bSuccess, rB);
-      check("B's lifecycle is provably STILL ACTIVE while A is in flight (no cross-lifecycle join freed B's alias)",
-        (await readLifecycleHeadForOperation(wreg, OWNER, "wcollb"))?.mapping.state === "active");
+      check("B uses a distinct target-derived op and never joins A's in-flight retirement",
+        rB !== "no-reply" && rB.ok === true && (rB.data as { retired?: boolean })?.retired === true, rB);
+      check("B completes under its own operation identity while A remains in flight", bSuccess, rB);
+      check("B's lifecycle is retired by B's own derived operation while A remains parked",
+        (await readLifecycleHeadForOperation(wreg, OWNER, "wcollb"))?.mapping.state === "retired");
     }
     // Release A; it completes its OWN legitimate retirement.
     gateRelease?.();

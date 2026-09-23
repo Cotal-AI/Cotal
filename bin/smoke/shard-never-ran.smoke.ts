@@ -99,10 +99,10 @@ check("a single-suite partition's only failure reports nothing", neverRanBlock([
 //   red: "the shipped never-ran block names only the two suites that never started"
 //   still green: helper isolation cells, and "a fully green shard reports nothing as never-ran"
 const green = runShippedShard({
-  "smoke:a": "node -e \"process.exit(0)\"",
-  "smoke:b": "node -e \"process.exit(0)\"",
-  "smoke:c": "node -e \"process.exit(0)\"",
-  "smoke:d": "node -e \"process.exit(0)\"",
+  "smoke:a": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
+  "smoke:b": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
+  "smoke:c": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
+  "smoke:d": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
 });
 check("the green fixture planned exactly 4 suites and did not time out", !green.timedOut && /shard 0\/1 — 4 of 4 smokes/.test(green.out), green.out.slice(0, 400));
 check(
@@ -117,7 +117,7 @@ check(
 );
 
 const broken = runShippedShard({
-  "smoke:a": "node -e \"process.exit(0)\"",
+  "smoke:a": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
   "smoke:b": "node -e \"process.exit(7)\"",
   "smoke:c": "node -e \"process.exit(0)\"",
   "smoke:d": "node -e \"process.exit(0)\"",

@@ -1,6 +1,15 @@
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
-import type { RemoteManagerAuthorityMaterial, RemoteManagerAuthorityRequest } from "./remote-manager-authority.js";
+import type {
+  RemoteManagerAdminAuthorizationRequest,
+  RemoteManagerAdminAuthorizationResult,
+  RemoteManagerAuthorityMaterial,
+  RemoteManagerAuthorityRequest,
+  RemoteManagerGoalIndexScanRequest,
+  RemoteManagerGoalIndexScanResult,
+  RemoteRetainedAgentValidationRequest,
+  RemoteRetainedAgentValidationResult,
+} from "./remote-manager-authority.js";
 
 /**
  * The one extension kind an identity/auth implementation registers so a composition root can turn
@@ -36,6 +45,9 @@ export interface AuthProvider extends Extension {
    * trust bundle.
    */
   prepareServer(input: AuthPrepareInput): Promise<AuthPrepared>;
+  /** Read this space's already-provisioned operator-signed accounts for a whole-broker render.
+   *  A missing or invalid account on an enabled space must refuse the render, not shrink it. */
+  preloadAccounts(opts: { store: SecretStore; space: string }): Promise<Array<{ pub: string; jwt: string }>>;
   /**
    * CLIENT side: produce the connect material for a user-mode space from THIS machine's session
    * state (the login cache + the provider's space-scoped state — secrets in `store`, the rest
@@ -53,6 +65,34 @@ export interface AuthProvider extends Extension {
    */
   userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
   /**
+   * Prepare the signed-in account's optional space catalog without exposing its cached session
+   * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
+   * the private cache. The caller supplies the product validator so an invalid candidate is never
+   * published over the last valid snapshot, and the consumer's `apply`, which the provider runs
+   * under its own lock: a candidate is committed to the cache as not yet applied before the first
+   * registry mutation and marked applied after the last, so a process that dies or pauses while
+   * applying leaves a cache that says so, and the next preparation applies that snapshot again
+   * before reporting it fresh or not modified.
+   */
+  prepareSpaceCatalogs?(opts: {
+    dir: string;
+    idpUrl?: string;
+    force?: boolean;
+    validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+    apply(result: AuthSpaceCatalogResult): void;
+  }): Promise<AuthSpaceCatalogResult[]>;
+  /** Complete login-time catalog discovery while the provider alone holds the new session. */
+  syncSpaceCatalogAfterLogin?(opts: {
+    dir: string;
+    idpUrl: string;
+    validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+    apply(result: AuthSpaceCatalogResult): void;
+  }): Promise<AuthSpaceCatalogResult[]>;
+  /** Whether the just-proved account advertised a catalog. Reads provider state only. */
+  hasSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): boolean;
+  /** Clear one account's provider cache and return its opaque registry ownership key. */
+  removeSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): string;
+  /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
    * provider must authenticate the signed-in human, fresh-check `supervise`, bind the returned
@@ -65,6 +105,30 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** Host-owned manager boot scan. The provider authenticates the human and returns only parsed,
+   * owner-scoped manager goal-index entries. No raw records or consumer authority crosses. */
+  scanRemoteManagerGoalIndex?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerGoalIndexScanRequest;
+  }): Promise<RemoteManagerGoalIndexScanResult>;
+  /** Host-owned, fresh serve-time authorization for one exact remote manager caller. */
+  authorizeRemoteManagerAdmin?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerAdminAuthorizationRequest;
+  }): Promise<RemoteManagerAdminAuthorizationResult>;
+  /**
+   * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
+   * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.
+   * The host authenticates the operator and manager lifecycle on every call and returns only the
+   * current non-secret authority row. Optional providers fail loud at the composition root.
+   */
+  validateRemoteRetainedAgent?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteRetainedAgentValidationRequest;
+  }): Promise<RemoteRetainedAgentValidationResult>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).
@@ -88,11 +152,26 @@ export interface AuthProvider extends Extension {
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
   /**
+   * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
+   * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,
+   * so implementations MUST send no Authorization header, MUST refuse redirects and non-HTTPS
+   * destinations (except a loopback HTTP literal), MUST NOT retry, log, or echo the URL, and MUST
+   * surface the server's closed enrollment-refusal sentence without trying to distinguish unknown,
+   * expired, revoked, or already-used tokens. `idpUrl`, when known from an existing registration,
+   * lets the provider refuse an ambiguous login+enrollment invocation before consuming the token.
+   * The caller validates and persists the returned material. Optional so a provider without this
+   * path fails loud at the caller rather than falling back to login provisioning.
+   */
+  postAgentEnrollment?(opts: { url: string; idpUrl?: string }): Promise<unknown>;
+  /**
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's
    * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state
-   * here, not a thrown one. Throws only when the space has no user-auth material in `store`/`dir`
-   * (there is nothing to report status about).
+   * here, not a thrown one. The IdP pins come from `dir` when the space was provisioned locally,
+   * or from the registry entry bound to that `dir` when it is a remote registration (a `meshes
+   * add --from` entry or catalog discovery) — in which case `grant` stays absent, since the ledger
+   * runs where the space was provisioned. Throws only when neither position exists (there is
+   * nothing to report status about).
    */
   userStatus(opts: { store: SecretStore; dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
   /**
@@ -172,6 +251,41 @@ export interface AuthProvider extends Extension {
    * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
    * runtime only runs an argv and reads a line. */
   readonly agentBearerCommand: string;
+}
+
+/** Non-secret proved account identity returned beside a catalog snapshot. */
+export interface AuthSpaceCatalogAccount {
+  idpUrl: string;
+  issuer: string;
+  sub: string;
+  /** Opaque machine-local ownership key. It contains no subject or credential material. */
+  ownerKey: string;
+  catalogUrl?: string;
+}
+
+/** One account's catalog preparation result. A failure keeps and returns the prior snapshot. */
+export interface AuthSpaceCatalogResult {
+  account: AuthSpaceCatalogAccount;
+  state: "fresh" | "updated" | "not-modified" | "no-catalog" | "failed";
+  snapshot?: unknown;
+  fetchedAt?: string;
+  error?: string;
+}
+
+/** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI.
+ *  `apply` runs inside the provider's catalog lock and must be idempotent: an interrupted
+ *  application is applied again from the cached snapshot by the next preparation. */
+export interface SpaceCatalogConsumer extends Extension {
+  readonly kind: "space-catalog-consumer";
+  validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+  apply(result: AuthSpaceCatalogResult): void;
+}
+
+export function resolveSpaceCatalogConsumer(): SpaceCatalogConsumer {
+  const consumers = registry.all<SpaceCatalogConsumer>("space-catalog-consumer");
+  if (consumers.length !== 1)
+    throw new Error(consumers.length === 0 ? "no space catalog consumer is registered in this build" : "multiple space catalog consumers are registered");
+  return consumers[0];
 }
 
 /** Provider-defined, versioned manifest-safe commitment. Callers compare both fields exactly. */

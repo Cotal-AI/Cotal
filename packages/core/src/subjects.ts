@@ -656,7 +656,9 @@ export function controlServiceSubject(space: string, service: string, owner: str
 export const CONTROL_DELIVERY = "delivery" as const;
 /** The delivery daemon's PRIVILEGED admin rail (the D5 rail-split): control-plane ops the daemon
  *  EXECUTES for the mesh's renewal/repair owner — credential reload (`reloadCreds`, the class-2
- *  standing-renewal adoption step) now; the live-eviction executor rides here next. Cred-enforced
+ *  standing-renewal adoption step); the store-identity challenge (`reloadStoreIdentity`,
+ *  so a two-root composition is refused before that remint, including a late-binding daemon); the live-eviction executor
+ *  rides here next. Cred-enforced
  *  caller set: only the manager's `supervisor` profile holds the request-publish grant (every agent
  *  cred is default-denied — nats-server is the boundary);
  *  the `delivery` cred holds the serve + bounded-reply side. */
@@ -959,6 +961,15 @@ export const MANAGER_LEASE_KEY = "lease";
 export function managerLeaseKey(instanceId: string): string {
   return `${MANAGER_LEASE_KEY}.${instanceId}`;
 }
+
+/** The per-SPACE daemon-credential renewal lease in {@link managerBucket} (#1634). Store identity
+ *  alone cannot pick one renewal owner: `sameSecretStoreIdentity` is pure equality, carrying no
+ *  holder and no tiebreak, so N managers sharing one store (a shared root, or one injected
+ *  coordinate on both) all satisfy it at once and all remint. Whoever holds this one key remints;
+ *  everyone else serves the space and skips it. Bucket TTL expires a crashed holder's key so a
+ *  survivor takes over. Deliberately OUTSIDE the `lease.*` subtree, which is per-instance liveness:
+ *  a manager's own-lease-only grant must not reach this one. */
+export const MANAGER_RENEWAL_LEASE_KEY = "renewal";
 
 /** Deterministic FNV-1a (32-bit) hash of `key` into `[0, n)` — stable across processes/restarts, so a
  *  shard assignment never moves under a running daemon. The Plane-3 partition seam (sharding):

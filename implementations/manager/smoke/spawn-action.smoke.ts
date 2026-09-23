@@ -20,7 +20,7 @@
  * Run: pnpm smoke:manager-spawn-action   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +33,11 @@ import {
   type ActionContext, type Connector, type EpCaller, type GoalRef, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
+import { censusCustodians, reapSeat, runMarker } from "@cotal-ai/seat";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+import { SMOKE_BROKER_TOKEN, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -62,6 +64,14 @@ const conns: NatsConnection[] = [];
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
+// A DISPOSABLE custody root for this run's seats (the pty runtime reads COTAL_SEAT_ROOT at
+// construction, so it must be set before the first `new Manager`). The M5 crash stop below
+// deliberately detaches live seats, and this suite - not the manager - reaps them on the way out;
+// a private root is what scopes that reap to seats this run launched. Every other seat suite on
+// this tree does the same; without it the suite writes into ~/.cotal/seats, a shared root this
+// run has no business claiming wholesale (#1791).
+const seatRoot = makeSeatRoot("spawnact-seats-");
+process.env.COTAL_SEAT_ROOT = seatRoot;
 for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1", "race"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 // A ROLE-LESS persona: its succeeded terminal data carries no `role`, which the strict
@@ -103,7 +113,7 @@ for (const c of [joinCon, exitCon, stuckCon, boomCon]) registry.register(c);
 const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
 let callNc!: NatsConnection;
 const callSpawn = (args: Record<string, unknown>) =>
-  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
+  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { events: false, ...args } }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
 const callDespawn = (t: { actor: string; lifecycleUid: string }) =>
   epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller, args: { graceful: false }, target: { mode: "owner", owner: DEV_OWNER, actor: t.actor, lifecycleUid: t.lifecycleUid } }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
 
@@ -141,7 +151,8 @@ const acc = (r: Awaited<ReturnType<typeof epCall>>) => (r.reply.data ?? {}) as R
 let mgr: InstanceType<typeof Manager> | undefined;
 
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-spawnact-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}spawnact-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
@@ -367,9 +378,27 @@ try {
   console.log(`\nspawn-action open-mesh functional smoke: ${pass} passed, ${fail} failed`);
 } finally {
   for (const c of conns) await c.drain().catch(() => c.close());
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
+  // The M5 crash stop detached the FIRST manager's seats on purpose: its goal had to stay orphaned
+  // so the successor reconciles it. That detached set is now this suite's to dispose of, and no
+  // manager alive owns it - `mgr` here is the successor, whose `withAgents` stop above reaches only
+  // its own (zero) agents. The root is this run's alone, so every custody record still in it is a
+  // seat this run launched whose custodian is alive (a settled custodian removes its own record);
+  // reap each by record - the reap verifies process identity before it signals anything - rather
+  // than leaving nine custodians x ~65 MB to the 10-minute unattended window (#1791). A reap that
+  // cannot PROVE a seat gone throws, which fails the suite loudly instead of quietly leaking.
+  const unsettled = readdirSync(seatRoot).filter((id) => /^[0-9a-f]{32}$/.test(id) && existsSync(join(seatRoot, id, "record.json")));
+  for (const id of unsettled) await reapSeat(seatRoot, id, { graceMs: 5_000 });
+  check("teardown: no live seat is left behind (every remaining custody record was reaped)",
+    readdirSync(seatRoot).filter((id) => existsSync(join(seatRoot, id, "record.json"))).length === 0,
+    { root: seatRoot, left: readdirSync(seatRoot) });
+  check("teardown: no custodian of this run outlives the suite (the CI shard-3 leak, as a cell)",
+    censusCustodians(runMarker()).length === 0,
+    { run: runMarker(), live: censusCustodians(runMarker()).map((c) => c.pid) });
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   await wait(200);
+  rmSync(workspaceRoot, { recursive: true, force: true });
+  rmSync(seatRoot, { recursive: true, force: true });
 }
 
 process.exit(fail > 0 ? 1 : 0);

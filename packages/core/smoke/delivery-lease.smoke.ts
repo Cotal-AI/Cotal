@@ -12,7 +12,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
+import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -40,6 +43,34 @@ const mkDaemon = async () =>
     card: { name: "delivery", role: "delivery", kind: "endpoint" },
   });
 
+/** Overwrite the shard-3 lease row from a THIRD-party cred (previousSeq CAS), the shape of a
+ *  foreign takeover this suite needs: a write the daemon did not make, landing on the row it holds. */
+const overwriteLeaseRow = async (previousSeq: number, info: Record<string, unknown>): Promise<void> => {
+  const id = newIdentity();
+  const nc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, id, "delivery"))),
+    inboxPrefix: `_INBOX_${id.id}`,
+    maxReconnectAttempts: 0,
+  });
+  try { await (await new Kvm(nc).open(deliveryBucket(space))).update(leaseKey(3), new TextEncoder().encode(JSON.stringify(info)), previousSeq); }
+  finally { await nc.close(); }
+};
+
+/** DELETE the shard-3 lease row from a third-party cred (previousSeq CAS) — the shape of the
+ *  bucket-TTL expiry or an operator clear the watch must also feel. */
+const deleteLeaseRow = async (previousSeq: number): Promise<void> => {
+  const id = newIdentity();
+  const nc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, id, "delivery"))),
+    inboxPrefix: `_INBOX_${id.id}`,
+    maxReconnectAttempts: 0,
+  });
+  try { await (await new Kvm(nc).open(deliveryBucket(space))).delete(leaseKey(3), { previousSeq }); }
+  finally { await nc.close(); }
+};
+
 let d1: CotalEndpoint | undefined, d2: CotalEndpoint | undefined;
 try {
   let up = false;
@@ -59,7 +90,7 @@ try {
 
   const before = await d1.readDeliveryLease(0);
   check("lease is NOT ready until the daemon marks it (responder bound)", before?.ready === false);
-  await d1.markDeliveryLeaseReady(0, rev1);
+  const readyRev = await d1.markDeliveryLeaseReady(0, rev1);
   const after = await d1.readDeliveryLease(0);
   check("lease reads ready + held by the first daemon after markReady", after?.ready === true && after?.holder === d1.card.id);
 
@@ -76,10 +107,343 @@ try {
   check("a ready lease held by another daemon does NOT answer for the one we launched", (await waitFor(d2.card.id)) === false);
   check("CONTROL: an unnamed holder (adopting a running daemon) still accepts any ready lease", await waitFor(undefined));
 
-  await d1.releaseDeliveryLease(0);
+  // #837 AGAIN, FROM THE LAUNCHER'S SIDE. The three cells above hand the wait `d1.card.id`, taken off
+  // a live endpoint object - so they grade the WAIT while assuming the hardest part, which is that a
+  // launcher can work out that string in the first place. It cannot read it off anything: it holds a
+  // creds FILE, and the process that will write the row does not exist yet. Deriving the bare nkey
+  // from that cred is the obvious move and is wrong, because the endpoint rewrites `card.id` to the
+  // principal dot-form before stamping it, so the comparison could only ever be false - the #837
+  // guarantee defeated by a test that never fires rather than by one that accepts anything. That is
+  // what `cotal up` actually did on every fresh launch until this was found in review (#1318).
+  const launchCreds = await mintCreds(auth, newIdentity(), "delivery");
+  const launched = new CotalEndpoint({
+    space, servers: SERVERS, creds: launchCreds, channels: [],
+    consume: false, watchPresence: false, registerPresence: false,
+    card: { id: idFromCreds(launchCreds), name: "delivery", role: "delivery", kind: "endpoint" },
+  });
+  launched.on("error", () => {}); await launched.start();
+  try {
+    const lrev = await launched.acquireDeliveryLease(1);
+    await launched.markDeliveryLeaseReady(1, lrev);
+    const row = await launched.readDeliveryLease(1);
+    // The launcher has ONLY the cred. This is the whole cell: does the value it can derive match the
+    // value the daemon wrote?
+    check("the holder a launcher derives from the cred alone MATCHES the row the daemon wrote",
+      deliveryLeaseHolderFor(launchCreds) === row?.holder,
+      { derived: deliveryLeaseHolderFor(launchCreds), written: row?.holder });
+    // REFUSING CONTROL: the derivation is not just returning whatever is in the row. A different
+    // cred must derive a holder that does NOT match.
+    check("CONTROL: a DIFFERENT cred derives a holder that does not match that row",
+      deliveryLeaseHolderFor(await mintCreds(auth, newIdentity(), "delivery")) !== row?.holder);
+    await launched.releaseDeliveryLease(1, (await launched.readDeliveryLeaseEntry(1))?.revision);
+  } finally { await launched.stop(); }
+
+  // A STALE REVISION RELEASES NOTHING, AND SAYS SO TO NOBODY. The release is a compare-and-swap,
+  // and `releaseDeliveryLease` swallows every error by design (at shutdown the broker may already be
+  // gone), so a token one step behind frees nothing and reports success. The row then claims the
+  // shard for the rest of the bucket TTL with no process behind it, and the next daemon is refused
+  // outright: "a live lease already exists". That is #1318's outage with no starvation and no broker
+  // fault anywhere, reached by an ordinary stop and restart.
+  //
+  // The token lags on ordinary interleavings, not only on faults. `markDeliveryLeaseReady` MOVES the
+  // row, so between the broker applying that write and the daemon assigning the returned value the
+  // cached revision is still the acquire token; a markReady that rejects after its write landed
+  // leaves the same lag permanently, since the daemon catches it (correctly - the renew loop
+  // repairs it). Either way the launcher can already have seen the row ready. So this grades the
+  // endpoint surface the daemon's shutdown depends on, rather than the daemon's own timing.
+  const st = await mkDaemon(); st.on("error", () => {}); await st.start();
+  try {
+    const stAcquired = await st.acquireDeliveryLease(2);
+    const stReady = await st.markDeliveryLeaseReady(2, stAcquired);
+    check("markReady MOVES the revision, so a token cached before it is stale", stReady !== stAcquired,
+      { acquired: stAcquired, afterReady: stReady });
+    // THE DEFECT: release with the pre-markReady token, exactly what the swallowed catch leaves.
+    await st.releaseDeliveryLease(2, stAcquired);
+    check("a release arguing a STALE revision leaves the row in place, silently",
+      (await st.readDeliveryLease(2)) !== undefined);
+    // ACCEPT CONTROL: the same call with the broker's current revision does free it, so the failure
+    // above is the token rather than the release being broken for every input.
+    await st.releaseDeliveryLease(2, (await st.readDeliveryLeaseEntry(2))?.revision);
+    check("CONTROL: releasing at the BROKER's current revision removes the row",
+      (await st.readDeliveryLease(2)) === undefined);
+    // THE CONSEQUENCE an operator feels: a replacement can claim the shard again.
+    const stNext = await mkDaemon(); stNext.on("error", () => {}); await stNext.start();
+    try {
+      let claimed = -1;
+      try { claimed = await stNext.acquireDeliveryLease(2); } catch { /* refused */ }
+      check("and a replacement daemon can then ACQUIRE the shard", claimed > 0, { claimed });
+      await stNext.releaseDeliveryLease(2, claimed > 0 ? claimed : undefined);
+    } finally { await stNext.stop(); }
+  } finally { await st.stop(); }
+
+  // RELEASE ARGUES THE REVISION IT LAST OWNED, and `markDeliveryLeaseReady` moved it, a release
+  // offering the stale `rev1` is refused, which is the correct outcome for a row that has moved on
+  // and the wrong one here, where this daemon genuinely still holds the shard.
+  await d1.releaseDeliveryLease(0, readyRev);
   let reacquired = false;
   try { await d2.acquireDeliveryLease(0); reacquired = true; } catch { /* still held */ }
   check("after release, a fresh daemon CAN acquire the freed lease", reacquired);
+
+  // ---- W: THE LEASE-LOSS WATCH — a row that changes hands must be FELT, not polled into view ----
+  // (#1596) Nothing but the renew interval observed the lease row, so a daemon whose shard was
+  // taken served a full renew period (~15s) before its next CAS failure said so: two processes on
+  // one shard's fan-out durable, reader and ctl.delivery responder for the whole window. The watch
+  // is the native JetStream answer: a KV watch FILTERED to the daemon's own lease key, the same
+  // ordered-consumer mechanism the presence and channel watchers ride, pushed the moment the
+  // broker applies the row's change. These cells grade the ENDPOINT surface (the daemon-side cell
+  // with the real process is in delivery-broker-coupling.smoke.ts):
+  //   W1 an own write (markReady) does NOT fire the trigger for a foreign row — no self-quiesce;
+  //   W2 a row overwritten by another incarnation fires the trigger within delivery latency
+  //      (bounded far under the renew period; the named bound is 5s, ~10x the measured latency);
+  //   W3 a DEL on the key fires the trigger too (gone's territory, same tree);
+  //   W4 the stop handle stops it, and a later write lands unobserved.
+  console.log("\nW. the lease-loss watch fires on foreign writes and deletes, not on our own");
+  const w1 = await mkDaemon(); w1.on("error", () => {}); await w1.start();
+  try {
+   const wrev = await w1.acquireDeliveryLease(3);
+   const events: Array<{ kind: string; holder?: string; mine: boolean }> = [];
+   const stopWatch = await w1.watchDeliveryLease(3, (info) => {
+     events.push({ kind: info === undefined ? "gone" : "put", holder: info?.holder, mine: info !== undefined && w1.ownsDeliveryLease(info) });
+   });
+   // W1: our own markReady replays/streams through the watch and must NOT count as a loss
+   // trigger. The cell asserts the daemon-side contract at the endpoint level: the event for an
+   // OWN row is an ordinary input the daemon answers itself (no quiesce). Here that is graded as
+   // "the event arrived and says mine" — the ownership test is the daemon's, `mine` proves the
+   // row content suffices for it.
+   await w1.markDeliveryLeaseReady(3, wrev);
+   let sawOwn = false;
+   for (let i = 0; i < 20 && !sawOwn; i++) {
+     sawOwn = events.some((e) => e.mine);
+     if (!sawOwn) await wait(100);
+   }
+   check("W1 a watch event for the daemon's OWN write reads as its own row (no loss trigger)", sawOwn);
+   // W2: overwrite the row from a second endpoint as a DIFFERENT incarnation (a replacement
+   // daemon re-reading the same creds file would present the same holder; the incarnation is
+   // what distinguishes runs), exactly the takeover the daemon must feel at once.
+   const taker = await mkDaemon(); taker.on("error", () => {}); await taker.start();
+   try {
+     const row = await w1.readDeliveryLeaseEntry(3);
+     if (row === undefined) throw new Error("no lease row to overwrite");
+     await overwriteLeaseRow(row.revision, { ...row.info, holder: taker.card.id, incarnation: "w2-overtaker", since: Date.now() });
+     const t0 = Date.now();
+     let foreign: { kind: string; holder?: string; mine: boolean } | undefined;
+     for (let i = 0; i < 50 && !foreign; i++) {
+       foreign = events.find((e) => !e.mine && e.kind === "put");
+       if (!foreign) await wait(100);
+     }
+     const foreignMs = Date.now() - t0;
+     check("W2 a row overwritten by another incarnation fires the trigger within 5s (delivery latency, not the renew period)",
+       foreign !== undefined && foreignMs < 5000, { foreignMs, foreign });
+     // W3: a DEL on the key must fire too (the gone branch runs the same tree).
+     const delRow = await w1.readDeliveryLeaseEntry(3);
+     if (delRow === undefined) throw new Error("no lease row to delete");
+     await deleteLeaseRow(delRow.revision);
+     let goneEvt: { kind: string; mine: boolean } | undefined;
+     for (let i = 0; i < 50 && !goneEvt; i++) {
+       goneEvt = events.find((e) => e.kind === "gone");
+       if (!goneEvt) await wait(100);
+     }
+     check("W3 a DELETE on the key fires the trigger (gone runs the same tree)", goneEvt !== undefined);
+   } finally { await taker.stop(); }
+   // W4: the stop handle stops the watch; later writes land unobserved. W3 deleted the key, so a
+   // fresh own-row is created (an event in itself, if the watch were still live) and then MOVED
+   // once more; both must land unobserved after the stop.
+   stopWatch();
+   const w4rev = await w1.acquireDeliveryLease(3);
+   await w1.markDeliveryLeaseReady(3, w4rev);
+   const before = events.length;
+   const w4row = await w1.readDeliveryLeaseEntry(3);
+   if (w4row === undefined) throw new Error("no lease row after re-acquire");
+   await overwriteLeaseRow(w4row.revision, { ...w4row.info, since: Date.now() });
+   await wait(1200);
+   check("W4 after the stop handle, later writes on the key land unobserved", events.length === before, { before, after: events.length });
+   await w1.releaseDeliveryLease(3, (await w1.readDeliveryLeaseEntry(3))?.revision);
+ } finally { await w1.stop(); }
+
+ // ---- Q: A REARM THAT FAILS PART-WAY MUST LEAVE THE ENDPOINT QUIESCED (found in review) ----
+  // `armPlane3` binds in four stages, so it can fail with some of them up. The first version of
+  // `rearmPlane3` cleared `plane3Quiesced` BEFORE calling it, which looks equivalent and is not: on a
+  // throw the endpoint recorded itself un-quiesced while unbound, every later `rearmPlane3` returned at
+  // the `!plane3Quiesced` guard WITHOUT retrying, and `resumeServing` went on to flip the lease READY.
+  // A transient broker error therefore became a permanent readiness lie: the daemon advertises a
+  // responder it does not have. That is #1318's outage hiding in the readiness flag instead of the exit
+  // path, so the recovery this branch added would have re-introduced the class it exists to remove.
+  //
+  // The failure is injected at the BROKER, not with a stub: the fan-out durable is replaced by one with
+  // an incompatible config, so the real `runFanout` gets a real `consumer already exists` from a real
+  // nats-server. Nothing here is mocked, and the arm path under test is the shipped one.
+  const d3 = await mkDaemon(); d3.on("error", () => {}); await d3.start();
+  await d3.startPlane3(() => undefined);
+  check("Q1 CONTROL: a healthy Plane-3 endpoint reports itself serving (not quiesced)", d3.plane3IsQuiesced() === false);
+
+  await d3.quiescePlane3();
+  check("Q2 CONTROL: quiescing records the endpoint as not serving", d3.plane3IsQuiesced() === true);
+
+  // Make the next fan-out bind fail, at the broker.
+  // The `delivery` role is the one the broker grants consumer-create on the chat stream, which is the
+  // same grant the daemon itself arms with. A provisioner cred is refused here, correctly.
+  const conflictNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }) });
+  const jsmConflict = await jetstreamManager(conflictNc);
+  const chat = chatStream(space);
+  await jsmConflict.consumers.delete(chat, FANOUT_DURABLE).catch(() => {});
+  // An ack policy the daemon's own config contradicts, so `runFanout` gets a real
+  // `consumer already exists` from a real broker rather than a stubbed rejection.
+  await jsmConflict.consumers.add(chat, { ...fanoutDurableConfig(space), ack_policy: AckPolicy.None, durable_name: FANOUT_DURABLE });
+
+  let rearmThrew = false;
+  try { await d3.rearmPlane3(); } catch { rearmThrew = true; }
+  check("Q3 a rearm whose binding fails at the broker THROWS rather than reporting success", rearmThrew);
+  // THE DEFECT. Pre-fix this read false: the flag was cleared before the throw.
+  check("Q4 and the endpoint is STILL QUIESCED after that failure, not silently un-quiesced", d3.plane3IsQuiesced() === true);
+
+  // The consequence that made it a merge blocker: a later retry must actually retry. Pre-fix the
+  // second call returned `ok` at the `!plane3Quiesced` guard WITHOUT binding anything, so the caller
+  // marked the lease ready over an endpoint with no fan-out at all.
+  let secondRearmThrew = false;
+  try { await d3.rearmPlane3(); } catch { secondRearmThrew = true; }
+  check("Q5 a LATER retry still attempts the bind (it fails again while the conflict stands)", secondRearmThrew);
+  check("Q6 and it is still quiesced, so readiness is never claimed over missing bindings", d3.plane3IsQuiesced() === true);
+
+  // Clear the conflict: the same retry path must now genuinely recover, or the fix has merely
+  // converted a readiness lie into a daemon that can never come back.
+  await jsmConflict.consumers.delete(chat, FANOUT_DURABLE).catch(() => {});
+  await d3.rearmPlane3();
+  check("Q7 REFUSING CASE: once the broker recovers, the SAME retry path resumes serving", d3.plane3IsQuiesced() === false);
+  const fanoutBack = await jsmConflict.consumers.info(chat, FANOUT_DURABLE).then(() => true, () => false);
+  check("Q8 and the fan-out durable is really bound again, read from the broker", fanoutBack);
+
+  // ── V. A UNIT ALREADY IN FLIGHT MUST NOT TAKE EFFECT AFTER THE QUIESCE ─────────────────
+  //
+  // A REVIEWER FINDING, and it is the half of "one server" that unsubscribing cannot deliver.
+  // `quiescePlane3` stops NEW work: it unsubscribes the responders and stops the consumers. It
+  // cannot recall work already dispatched. A handler that entered before the freeze and awaited
+  // broker I/O inside it RESUMES after it, and the ordering that makes that a split rather than a
+  // blip is: the loser accepts a request and awaits, the loser is descheduled, the successor
+  // acquires the shard and flips its lease READY, the loser resumes and answers for a shard it no
+  // longer holds. Two live servers on one shard, which is what the lease exists to prevent.
+  //
+  // THE STARVATION SUITE'S CELL G COULD NOT SEE THIS, and that is the point of adding it here: G
+  // reads subscription counts and parked pulls, and INJECTS NO TRAFFIC, so a daemon with no work in
+  // flight looks identical to one whose in-flight work is about to land. The effect is the REPLY,
+  // not the binding. So this drives the real `ctl.delivery` rail over the wire and grades what the
+  // caller actually receives.
+  console.log("\nV. work dispatched before a quiesce must not act after it");
+  // SOLE SERVER ON THE RAIL, or this cell grades nothing. `serveControl` subscribes with a QUEUE
+  // group, so every endpoint this suite has started is a candidate responder for the same subject.
+  // The first version of this cell left them up, and V3 went green-then-red on `ok:true` served by a
+  // DIFFERENT daemon - which is correct queue behaviour and says nothing about the one under test.
+  // The others are stopped first so the only endpoint that can answer is the one being quiesced.
+  for (const other of [d1, d2, d3]) { try { await other?.stop(); } catch { /* ignore */ } }
+  d1 = undefined; d2 = undefined;
+
+  // A FRESH daemon with a REAL ACL resolver: d3 above is mid-experiment (quiesced and rearmed by the
+  // Q cells) and was started with a stub resolver that answers no ACL at all, so it cannot serve a
+  // control request and could never provide the accept control this cell needs.
+  const dv = await mkDaemon(); dv.on("error", () => {}); await dv.start();
+  await dv.startPlane3((owner, lifecycleUid) => dv.aclForOwner(owner, lifecycleUid));
+  const vIdentity = newIdentity();
+  const vLifecycleUid = mintLifecycleUid();
+  const vNoop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+  const vCreds = await provisionAgent(vNoop, auth, vIdentity, { subscribe: [], allowSubscribe: [], lifecycleUid: vLifecycleUid });
+  const vNc = await connect({
+    servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(vCreds)),
+    inboxPrefix: `_INBOX_${vIdentity.id}`, maxReconnectAttempts: 0,
+  });
+  try {
+    const vSubject = controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, vIdentity.id);
+    // BOUND REPLY, because the rail demands it: `serveControl(..., { boundReply: true })` answers only
+    // when `m.reply` sits under the authenticated request subject, which is the confused-deputy
+    // defence. A plain `nc.request()` uses an `_INBOX_` reply and is silently never answered - it
+    // cost this cell two red accept controls before the harness was fixed, which is the harness
+    // being broken rather than the daemon.
+    const ask = async (): Promise<{ ok?: boolean; error?: string } | undefined> => {
+      const replyTo = `${vSubject}.reply.${randomUUID()}`;
+      const inbox = vNc.subscribe(replyTo, { max: 1 });
+      // An EMPTY body is a real outcome here, not a parse bug: once the rail is unsubscribed nobody
+      // answers, and the race below resolves undefined. Decode defensively so "no answer" reports as
+      // no answer rather than throwing out of the suite.
+      const answer = (async () => {
+        for await (const m of inbox) {
+          try { return m.json<{ ok?: boolean; error?: string }>(); } catch { return { error: "unparseable reply" }; }
+        }
+        return undefined;
+      })();
+      vNc.publish(vSubject, new TextEncoder().encode(JSON.stringify({
+        op: "listMemberships", args: { lifecycleUid: vLifecycleUid },
+        from: { id: `${DEV_OWNER}.${vIdentity.id}`, name: "v-caller", kind: "agent" }, // the subject encodes owner.actor; `from.id` must be that dot-form, not the bare nkey
+      })), { reply: replyTo });
+      await vNc.flush();
+      const out = await Promise.race([answer, wait(2500).then(() => undefined)]);
+      try { inbox.unsubscribe(); } catch { /* already gone */ }
+      return out;
+    };
+    // ACCEPT CONTROL FIRST, so a refusal below is the fence rather than a rail that never worked.
+    const vServing = await ask();
+    check("V1 CONTROL: while serving, the control rail ANSWERS this caller", vServing?.ok === true, vServing);
+    // Now the daemon stops serving the shard, exactly as a failed renew makes it.
+    await dv.quiescePlane3();
+    check("V2 the endpoint records itself as not serving", dv.plane3IsQuiesced() === true);
+    const vQuiesced = await ask();
+    // The subscription is gone, so the honest outcomes are "no reply" or "a refusal". What must
+    // NEVER happen is an ok:true answer served for a shard this daemon has stopped serving.
+    check("V3 a request is NOT answered ok by a daemon that has stopped serving the shard",
+      vQuiesced?.ok !== true, vQuiesced);
+    // REFUSING CASE, and it is what keeps V3 from passing on a permanently dead rail: the same call
+    // is answered again once ownership is re-proven and serving resumes.
+    await dv.rearmPlane3();
+    const vBack = await ask();
+    check("V4 REFUSING CASE: once serving resumes, the SAME request is answered again", vBack?.ok === true, vBack);
+
+    // V5-V6 ARE THE CELLS THAT ACTUALLY GRADE THE FENCE, and V3 above is NOT one of them: with the
+    // rail unsubscribed nobody answers at all, so V3 stays green with every fence removed. Measured,
+    // not assumed - that control is why these two exist.
+    //
+    // The ordering under test is the one three reviewers described: a request ADMITTED while serving,
+    // descheduled inside its broker read, resuming after a successor has taken the shard. It is
+    // reproduced by quiescing WHILE the request is in flight rather than before it, so the handler
+    // entered through a live subscription and returns through a stood-down daemon.
+    //
+    // THE HANDOFF IS OBSERVED, NOT TIMED. The first version slept 1ms and hoped the request had
+    // reached the handler. Two reviewers caught it: when the sleep loses, `quiescePlane3` unsubscribes
+    // the rail BEFORE dispatch, the broker answers 503 No Responders with an EMPTY body, and V6 sees
+    // "unparseable reply" instead of the named refusal. Reproduced by them, not by me - my own six
+    // consecutive runs were green, which is exactly why a sleep is the wrong instrument: it fails on
+    // someone else's machine and passes on mine.
+    //
+    // So the test WAITS FOR THE HANDLER TO SAY IT IS INSIDE. `ownerMemberships` is the await the real
+    // handler parks on, so wrapping it gives the exact ordering under test: entered through a live
+    // subscription, released after the quiesce has run. No sleep, no race, and it cannot pass by
+    // accident on a fast host.
+    let sawEntry!: () => void;
+    const entered = new Promise<void>((res) => { sawEntry = res; });
+    let releaseHandler!: () => void;
+    const held = new Promise<void>((res) => { releaseHandler = res; });
+    const realOwnerMemberships = dv.ownerMemberships.bind(dv);
+    (dv as unknown as { ownerMemberships: typeof realOwnerMemberships }).ownerMemberships = async (owner, uid) => {
+      sawEntry();                        // "I am inside the handler, past its entry check"
+      await held;                        // park here exactly as a slow broker read would
+      return realOwnerMemberships(owner, uid);
+    };
+    const inflight = ask();
+    await entered;                 // PROVEN in the handler, not presumed
+    await dv.quiescePlane3();      // the successor has taken the shard; this daemon stands down
+    releaseHandler();              // the parked handler resumes into a stood-down daemon
+    const vInflight = await inflight;
+    check("V5 a request admitted BEFORE the quiesce is not answered ok after it", vInflight?.ok !== true, vInflight);
+    // NO LONGER TOLERATES `undefined`. With the ordering proven rather than raced, "no answer" is a
+    // real failure: the handler WAS admitted, so the caller is owed a named refusal it can retry on.
+    check("V6 and it is refused BY NAME rather than dropped or answered with an empty body",
+      /stopped serving this shard/.test(vInflight?.error ?? ""), vInflight);
+    (dv as unknown as { ownerMemberships: typeof realOwnerMemberships }).ownerMemberships = realOwnerMemberships;
+  } finally {
+    try { await vNc.close(); } catch { /* ignore */ }
+    try { await dv.stop(); } catch { /* ignore */ }
+  }
+
+  // d3 was stopped above, before the V cells took sole ownership of the control rail.
+  // Drain the observer connection, or the suite's event loop stays alive on an open socket and the
+  // run hangs after the last cell instead of exiting.
+  try { await conflictNc.close(); } catch { /* ignore */ }
 
   console.log(`\nDELIVERY-LEASE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

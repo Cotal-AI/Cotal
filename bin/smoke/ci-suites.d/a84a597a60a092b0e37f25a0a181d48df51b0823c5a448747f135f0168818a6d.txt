@@ -1,0 +1,5 @@
+# A spawn that launched its seat and then threw, rolled back by the manager that launched it. The
+# handle is gone with the stack frame, so the rollback reaps the seat through the custody reference
+# the spawn reserved and carried on its rollback object. Its own suite because the two sibling
+# orphan-seat suites both wait out a manager liveness lease and this one waits for nothing.
+smoke:orphan-seat-rollback

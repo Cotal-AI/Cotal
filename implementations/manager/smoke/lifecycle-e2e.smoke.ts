@@ -35,7 +35,7 @@ import {
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -169,13 +169,14 @@ try {
     evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
       servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
     }),
+    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(workspaceRoot) }),
   });
   await mgr.start();
 
   // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered
   // renewal pass and persists the audit record — here with both daemon files absent (no delivery
   // daemon staged), recorded honestly as skips, never a fabricated adoption.
-  const renewalPath = join(workspaceRoot, ".cotal", "renewal.json");
+  const renewalPath = renewalRecordPath(workspaceRoot, space);
   check("manager start writes the renewal audit record", existsSync(renewalPath));
   {
     const rec = JSON.parse(readFileSync(renewalPath, "utf8")) as { owner?: string; results?: Array<{ file: string; ok: boolean; skipped?: string }>; adoption?: unknown };
@@ -185,7 +186,7 @@ try {
 
   // 1 — STARTED via real presence + footprint exists.
   console.log("1. real spawn → started via presence:");
-  const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot });
+  const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("startAgent reports started (agent joined the mesh)", r1.ok === true, r1);
   const id1 = (r1.data as { id?: string } | undefined)?.id ?? "";
   const uid1 = uidOf("w1"); // capture the manager-minted uid while w1 is still managed (despawn clears it)
@@ -210,7 +211,7 @@ try {
 
   // 3 — FAILED launch: process exits on arrival → {ok:false} + footprint rolled back.
   console.log("3. die-on-arrival → failed + footprint rolled back:");
-  const r3 = await mgr.startAgent({ name: "bad1", agent: "e2e-die", cwd: repoRoot });
+  const r3 = await mgr.startAgent({ name: "bad1", agent: "e2e-die", cwd: repoRoot, events: false });
   check("startAgent reports {ok:false}", r3.ok === false, r3);
   check("failure names 'exited on launch'", /exited on launch/.test((r3 as { error?: string }).error ?? ""), (r3 as { error?: string }).error);
   // The die connector still provisioned before it exited; that footprint must be torn down. Its id isn't
@@ -224,7 +225,7 @@ try {
   // backstop → {ok:false} uncertain, and the agent is KEPT (not deprovisioned; it may still be booting).
   console.log("3b. runs-but-never-joins → uncertain + kept:");
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000; // shrink the backstop for the test
-  const r3b = await mgr.startAgent({ name: "idle1", agent: "e2e-idle", cwd: repoRoot });
+  const r3b = await mgr.startAgent({ name: "idle1", agent: "e2e-idle", cwd: repoRoot, events: false });
   check("startAgent reports {ok:false}", r3b.ok === false, r3b);
   check("failure names it 'uncertain'", /uncertain/i.test((r3b as { error?: string }).error ?? ""), (r3b as { error?: string }).error);
   const idleId = (mgr as unknown as { agents: Map<string, { id: string; agent: string }> }).agents.get("idle1")?.id ?? "";
@@ -249,11 +250,11 @@ try {
         return Object.keys(info.state.subjects ?? {});
       });
     const before = new Set(await presenceKeys());
-    const rNo = await mgr.startAgent({ name: "nouid1", agent: "e2e-nouid", cwd: repoRoot });
+    const rNo = await mgr.startAgent({ name: "nouid1", agent: "e2e-nouid", cwd: repoRoot, events: false });
     check("a launch whose connector DROPS the launcher uid never reports started", rNo.ok === false, rNo);
-    const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot });
+    const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot, events: false });
     check("a consuming launch that LIES a different uid never reports started (bind denied)", rWrong.ok === false, rWrong);
-    const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot });
+    const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot, events: false });
     check("a REGISTER-ONLY (consume:false) launch that lies a uid never reports started (dm_ proof denied)", rWrongReg.ok === false, rWrongReg);
     const added = (await presenceKeys()).filter((k) => !before.has(k));
     check("NONE of the fail-before-presence launches left a presence ghost (dropped/lying uid, consume or register-only)", added.length === 0, added);
@@ -263,25 +264,25 @@ try {
     // readiness LIFECYCLE FENCE rejects it anyway - client-authored kind is not the authority
     // boundary; the manager owns the expected uid, so the ghost never reports STARTED.
     (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000;
-    const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot });
+    const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot, events: false });
     check("a kind:endpoint child with a lied uid never reports STARTED (manager readiness lifecycle fence, not client kind)",
       rBypass.ok === false && /uncertain/i.test((rBypass as { error?: string }).error ?? ""), rBypass);
     (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000;
   }
 
-  // 4 — SHUTDOWN teardown: stop() deprovisions the still-managed agents (w2 + the kept idle1).
-  console.log("4. manager stop() → still-managed footprint torn down:");
-  const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot });
+  // 4 — EXPLICIT SHUTDOWN teardown: withAgents deprovisions the still-managed agents (w2 + the kept idle1).
+  console.log("4. manager stop({ withAgents: true }) → still-managed footprint torn down:");
+  const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("second agent started", r4.ok === true, r4);
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
   const uid2 = uidOf("w2"); // capture before stop() clears the managed set
   check("w2 footprint exists before stop", (await footprint(id2, uid2, "w2")).dm, await footprint(id2, uid2, "w2"));
-  await mgr.stop(); // awaits teardownManagedAgents → deprovision
+  await mgr.stop({ withAgents: true }); // awaits teardownManagedAgents → deprovision
   const fp2 = await footprint(id2, uid2, "w2");
-  check("w2 dm_ durable gone after stop()", !fp2.dm, fp2);
-  check("w2 dlv_ durable gone after stop()", !fp2.dlv, fp2);
-  check("w2 read-ACL row gone after stop()", !fp2.acl, fp2);
-  check("w2 creds file gone after stop()", !fp2.creds, fp2);
+  check("w2 dm_ durable gone after explicit stop", !fp2.dm, fp2);
+  check("w2 dlv_ durable gone after explicit stop", !fp2.dlv, fp2);
+  check("w2 read-ACL row gone after explicit stop", !fp2.acl, fp2);
+  check("w2 creds file gone after explicit stop", !fp2.creds, fp2);
 
   console.log(`\nLIFECYCLE E2E ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
@@ -289,7 +290,7 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  try { await mgr.stop(); } catch { /* already stopped */ }
+  try { await mgr.stop({ withAgents: true }); } catch { /* already stopped */ }
   await delivery?.stop().catch(() => {});
   srv.kill("SIGKILL");
   await wait(300);

@@ -37,15 +37,17 @@ import {
   validateCanonicalBackupStreamConfig,
   validatePersistentConsumerInventory,
 } from "../src/index.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = 12000 + Math.floor(Math.random() * 8000);
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = `backup_${randomUUID().slice(0, 8)}`;
-const dir = mkdtempSync(join(tmpdir(), "cotal-backup-live-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}backup-live-`));
 const auth = await createSpaceAuth(space);
 const configPath = join(dir, "server.conf");
 writeFileSync(configPath, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const server = spawn("nats-server", ["-c", configPath], { stdio: "ignore" });
+teardownOnSignal(server, configPath);
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (timeoutMs = 3000): Promise<void> => new Promise((resolve) => {
   if (server.exitCode !== null || server.signalCode !== null) return resolve();

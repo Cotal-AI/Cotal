@@ -85,8 +85,10 @@ they self-register into. The wire standard — depends on nothing else in the re
 over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
 helpers, and the command-copy renderer. Depends on core; not part of the wire standard.
 - `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
-suites — currently the broker ownership that kills a spawned `nats-server` when a suite is
-*signalled* rather than only when it returns. Never published and never imported by shipped code
+suites — the broker ownership that kills a spawned `nats-server` when a suite is
+*signalled* rather than only when it returns, and the spawn-site census behind
+`pnpm smoke:broker-migration`, which walks `git ls-files` and fails when any suite starts a broker
+the reaper cannot claim or the helper cannot kill. Never published and never imported by shipped code
 (enforced by `pnpm smoke:core-boundary`); it has no `dist`, so there is no build step and no
 compiled second copy that can disagree with the source.
 - `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language, as
@@ -153,7 +155,9 @@ fix works. If you can't reproduce it, report that and stop, don't ship a guess.
 mutation-proof` breaks the implementation on purpose and requires the suite to go red **on the
 assertion you name**. It refuses an absent or ambiguous target, refuses a dirty tree (git must be
 your recovery, not the tool), refuses an already-red suite, verifies its own restore, and reports
-`SURVIVED` rather than a pass when the suite fails to notice. Red alone is not proof: an unrelated
+`SURVIVED` rather than a pass when the suite fails to notice. A proof that is killed cannot
+restore, so it records what it broke before it breaks it: the next run puts the file back, and
+`node scripts/mutation-proof.mjs --recover` does only that. Red alone is not proof: an unrelated
 early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
 real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.

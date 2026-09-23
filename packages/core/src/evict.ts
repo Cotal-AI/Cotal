@@ -233,7 +233,7 @@ async function kick(evictorConn: NatsConnection, conn: LiveConn): Promise<void> 
  */
 export async function evictDeniedPrincipal(
   observerConn: NatsConnection,
-  evictorConn: NatsConnection,
+  evictorConn: NatsConnection | (() => Promise<NatsConnection>),
   accountId: string,
   principal: string,
   options: EvictOptions = {},
@@ -249,14 +249,17 @@ export async function evictDeniedPrincipal(
     return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note: "CONNZ scan under-reported (no responder or truncated) - eviction UNKNOWN, not attempted" };
 
   const targets = first.conns.filter((c) => c.principal === principal);
+  // A complete scan that matches nothing is verified-gone on its own. The evictor supplier is not
+  // called: there is no connection to kick. A live match still needs it.
   if (targets.length === 0)
     return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, note: "principal not currently live - nothing to evict" };
+  const kicker = typeof evictorConn === "function" ? await evictorConn() : evictorConn;
 
   let kicked = 0;
   let note: string | undefined;
   for (const t of targets) {
     try {
-      await kick(evictorConn, t);
+      await kick(kicker, t);
       kicked++;
     } catch (e) {
       note = e instanceof Error ? e.message : String(e);
@@ -274,7 +277,7 @@ export async function evictDeniedPrincipal(
       return { principal, kicked, remaining: 0, verifiedGone: true, scanComplete: true, note };
     // Still live — kick the fresh cids and try again (bounded by maxVerifyRounds).
     for (const t of still) {
-      try { await kick(evictorConn, t); kicked++; } catch (e) { note = e instanceof Error ? e.message : String(e); }
+      try { await kick(kicker, t); kicked++; } catch (e) { note = e instanceof Error ? e.message : String(e); }
     }
     if (round === opts.maxVerifyRounds - 1)
       return { principal, kicked, remaining: still.length, verifiedGone: false, scanComplete: true, note: note ?? `${still.length} connection(s) still live after ${opts.maxVerifyRounds} verify rounds - is deny-new committed?` };
@@ -687,14 +690,18 @@ export async function observePrincipalLivenessWithCreds(opts: {
 }
 
 /** Creds-level wrapper for composition roots that hold the two $SYS creds as FILES/strings (the
- *  delivery daemon's admin-rail executor): open the observer (under its granted inbox prefix) and
- *  the kick-only evictor PER CALL, run {@link evictDeniedPrincipal}, and drain both — eviction is a
- *  rare repair/flip step, never a standing $SYS connection. Core owns the connection lifecycle
+ *  delivery daemon's admin-rail executor): open the observer (under its granted inbox prefix) PER
+ *  CALL. The kick-only evictor is opened only when {@link evictDeniedPrincipal} finds a live match.
+ *  A complete scan that matches nothing answers verified-gone without the evictor credential
+ *  entering memory or a connection. A live match with no evictor credential throws. Eviction stays
+ *  a rare repair/flip step, never a standing $SYS connection. Core owns the connection lifecycle
  *  (the same placement rule as the membership feed), so edge packages never import the transport. */
 export async function evictDeniedPrincipalWithCreds(opts: {
   servers: string;
   observerCreds: string;
-  evictorCreds: string;
+  evictorCreds?: string;
+  /** Loaded only after a complete scan finds a live match. Wins over `evictorCreds` when both are set. */
+  openEvictor?: () => Promise<string>;
   accountId: string;
   principal: string;
   options?: EvictOptions;
@@ -706,18 +713,21 @@ export async function evictDeniedPrincipalWithCreds(opts: {
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
     maxReconnectAttempts: 0,
   });
+  let evictor: NatsConnection | undefined;
   try {
-    const evictor = await connect({
-      servers: opts.servers,
-      authenticator: credsAuthenticator(enc(opts.evictorCreds)),
-      maxReconnectAttempts: 0,
-    });
-    try {
-      return await evictDeniedPrincipal(observer, evictor, opts.accountId, opts.principal, opts.options ?? {});
-    } finally {
-      await evictor.drain().catch(() => {});
-    }
+    return await evictDeniedPrincipal(observer, async () => {
+      const creds = opts.openEvictor ? await opts.openEvictor() : opts.evictorCreds;
+      if (creds === undefined)
+        throw new Error("evictDeniedPrincipal: a live match requires the kick-only evictor credential");
+      evictor = await connect({
+        servers: opts.servers,
+        authenticator: credsAuthenticator(enc(creds)),
+        maxReconnectAttempts: 0,
+      });
+      return evictor;
+    }, opts.accountId, opts.principal, opts.options ?? {});
   } finally {
+    if (evictor) await evictor.drain().catch(() => {});
     await observer.drain().catch(() => {});
   }
 }

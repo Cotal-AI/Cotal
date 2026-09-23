@@ -1,0 +1,2 @@
+# A starved host must report itself (L4025) and complete a late `sleep`, while a genuine plane fault still fails L4000.
+smoke:runtime-host-starvation

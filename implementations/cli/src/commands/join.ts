@@ -19,6 +19,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
+import { findMesh, refreshRegistrationPolicy, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { c, statusBadge } from "../ui.js";
@@ -38,8 +39,16 @@ function renderJoinAuthError(e: unknown, space: string): boolean {
     return true;
   }
   if (/authoriz|permission|not authorized/i.test(msg)) {
+    // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
+    // unexpired creds spent days pursuing that hypothesis. A durable join is authorized by the
+    // delivery daemon off the ACL row, so when its responder is not bound the broker denies the
+    // consumer the join needs and the failure surfaces here as a permission error — indistinguishable
+    // from a genuinely bad credential unless this sentence says so. Credentials remain the first
+    // cause because they usually are; the daemon is now named as the second rather than left out.
     console.error(
-      c.red(`not authorized to join ${space}'s channels - pass --creds/--token, or ask the mesh operator for a join link.`),
+      c.red(`not authorized to join ${space}'s channels.\n`) +
+        c.red(`  - if your credentials are wrong or missing: pass --creds/--token, or ask the mesh operator for a join link.\n`) +
+        c.red(`  - if they are valid: the space's DELIVERY DAEMON may not have its responder bound, which denies durable joins with this same message. Ask the operator to check \`cotal status --components\` (delivery row); a join needs it bound.`),
     );
     return true;
   }
@@ -111,6 +120,17 @@ export async function join(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
+    let registeredPolicy: MeshEntry["policy"];
+    try {
+      registeredPolicy = await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+    if (registeredPolicy?.events === "required") {
+      console.error(c.red(`✗ space "${space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
+      process.exit(1);
+    }
     refuseStaticCredsForKnownUserAuthOrExit(space, server, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
@@ -126,6 +146,17 @@ export async function join(args: ParsedArgs): Promise<void> {
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+    let policy: typeof target.policy;
+    try {
+      policy = await refreshRegistrationPolicy(target);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+    if (policy?.events === "required") {
+      console.error(c.red(`✗ space "${target.space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
+      process.exit(1);
+    }
     space = target.space;
     server = target.server;
     // USER-auth mesh: interactive join self-provisions a STATIC agent identity, which is the wrong

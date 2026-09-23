@@ -11,7 +11,7 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-08-24. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-09-22. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.5 binding revision: workflow runs.** A deployment MAY host **durable workflow runs**: programs
@@ -282,6 +282,11 @@ as described in §11:
 - `{ "kind": "artifact", "name": string, "mediaType": string, "digest": string, "size": number }`
 - `{ "kind": "<reverse-DNS extension kind>", ... }`
 
+A `data` part's `data` MUST be a JSON value at every depth; a publisher MUST refuse the part
+rather than serialize a value JSON cannot represent, naming the offending member's path (a
+top-level `undefined` serializes to a keyless `{"kind":"data"}` object, and `NaN`, a `Date`,
+or a class instance would be silently rewritten rather than refused).
+
 An `artifact` part REFERENCES bytes held outside the message. `digest` MUST be
 `sha256:<lowercase hex>` over the raw bytes and is the artifact's identity; the part carries no
 location, so resolution is the receiver's. `name`, `mediaType`, and `size` are the publisher's
@@ -335,6 +340,8 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | --- | --- | --- | --- |
 | `card` | `AgentCard` | MUST | identity record |
 | `status` | `PresenceStatus` | MUST | `idle`, `waiting`, `working`, or `offline` |
+| `condition` | `PresenceCondition` | MAY | harness-reported structured condition. Missing means nothing was reported. A connector relays the harness signal and MUST NOT infer a condition itself |
+| `environment` | string | MAY | opaque reference whose meaning belongs to the provider that issued it. Core MUST NOT parse it |
 | `activity` | string | MAY | freeform current activity |
 | `attention` | `AttentionMode` | MAY | global attention mode: `open` \| `dnd` \| `focus`. Advisory observability; `open`/absent ⇒ receives everything. Reset: `open` published on `SessionStart`, removed on the offline sweep |
 | `lifecycleUid` | string | MUST in auth mode from v0.4 | the current managed-lifecycle UID (§13.1); distinguishes a live instance from a same-name successor. Advisory for display; authority checks use the trusted lifecycle mapping, not presence |
@@ -352,7 +359,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata; reserved keys include `connector` (host harness name), `model` (pinned model), and `host` (the machine the session runs on, self-reported by that machine), all advisory only |
+| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -363,6 +370,17 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 `offline` presence record. Observers MUST also derive `offline` from stale timestamps and
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
+Readers MUST drop a record whose `card.id` differs from its KV key and SHOULD report the
+rejection on their recoverable diagnostic path.
+
+`PresenceCondition`:
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `code` | `PresenceConditionCode` | MUST | `rate_limit` \| `overloaded` \| `auth` \| `billing` \| `budget` \| `context` \| `model` \| `request` \| `server` \| `retrying` \| `approval` \| `input` \| `failed` |
+| `source` | string | MAY | harness-native value, relayed verbatim |
+| `message` | string | MAY | free text from the harness |
+| `since` | number | MAY | epoch ms when the condition began |
 
 ---
 
@@ -750,6 +768,9 @@ exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry 
 client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
 every connect: the callout then mints the connection as the named elevated profile (Appendix B:
 `admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
+On a public exchange face, only `channel-writer` and `channel-purger` MAY be issued, still
+re-authorized against ledger scope `admin`; `admin`, `purger`, `deployer`, and `manager-service`
+MUST remain loopback-only. A managed-agent secret exchange MUST still refuse every view.
 
 ---
 
@@ -1365,6 +1386,16 @@ per mode, zero to three pinned target tokens between the command and the caller:
 | Scatter | as class forms with mode token `all` | 10-14 |
 | Instance | `cotal.<space>.ep.inst.<endpoint>.<instanceId>.<command>[.<authz>[.<target tokens per mode>]].<owner>.<actor>.<uid>.<nonce>` | 11-15 |
 | Reply | `cotal.<space>.ep.reply.<endpoint>.<instanceId>.<epoch>.<owner>.<actor>.<uid>.<nonce>` | 11 |
+| Versioned rail (§13.15) | every form above with `ep.v1` in place of `ep` and `<generation>` inserted between `<uid>` and `<nonce>` | 12-17 |
+
+**The versioned rail.** An **issued** caller (§13.15) rides `cotal.<space>.ep.v1.…`: the same
+forms, one more token, the caller's issued `<generation>` (32 lowercase hex characters), placed
+between `<uid>` and `<nonce>` on every request and reply form. The legacy `ep.` rail and the
+`ep.v1.` rail are disjoint subject spaces at the broker: an issued credential holds rows on the
+versioned rail only, a legacy credential holds rows on the legacy rail only, and an endpoint
+serves both. A responder derives the reply subject from the authenticated request subject on
+whichever rail it arrived, generation included. `v1` versions the rail encoding, not the
+protocol.
 
 **Single-owner endpoint names (normative).** An endpoint name binds to exactly ONE owner
 (§13.9: operator-provisioned core names, domain-owner-bound reverse-DNS names), so the name
@@ -1847,7 +1878,11 @@ facts.
 - **cast**, the same subjects and grants (`replyExpected: false`): fire-and-forget,
   at-most-once, the responder MUST NOT reply and the caller never reads the rail (the nonce
   is present but unused). A cast to a journaled command is `class-mismatch`; journaled work
-  goes through submissions.
+  goes through submissions. In the NATS binding a publish violation is asynchronous — the
+  publish call returns normally while the broker refuses — so a caller-side cast
+  implementation MUST watch the connection status for a violation on the cast's own subject
+  and raise `permission-denied` naming that subject, exactly as a call does; a cast
+  implementation MUST NOT resolve as though a refused publish had been cast.
 - **watch**; observe a record (KV watch; fell-behind ⇒ re-read, §13.4) or an event topic
   (live subscription within the read grant plus filtered replay from the event stream).
   Per-key and per-goal subjects carry read containment; a watch grant names the exact subtree.
@@ -1903,7 +1938,12 @@ facts.
   all-expected-replied or deadline, in which case the result is explicitly partial with
   `missing` / `churn` / `unexpected` / `duplicate` / `late` classifications (a churned slot
   reports as `churn`, not `missing`). An empty or unreadable registry is
-  `failed-precondition`, not an empty success. Deadline mandatory.
+  `failed-precondition`, not an empty success. Deadline mandatory. A per-instance liveness
+  probe that asks the broker about an instance's own rail is such a cast, and a refused
+  probe publish MUST surface as that same `permission-denied` refusal naming the refused
+  subject, never as a liveness verdict: only the broker's no-responders answer is a
+  liveness fact, and a refusal licenses nothing (a caller that swallowed it into `unknown`
+  would read a permission problem as "no verdict" and pay the full budget for it).
 
 ### 13.6 Composites
 
@@ -2558,7 +2598,7 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 | `handle` | `handle.<issuerKeyId>.<id>` |
 | `contracts` | `contracts.<endpoint>` |
 | `goal` | `goal.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` |
-| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by the provisioner sweep so a superseded executor's orphaned goals settle; never caller-addressed). Writer: the **goal-writer** principal (§13.9), which composes the commit principal with three additions, this index subtree among them, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
+| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by a bounded boot-sweep authority so a superseded executor's orphaned goals settle; never caller-addressed). The reference local signer composition uses its ephemeral provisioner. The signerless remote-manager composition uses an authenticated host operation backed by a sealed, owner-filtered `goalidx.manager.<cOwner>.>` scan; no participant credential carries records consumer create or delete. Writer: the **goal-writer** principal (§13.9), which composes the commit principal with three additions, this index subtree among them, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
 | `goaleff` | `goaleff.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>.<gen>` (atomic; the at-most-one-launch election for one accepted action, written create-only by the effects executor that wins it and advanced by revision-CAS through its phases). `<gen>` is the accepted submission's **EPJ `sourceSeq`**, the sequence it was delivered at, carried verbatim into the acceptance fact; the only discriminator that exists at the EARLIEST coordinate, since `goalidx` is created before the bind and therefore before any decision fact exists, so a decision sequence cannot key it. The generation token is what keeps this kind out of the one-use-forever trap: a lawful later acceptance under the same `goalId` gets a different `<gen>` and a fresh key, never a permanent tombstone. Writer: the owning endpoint's **commit path** ONLY (§13.9), inherited by the goal-writer principal that composes it; the generic per-kind spec/status writer row does not reach it, because this kind is unsplit and has no `.spec`/`.status` to write. The value machine, including which actor may settle a row, is *The two coordination machines* below |
 | `epname` | `epname.<endpoint>.<nameToken>` (atomic; the durable claim on one name, keyed by the NAME rather than by a caller triple, because the thing being made exclusive is the name and two callers must contend on one key). Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, so create-only for the claim and revision-CAS for every state change. The state machine, its actor roles, and the claimant union are *The two coordination machines* below |
 | `epmig` | `epmig.<endpoint>` (atomic; the endpoint's cutover manifest: the inventory a migration is performed against, and the durable record of the cutover runs performed against it, so a run generation is never reused by a later run). That run generation is **scoped to cutover and is key material nowhere else**: the `<gen>` token in the `goaleff` grammar is the accepted submission's EPJ `sourceSeq` and only that, the `goal`, `goalidx`, and `goal….result` grammars carry no generation token at all, and an implementation that keys any of them from this manifest has built an election two conforming peers can never meet inside. Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, and its qualifier profile is `[qEndpoint]` alone, one manifest per endpoint, never one per caller or per run |
@@ -3175,6 +3215,10 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Reply subscribe (caller) | capability holder | `ep.reply.*.*.*.<cO>.<cA>.<cUid>.*` (exact arity) | direct read; own rail only |
 | Serve subscribe | the endpoint's serve credential | per registered command: `"ep.one.<endpoint>.<command>.> <endpoint>"` (queue-qualified ONLY), `ep.all.<endpoint>.<command>.>` plain, `ep.inst.<endpoint>.<instanceId>.<command>.>` exact (never a cross-command `>` | direct) name/instance/command-pinned; epoch deliberately absent (§13.1 barrier is the fence) |
 | Reply publish | the endpoint's serve credential | `ep.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*` | direct; attribution-pinned; addressing by nonce |
+| Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
+| Issuance (§13.15) | the `issuer` principal (one-shot, minted per issuance or per lifecycle terminal by the party holding the space signer) | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
+| Run admission (§14.8) | the `run-admitter` principal (one-shot, 60 s, minted per run by the hosting endpoint or the local operator) | exactly `$KV.cotal_admission_<space>.admission.v1.<endpoint>.<runId>` and `….revoked.v1.<endpoint>.<runId>` publish plus `STREAM.MSG.GET` on that store; nothing else | mediated; create-only |
+| Run admission read (§14.8) | the `run-mediator` and `run-operator` principals | `STREAM.MSG.GET` on `KV_cotal_admission_<space>` (leader-served; body-selected, stream-wide, the same residual as every records reader); the `run-driver` holds NO row on this store | mediated read; fail-closed |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct, explicitly untrusted input |
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only, and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
 | Canonical decisions + quarantine + goal-bind | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>`, `epf.<endpoint>.quar.>`, and `epf.<endpoint>.goal.*.*.*.*.bind` (the per-goal first-wins bind, §13.4, create-only CAS per subject; the `.bind` leaf is disjoint from the commit principal's `goal….result`/status writes, so no writer overlap) | mediated |
@@ -3456,6 +3500,9 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
 | `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`, `govern`, `uid`, `policy`, `oblig`, and the §14 kinds `run`, `answer`, `notice`, `migration`) | per-key CAS; `.spec`/`.status`-split keys EXCEPT the unsplit atomic keys `lifecycle.<owner>.<actor>`, `govern.<endpoint>`, `uid.<lifecycleUid>`, `policy.<endpoint>.<digest-hex>`, and `oblig.>` (§13.1/§13.7/§13.8/§13.9); `allow_direct=true`, but the heads and every fencing read are leader-served `STREAM.MSG.GET` (§13.9 read service). **No age retention on authority keys:** `lifecycle` heads, `govern`, `uid` reservations, `policy` versions, and `oblig` rows are NEVER-DELETED (no grant permits DEL/PURGE; an age-evicted reservation would reopen UID reuse, an evicted obligation would orphan accepted work); a deletion marker on any of them refuses loudly as corruption, never as absence. **Shape is proved at bind, not assumed:** the stream MUST be primary (never a mirror/sourced copy) and MUST carry no bucket-wide silent-eviction limit (no `max_age`, no finite `max_msgs`/`max_bytes`: under `DiscardOld` a finite global limit evicts a prior authority key's latest row the moment an unrelated key is written); every trusted consumer of this store (the minting authority, the mapping reader, the mediator) verifies exactly this via `STREAM.INFO` when it binds and refuses to serve otherwise |
 | `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + the disjoint endpoint families `epgate.<endpoint>.<instanceId>` / `epcred.<endpoint>.<instanceId>.<credentialId>` + the staging family `stage.>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY; no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states. **No bucket-wide age retention:** `gate.`, `epgate.`, `srcgate.`, and `session.` authority keys persist until their lifecycle/handle/session is explicitly terminal (an age-evicted `open` gate would silently reopen minting, or drop a `frozen`/`retired` fence); only `cred.`/`epcred.`/`bysrc.` rows carry a per-key TTL bounded by the credential TTL (NATS per-key message TTL, ≥ 2.12), never a bucket MaxAge; `stage.` rows follow their operation's retention, never a ledger row's. **Shape is proved at bind** (the records-store rule above, plus `allow_direct=false`): primary, un-mirrored, no bucket `max_age`, no finite `max_msgs`/`max_bytes`; the trusted auth path verifies this via `STREAM.INFO` when it binds and refuses to serve otherwise |
+| `cotal_issued_<space>` KV | issued-authority evidence (§13.15): `v1.<owner>.<actor>.<uid>.<generation>` (immutable evidence), `attempt.v1.…` (the one-field attempt row), `bysource.v1.<sha256>.…` (the reverse index from a source gate to the issuances depending on it) | Limits, file storage, no age eviction, **`allow_direct=false`** (every read is a fence); create-only evidence, revision-CAS attempt; never deleted while the issuance or anything admitted under it is resumable. Immutability is BROKER-ENFORCED the way the EPC store's is: `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true`, set once at creation and verified by every provisioner that binds, so a holder of the issuer's own key row cannot replace evidence or empty the bucket with a `Nats-Rollup` header, a message delete, or a purge |
+| `cotal_accepted_<space>` KV | accepted rows (§13.15): `accepted.v1.<acceptedToken>`, one per issuance, written by the issuer at release | Limits, file storage, `allow_direct=true`: the client's per-key `DIRECT.GET` is the discovery read; create-only, with the same three broker-enforced flags as the evidence store |
+| `cotal_admission_<space>` KV | run admissions and revocations (§14.8): `admission.v1.<endpoint>.<runId>`, `revoked.v1.<endpoint>.<runId>` | Limits, file storage, no age eviction, `allow_direct=false`; both keys create-only and the marker permanent, BROKER-ENFORCED by `allow_rollup_hdrs=false, deny_delete=true, deny_purge=true` (a run-admitter's own key row admits no `Nats-Rollup` replacement of the admission, and no purge empties another run's row); retained while the run, its program, its journal or its lineage is resumable |
 | `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path; non-fencing, verify-on-read); permanence is BROKER-ENFORCED: `deny_delete=true, deny_purge=true` (the broker rejects the message-delete and purge APIs even from a stream-API-holding principal). Permanence is the COMBINATION of these flags, the retention floor's no-early-removal rule (below: the flags alone stop delete/purge but not age eviction or a whole-stream teardown), verify-on-read pinning WHAT a subject carries, and the stream-management surface held by no profile (§13.9); no single flag makes deletion structurally impossible |
 
 **Retention floor (one-use-identity facts).** A stream or bucket whose messages carry
@@ -3638,6 +3685,64 @@ whose `protocol.v` it does not implement (the marker rides the descriptor and th
 never the cluster document, which carries no `protocol`), and never automatically repeat a `write`
 command (§13.7) — whatever `id` the re-issue carries — except on an outcome that proves
 non-execution (§13.3).
+
+### 13.15 Issued authority
+
+The caller triple (§13.1) says WHO is calling. It does not say what the credential they are
+calling with was granted, and a host that performs an effect on a caller's behalf needs that:
+the ceiling as the issuer accepted it, immutable, and bound to the request by the broker rather
+than by anything the caller or a mutable ledger says. This section defines that binding.
+
+**The reference.** An issued authority is `{ space, owner, actor, uid, generation }`: the
+caller triple plus a **generation**, 32 lowercase hex characters of issuer-chosen entropy (at
+least 128 bits). A generation is an identifier, never a bearer secret. It is chosen by the
+issuer, never by the client, and is never reused: a reference is created once or refused.
+
+**The rail.** An issued credential's request-publish and reply-subscribe rows ride the
+versioned rail (§13.2), with its generation pinned literally beside its triple. A request
+arriving on `ep.v1` therefore carries a broker-confined generation, and a request arriving on
+the legacy rail carries none. A body field, a header, or a policy reference supplied by the
+caller establishes no binding.
+
+**Issuance.** Before an issued credential's material is returned, the issuer MUST persist its
+**evidence** in `cotal_issued_<space>`: `{ version: 1, ref, sources, permissions, expiresAt? }`,
+where `permissions` is the credential's final effective permission ceiling (publish and
+subscribe, each an explicit `all`, `none` or `patterns` allow plus a deny list, imported from the
+native permission fragment so an omitted list can never read as a narrow one) and `sources` are
+the gate coordinates the issuance depends on. Issuance is `prepare → release`: the evidence and
+a `prepared` attempt row are written create-only, the issuer performs its own finalization, and
+the attempt row is CAS-advanced to `active` at the revision the prepare observed. A prepare that
+loses its create is refused; a release whose CAS loses is `aborted`. The evidence store is
+append-only at the broker (§13.12: unlimited per-key history, no rollup header, no message delete,
+no purge), and the evidence and source-index rows are read as the FIRST message on their key, so a
+later write on the same key by a holder of the issuer's bucket-wide row is inert to every
+resolver; only the attempt row advances, by CAS. The issuer also writes the
+**accepted row** (`cotal_accepted_<space>`, keyed by a token the launching party chose) naming the
+reference, create-only. A client learns which generation it was bound under by reading that one
+row over a per-key `DIRECT.GET` grant its ceiling carries; it never trusts what it proposed or
+what a file says, and it refuses a row naming another owner, actor or lifecycle.
+
+**Renewal.** A renewal of an issued credential keeps its generation only when the ceiling being
+minted is byte-identical (RFC 8785) to the recorded evidence; a changed ceiling is refused as a
+renewal and is a fresh issuance on a fresh generation, which the client adopts only through a
+new connection. Refreshing a credential file never switches the generation of an already
+connected transport.
+
+**Resolution.** A host that admits an effect under an issued authority resolves it: the
+evidence exists, the attempt row is `active`, the evidence is unexpired, every source is live,
+and a second read of the attempt row returns the same revision. Any other outcome refuses. The
+one source shape this revision issues against is a static incarnation's credential ledger family
+(`cred.<lifecycleUid>` on `cotal_auth_<space>`), whose liveness is its issuance gate not being
+`retired`; a lifecycle terminal retires every issuance indexed to that family
+(`bysource.v1.…`), so a retired incarnation's generations refuse to resolve afterwards.
+
+**Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
+§14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
+`ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
+host's own authority. Every other command serves both rails unchanged. Origin (that a request on
+a generation-pinned subject was published by the grant holder) is a property of the grant set,
+not of this section: no peer-held profile pairs a write with a raw stream read on one stream, and
+mediated reads remain the remedy.
 
 ---
 
@@ -3845,6 +3950,57 @@ A conformant driver (v0.5) MUST:
 6. File answers, notices and migrations under their derived ids, create-only, and render notices
    ahead of the addressee's next turn rather than as channel messages.
 7. Hold only the per-run, per-takeover grant family of §14.6.
+8. Admit every run under §14.8 before launching it, check every channel effect against the
+   admitted ceiling and the current revocation state, and never continue a run whose admission is
+   missing, unreadable, mismatched or revoked.
+
+### 14.8 Run admission
+
+A hosted run performs channel effects on a caller's behalf. What it may do in channels is the
+**admitted ceiling**: the caller's issued permission ceiling (§13.15) as resolved at admission,
+recorded once per run, and never widened afterwards.
+
+**The record.** Before the driver is launched and before a successful start reply, the hosting
+endpoint writes `admission.v1.<endpoint>.<runId>` in `cotal_admission_<space>`, create-only,
+under a one-shot `run-admitter` credential pinned to that one run:
+`{ version: 1, space, endpoint, runId, instanceId, caller, ceiling, provenance, admittedAt }`.
+The store is write-once per key at the broker (§13.12: one message per subject under `discard:
+new`, no rollup header, no message delete, no purge), so the admitter's own key row can neither
+replace the admission nor remove it once written, and a marker, once written, stays.
+`caller` is the admitting request's broker-authenticated caller, generation included; `ceiling`
+is the resolved evidence's `permissions`, verbatim; `provenance` is
+`{ kind: "issued", ref, resolvedRevision }` for a hosted admission or
+`{ kind: "operator", by, reason }` for a local one (below). A run-start arriving on the legacy
+rail is refused as §13.15 says. On an open mesh, which issues no authority, the endpoint hosts no
+run. The driver holds no row on this store; the mediator and operator profiles hold its leader-
+served read only.
+
+**Enforcement.** The trusted host re-reads the admission, leader-served, before every channel
+effect: opening a wait, each fetch on it, each re-read of a recorded match, and a conclave's
+channel writes. A concrete channel is checked against the ceiling with the §3 matcher: a
+publish requires `chat.<owner>.<actor>.<channel>` under the caller's own triple to be allowed by
+`ceiling.publish`; a read requires every subject `chat.*.*.<channel>` matches to be covered by
+`ceiling.subscribe`. Deny wins; an explicit `none` is deny-all; a generated channel name is
+checked after it is derived and no wildcard is invented to admit it. `notify` writes agent-
+addressed notices and is not channel publication; spawn and turn keep their separately checked
+delegated authority.
+
+**Revocation.** `revoked.v1.<endpoint>.<runId>` is the run's revocation marker: create-only,
+idempotent, written under the same `run-admitter` profile, never removed. A revoked run performs
+no further channel effect, its open waits refuse at their next fetch (the linearization point is
+the leader-served read the host makes before returning any channel bytes), and no resume,
+takeover or boot reconcile continues it. Revocation authorizes no new resource and no cleanup
+beyond what the run's own journal already justifies. Caller disconnect or credential expiry after
+admission does not revoke a run.
+
+**Resume, fork, local, restore.** A resume, takeover or reconcile continues under the ORIGINAL
+admission and the current marker; the resuming caller's own authority is not consulted and cannot
+widen it; a run with no admission stays parked, named in the host's log. A fork is a new run and
+needs its own admission under the forking caller. A local drive (`cotal run start --local`) is
+admitted from operator evidence named on the command line (the read and publish channel sets, or
+`none`), never from the host's own scope. The admission and revocation stores are retained with
+the run, program and journal state they authorize; a restore that lacks them recreates them empty,
+and no run is taken back under authority the host cannot read.
 
 ---
 
@@ -3859,7 +4015,8 @@ A conformant driver (v0.5) MUST:
 | §9 Security | `packages/core/src/provision.ts` |
 | §10 Join link | `packages/core/src/link.ts` |
 | §13 Endpoint control surface | `packages/core/src/` (endpoint rails, envelope, contracts; lands with the control-surface campaign) |
-| §14 Workflow runs, [`spec/cotal-lang.md`](spec/cotal-lang.md) | `packages/lang/src/` (the language, journal, keys, pins), `packages/core/src/run-record.ts`, `run-journal.ts`, `checkpoint-answer.ts`, `run-notice.ts`, `run-migration.ts`, `endpoint-binding.ts` (WFJ, grants), `implementations/runtime/src/` (driver, migrate, fork) |
+| §13.15 Issued authority | `packages/core/src/issued-authority.ts` (reference, evidence store, accepted row), `issuer-session.ts`, `endpoint-subjects.ts` / `endpoint-grants.ts` (the versioned rail) |
+| §14 Workflow runs, [`spec/cotal-lang.md`](spec/cotal-lang.md) | `packages/lang/src/` (the language, journal, keys, pins), `packages/core/src/run-record.ts`, `run-journal.ts`, `checkpoint-answer.ts`, `run-notice.ts`, `run-migration.ts`, `endpoint-binding.ts` (WFJ, grants), `run-admission.ts` (§14.8), `implementations/runtime/src/` (driver, migrate, fork), `implementations/manager/src/run-hosting.ts` (admission) |
 
 ## Appendix B: Profile ACLs
 
@@ -4023,7 +4180,20 @@ single-function profiles, each granting only the verbs its function needs and no
   endpoint's serve credential (§13.9); its admin commands, `reloadCreds`, the explicit adoption
   step of standing credential renewal (the daemon re-reads its re-signed creds file, pins the
   identity, swaps its connection, and reconnects the membership feed's rw connection, replying
-  with the adopted JWT windows); and `evictPrincipal`, force-drop of a denied principal's live
+  with the adopted JWT windows); `reloadStoreIdentity`, the store-identity challenge that
+  names the SecretStore the daemon reloads from (the workstation root only when `--creds` is
+  `<root>/.cotal/<spaceSegment(space)>/delivery.creds`; the file's own directory otherwise, an injected coordinate,
+  the declared identity of an injected adapter, or the workstation root of the canonical arm; never a
+  `findCotalRoot` ancestor walk). The first-party workspace filesystem adapter declares its workstation
+  root, so passing that store explicitly names the real operator layout without an ambient coordinate. Uninjected `--creds`
+  that names one real workstation while process cwd resolves another is refused at start, because
+  membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
+  case. A manager whose remint store diverges is not that daemon's renewal owner: it starts and
+  serves the space and skips the remint rather than being refused, including a daemon that bound
+  after manager start. Matching that store identity is necessary but NOT sufficient to own the
+  renewal, since the comparison carries no holder and no tiebreak and every manager sharing one
+  store satisfies it; the owner is the manager that also holds the space's renewal lease, so a
+  daemon's credentials have exactly one renewal owner at a time. And `evictPrincipal`, force-drop of a denied principal's live
   connections (system-account CONNZ scan → per-server KICK → re-scan verify, fail-closed on
   partial scans and on owners outside the principal namespace); carry a capability requirement
   minted to the `supervisor` profile **and to the trusted auth path** (§9/§10), which is the
@@ -4043,6 +4213,10 @@ single-function profiles, each granting only the verbs its function needs and no
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs.
+- `issuer`: one issuance window (§13.15), minted per mint or per lifecycle terminal by the party
+  holding the space signer; the issued and accepted stores plus one auth-store liveness read.
+- `run-admitter`: one run's admission record or revocation marker (§14.8), minted per run for
+  60 seconds; two exact keys and nothing else.
 - `manager-service` is NOT a generic host profile: on a per-user-auth space only the
   loopback/operator exchange may issue this closed, one-owner/one-fixed-manager-actor/one-instance
   view to a signed-in user with ledger scope `supervise` (§13.1/§13.6). It reaches exactly the
@@ -4093,6 +4267,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-09-09 | **Issued authority and run admission (§13.15, §14.8).** A caller's request may ride a versioned rail (`ep.v1`) that pins the credential's issuer-accepted **generation** beside its triple; the issuer persists the generation's immutable permission ceiling as evidence before returning material, and a client learns its generation from an issuer-written accepted row. A hosted workflow run is admitted under the caller's resolved ceiling, recorded once per run in a dedicated store the driver cannot write, checked before every channel effect, and revoked by an independent marker; resume, takeover and reconcile continue under the original admission, a fork is a new admission, and a local run is admitted from operator evidence named on the command line. `run-start` on the legacy rail is refused by name. Three new per-space stores, two new one-shot profiles (`issuer`, `run-admitter`), and an admission read on the run mediator and operator profiles. **Breaking pre-1.0 authority change: minor.** |
 | 2026-08-24 | **Remote user manager authority.** A closed server-authored `manager-service` view permits one registered user-auth participant to operate one opaque manager instance only when their live actor-ledger row carries the dedicated `supervise` scope. `supervise` is distinct from `spawn` and `admin`; public and managed-agent exchanges refuse the view, and plain user bearers remain unprivileged. The host, never the participant, issues public-nkey JWT material through a lifecycle- and instance-bound, typed, replay-safe `prepare → activate → renew` protocol. The family is confined to one derived owner, fixed server-selected manager actor, lifecycle UID, instance registration/contracts/status, gate, and credential rows; descendant provisioning is host-validated for the same owner only. Revocation and renewal deny new material and unsafe restarts fail-closed while retaining live agents only within their independently valid authority. **Breaking pre-1.0 authority change: minor.** |
 | 2026-08-19 | **Receiver deduplication MUST NOT use the empty string as a key (§4), and id-less deliveries are individually addressable (§8).** Two distinct received messages MUST NOT be treated as one logical delivery solely because both carry `id: ""`; each remains independently deliverable, and copies that cannot be correlated by wire identity may surface more than once on an at-least-once path. The publisher's §5 obligation to supply a unique string id is unchanged; an absent or non-string id remains a malformed envelope, now enforced at each delivery pump (durable terminate, live drop, history and recall skip). §8 adds that the absence of a usable receiver dedup key does not relax acknowledgement ownership: a JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged independently, and the reference implementation realizes that through a per-delivery receive key (never wire identity, never dedup authority) at its drain and in-flight seams. Plane-3 durable fan-out still derives its publish msgID from `CotalMessage.id`, so distinct `id: ""` messages can be collapsed inside the broker's duplicate window on a durable channel before the receiver sees them; that path is its own tracked change and this revision's guarantee is scoped to the receiver. Classification: normative receive-side semantics, no wire-envelope or schema change, `protocolVersion` unchanged. |
 | 2026-08-18 | **v0.5 binding revision: workflow runs (§14), additive.** A deployment MAY host durable workflow runs: programs in the Cotal workflow language, defined by the new normative reference [`spec/cotal-lang.md`](spec/cotal-lang.md) (language version `1`: the syntax table, values and the boundary rule, the library, the effect primitives with their hashed projections, the four concurrency scopes and the clock-decided `race`, the step key grammar, journal entry schema, input hash and request id, resume, migrate and fork), whose every effect is recorded in a per-run step journal on the new per-space `WFJ_<space>` stream (one subject per run, no age eviction, no Direct Get, every append fenced by the run subject's own sequence, replay-then-activate takeover with a fencing-token authorization tuple, an ordinal chain and a `journalHigh` anchor). Four core record kinds join §13.7: `run` (split; the resolved pin set on the spec half, holder/lease/`journalHigh` on the status half; driver-minted, never-reused ids), `answer` (atomic, content-derived id, keyed per answer because every presenter is the driver), `notice` (split; addressee keyed by a digest of the name; consumption as status), `migration` (split; content-derived id; application as a create-only status). Driver grants are per run and per takeover, with no wildcard form. `languageVersion` is pinned per run and moves independently of the wire version. No existing kind, subject, grant row or shipped datum changes. |

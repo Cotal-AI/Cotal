@@ -192,7 +192,7 @@ export const claudeConnector: Connector = {
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
       // shells, builds and third-party CLIs this session runs no longer inherit live authority.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
@@ -200,14 +200,15 @@ export const claudeConnector: Connector = {
       COTAL_CHANNEL: "1",
       COTAL_CONTROL_SOCKET: control.path,
     };
-    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter and is what makes a grant meaningful:
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` is what makes the matching grant meaningful:
     // holding publish rights on a channel is not a request to publish to it. `COTAL_WORKSPACE_ROOT`
     // rides with it because the emitter's write-ahead log has to live somewhere a LATER start will
     // look, and there is no safe default: a WAL written under the launch cwd is invisible to the
     // next start, which then reads an already-published thread as virgin and republishes sequences
     // the stream has seen. Sent only when events are on, so a session that never emits carries no
     // path it has no use for.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(
@@ -220,6 +221,7 @@ export const claudeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
 
     // A leading positional is claude's first message, auto-submitted on start —
     // so a driving session can greet the operator the moment it joins.
@@ -333,9 +335,10 @@ export const claudeConnector: Connector = {
       command: opts.resolvedBinaries?.claude ?? "claude",
       args,
       env,
-      // The dev-channels flag shows a one-time "Enter to confirm" prompt; the
-      // manager auto-clears it so a supervised launch needs no human keypress.
-      confirm: "Enter to confirm",
+      // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic
+      // "Enter to confirm" footer, which the workspace-trust dialog also renders with a different
+      // default action. The runtime presses Enter once when this connector-owned text appears.
+      confirm: "WARNING: Loading development channels",
       control,
     };
   },

@@ -1,0 +1,84 @@
+{
+  "suite": [
+    "packages/lang/smoke/wait-until.smoke.ts",
+    "packages/lang/smoke/options.smoke.ts"
+  ],
+  "guard": "A `waitUntil`'s non-terminal observation is journalled AS AN OBSERVATION and leaves the entry pending, so a resumed run RE-OBSERVES the world instead of replaying what it last saw; only a terminal observation settles, each observation's probe is keyed in its own namespace, and the deadline is absolute across activations.",
+  "command": "pnpm smoke:lang-wait-until && pnpm smoke:lang-options",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/wait-until-reobserve.json",
+  "mutations": [
+    {
+      "name": "a non-terminal observation SETTLES the entry, which is exactly the defect #1459 reports",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    await host.journal.observe(key, observation, at);\n    frame.clock.advance(at);\n    attempt += 1;",
+      "replace": "    await host.journal.observe(key, observation, at);\n    await host.journal.settle(key, { status: \"ok\", result: deepFreeze(observation) }, at);\n    frame.clock.advance(at);\n    return observation;",
+      "expectRed": "the wait's entry is PENDING with its non-terminal observations recorded, and NO result",
+      "note": "THE MUTANT IS THE OLD BEHAVIOUR, restored deliberately: the first observation becomes the step's result, so the entry settles `ok` with `result: \"pending\"` and a resume replays it forever. That is byte for byte the defect #1459 reports, and byte for byte what the CONTROL cell measures on an ordinary effect. The suite is deliberately NOT fail-fast: under this mutant a fail-fast version died on an unrelated upstream cell (the mutant settles the wait, so the run completes before the mid-wait release fires) and never reached the cell that names the defect."
+    },
+    {
+      "name": "the pending verdict replays instead of re-entering the live path, so a resumed wait never looks again",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    case \"refused\":\n    case \"pending\":\n    case \"miss\":\n      break;\n  }\n\n  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n  const stop = host.options.shouldStop?.();\n  if (stop !== undefined) throw new RunReleased(stop);",
+      "replace": "    case \"pending\":\n      return (verdict.entry.observations ?? []).at(-1)?.value;\n    case \"refused\":\n    case \"miss\":\n      break;\n  }\n\n  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n  const stop = host.options.shouldStop?.();\n  if (stop !== undefined) throw new RunReleased(stop);",
+      "expectRed": "THE PROPERTY: the resumed wait OBSERVES THE WORLD AGAIN rather than replaying what it last saw",
+      "note": "The subtlest wrong fix available: the observations are still RECORDED as observations, and the entry is still left pending, so every cell about the journal's shape stays green. What changes is the only thing that matters, which is that the resumed run hands back the newest recorded observation instead of looking. This is the mutant that would survive a suite which only inspected the record, which is why the property cell asserts on the handler's OWN look count rather than on what the program printed."
+    },
+    {
+      "name": "every observation shares one key namespace, so the resumed probe replays the first look's answer",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    const observing = frame.branch(\"waitUntil\", name, key.occurrence, String(attempt));",
+      "replace": "    const observing = frame.branch(\"waitUntil\", name, key.occurrence, \"0\");",
+      "expectRed": "each observation's probe is journalled in ITS OWN namespace, so no later look can replay an earlier look's answer",
+      "note": "THE FIX THAT LOOKS RIGHT AND IS NOT. The wait re-enters and re-observes, so the headline property cell above still passes; but the probe's own `ask` allocates a key the previous observation already settled, so the journal answers `replay` and hands the probe a stale answer. The re-observation becomes a ritual. Only a cell that reads WHERE the probe's steps were filed can see it, which is why that cell exists separately from the property cell it protects."
+    },
+    {
+      "name": "the deadline is recomputed from the current clock, so every crash buys the wait a fresh deadline",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  const startedAt = host.journal.get(key)?.startedAt ?? host.options.handler.now();",
+      "replace": "  const startedAt = host.options.handler.now();",
+      "expectRed": "and it gives up WITHOUT LOOKING AGAIN, because the deadline it was measured against had already passed while the host was down",
+      "note": "The mirror of the defect being fixed: a wait that can never give up. This mutant SURVIVED the first version of the deadline cell, which is why the cell now exists in its present form: both activations started at clock 0, so an absolute epoch and a recomputed one were the same number and the cell graded nothing. The resuming handler's clock now starts 30m past the recorded start, and the cell asserts the resumed wait gives up WITHOUT LOOKING AGAIN, which a freshly-dated deadline cannot do."
+    },
+    {
+      "name": "the terminal predicate's answer is read as truthy rather than as a boolean",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (typeof decided !== \"boolean\") {",
+      "replace": "    if (false) {",
+      "expectRed": "a terminal predicate answering a truthy non-boolean is L4024, so a predicate that accidentally returns a record does not end every wait on its first look",
+      "note": "A predicate returning the observation itself (`(o) => o`) is a plausible typo, and under the mutant every non-empty observation is terminal: the wait ends on its first look and reports the pending state as the answer. The probe-shape cell above it uses a different code path (the crossing rule) and stays green, which is what makes it the marker."
+    },
+    {
+      "name": "the cadence option is dropped from the input hash, so editing it replays clean",
+      "file": "packages/lang/src/primitives.ts",
+      "find": "    hashedOptions: [\"every\", \"deadline\"],",
+      "replace": "    hashedOptions: [\"deadline\"],",
+      "expectRed": "the interpreter's projection matches the table on every option",
+      "note": "`every` stops observation exactly as `wait`'s timeout does: a wait that polled hourly did not ask what a minutely one asks. This mutant was UNGRADABLE until `waitUntil` was added to the executable hash-table audit in options.smoke: the table in primitives.ts was documentation that no test consulted, which is the exact decay that audit exists to stop. The divergence cells in wait-until.smoke assert the BEHAVIOUR; the audit asserts the behaviour matches the TABLE, and mutation 7 below is the positive control proving the suite reaches that file. The red lands on the AUDIT rather than on the behaviour cell, and that is the point: the behaviour is correct under this mutant (the interpreter still projects `every`), so the only thing broken is the table's claim about it, which is precisely the decay this audit was built to catch."
+    },
+    {
+      "name": "POSITIVE CONTROL for the file: wait's own timeout is dropped from the hash table",
+      "file": "packages/lang/src/primitives.ts",
+      "find": "    hashedOptions: [\"timeout\"],",
+      "replace": "    hashedOptions: [],",
+      "expectRed": "the interpreter's projection matches the table on every option",
+      "note": "Not a defect this change introduces: it exists so the cadence mutation above is GRADABLE. The prover cannot tell \"the suite does not test this file\" from \"this mutant changed no behaviour\" unless some mutation in the same file is killed. This one must redden the audit, and does, which is what makes a survivor in primitives.ts reportable rather than ambiguous."
+    },
+    {
+      "name": "a zero cadence is accepted at the call, so a wait can busy-poll a resource it does not own",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (everyMs <= 0) {",
+      "replace": "      if (false) {",
+      "expectRed": "and a zero cadence the validator CANNOT read, because it is computed rather than a literal, is refused at the CALL by the interpreter",
+      "note": "The ordering test below this guard cannot catch zero: `0 > deadline` is false, so removing the zero check restores a validator-invisible busy loop. Found in review by an independent seat rather than by me."
+    },
+    {
+      "name": "the static validator stops refusing a zero cadence, leaving only the runtime check",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {",
+      "replace": "  if (false) {",
+      "expectRed": "a ZERO cadence is refused, and it is not caught by the ordering test: `every: 0` is not greater than any deadline",
+      "note": "The static and runtime guards are separately necessary: this mutant proves the literal case is caught by the validator and not incidentally by the interpreter."
+    }
+  ]
+}

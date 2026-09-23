@@ -14,7 +14,8 @@
  *
  * Run: pnpm smoke:flag-inventory
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { registry, type Command } from "@cotal-ai/core";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
@@ -24,6 +25,9 @@ import "@cotal-ai/runtime"; // registers run
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
   // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.
@@ -34,7 +38,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "idp:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
       // The optional PUBLIC remote-exchange face, threaded to the auth-service daemon.
       // `--advertised-server` (2026-08): with --exchange-public-port, the broker address the public
       // discovery bundle advertises - what participants dial, which is not the address the callout
@@ -45,6 +49,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
+      // `--accept-stale-checkpoint` (2026-09): gate 3's only override on the preserved-resume path.
+      "accept-stale-checkpoint:boolean",
       // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
       "rotate-sys:boolean",
@@ -53,7 +59,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   // `--space` (2026-07): selects the mesh for target-addressed components (`cotal down web --space <name>`).
-  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "space:string", "store-dir:string"], positionals: true },
+    // `--session-store` (2026-09): repeatable operator input naming the harness transcript store a
+  // preserve-state cut captures with each continuation-capable seat. No default, never inferred.
+  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "session-store:string", "space:string", "store-dir:string", "with-agents:boolean"], positionals: true },
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
   // `meshes` gained the registry-maintenance verbs (2026-08): `add <space> --server … [--root]
   // [--mode]` registers a mesh this machine did NOT start, `rm <space> …` drops records. `--force`
@@ -66,6 +74,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
+  // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
+  sync: { flags: ["idp:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
@@ -140,7 +150,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391). It is
@@ -163,6 +173,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
+  // `service` (2026-09): the manager as a user service; the subcommand is the positional.
+  service: { flags: ["json:boolean", "linger:boolean", "mesh:string"], positionals: true },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
@@ -226,8 +238,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // flag; resume/journal/answer name an existing run positionally.
   run: {
     flags: [
-      "artifact:string", "by:string", "creds:string", "endpoint:string", "file:string:f",
-      "local:boolean", "server:string", "space:string", "timeout:string", "value:string",
+      "admit-publish:string", "admit-read:string", "artifact:string", "by:string", "creds:string",
+      "endpoint:string", "file:string:f", "local:boolean", "reason:string", "server:string", "space:string",
+      "timeout:string", "value:string",
     ],
     positionals: true,
   },
@@ -252,3 +265,4 @@ for (const cmd of commands) {
 }
 
 console.log(`✓ flag-inventory smoke passed (${commands.length} commands)`);
+emitSentinel({ passed: cells(), failed: 0 });

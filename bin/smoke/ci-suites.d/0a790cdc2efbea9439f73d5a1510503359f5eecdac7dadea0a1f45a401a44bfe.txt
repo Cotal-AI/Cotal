@@ -1,0 +1,2 @@
+# A seat is reported absent only when every reachable instance answered for itself (#1638).
+smoke:seat-locality-honesty

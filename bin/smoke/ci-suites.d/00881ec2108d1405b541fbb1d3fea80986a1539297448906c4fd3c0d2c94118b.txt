@@ -1,0 +1,3 @@
+# A reap that cannot prove the seat is gone must refuse rather than assume. Added with the suite in
+# #1671, which defined the script but not this fragment, so nothing ran it.
+smoke:reap-absent-refusal

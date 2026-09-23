@@ -100,7 +100,7 @@
     {
       "name": "any non-200 is treated as absence again, so a 5xx reads as an unpublished package",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "    if (status === 200) continue;\n    if (status === 404) missing.push(pkg);\n    else errored.push(pkg);",
+      "find": "    if (status === 404) missing.push(pkg);\n    else errored.push(pkg);",
       "replace": "    if (status !== 200) missing.push(pkg);",
       "expectRed": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say",
       "cell": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say"
@@ -144,6 +144,30 @@
       "replace": "    const elapsedMs = now() - started;",
       "cell": "spending the real budget ends the run even when the injected clock has not moved",
       "expectRed": "spending the real budget ends the run even when the injected clock has not moved"
+    },
+    {
+      "name": "the body validation is skipped, so any 200 is presence again (#1257)",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        const body = await res.json();\n        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        continue;",
+      "expectRed": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)",
+      "cell": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)"
+    },
+    {
+      "name": "a wrong-version body is accepted as presence (#1257)",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        if (body && body.name === pkg) continue;",
+      "expectRed": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)",
+      "cell": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)"
+    },
+    {
+      "name": "a wrong-name body is accepted as presence (#1257)",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        if (body && body.version === version) continue;",
+      "expectRed": "a 200 naming a different package in the body is NOT presence (#1257)",
+      "cell": "a 200 naming a different package in the body is NOT presence (#1257)"
     }
   ]
 }

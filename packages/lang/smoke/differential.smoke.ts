@@ -368,6 +368,20 @@ log("rounds", rounds, r.status);`,
     'const a = await spawn("one");\nawait notify([a], { decision: "build", outcome: "blocked" });\nawait monitor([a], { name: "m" });\nlog("done");',
     {},
   ],
+  // `waitUntil` ON BOTH ENGINES, and the row is deliberately one that OBSERVES MORE THAN ONCE. A
+  // single terminal look would journal one entry and never exercise the property the primitive
+  // exists for: the non-terminal observation that leaves the entry pending, the per-observation
+  // key namespace its probe's own effects are filed under, and the cadence between them. Two
+  // scripted asks make the first look non-terminal and the second terminal, so the recorded
+  // journals the two engines are compared byte for byte on carry both shapes.
+  [
+    "waitUntil: a non-terminal observation, then a terminal one",
+    'const a = await spawn("one");\n'
+      + 'const seen = await waitUntil(async () => await ask(a, { name: "look", schema: { state: "string" } }),\n'
+      + '  { name: "checks", every: "1m", deadline: "10m", terminal: (o) => o.state !== "pending" });\n'
+      + 'log(seen.state);',
+    { asks: { look: [{ state: "pending" }, { state: "completed" }] } },
+  ],
   [
     "a checkpoint that expires",
     'const c = await checkpoint("go", "Go?", { timeout: "1m", onExpiry: "proceed" });\nlog(c.status);',

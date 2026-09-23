@@ -70,6 +70,7 @@
  * Run: pnpm smoke:freeslot-barrier:live   (pnpm build first — Manager + the agent child load
  * dist; needs nats-server + node on PATH)
  */
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]`, which in this in-process
@@ -124,11 +125,11 @@ type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
-const { join } = await import("node:path");
+const { join, resolve } = await import("node:path");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fsb-home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-fsb-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}fsb-root-`));
 
 const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
@@ -334,6 +335,7 @@ try {
   jsDir = mkdtempSync(join(tmpdir(), "cotal-fsb-js-"));
   writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);
@@ -375,6 +377,7 @@ try {
     evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
       servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
     }),
+    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
   });
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -433,7 +436,7 @@ try {
   console.log("B) user-mode spawn of the predecessor");
   manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("predecessor spawn ok", r1.ok === true, r1);
   const fp1 = await footprint();
   check("predecessor footprint exists (row + dm + dlv + acl)",
@@ -496,7 +499,7 @@ try {
   // the incidental numbered-name refusal that follows once the reservation releases.
   rmSync(join(root, "child-connected"), { force: true });
   const namesBeforeProbe = listNames();
-  const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   const probeDelta = listNames().filter((n) => !namesBeforeProbe.includes(n));
   check("BARRIER: the alias is not reassignable while the predecessor's cleanup is pending",
     !probeDelta.includes(AGENT), { probeReply: probe, probeDelta });
@@ -541,7 +544,7 @@ try {
   let r2: ControlReply | undefined;
   do {
     const before = listNames();
-    r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+    r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
     const delta = listNames().filter((n) => !before.includes(n));
     if (r2.ok === true && delta.includes(AGENT)) break;
     for (const n of delta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
@@ -656,7 +659,7 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  try { await manager?.stop(); } catch { /* already stopped */ }
+  try { await manager?.stop({ withAgents: true }); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }
   if (authChild?.pid) { try { process.kill(authChild.pid, "SIGKILL"); } catch { /* gone */ } }
   if (broker?.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }

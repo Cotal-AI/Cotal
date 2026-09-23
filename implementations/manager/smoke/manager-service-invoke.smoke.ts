@@ -110,7 +110,7 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("static reconciliation status advances the manager cluster revision", shipped.revision === 14, shipped);
+  check("classSpawn status advances the manager cluster revision", shipped.revision === 15, shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
@@ -131,7 +131,7 @@ try {
   catch (e) { badCode = e instanceof EpEnvelopeError ? e.code : (e as Error).message; }
   check("a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)", badCode === "bad-request", badCode);
   // P2 item 2: spawn is an ACTION - invoke returns the acceptance floor (before the agent is live).
-  const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot }, { currentEpoch, deadlineMs: 30_000 });
+  const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false }, { currentEpoch, deadlineMs: 30_000 });
   const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string; readinessDeadlineMs?: number };
   check("invoke spawn accepts the goal with the exact connector readiness budget a follower must outlive",
     rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string" && acc.readinessDeadlineMs === CONNECTOR_READINESS_MS, rSpawn.reply);
@@ -164,7 +164,7 @@ try {
   check("invoking a command not in the resolved surface is not-found", notFound === "not-found", notFound);
 
   await nc.drain().catch(() => nc.close());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });

@@ -11,6 +11,15 @@
  * `process.env` before the `configFromEnv()` call. Pointer only. Unlinking the file is
  * wrong: the session that launched this process may still need it.
  *
+ * A WHOLE-PREFIX SCRUB SATISFIES THIS TOO, and is accepted as such rather than as an
+ * exception. `COTAL_LAUNCH_MATERIAL` starts with `COTAL_`, so a loop that deletes every
+ * `COTAL_` key from `process.env` has dropped the pointer by construction and has also
+ * dropped the twelve variables beside it that this rule says nothing about. Refusing the
+ * stronger form would push files back toward the weaker one. The prefix scrub carries its
+ * own requirements, which this census does not attempt to restate: ownership at module
+ * scope is graded by `smoke:suite-ambient-env-self`, and this file grades ORDER for both
+ * forms.
+ *
  * A file that defaults the broker but hands `configFromEnv` an explicit object is not in
  * this class: that call does not read the ambient pair.
  *
@@ -36,9 +45,11 @@ const VAR = String.raw`process\.env(?:\.COTAL_SERVERS|\[["']COTAL_SERVERS["']\])
 const DEFAULTS = new RegExp(String.raw`${VAR}\s*(?:\|\||\?\?)=`);
 /** `configFromEnv()` or `configFromEnv(process.env)`. An explicit object is a different call. */
 const CALLS = /configFromEnv\s*\(\s*(?:process\.env\b)?\s*\)/;
-/** A real statement, not a mention in a comment. */
+/** A real statement, not a mention in a comment. Either the NAMED pointer drop, or the whole-prefix
+ *  scrub that subsumes it: a loop over the ambient keys deleting every `COTAL_` one from
+ *  `process.env` removes the pointer along with everything else the launcher exported. */
 const SCRUB =
-  /^[ \t]*delete\s+process\.env(?:\.COTAL_LAUNCH_MATERIAL|\[["']COTAL_LAUNCH_MATERIAL["']\]|\s*\[\s*LAUNCH_MATERIAL_ENV\s*\])/m;
+  /^[ \t]*(?:delete\s+process\.env(?:\.COTAL_LAUNCH_MATERIAL|\[["']COTAL_LAUNCH_MATERIAL["']\]|\s*\[\s*LAUNCH_MATERIAL_ENV\s*\])|for\s*\(\s*const\s+(\w+)\s+of\s+Object\.keys\(\s*process\.env\s*\)\s*\)[^\n]*?\1\.startsWith\(\s*["']COTAL_["']\s*\)[^\n]*?delete\s+process\.env\s*\[\s*\1\s*\])/m;
 
 const self = relative(repoRoot, fileURLToPath(import.meta.url));
 
@@ -128,6 +139,22 @@ check(
     'delete process.env["COTAL_LAUNCH_MATERIAL"];\n' +
     bracket +
     "const config = configFromEnv(process.env);\n";
+  // The stronger form, accepted because it is strictly stronger: the pointer starts with the
+  // prefix, so a prefix scrub removes it along with everything else the launcher exported.
+  const PREFIX =
+    'for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];\n' +
+    assign +
+    "const config = configFromEnv();\n";
+  const PREFIX_LATE =
+    assign +
+    "const config = configFromEnv();\n" +
+    'for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];\n';
+  // A loop that walks the ambient keys and deletes from somewhere ELSE has dropped nothing from
+  // this process. Same shape, different target, and the difference is the whole requirement.
+  const PREFIX_COPY =
+    'const copy = { ...process.env };\nfor (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete copy[key];\n' +
+    assign +
+    "const config = configFromEnv();\n";
   check("fixture: a compliant file passes both requirements", evaluate(GOOD).scrubs && evaluate(GOOD).ordered);
   check("fixture: a file that drops the pointer AFTER configFromEnv is rejected on order", !evaluate(LATE).ordered);
   check("fixture: a file that never drops the pointer is rejected", !evaluate(MISSING).scrubs);
@@ -139,6 +166,18 @@ check(
   check(
     "fixture: the same drop under bracket access is SEEN, so it can be judged at all",
     evaluate(BRACKET).applicable && evaluate(BRACKET).scrubs && evaluate(BRACKET).ordered,
+  );
+  check(
+    "fixture: a whole-COTAL_-prefix scrub satisfies the pointer drop, because the pointer is one of the keys it removes",
+    evaluate(PREFIX).scrubs && evaluate(PREFIX).ordered,
+  );
+  check(
+    "fixture: a prefix scrub placed AFTER configFromEnv is still rejected on order",
+    !evaluate(PREFIX_LATE).ordered,
+  );
+  check(
+    "fixture: a prefix loop that deletes from a COPY drops nothing from this process",
+    !evaluate(PREFIX_COPY).scrubs,
   );
 }
 

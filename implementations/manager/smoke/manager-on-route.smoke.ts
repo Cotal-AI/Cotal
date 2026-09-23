@@ -19,6 +19,7 @@ import { probeConnect, resolveService, invokeCommand, newIdentity, mintLifecycle
 import { recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -44,7 +45,8 @@ let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 let nc: Awaited<ReturnType<typeof connect>> | undefined;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-onroute-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}onroute-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
   const root1 = mkRoot(), root2 = mkRoot();
@@ -87,8 +89,8 @@ try {
   check("--on <unknown instance> deadlines (no fallback to another instance)", unknownErr);
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }
 

@@ -47,7 +47,7 @@ are marked; import them with `import type`.
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
-| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. |
+| `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 
 **Provisioning and minting** (all `@cotal-ai/core`)
@@ -148,7 +148,9 @@ signer. Provide the cred either through the injected store (under
 `deliveryCredsKey(space, { injected: true })`) or with a
 `--creds` file; the two are mutually exclusive. The daemon re-fetches the cred from the store at 75%
 of its JWT lifetime and fails loud rather than riding to expiry, so **something must re-sign a fresh
-cred into that same store**.
+cred into that same store**. When that read finds the previous generation still there, the daemon
+reports the missed remint and retries in 60 seconds. The current cred stays live until its expiry,
+and the store is read once per retry rather than once per second.
 
 ```ts
 import { runDelivery } from "@cotal-ai/delivery";
@@ -176,7 +178,21 @@ stripped; a legitimate local re-sign is continuous and proceeds without a networ
 `Manager` runs it on a schedule against its **own**
 `secretStore` (see below), so passing the manager and the delivery daemon the *same* store closes the
 renewal loop end-to-end on an injected backend: the manager reads the signer from the store, re-signs
-into it, and the daemon adopts each generation on a preflight-proven 75% timer. It never throws: it
+into it, and the daemon adopts each generation on a preflight-proven 75% timer. The stock
+cross-host composition cannot satisfy that by writing one filesystem and fingerprinting another:
+`Manager.start()` and every later remint challenge the daemon's `reloadStoreIdentity` and a
+divergent pair is refused naming both stores. The identity is the store the daemon actually
+reloads: an injected coordinate, the workstation root only when `--creds` is
+`<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
+file's own directory for any other `--creds` path, or the workstation root. Uninjected
+`--creds` that names one real workstation while process cwd resolves another is refused
+at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
+path that is not under any `.cotal` tree is not that case and is not refused here. It never
+walks ancestors with `findCotalRoot`. No bound daemon is not a named
+store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
+The first-party filesystem adapter declares its workspace-root identity on the store itself. Other
+injected adapters declare their stable coordinate on `SecretStore.identity`, or name it in
+`COTAL_SECRET_STORE` on both processes. It never throws: it
 returns per-file results (`skipped: "no-auth"` when the store holds no signer records),
 so the caller must check them or the cred still rides to expiry. A composition whose signer lives in
 KMS/Vault simply injects that store; no bespoke renewal is needed. A `--creds` file path must be
@@ -211,7 +227,16 @@ registry record and the workspace user-auth marker to start in user mode. `Manag
 injects the one `SecretStore` the manager uses for **the signer itself (the split trust
 records)**, daemon-credential renewal (`remintDaemonCreds`), and per-agent secrets,
 defaulting to the workspace filesystem store; pass the delivery daemon the *same* store for end-to-end
-hosted renewal. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+hosted renewal. The store declares the same identity on both processes, or both set
+`COTAL_SECRET_STORE` to the same coordinate. The manager
+remints no daemon credential when the daemon names a different store, including a daemon that binds
+after start; it keeps running and serving its own agents, so one space can carry a manager on more
+than one workspace root. Pointing several managers at one coordinate is safe: the store identity
+alone cannot pick an owner (it carries no holder and no tiebreak, so every manager sharing the store
+matches), so the manager that also holds the space's renewal lease is the one that remints and the
+rest skip it. Without that lease two owners would remint on independent timers with no ordering
+between them, and one write would land between the other's re-sign and its fingerprint-only
+`reloadCreds`. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
@@ -221,6 +246,55 @@ custody problem. The other knobs are `workspaceRoot` and the process-global `COT
 > `loadSpaceAuth`). That is the single-machine composition, where the signer is on local disk by the
 > static-auth model; multi-tenant hosting runs **user mode**, which never mints from on-disk trust. The
 > store-injectable signer path is the hosted-server set: the manager, `remintDaemonCreds`, and delivery.
+
+The typed remote-manager authority contract includes a one-shot terminal phase. A host implements
+`remoteAuthority.prepareAgentRetirement` to revoke the managed grant and finish its resumable
+release while preserving the UID, then `remoteAuthority.mintRetirementRequester` returns the
+host-signed JWT for a fresh participant-owned nkey. The credential is pinned to the authenticated
+owner, server-derived manager serve principal, current instance epoch, and exact target lifecycle.
+The manager then uses the existing auth `retireLifecycle` rail with the operation id derived by
+`managedRetirementOpId(target.lifecycleUid)`. This derivation is the reference remote-Manager
+composition's closed contract, not a rule for every retirement entry point; interactive retirement
+keeps its existing operation identity and remains compatible. The `retireLifecycle` rail independently
+recomputes the managed id from its broker-pinned target before any gate, head, intent, or barrier
+access, so mint-time validation is not the terminal boundary. A failure keeps
+the alias held. This does not expose the auth barrier or give the participant signer authority.
+
+A host that resumes retained managed actors also implements
+`remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
+already holds, plus the `nextRegistrationProof` returned by the activation response. That proof is
+host-issued after registration and binds the manager owner, actor, lifecycle, identity nkeys, current
+registration revision, and serving epoch. The host checks it against the current open manager gate,
+validates the retained secrets against its current managed row, and returns only the non-secret
+authority shape. The manager binds every result coordinate and the returned authority back to its
+inventory before use. Do not copy the provider's `issuer.json` or `callout.json` into the participant
+store. Both contain private signing or exchange authority.
+
+The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinned public auth-service
+base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
+not select the local `--dir` arm, which depends on a host-only auth-service process record.
+
+Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
+request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays
+that tuple over the current registered manager lifecycle. HTTPS does not separately authenticate the
+relayed caller. The host authenticates the manager operator, binds the request to the current open
+manager gate, registration proof, serving epoch, and identity nkeys, then reads the caller's unified
+authoritative row fresh. It returns only the manager owner and `authorized: boolean`, with every request
+coordinate echoed. Missing, revoked, narrowed, foreign-owner, and stale-lifecycle callers all return
+`false`; malformed coordinates or corrupt and unavailable authority state fail the operation. The
+participant never reads or mirrors the host ledger, and the remote branch has no local fallback. The
+same callback gates all `manager.admin` handlers, any-mode cross-owner control, and `ps` or `inspect`
+cross-owner visibility. Launch keeps its owner-equality policy.
+
+The remote authority's instance executor remains the scoped maintenance credential for clean service
+deregistration and exact instance registration operations. It carries no records-stream consumer
+lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
+returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
+consumer connection and its create/delete rights. The executor remains a five-minute credential for
+registration operations and clean deregistration. A hosted process expected to
+run beyond that window cannot yet renew it in place. Clean deregistration then fails loud and the
+operator removes the stale instance with `cotal deregister-instance`. Wiring the typed `renew` phase
+into the running manager remains required for unattended long-lived hosting.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on

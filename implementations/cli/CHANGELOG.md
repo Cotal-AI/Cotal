@@ -1,5 +1,460 @@
 # @cotal-ai/cli
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- db18070: Apply a signed-in account's space catalog to the registry under the provider's catalog lock, and
+  record in the cache whether the snapshot was applied in full. A command that dies or is stopped
+  while applying no longer leaves a partial registry that fresh and not-modified refreshes accept:
+  the next command applies the cached snapshot again first. `prepareSpaceCatalogs` and
+  `syncSpaceCatalogAfterLogin` now take the consumer's `apply`.
+- 7bd1ce8: Add `cotal service` (install/status/uninstall): run the manager as a user service that survives logout and reboot. Linux installs a systemd user unit per mesh, macOS a launchd agent; other platforms fail with a message naming what is missing. The unit runs a bare `supervise` with mesh facts in a 0600 EnvironmentFile, a private COTAL_HOME (with the mesh registry entry snapshotted into it), and connectors pre-seeded synchronously by the installer. `supervise` reads COTAL_SPACE/COTAL_SERVER from the environment when the flags are absent, and pins its workspace root so a unit's WorkingDirectory owns the pidfiles.
+
+  Every path-derived value the unit writes (WorkingDirectory, EnvironmentFile, ExecStart tokens) is escaped for systemd percent specifiers, so a mesh root containing `%` starts over its real path instead of a path systemd rewrote while install reported success. Uninstall and status require the unit's recorded mesh to be present (and, for uninstall, to match the named mesh); a unit that carries the provenance marker but no recorded mesh is refused rather than treated as the requested mesh.
+
+- b4de8ff: Mark partial multi-manager `ps` results incomplete with a non-zero exit and a clear contract mismatch summary.
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- c36baf7: Refuse a URL or `host:port` value passed to `cotal up --host` by name, pointing at `--server`, instead of bracketing it into an unparseable broker URL. With no `--server` the derived garbage string used to reach the registry comparison and misfire as the unrelated "registered by hand" refusal; with `--server` the mismatch check threw a raw `Invalid URL` instead of its own diagnostic. The manifest path gets the same refusal for `broker.host` against `broker.servers`. (issue #1697)
+- 92a8938: Run a manual registration's policy refresh where the policy is consumed. The refresh reached the
+  pinned exchange from the command dispatcher, ahead of every command's own refusals, so `cotal status`
+  on a pre-policy manual entry failed on a transport error and `cotal supervise` reported that error
+  instead of its `--server` mismatch or missing-login sentence. Spawn, join and supervise now refresh
+  after their local refusals; read-only commands never refresh. The bundle validator, the pinned fetch
+  and the dial classifier move to `@cotal-ai/workspace` so the manager can share them.
+- 949d4d1: Admit seat checkpoints and take custody on the resume path, before anything starts.
+
+  An ordinary `up` from a preserved cut now runs the three admission gates over that cut's seat checkpoints, then claims the seat's next writer generation, all before the resume attempt is journalled and long before a manager launches. A refusal at that point costs nothing; the same refusal after a launch would be a second writer.
+
+  Integrity checks presence, regular non-symlink, byte size and sha256, and re-stats after the read. Identity checks the space, that the recorded `lifecycleUid` is not live, and the profile revision against this host's current digest of the seat's launch config, with no override at all: a differing revision is refused naming both digests and the remedy, because the checkpoint carries the recorded digest and not the config bytes, and the manager re-digests the same file at relaunch and refuses drift on its own. Recency compares `capturedAt` to this host's clock against the horizon the record carries, refusing outside it with all three values named. `--accept-stale-checkpoint` admits a stale checkpoint and records the exercised consent in the resume journal with the seat, the capture instant, the admitted age and the horizon.
+
+  Admission is all or nothing. Coverage is settled first from the cut's own directory listing, then all three gates run over every checkpoint, and only when the whole set has passed does any generation get claimed. A refusal anywhere leaves every generation unclaimed, including a lost exclusive create inside the claim phase itself: the claims made by that attempt are removed before the refusal is raised, by the exact paths it wrote and nothing else, so a generation another destination holds is never touched. The resume can then be retried over a repaired checkpoint set. Custody is claimed by exclusive create on the recorded generation plus one, and a lost create refuses rather than adopting the winner.
+
+  Admission is reconciled against the inventory the resume is about to hand the manager. A retained seat with no admitted checkpoint refuses the resume by name, before any gate runs and before any generation is claimed: an absent checkpoint directory and an absent record look identical to a reader of the directory alone, and a seat that starts without passing the gates has claimed no writer generation.
+
+  Two limits are stated in `docs/cli.md` rather than implied. The writer generation is claimed inside one workspace root, so it fences two resumes on one host and not two independent destinations. And no shipped command consumes the captured bytes: the bundle, diffs and untracked archive are written, digested and admitted, but restoring them is manual today, so an ordinary resume still requires the preserved source store.
+
+  Checkpoints are addressed by the preservation attempt that wrote them, `.cotal/maintenance/v<N>/checkpoints/<attemptId>/<seat>/`, through one shared path helper so the cut and the resume cannot disagree about where they are. A shared per-seat directory made the second cut in a root impossible: the writer refuses a destination that already exists, and deleting the previous one would destroy an artifact a rollback still needs.
+
+- 949d4d1: Capture a seat checkpoint during `down --preserve-state`, after the cut has proven the whole stack down.
+
+  Each retained seat gets `.cotal/maintenance/v1/checkpoints/<attempt>/<seat>/` holding a `git bundle` of its `cwd`'s reachable history anchored on a named base commit, the staging state as two diffs (base to index, index to worktree), the untracked files in scope, the harness session pointer and store when the connector declares them, and a `checkpoint.json` written last with every file's byte size and sha256. The command prints each checkpoint's path, continuity class and writer generation. The preservation attempt is in the path because a sealed checkpoint is immutable: a shared directory would make the second cut in a root refuse on the first cut's leftovers.
+
+  Capture runs only after the manager has proven every child exited and the endpoint is unreachable, because anything earlier races a harness still writing its transcript and its working tree. The staging state is two diffs rather than one so a mixed tree restores with the same index it was cut with.
+
+  The recorded untracked selection rule excludes the `.cotal/` control directory. When a seat's `cwd` is also the mesh root that directory is untracked, and without the exclusion the broker trust material, the space account, the manager instance identity's private seed and the seat's own credentials would be written into the artifact. A checkpoint carries credential references only.
+
+  A seat whose launch options could not be resolved is refused at prepare time, while every child is still running, in the manager's existing wording. The decision reads only the prepared inventory, so refusing after the stack is down would cost the operator a running mesh to learn the cut could never complete.
+
+  The continuity class a checkpoint records is what the connector declares, capped by what the cut actually carried. The manager's resume inventory records no session pointer path, so a command-produced checkpoint carries no session bytes and a continuation-capable connector is recorded as `fresh` or `drain-only` rather than `exact`. A class is a promise a destination may act on, so it never describes bytes the artifact does not contain.
+
+- f50e20d: Restore an admitted seat checkpoint on the destination, before the preserved resume starts.
+
+  A destination used to admit a checkpoint and then launch the seat against whatever happened to be at `launch.cwd`. The captured bundle, the two diffs and the untracked archive were written, digested and admitted, and nothing consumed them. `cotal up` now puts those bytes back, as a step of the preserved-resume path that runs after every gate has passed over every checkpoint and before a single writer generation is claimed, so a refusal costs nothing for the same reason a gate failure does.
+
+  Each seat stages beside its own `cwd`. Every recorded digest is verified again over the files as they are now; the bundle is cloned into `<cwd>.incoming`, refused when that path already exists; the recorded base commit is verified in the clone and checked out detached; the index diff is applied with `--index` and the worktree diff without it, both `--binary --allow-empty`; the untracked archive is extracted. Every seat stages before any seat is promoted, and promotion moves an existing `cwd` aside to `<cwd>.superseded.<timestamp>` before renaming the staging directory into place. Those two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves every seat's live `cwd` as it was, promotes nothing and claims no generation. `git` and `tar` run as child processes with argument arrays, never a shell string.
+
+  The superseded name is claimed before anything moves, by exclusive directory create, with a numeric suffix when the name is taken. The timestamp has one-second resolution, so two promotions of the same seat within one second would otherwise compute the same path, and the second rename would either replace the tree the first one saved or fail on it. A name this step could not create is a name it does not use.
+
+  A leftover `<cwd>.incoming` refuses by name and is never removed automatically: a staging directory from a failed run is the only record of what failed, so an operator inspects it and removes it by hand. A pre-existing `cwd` is renamed rather than deleted, so a wrong checkpoint costs a rename instead of a tree.
+
+  The promoted tree is verified once more. A checkpoint now records the seat's `git status --porcelain` as the cut read it, under the same selection rule the untracked set was produced under, and the restore re-reads it in the promoted tree and refuses a difference. Both applies can return 0 and still leave an index the source did not have, and this is the only check that sees it.
+
+  The session files travel the same way. The manager's resume entry carries the connector's `sessionStatePath` when the seat has one, `cotal down --preserve-state` takes `--session-store <path>` (repeatable, applied to every continuation-capable retained seat, refused when the path does not exist or is not a directory), and each captured session file records where it lands as an anchor plus a relative path rather than the source host's absolute spelling. The restore places them before the seat launches, so a connector that declares exact continuation is sealed and resumed as `exact` rather than capped. A pointer whose recorded `sessionId` is not the one the retained inventory reopens is refused before anything is cloned, and a session file already present at its destination is judged by content: equal bytes are already restored, different bytes are refused with both digests rather than clobbered.
+
+  `up --restore <dir>` reaches the same admission and the same restore, after the store is restored and validated and before commit intent is journaled. It previously handed a retained inventory to the manager with no gate run, no generation claimed and no restore.
+
+  The incarnation check runs before the restore does. The recorded `lifecycleUid` is reconciled against the inventory the resume is about to hand the manager as a gate over the staged set, so a checkpoint describing a different incarnation refuses with both uids while every live working tree is still in place and no generation has been claimed. That comparison previously ran after admission returned, which is after a tree had been moved aside, another promoted over it and a generation claimed under the checkpoint's uid.
+
+  A restore never moves or replaces the destination's own control directory. A seat whose `cwd` holds a `.cotal/`, the layout an operator gets from running `up` and `spawn` in one directory, is refused before staging: a checkpoint excludes the control directory by design, so promoting a tree that cannot contain it would carry the destination's live trust material and maintenance state away under the superseded tree, and the restore would report success.
+
+  A continuity class of `exact` or `fork` now requires the pointer and at least one store file. A pointer alone names a session whose transcript the artifact does not hold, and it is capped like a cut carrying neither.
+
+- a1c7737: A seat restore moves an existing working tree aside by renaming it straight onto its timestamped superseded name, retrying with a suffix when the name is taken. The previous exclusive-create claim could never be redeemed on Windows, where a rename onto an existing directory is refused.
+- a0c8a59: Discover a signed-in account's advertised spaces lazily, cache validated snapshots, and add `cotal sync` for explicit refreshes.
+- f178611: Preload every persisted per-space auth-callout account when a shared broker starts, and refuse incomplete user-auth state before writing its resolver config.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+- 26d864b: `cotal update` and `cotal update --self` complete on a machine with no recorded mesh instead of refusing with "no mesh running": there is no running manager to observe there, so the continuity read is skipped. The same holds when every recorded mesh is down and none is selected. A recorded mesh that is down still refuses when the command selects it, with `--space` or from inside its project, and so does a named space that is not running. A connect refusal that came from mesh-target resolution now carries that target error as its `cause`.
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [314a12c]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/workspace@0.51.0
+
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- ba91ad5: Attach on an open-mode mesh, which never has a local seed
+
+  `cotal attach` refused every seat on a mesh started with `cotal up --open`, saying it needed this
+  space's local seed to redeem the session grant. An open-mode mesh has no seed by design, so the
+  refusal fired on exactly the configuration attach exists to serve, and its remedy pointed at
+  re-registering a root the mesh had already resolved correctly.
+
+  How a session grant is redeemed is now the recorded mesh contract, carried as a value rather than
+  inferred from whether a credential happens to be present. An open mesh redeems over the same bare
+  connection the control round trip already used, and nothing is minted or synthesised for it. A
+  static-auth mesh still mints a session-scoped credential from the seed at the root the mesh
+  resolved to, and a static-auth mesh whose seed is missing still refuses, now naming
+  restore-at-checkout rather than a re-registration that would change nothing. A user-auth mesh still
+  refuses loud: two-step user-mode redemption is not wired.
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- 44cdcc2: Make the delivery daemon own its liveness record
+
+  `delivery.<space>.pid` was written only by the CLI launcher, so a daemon started by any other route,
+  a container entrypoint, systemd, or an operator running `cotal deliver --space <space>`, left
+  whatever was on disk untouched and every reader believed it. On a reporting mesh the record named a
+  pid that had been dead for four days while the daemon ran under a different one.
+
+  That is not only an under-report. `cotal down` decides what to stop from the same record, and
+  `mayBeRunning` is the guard that must fail closed so `cotal down nats` cannot take the broker away
+  from a live dependant. A record naming a dead pid satisfies that guard: it supplies the
+  proof-of-death the guard asks for, so a live delivery daemon reads as clear and the broker goes out
+  from under it.
+
+  The daemon now writes its own record and removes it, with the identity pin, when it exits. The write
+  happens once the single-flight shard lease is held, and not before: a daemon that loses that lease
+  refuses to bind and exits, so writing on entry would let a loser overwrite the live holder's record
+  on its way out. It is written before the Plane-3 bind so an operator can still stop a daemon whose
+  bind hangs; readiness is a separate fact the lease's own flag already carries.
+
+  Readers no longer believe a pid merely because it is alive. The delivery record's liveness gains the
+  `foreign` state the manager's already had, for the same reason: a record that outlived its daemon is
+  eventually re-pointed at an unrelated process by pid reuse, and `kill(pid, 0)` alone reports that
+  stranger as a healthy daemon forever. A live pid is trusted only once its command line has been read
+  and names the daemon, and `cotal down` never signals a live process that is provably not one.
+  Attribution only downgrades on proof, so a platform with no argv source, an unreadable process, or
+  one that exits during the read all behave exactly as before.
+
+- 6cc504b: Report an unbound delivery responder instead of a healthy-looking daemon
+
+  A delivery daemon whose `ctl.delivery` responder has not bound blocks spawn, retirement and join,
+  but no operator-facing surface said so. `cotal status` printed `delivery  running (pid N)` off the
+  pidfile alone, which is the identical line it prints when delivery is fully healthy. The daemon's
+  own readiness lease already distinguished the two, and `cotal status --components` already read it,
+  but that pass is opt-in, so an operator watching the ordinary surfaces saw a green control plane
+  while every lifecycle operation failed. The boot path made the same conflation from the other side:
+  when the readiness wait elapsed, `cotal up` logged one info line promising that boot durable joins
+  would reconcile and then reported success, so its caller could not tell a bound responder from an
+  absent one.
+
+  Bare `cotal status` now reads the same readiness lease `--components` reads, and reports the
+  responder as bound, not bound, or unchecked. An unbound responder names its consequence in the same
+  line: no spawn, no retirement, no join until it binds. Bare status remains a broad, recovery
+  oriented diagnostic and still exits 0, and where the lease cannot be read it says the axis was not
+  checked and points at `--components` rather than implying health.
+
+  Readiness is judged against the daemon that is supposed to be serving, not merely against the flag.
+  A daemon that dies without releasing its lease leaves its `ready` record in the bucket until the
+  lease TTL expires it, so for that window a restarted or crashed mesh could still report a bound
+  responder off the previous daemon's record. Both surfaces now compare the lease holder against the
+  daemon this workspace launched and report a leftover record as not bound, naming it as a dead
+  daemon's record that clears on its own. Where the holder genuinely cannot be known, such as an
+  adopted daemon this process did not start, the holder is not checked and behaviour is unchanged.
+
+  `cotal up` either binds the responder or states that it did not and what that prevents; the promise of a reconcile stays, but as
+  a statement that the wait is open ended and that agents do not need respawning, rather than as the
+  only thing said. A denied join now names the delivery daemon as a possible cause alongside
+  credentials, instead of sending an operator holding valid credentials after the wrong hypothesis.
+
+  `cotal doctor auth` no longer reports a healthy fleet as broken. When a daemon re-mints an agent's
+  credential, the previous incarnation's file stays on disk, expired, and every one of those was
+  reported as `EXPIRED - the broker denies this credential` with the remedy `respawn the agent`.
+  Following that remedy destroys live sessions to repair nothing, because the running agent is already
+  using its successor. Superseded incarnations are now recognised from the credential family that
+  names them, reported as leftover files with a cleanup that is explicitly not a respawn, and excluded
+  from the verdict, while a credential that genuinely has no successor is still a problem. The remedy
+  for a recoverable credential now says that a running manager re-mints it and that the agent adopts
+  the new file without being restarted; `respawn` is reserved for material no renewal pass can rescue.
+  The doctor also names an unbound delivery responder when the recorded renewal pass hit one, so the
+  surface an operator reaches for when credentials look wrong can say that credentials are not the
+  fault.
+
+- fc6f0b1: Scope an unanswered endpoint verdict to the rail the request rode
+
+  A CLI whose caller carries an issued generation rides the versioned `ep.v1` rail. SPEC 13.15 makes
+  that rail a separate subject space from the legacy `ep` rail and requires an endpoint to serve
+  both, so a manager built before the versioned rail serves `ep` alone and never receives the
+  request. The describe waited out its whole budget and every hosted `cotal run` verb reported that
+  no manager answered on the endpoint rails, asked whether one was running, and offered `--local`,
+  against a manager that was up, on the roster and answering `cotal ps` throughout. `--local` drives
+  the run from the calling process and names the caller as the run's answerer, so an operator who
+  took the suggestion would submit an answer under the wrong identity.
+
+  The unanswered marker now carries the `ep` plane the request was published on, and `describe`
+  names it in its own refusal. `cotal ps` and the other manager verbs state the reachability verdict
+  against that rail instead of against the mesh, and say what silence on a versioned rail does not
+  establish. `cotal run`'s hosted verbs do the same and drop both the question and the `--local`
+  suggestion there, since neither follows from what was observed. On the legacy rail every message is
+  unchanged: there is no second rail its silence could be hiding a manager on.
+
+  No fallback describe is issued on the other rail. A caller holds broker rows for its own rail only,
+  so the request would be refused at publish rather than answered.
+
+- f4ddd02: Refuse to re-exec a detached daemon from an entry that is not the CLI
+
+  `selfArgv()` builds the argv every detached re-exec is spawned with: `[node, ...loaderFlags,
+process.argv[1]]`, plus a cotal subcommand the caller appends. It took `process.argv[1]` on trust.
+  Under tsx that is whatever file was run, so a process started from something other than the `cotal`
+  entry spawned a child that re-ran THAT file with `supervise`, `deliver` or `ext add` appended, which
+  the file does not read. A test fixture reaching `ensureControlPlane` therefore spawned a copy of
+  itself as its own manager, and the copy reached the same call and spawned the next: 970 detached
+  generations over 4.7 hours on a persistent host, each holding a nats-server and a delivery holder.
+  The guard cannot live in the test harness, because `startManagerDetached` unrefs its child on
+  purpose and nothing can adopt it.
+
+  `selfArgv()` now refuses unless the entry is the CLI's own composition root: `bin/cotal.ts` in a
+  source checkout, `dist/cotal.js` in an install, or a bare `cotal`, which is what `npm i -g` leaves
+  in `process.argv[1]` because it publishes the bin as a symlink. The refusal names the entry, says
+  what a child spawned from it would actually run, and names the remedy. It is a throw rather than a
+  skipped spawn: a re-exec that silently does not happen reports a healthy control plane over nothing.
+
+  The manager, delivery and auth starters now build that argv before they open the daemon logfile, so
+  a refused start leaves the mesh root exactly as it found it instead of creating a log and leaking
+  its descriptor.
+
+- 56afdaf: A seat is reported as not found only when every reachable manager instance answered for itself
+
+  `cotal stop`, `cotal attach` and `cotal input` locate a seat by asking every registered manager
+  instance which one hosts it, because a single manager answers `not-found` both for a seat it does
+  not host and for a name that exists nowhere. That search concluded absence from every instance the
+  scatter called reachable. An instance that answered with a REFUSAL is reachable, and it stated
+  nothing about which seats it hosts; an instance that never answered at all was left out of the
+  count entirely. So an incomplete search printed a definite negative that named the instance count,
+  which is the shape a reader believes: a seat that `cotal ps` listed as running the whole time was
+  reported as being on none of the reachable managers, and the same command with `--on <instance>`
+  succeeded first time.
+
+  Absence is now concluded only from instances that answered for themselves. When any registered
+  instance stayed silent or refused the read, the verbs report that the seat's location could not be
+  established, name those instances, and state that this is not a report that the seat is gone, so an
+  operator or a retry loop pins with `--on` instead of concluding the seat is already gone. A search
+  in which every instance answered still reports the seat as absent, unchanged.
+
+### Patch Changes
+
+- 5e23b1d: Keep the versioned rail's subject token out of source comments
+
+  The issued-profile census scans every shipped source for the versioned rail's subject token and
+  allows only core's subject and grant builders to spell it. Five comments in core, the CLI and the
+  runtime spelled the token and failed that cell on main. They now say "the versioned rail" or "the
+  versioned plane". No code changes.
+
+- 1112755: Give fresh setup defaults the run capability alongside spawn. Document workflow tool setup, credential refresh for existing personas, and supported authentication modes.
+- 504e78f: Observe before writing: no seed store rewrite during parse, validation or a dry run
+
+  `runCli` ran the connector-seeding boot gate before command lookup, flag parsing and the command
+  body, so a newer staged binary invoked as `cotal down --preserve-state --dry-run` against a live
+  older deployment rewrote the operator-global seed store, manifest and npm prefix to the new version
+  and only then printed the usage refusal for the unsupported flag combination. No service stopped,
+  yet the operator's next command from the older CLI failed on version skew: the machine was migrated
+  by a run that refused to do anything. A `--dry-run` invocation now skips the auto-reconcile, so a
+  run that promises to plan and print writes nothing, whether it goes on to render a plan or to
+  reject the invocation.
+
+  `executeUpdate` had the same shape one level down. `reconcileCurrent` ran `runSeed({force: true})`
+  before `reportRunningManager`, so `cotal update --self` rewrote the store before it had read whether
+  a manager was running or which mesh was the target; on a machine whose mesh predates this release's
+  authority stores the run then failed its running-manager continuity check with the store already
+  rewritten. The continuity check is a pure read of the running manager and the selected target, and
+  now runs first: a failed or legacy verdict refuses with the seed store untouched.
+
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+
+## 0.49.0
+
+### Minor Changes
+
+- b0aeca4: Make bare `cotal down` and `Manager.stop()` spare managed agents by default. Use
+  `cotal down --with-agents` or `Manager.stop({ withAgents: true })` for deliberate destructive
+  teardown. Linux PTY seats release manager-local proxy custody while their detached custodians and
+  child processes continue running, and the CLI binds destructive intent to the exact live stop
+  attempt so an interrupted command cannot poison a later bare shutdown. Managers launched before
+  process identity pins existed remain stoppable after the documented reduced-guarantee warning:
+  bare down cannot prove which SIGTERM handler that running binary carries, so it never reports the
+  pre-signal seat inventory as confirmed spared. A genuinely older destructive handler may still reap
+  those agents. `--with-agents` uses a one-shot handoff bound to the manager pid and the live
+  stop-reservation inode, then signals unconditionally.
+- e3f2d21: Keep a dead `cotal up` mesh record as offline, with its root in the error
+
+  A liveness miss used to delete every registry record that was not `origin: "manual"`, including
+  `origin: "up"` and pre-origin records. `cotal meshes` was the command the error pointed at, and it
+  was the command that destroyed the restart authority. The record was already written at provision
+  time; this change stops withholding survival from it.
+
+  `pruneMesh` is now reason-gated. `gone` (the liveness sweep, and preflight `unreachable`) keeps
+  every origin as `offline`. `mismatch` (credentials rejected, open-now-auth, stale-auth-root) still
+  drops an `up` record and still never drops a `manual` one. `cotal down` / `cotal clean all` still
+  drop `up` records for the root they tear down.
+
+  The unreachable copy for a kept `up` record still starts `no mesh running at <server>` and then
+  names the recorded root, telling the operator to run `cotal up` there, so a bare `cotal up` in
+  the wrong cwd cannot start a different mesh.
+
+  A liveness sweep still returns `{ pruned, offline }`. Resolution now uses `offline`: a record
+  known dead is not a live candidate for a bare command (`no mesh running` / `multiple meshes
+running` name only meshes that answered). `--space` still resolves a dead record so preflight
+  can name its root. All-offline is still `no-meshes`; the named-space path is what reports
+  "recorded but not running".
+
+### Patch Changes
+
+- 0680a3f: Warn when `cotal up --detach` is launched by a systemd `Type=oneshot` unit with
+  `RemainAfterExit=yes`, because that unit observes only the launcher's successful exit and can remain
+  active after the detached stack dies. Document a foreground long-running unit, component-health
+  checks, and split broker/manager monitoring.
+- 062881a: Wire `--max-sessions` from the CLI into the manager's live-session ceiling.
+
+  `ManagerOptions.maxSessions` was documented as deployment-configurable, but nothing in the CLI
+  could set it, so every live manager sat at 64. `cotal supervise --max-sessions` and
+  `cotal up --max-sessions` now parse a positive integer, pass it into the manager, and record it on
+  the mesh so a same-root repair, resume, or `spawn -f` that restarts the manager does not silently
+  drop a raised ceiling. A refresh of an already-running manager refuses a different `--max-sessions`
+  rather than recording an unapplied setting. A capacity refusal names `--max-sessions`. Default
+  remains 64. Size for agents × panes: the browser console opens one session per pane.
+
+- 5079c89: Rebind a presence watch that goes silent under a live connection, and stop `cotal ps` from printing a liveness verdict while the manager's own presence view is stale.
+
+  On netcup on 2026-09-09 the presence stream was deleted and recreated while the manager kept its
+  connection. Its ordered consumer re-created itself from the old cursor against a stream whose
+  sequence had restarted, the broker kept sending it idle heartbeats, and nothing ever re-created the
+  watch. The manager's roster froze at the pre-recreation snapshot for hours: `cotal ps` printed
+  `mesh offline` for every seat older than the freeze and `not in roster` for every seat younger,
+  while a fresh observer saw all of them heartbeating. The lane watchdog stopped a working
+  orchestrator twice on that reading.
+
+  The endpoint's sweep already refused to age peers out while the whole bucket was silent and marked
+  the view stale; that was the right verdict for a held link and the wrong end state for a dead
+  consumer. When the view is stale and the transport is up, the endpoint now stops the old watch and
+  binds a new one from the bucket's current state, once per liveness window, and reports the rebind
+  as a warning that names the silent interval. The per-peer age-out also requires that the watch
+  delivered for a full window after the peer's last heartbeat, so an observer's own deafness no longer
+  emits one offline verdict per peer on the tick before the whole-bucket gate trips. A rebind that
+  is still awaiting the broker when the endpoint stops or rebuilds its connection is retired: it
+  installs nothing and reports nothing, so a stopped endpoint never regains a watch and a rebuilt
+  one keeps the watch its fresh connection bound. A rebind that lands on a bucket with no keys is
+  read two ways. An observer that does not register (a probe) learns that nobody is present: it
+  retires every peer still in its roster and holds the view current until the first write, instead of
+  reading its own silence as staleness and rebinding once per window while the mesh is empty. An
+  observer that registers (the manager) is one of the missing keys, so the bucket was wiped since its
+  last heartbeat: it re-publishes its own record, the new watch delivers it, and every other peer is
+  re-observed or aged out from that delivery. It never marks itself offline on a current view.
+
+  Each `ps` row now carries the manager's presence-view state (`meshView`: `current`, `stale`, or
+  `unpopulated`), and the CLI prints `mesh unknown` with the reason instead of `mesh offline` or
+  `not in roster` whenever that state is not `current`. Rows from an older manager carry no field and
+  render as before.
+
+- 1636927: Resume long manager re-registrations with fresh scoped authority and durable same-operation eviction progress, and document safe gate recovery and the last-resort JetStream store replacement procedure.
+- 6836dd3: Allow `cotal send dm`, `msg`, and `ask` from an operator shell outside a managed seat. The transient
+  sender now uses a fixed advisory display name while its wire principal continues to come from the
+  resolved credential or user bearer.
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/workspace@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

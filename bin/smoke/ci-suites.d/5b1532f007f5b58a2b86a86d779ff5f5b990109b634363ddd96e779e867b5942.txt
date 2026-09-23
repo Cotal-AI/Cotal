@@ -1,0 +1,2 @@
+# Self-test for the coverage report's gradability check (the assembles witness and the dist trap).
+smoke:mutation-coverage

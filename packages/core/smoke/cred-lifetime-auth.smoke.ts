@@ -7,15 +7,16 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseCreds } from "@nats-io/jwt";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
+  CotalEndpoint,
   createSpaceAuth,
   credentialLifetime,
-  chatSubject,
   isReachable,
   probeConnect,
   mintConnectionEvictorCreds,
@@ -23,7 +24,6 @@ import {
   mintCreds,
   newIdentity,
   serverConfig,
-  DEV_OWNER,
   ROTATION_RENEWED_TTL_SEC,
   STANDING_RENEWABLE_TTL_SEC,
 } from "../src/index.js";
@@ -40,6 +40,49 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<vo
     proc.once("exit", () => resolve());
     setTimeout(resolve, timeoutMs);
   });
+
+const SELF = fileURLToPath(import.meta.url);
+
+if (process.argv[2] === "expiry-child") {
+  const [, , , servers, childSpace, credsPath, id] = process.argv;
+  if (!servers || !childSpace || !credsPath || !id) throw new Error("expiry child requires servers, space, creds path, and id");
+  const liveCreds = readFileSync(credsPath, "utf8");
+  const liveClaims = await parseCreds(enc(liveCreds));
+  if (typeof liveClaims.uc.exp !== "number") throw new Error("expiry child credential has no exp");
+  const ep = new CotalEndpoint({
+    space: childSpace,
+    servers,
+    creds: liveCreds,
+    card: { name: "expiry-child", kind: "endpoint", id },
+    consume: false,
+    registerPresence: false,
+    watchPresence: false,
+    watchChannels: false,
+  });
+  const endpointErrors: string[] = [];
+  ep.on("error", (err: Error) => endpointErrors.push(err.message));
+  await ep.start();
+  const nc = (ep as unknown as { nc?: NatsConnection }).nc;
+  if (!nc) throw new Error("expiry child started without a NATS connection");
+  const closed = nc.closed();
+  // Observe the policy after Cotal's pre-expiry timer has fired but before the broker's expiry close.
+  // This makes the root mechanism itself a deterministic mutation control while the same child keeps
+  // running to grade the real nc.closed() value and process survival below.
+  await wait(Math.max(0, liveClaims.uc.exp * 1000 - Date.now() - 250));
+  const reconnectDisabled = (nc as unknown as { protocol?: { options?: { reconnect?: boolean } } }).protocol?.options?.reconnect === false;
+  const reason = await Promise.race([
+    closed,
+    wait(10_000).then(() => "timeout" as const),
+  ]);
+  if (reason === "timeout") throw new Error("the broker did not close the expired connection");
+  console.log(`EXPIRY_CHILD_CLOSED ${JSON.stringify({ name: reason?.name, message: reason?.message, reconnectDisabled, endpointErrors })}`);
+  await ep.stop();
+  // Let the transport-close continuation and its microtasks settle before the explicit exit. With the
+  // reconnect fence removed, nats-core's discarded continuation rejects during this window and Node
+  // exits nonzero. No process-level rejection handler is installed.
+  await wait(100);
+  process.exit(0);
+}
 
 let pass = 0;
 let fail = 0;
@@ -59,6 +102,7 @@ async function tryConnect(creds: string, id: string): Promise<"ok" | "rejected">
       servers: SERVERS,
       authenticator: credsAuthenticator(enc(creds)),
       inboxPrefix: `_INBOX_${id}`,
+      reconnect: false,
       maxReconnectAttempts: 0,
     });
     await nc.close();
@@ -136,24 +180,24 @@ try {
   check("fresh bounded cred connects", await tryConnect(freshCreds, fresh.id) === "ok");
 
   const live = newIdentity();
-  const liveCreds = await mintCreds(auth, live, "operator", { expiresInSeconds: 1 });
-  const nc = await connect({
-    servers: SERVERS,
-    authenticator: credsAuthenticator(enc(liveCreds)),
-    inboxPrefix: `_INBOX_${live.id}`,
-    maxReconnectAttempts: 0,
+  const liveCreds = await mintCreds(auth, live, "operator", { expiresInSeconds: 6 });
+  const liveCredsPath = join(dir, "live.creds");
+  writeFileSync(liveCredsPath, liveCreds, { mode: 0o600 });
+  const expiryChild = spawn(process.execPath, ["--import", "tsx", SELF, "expiry-child", SERVERS, space, liveCredsPath, live.id], {
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  await wait(1600);
-  let liveAfterExp: "allowed" | "closed" = "allowed";
-  try {
-    nc.publish(chatSubject(space, DEV_OWNER, live.id, "general"), enc("after-exp"));
-    await nc.flush();
-  } catch {
-    liveAfterExp = "closed";
-  } finally {
-    await nc.close().catch(() => {});
-  }
-  check("live connection behavior after exp is empirically pinned (nats-server closes/rejects after expiry)", liveAfterExp === "closed", liveAfterExp);
+  let expiryOutput = "";
+  expiryChild.stdout?.on("data", (chunk) => { expiryOutput += String(chunk); });
+  expiryChild.stderr?.on("data", (chunk) => { expiryOutput += String(chunk); });
+  await awaitExit(expiryChild, 12_000);
+  if (expiryChild.exitCode === null && expiryChild.signalCode === null) expiryChild.kill("SIGKILL");
+  const closeLine = expiryOutput.split("\n").find((line) => line.startsWith("EXPIRY_CHILD_CLOSED "));
+  const closeReason = closeLine ? JSON.parse(closeLine.slice("EXPIRY_CHILD_CLOSED ".length)) as { name?: string; message?: string; reconnectDisabled?: boolean; endpointErrors?: string[] } : undefined;
+  check(
+    "CotalEndpoint disables library reconnect before credential expiry, nc.closed() resolves with the expiry error, and the process stays alive",
+    expiryChild.exitCode === 0 && closeReason?.reconnectDisabled === true && closeReason.name === "UserAuthenticationExpiredError" && closeReason.message === "User Authentication Expired",
+    { exitCode: expiryChild.exitCode, signal: expiryChild.signalCode, closeReason, output: expiryOutput },
+  );
 } finally {
   srv.kill();
   await awaitExit(srv);

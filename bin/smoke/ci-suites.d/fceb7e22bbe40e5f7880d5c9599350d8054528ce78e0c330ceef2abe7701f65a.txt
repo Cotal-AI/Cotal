@@ -1,0 +1,2 @@
+# A Jcode home with an empty sessions/ directory must start a fresh session.
+smoke:jcode-empty-sessions

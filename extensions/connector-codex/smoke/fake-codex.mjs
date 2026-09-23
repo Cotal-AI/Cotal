@@ -348,6 +348,9 @@ async function runTurn(text) {
     });
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
+  if (text.includes("APPROVAL")) {
+    await serverRequest("item/commandExecution/requestApproval", { threadId: THREAD, turnId, itemId: `cmd_${turnSeq}` });
+  }
   await waitForOutageGate(text);
   await waitForOpenWalGate(text, turnId);
   if (text.includes("SOLOTUI") && !soloUsed) {
@@ -430,7 +433,16 @@ async function runTurn(text) {
       item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
     });
   activeTurn = undefined;
-  notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status } });
+  notify("turn/completed", {
+    threadId: THREAD,
+    turn: {
+      id: turnId,
+      status,
+      ...(status === "failed"
+        ? { error: { message: "fake rate limit", codexErrorInfo: "rateLimitExceeded", willRetry: false } }
+        : {}),
+    },
+  });
 }
 
 // One websocket frame is a complete unit (no partial message carries across frames), but it may

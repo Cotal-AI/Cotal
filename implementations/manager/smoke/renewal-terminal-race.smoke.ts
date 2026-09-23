@@ -172,6 +172,7 @@ for (const { name } of SCENARIOS)
   );
 
 await putSpaceAuth(secrets, auth);
+process.env.COTAL_SECRET_STORE = `memory:renewal-terminal-race`;
 const mgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, secretStore: secrets });
 (mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   async (principal) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true });
@@ -258,7 +259,7 @@ try {
   for (const scenario of SCENARIOS) {
     const { name } = scenario;
     console.log(`\n${name}: ${scenario.renewal} renewal then ${scenario.terminal}`);
-    const spawned = await mgr.startAgent({ name, agent: "smoke-race" });
+    const spawned = await mgr.startAgent({ name, agent: "smoke-race", events: false });
     check(`${name}: spawn succeeds`, spawned.ok, spawned);
     const agent = M.agents.get(name);
     check(`${name}: the spawned lifecycle is managed`, agent !== undefined);
@@ -357,7 +358,7 @@ try {
     }
   }
 } finally {
-  await mgr.stop().catch(() => {});
+  await mgr.stop({ withAgents: true }).catch(() => {});
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
 }

@@ -43,6 +43,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -63,7 +64,7 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `sesscap-${mintLifecycleUid().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-sesscap-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}sesscap-`));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -75,7 +76,9 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
-kids.push(spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }));
+const broker = spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+kids.push(broker);
+teardownOnSignal(broker);
 const managers: InstanceType<typeof Manager>[] = [];
 
 const fakeSession = () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} });
@@ -124,7 +127,7 @@ try {
   const iid = M.managerInstanceId;
   check("fixture: the manager took the configured cap", M.sessionPlane.maxSessions === CAP, M.sessionPlane.maxSessions);
 
-  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-cap" });
+  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-cap", events: false });
   check("fixture: an agent is running to attach to", spawned.ok === true, spawned);
 
   // Count the §13.1 credential family: a minted per-session SERVING credential lands here, so an
@@ -160,8 +163,8 @@ try {
   }
   check("it throws rather than establishing", refusal !== undefined && leaked === undefined, { refusal, leaked });
   check("the refusal is `resource-exhausted`", refusal?.code === "resource-exhausted", refusal);
-  check("the message NAMES the cap and its current value (an operator learns the knob to raise)",
-    refusal !== undefined && refusal.message.includes(String(CAP)) && refusal.message.includes("maxSessions"), refusal?.message);
+  check("the message NAMES the cap and its operator flag (an operator learns the knob to raise)",
+    refusal !== undefined && refusal.message.includes(String(CAP)) && refusal.message.includes("--max-sessions"), refusal?.message);
   check("liveSessions stays at N — the refused attempt left no half-registered session",
     M.sessionPlane.liveSessions === CAP, M.sessionPlane.liveSessions);
   check("NO caller JWT was returned (the establisher never reached its mintCreds)", leaked === undefined);
@@ -286,8 +289,8 @@ try {
     const body = (await over.json()) as { error?: string; code?: string };
     check("the over-cap POST is 429, NOT the 500 an internal fault gets", over.status === 429, { status: over.status, body });
     check("the body carries the stable `code` a page can branch on", body.code === "resource-exhausted", body);
-    check("the body still names the ceiling and its knob for an operator reading the response",
-      (body.error ?? "").includes(String(CAP)) && (body.error ?? "").includes("maxSessions"), body.error);
+    check("the body still names the ceiling and its operator flag for an operator reading the response",
+      (body.error ?? "").includes(String(CAP)) && (body.error ?? "").includes("--max-sessions"), body.error);
     check("the response is JSON", (over.headers.get("content-type") ?? "").includes("application/json"), over.headers.get("content-type"));
     check("the refused POST did NOT attach the target's PTY", attaches === attachesAtCap, { attachesAtCap, now: attaches });
   }

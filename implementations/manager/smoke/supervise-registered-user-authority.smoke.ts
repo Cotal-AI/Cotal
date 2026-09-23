@@ -81,10 +81,11 @@ import {
 } from "@cotal-ai/auth";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const self = process.argv[1]!;
 const participantHome = mkdtempSync(join(tmpdir(), "cotal-registered-manager-home-"));
-const hostRoot = mkdtempSync(join(tmpdir(), "cotal-registered-manager-host-"));
+const hostRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}registered-manager-host-`));
 const participantRoot = mkdtempSync(join(tmpdir(), "cotal-registered-manager-participant-"));
 const previousHome = process.env.COTAL_HOME;
 process.env.COTAL_HOME = participantHome;
@@ -273,6 +274,7 @@ try {
     extraAccounts: preparedHost.extraAccounts,
   }));
   broker = trackChild(spawn("nats-server", ["-c", join(hostRoot, "server.conf")], { stdio: "ignore" }));
+  teardownOnSignal(broker);
   let brokerReady = false;
   for (let tries = 0; tries < 50 && broker.exitCode === null; tries++) {
     try {

@@ -95,7 +95,14 @@ for (const k of CLAUDE_PROVIDER_KEYS) process.env[k] = `smoke-${k}`;
 for (const k of HOST_MARKERS) process.env[k] = `parent-${k}`;
 for (const k of UNRELATED) process.env[k] = `parent-${k}`;
 
-const env = claudeConnector.buildLaunch({ space: "smoke", name: "claude-1" } as never).env ?? {};
+const launch = claudeConnector.buildLaunch({ space: "smoke", name: "claude-1", events: false } as never);
+const env = launch.env ?? {};
+
+check(
+  "the connector declares the unique development-channels dialog title for PTY confirmation",
+  launch.confirm === "WARNING: Loading development channels",
+  launch.confirm,
+);
 
 check(
   "CLAUDE_CODE_OAUTH_TOKEN reached the child",
@@ -141,7 +148,7 @@ for (const spelling of ["PATH", "Path"] as const) {
   delete process.env.Path;
   process.env[spelling] = ambientPath;
   const row =
-    claudeConnector.buildLaunch({ space: "smoke", name: `claude-path-${spelling}` } as never).env ?? {};
+    claudeConnector.buildLaunch({ space: "smoke", name: `claude-path-${spelling}`, events: false } as never).env ?? {};
   const forwarded = Object.keys(row).filter((k) => k.toLowerCase() === "path");
   check(
     `a host spelling of ${spelling} is forwarded exactly once, keeping its source casing`,
@@ -156,6 +163,7 @@ process.env.PATH = ambientPath;
 const opted = claudeConnector.buildLaunch({
   space: "smoke",
   name: "claude-2",
+  events: false,
   envAllow: ["CLAUDE_CODE_CHILD_SESSION"],
 } as never).env ?? {};
 check(

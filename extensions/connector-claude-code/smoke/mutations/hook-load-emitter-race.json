@@ -86,11 +86,11 @@
     {
       "name": "E2b ONLY the middle hook entry loses its quotes",
       "file": "extensions/connector-claude-code/hooks/hooks.json",
-      "find": "\"matcher\": \"permission_prompt|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
-      "replace": "\"matcher\": \"permission_prompt|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node ${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"",
+      "find": "\"matcher\": \"permission_prompt|agent_needs_input|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node \\\"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\\\"\"",
+      "replace": "\"matcher\": \"permission_prompt|agent_needs_input|elicitation_dialog\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"node ${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\"",
       "expectRed": "the interpolated plugin root is QUOTED inside the command",
       "cell": "the interpolated plugin root is QUOTED inside the command",
-      "note": "The one entry carrying a matcher, in the middle of the file, unquoted alone. Kills any cell that checks only the first or only the last entry — and the permission-prompt hook is the one whose failure a participant feels as a dialog that never resolves."
+      "note": "The one entry carrying a matcher, in the middle of the file, unquoted alone. Kills any cell that checks only the first or only the last entry — and the permission-prompt hook is the one whose failure a participant feels as a dialog that never resolves. Re-anchored 2026-09-22: the Notification matcher gained agent_needs_input, which is the only thing that moved."
     },
     {
       "name": "E3 --plugin-dir dropped from the WITH-PROMPT shape only",

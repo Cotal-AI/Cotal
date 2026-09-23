@@ -1,0 +1,3 @@
+# The read-only delivery-lease grant an operator diagnostic needs to answer "is the responder bound",
+# and the confinement that the lease keeps exactly one writer (#1576).
+smoke:delivery-lease-grant

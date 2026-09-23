@@ -1,0 +1,148 @@
+{
+  "suite": [
+    "implementations/auth/smoke/issued-static-binding.smoke.ts",
+    "packages/core/smoke/prototypes/issued-accepted-row.ts",
+    "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+    "packages/core/smoke/prototypes/issued-request-admission.ts",
+    "packages/core/smoke/prototypes/issued-static-connection.ts"
+  ],
+  "guard": "The test-only static connection binds accepted signed metadata and broker-pinned generation permissions to a copied credential snapshot. Reconnect cannot adopt caller-mutated bytes. Missing/duplicate/future metadata and legacy request fallback refuse. This does not establish shipped static or auth-callout integration.",
+  "command": "pnpm exec tsx implementations/auth/smoke/issued-static-binding.smoke.ts",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-static-binding-prototype.json",
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "credential snapshot aliases a Buffer",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "const snapshot = new Uint8Array(material);",
+      "replace": "const snapshot = material.slice();",
+      "expectRed": "native reconnect retains snapshotted credentials after caller-buffer mutation",
+      "cell": "native reconnect retains snapshotted credentials after caller-buffer mutation"
+    },
+    {
+      "name": "accepted reference is mutable",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "const ref = Object.freeze({ space: parts[2], owner: parts[3], actor: parts[4], uid: parts[5], generation: parts[6] });",
+      "replace": "const ref = { space: parts[2], owner: parts[3], actor: parts[4], uid: parts[5], generation: parts[6] };",
+      "expectRed": "the accepted reference cannot be rewritten by the caller",
+      "cell": "the accepted reference cannot be rewritten by the caller"
+    },
+    {
+      "name": "issued credentials retain legacy grants",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "return epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref));",
+      "replace": "return [...epRequestGrantRows(ref.space, capability, { owner: ref.owner, actor: ref.actor, uid: ref.uid }), ...epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref))];",
+      "expectRed": "new bound credentials have no legacy request fallback",
+      "cell": "new bound credentials have no legacy request fallback",
+      "note": "The added rows must be minted for the bare triple: passing the issued ref again yields the same versioned-rail rows the credential already holds, so the mutation changed nothing and survived. A triple without a generation is a legacy caller, and its rows sit on the legacy plane the cell publishes on."
+    },
+    {
+      "name": "duplicate issued metadata is accepted",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "if (issued.length !== 1)",
+      "replace": "if (issued.length < 1)",
+      "expectRed": "duplicate issued metadata cannot establish a static binding",
+      "cell": "duplicate issued metadata cannot establish a static binding"
+    },
+    {
+      "name": "future metadata versions are accepted",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "parts[1] !== \"v1\"",
+      "replace": "false",
+      "expectRed": "future issued metadata cannot establish a static binding",
+      "cell": "future issued metadata cannot establish a static binding"
+    },
+    {
+      "name": "generation grants are widened to a wildcard",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "return epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref));",
+      "replace": "return epRequestGrantRows(ref.space, capability, ref).map((row) => bound(row, ref).replace(`.${ref.generation}.`, \".*.\"));",
+      "expectRed": "accepted static credentials bind their signed generation to durable issued evidence",
+      "cell": "accepted static credentials bind their signed generation to durable issued evidence"
+    },
+    {
+      "name": "unsupported journal capability is accepted",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "if (capability.journal) throw new Error(\"journal capabilities are unsupported by this prototype\");",
+      "replace": "void capability.journal;",
+      "expectRed": "the prototype refuses journal capabilities instead of adding a partial rail",
+      "cell": "the prototype refuses journal capabilities instead of adding a partial rail"
+    },
+    {
+      "name": "discovery accepts more than one bound generation",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "  if (found.size !== 1) throw new Error(",
+      "replace": "  if (found.size < 1) throw new Error(",
+      "expectRed": "discovery refuses ambiguous or unbindable grant rows",
+      "cell": "discovery refuses ambiguous or unbindable grant rows"
+    },
+    {
+      "name": "discovery stops validating the parsed reference",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "    if (ref) found.set(evidenceKey(ref), ref);",
+      "replace": "    if (ref) found.set(`${ref.owner}.${ref.actor}.${ref.uid}.${ref.generation}`, ref);",
+      "expectRed": "discovery refuses ambiguous or unbindable grant rows",
+      "cell": "discovery refuses ambiguous or unbindable grant rows"
+    },
+    {
+      "name": "discovery accepts rows from another space",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "parts[0] !== \"cotal\" || parts[1] !== space || parts[2] !== \"ep\"",
+      "replace": "parts[0] !== \"cotal\" || parts[2] !== \"ep\"",
+      "expectRed": "discovery refuses ambiguous or unbindable grant rows",
+      "cell": "discovery refuses ambiguous or unbindable grant rows"
+    },
+    {
+      "name": "discovery reads the generation from the wrong subject position",
+      "file": "packages/core/smoke/prototypes/issued-generation-discovery.ts",
+      "find": "const [owner, actor, uid, generation] = parts.slice(-5, -1);",
+      "replace": "const [owner, actor, uid, generation] = parts.slice(-6, -2);",
+      "expectRed": "the client discovers its accepted generation from the server, not from its own credentials",
+      "cell": "the client discovers its accepted generation from the server, not from its own credentials"
+    },
+    {
+      "name": "a versioned arrival is read as legacy",
+      "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
+      "find": "  const versioned = parts[3] === \"v1\";",
+      "replace": "  const versioned = false;",
+      "expectRed": "an endpoint serving both rails names the refusal for an unbound arrival",
+      "cell": "an endpoint serving both rails names the refusal for an unbound arrival"
+    },
+    {
+      "name": "a malformed binding falls through to the legacy refusal",
+      "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
+      "find": "  const ref = Object.freeze({ space, owner, actor, uid, generation });\n  evidenceKey(ref);",
+      "replace": "  const ref = Object.freeze({ space, owner, actor, uid, generation });\n  if (!/^[a-f0-9]{32}$/.test(generation)) return Object.freeze({ kind: \"legacy\" as const, reason: UNBOUND_REFUSAL });",
+      "expectRed": "a malformed binding on the versioned rail is refused rather than read as legacy",
+      "cell": "a malformed binding on the versioned rail is refused rather than read as legacy"
+    },
+    {
+      "name": "arrivals from another space are admitted",
+      "file": "packages/core/smoke/prototypes/issued-request-admission.ts",
+      "find": "parts[0] !== \"cotal\" || parts[1] !== space || parts[2] !== \"ep\"",
+      "replace": "parts[0] !== \"cotal\" || parts[2] !== \"ep\"",
+      "expectRed": "a malformed binding on the versioned rail is refused rather than read as legacy",
+      "cell": "a malformed binding on the versioned rail is refused rather than read as legacy"
+    },
+    {
+      "name": "the generation is placed at a mode-dependent offset",
+      "file": "packages/core/smoke/prototypes/issued-static-connection.ts",
+      "find": "    || ![\"one\", \"all\", \"inst\", \"reply\"].includes(parts[4]) || parts[parts.length - 2] !== ref.generation)",
+      "replace": "    || ![\"one\", \"all\", \"inst\", \"reply\"].includes(parts[4]) || parts[parts.length - (parts[4] === \"inst\" ? 3 : 2)] !== ref.generation)",
+      "expectRed": "the generation sits at one offset from the tail for every rail mode",
+      "cell": "the generation sits at one offset from the tail for every rail mode"
+    },
+    {
+      "name": "the accepted read grant covers every client's row",
+      "file": "packages/core/smoke/prototypes/issued-accepted-row.ts",
+      "find": "  return `$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.${acceptedKey(token)}`;",
+      "replace": "  acceptedKey(token);\n  return `$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.accepted.v1.*`;",
+      "expectRed": "a client can read its accepted generation from its own row instead of the server view",
+      "cell": "a client can read its accepted generation from its own row instead of the server view"
+    }
+  ],
+  "why": [
+    "The accepted store is write-once per key at the broker (SPEC 13.15, `ensureIssuedStores`), and this suite builds it through createEndpointStreams. A second write on a token's key is refused by the broker whether the writer uses create or put, so a mutation swapping the prototype's create for a put cannot redden the redeemed-once assertion; that property is proved at the store by packages/core/smoke/mutations/authority-store-immutability.json."
+  ]
+}

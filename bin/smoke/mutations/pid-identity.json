@@ -2,7 +2,7 @@
   "suite": [
     "packages/workspace/smoke/pid-identity.smoke.ts"
   ],
-  "guard": "pinned teardown refuses reused pids and torn pins, while a legacy live record warns and remains signalable for upgrade compatibility",
+  "guard": "pinned teardown refuses reused pids and torn pins; win32 launches write a creation-time pin; a legacy live record warns and remains signalable only when no sibling pin exists",
   "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pid-identity.json",
   "why": [
@@ -22,7 +22,13 @@
     "delivery teardown actually routes through the seam rather than the cells merely depending on",
     "the shared module in some other way.",
     "",
-    "BOTH RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
+    "M3 RESTORES THE #1437 WIN32 DEFECT: identityStartToken returns undefined on win32, so a launch",
+    "never has a token to pin. F1 is the off-Windows executable of that branch.",
+    "",
+    "M4 RESTORES THE WRITE SKIP: writeIdentityPin returns without creating a sibling even when a",
+    "token exists. That is the Windows steady state the issue named. F2 must red.",
+    "",
+    "ALL FOUR RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
     "and rebuild in afterRestore - git cannot recover a gitignored dist compiled from the mutant."
   ],
   "mutations": [
@@ -45,6 +51,28 @@
       "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "note": "Removes the gate entirely at one real call site. A1 reddens when the mismatch record is signalled; M2's distinct value over M1 proves the call site routes through the seam, not only that the shared verdict compares tokens.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M3 win32 identity token is undefined again (the #1437 reader defect)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  if (platform === \"win32\") return win32(pid);",
+      "replace": "  if (platform === \"win32\") return undefined;",
+      "expectRed": "F1 win32 identity uses the creation-time reader, not undefined",
+      "cell": "F1 win32 identity uses the creation-time reader, not undefined",
+      "note": "The Windows reader branch must not fold to undefined. F1 injects a FILETIME reader and names win32; returning undefined is the pre-fix processStartToken behaviour.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M4 writeIdentityPin never writes a sibling (the #1437 pin-absent defect)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));",
+      "replace": "  return;",
+      "expectRed": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
+      "cell": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
+      "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
       "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
       "afterRestore": "pnpm build > /dev/null"
     }

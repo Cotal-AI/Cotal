@@ -13,7 +13,7 @@
     {
       "name": "the verb gate is gone, so an unroutable verb reaches answer parsing",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
+      "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\", \"revoke\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
       "replace": "  if (false) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
       "expectRed": "and the usage line is printed for it too",
       "cell": "and the usage line is printed for it too",

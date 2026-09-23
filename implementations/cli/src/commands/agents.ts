@@ -1,8 +1,8 @@
-import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -91,6 +91,8 @@ type AgentRow = {
   status: string;
   uptimeMs: number;
   mesh: string;
+  /** The manager's own presence-view state when it built the row; absent from older managers. */
+  meshView?: "current" | "stale" | "unpopulated";
   authHealth?: string;
   authReason?: string;
   // #651 enrichment: present only when the manager recorded the fact (absent is real state:
@@ -151,7 +153,10 @@ function fmtUptime(ms: number): string {
 export type SeatLocation =
   | { kind: "pin"; instanceId: string }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
-  | { kind: "absent"; checked: number; unreachable: string[] };
+  | { kind: "absent"; checked: number }
+  /** #1638 item 3: the search could not settle. At least one registered instance did not answer
+   *  FOR ITSELF, so the seat may be sitting on it; absence is not what was established. */
+  | { kind: "unknown"; answered: number; silent: string[]; refused: { instanceId: string; error: string }[] };
 
 /** Exported for the console, which drives the same targeted verbs (`stop`/`attach`) from
  *  inside a TUI and so needs the THROWING resolve: an unreachable mesh there is a notice on the
@@ -168,12 +173,31 @@ export async function locateSeat(
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
-  const reachable = scatter.instances.filter((i) => i.reachable);
-  const unreachable = scatter.instances.filter((i) => !i.reachable).map((i) => i.instanceId);
-  if (reachable.length <= 1 && !unreachable.length) return { kind: "unpinned" };
-  const host = reachable.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
+  return locateSeatIn(scatter.instances, name);
+}
+
+/**
+ * WHAT THE SCATTER ESTABLISHED about one seat name — the whole decision, as a function of the rows
+ * alone, so it is gradable without a broker.
+ *
+ * ANSWERED FOR ITSELF means an instance returned its own roster. A slot that never answered and one
+ * that answered with a REFUSAL are the same fact for this search: neither stated which seats it
+ * hosts, so neither licenses a conclusion about a seat that might be sitting on it (#1638 item 3).
+ * The refusal half is the reachable-but-errored row `scatterManager` reports, which the older
+ * filter counted as a manager that had looked and found nothing.
+ *
+ * Absence is a claim about the WHOLE space, so it is concluded only when the whole space answered.
+ */
+export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: string): SeatLocation {
+  const reachable = instances.filter((i) => i.reachable);
+  const silent = instances.filter((i) => !i.reachable).map((i) => i.instanceId);
+  if (reachable.length <= 1 && !silent.length) return { kind: "unpinned" };
+  const answered = reachable.filter((i) => i.error === undefined);
+  const refused = reachable.filter((i) => i.error !== undefined).map((i) => ({ instanceId: i.instanceId, error: i.error as string }));
+  const host = answered.find((i) => ((i.data as AgentRow[] | undefined) ?? []).some((r) => r.name === name));
   if (host) return { kind: "pin", instanceId: host.instanceId };
-  return { kind: "absent", checked: reachable.length, unreachable };
+  if (silent.length || refused.length) return { kind: "unknown", answered: answered.length, silent, refused };
+  return { kind: "absent", checked: answered.length };
 }
 
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
@@ -184,7 +208,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  console.error(c.red(`✗ ${seatNotFoundMessage(loc, String(v.name), verb)}`));
+  console.error(c.red(`✗ ${seatMissRefusal(String(v.name), verb, loc)}`));
   process.exit(1);
 }
 
@@ -201,6 +225,40 @@ export function seatNotFoundMessage(loc: { checked: number; unreachable: string[
     ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.${remedy}`
     : "";
   return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`;
+}
+
+/**
+ * What a `stop`/`attach`/`input` that did not find its seat TELLS the operator — and the difference
+ * between the two things it can mean (#1638 item 3).
+ *
+ * ABSENT is a claim about the whole space and is only made when the whole space answered for
+ * itself. A registration that gave no answer within the deadline is NOT told to "retry": a manager
+ * whose host died never deregisters, so its row stays in the registry indefinitely and answers
+ * nothing, and a retry against it loops forever. Say what is known (registered, silent), what it
+ * may mean (a live slow host OR a dead registration), and the two real actions.
+ *
+ * UNKNOWN is the other case and it used to print as the first one. The seat may be sitting on the
+ * instance that did not answer, so "no managed agent <name>" was a definite negative drawn from an
+ * incomplete search — and it names the instance COUNT, which is the shape a reader believes.
+ * Measured on a live mesh: a seat that `ps` listed as running the whole time was reported absent,
+ * and the same command with `--on` succeeded first time. A retry loop that reads the old sentence
+ * as "already gone" stops looking for a seat that is still running.
+ */
+export function seatMissRefusal(
+  name: string,
+  verb: string,
+  loc: Extract<SeatLocation, { kind: "absent" | "unknown" }>,
+): string {
+  const address = `To address one directly: \`${verb} --on <instance>\` (the whole id, as printed).`;
+  if (loc.kind === "absent")
+    return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.`;
+  const silent = loc.silent.length
+    ? ` ${loc.silent.length} registered manager instance(s) gave no answer within the deadline (${loc.silent.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.`
+    : "";
+  const refused = loc.refused.length
+    ? ` ${loc.refused.length} refused the read rather than answering (${loc.refused.map((r) => `${r.instanceId}: ${r.error}`).join("; ")}).`
+    : "";
+  return `could not establish where "${name}" is: ${loc.answered} manager instance(s) answered and none hosts it, but ${loc.silent.length + loc.refused.length} did not answer for themselves, so this is NOT a report that it is gone — it may be running on one of those.${silent}${refused} ${address}`;
 }
 
 /**
@@ -246,6 +304,25 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
  *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
  *  or a seat that never joined. */
+/** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
+ *  own presence view as `stale` (its watch went silent past TTL) or `unpopulated` (its watch has not
+ *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
+ *  "mesh unknown" with the reason instead of a liveness word an operator, or a watchdog, would act
+ *  on. A row from a manager that predates `meshView` carries no field and renders as before. */
+export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView">): string {
+  if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
+  if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
+  return r.mesh === "absent"
+    ? c.yellow("not in roster")
+    : r.mesh === "offline"
+      ? c.dim("mesh offline")
+      : r.mesh === "working"
+        ? c.green("working · progress unknown")
+        : r.mesh === "waiting"
+          ? c.yellow("waiting")
+          : c.cyan(r.mesh);
+}
+
 function printAgentRow(r: AgentRow, indent = ""): void {
   const proc =
     r.status === "running"
@@ -253,16 +330,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
       : r.status === "exited"
         ? c.red("exited") + c.dim(" after " + fmtUptime(r.uptimeMs))
         : c.yellow(r.status) + c.dim(" " + fmtUptime(r.uptimeMs));
-  const mesh =
-    r.mesh === "absent"
-      ? c.yellow("not in roster")
-      : r.mesh === "offline"
-        ? c.dim("mesh offline")
-        : r.mesh === "working"
-          ? c.green("working · progress unknown")
-          : r.mesh === "waiting"
-            ? c.yellow("waiting")
-            : c.cyan(r.mesh);
+  const mesh = meshColumn(r);
   // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
   // triages "definitely broken" before "might be".
   const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
@@ -389,12 +457,15 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // abbreviated header therefore showed the operator an id that the very next command refuses
   // (`"4ik6rb0e" is not a valid lifecycle token`), with the full value printed nowhere: the remedy
   // was named and then withheld. Width costs one line here; the prefix cost the flag entirely.
+  let incomplete = false;
+  const mismatches: string[] = [];
   for (const inst of instances) {
     const label = `manager ${inst.instanceId}`;
     // Under --json the instance headers are STRUCTURE, not data: they go to stderr so stdout is
     // pure rows (each row carries its own instanceId/host, so nothing is lost).
     const header = (line: string): void => { (opts.json ? console.error : console.log)(line); };
     if (!inst.reachable) {
+      incomplete = true;
       // Not "unreachable": the client holds no network verdict. What it knows is which question it
       // asked about this instance and what came back, which is narrower and more useful. The four
       // cases and their wording are `silentManagerRow`.
@@ -402,12 +473,25 @@ export async function ps(args: ParsedArgs): Promise<void> {
       continue;
     }
     if (inst.error) {
-      header(`${c.bold(label)}  ${c.red(inst.error)}`);
+      incomplete = true;
+      const mismatch = /^pinned digests (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64}) do not match the served contract (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64});/.exec(inst.error);
+      if (mismatch) {
+        header(`${c.bold(label)}  ${c.red("contract mismatch; seats not listed")}`);
+        mismatches.push(`manager ${inst.instanceId}: requested input/output ${mismatch[1]} / ${mismatch[2]}; served input/output ${mismatch[3]} / ${mismatch[4]}`);
+      } else {
+        header(`${c.bold(label)}  ${c.red(`list refused: ${inst.error}`)}`);
+      }
       continue;
     }
     const rows = (inst.data as AgentRow[]) ?? [];
     header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
     for (const r of rows) printSeat(r, opts, "  ");
+  }
+  if (mismatches.length)
+    console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
+  if (incomplete) {
+    console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
+    process.exitCode = 1;
   }
 }
 
@@ -461,7 +545,7 @@ const SESSION_WORKED_MS = 5_000;
  *  it rather than by prose. `gone`/`denied` stop the loop; `fatal` is a refusal that retrying can
  *  never fix; everything else is worth another attempt. */
 type Established =
-  | { ok: true; nc: NatsConnection; grant: SessionGrant; creds: string; inbox: string; server: string }
+  | { ok: true; nc: NatsConnection; grant: SessionGrant; link: RedeemLink; inbox: string; server: string }
   | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true };
 
 /** What a caller should DO about a manager refusal. `denied` will not change by asking again;
@@ -514,11 +598,12 @@ export function reconnectNotice(est: { fromManager?: true; message: string }, al
 /**
  * The line an exit owes an operator about sessions this attach could not hand back, or nothing.
  *
- * Suppressed on `gone`, and that is not tidiness. That verdict exists because the manager answered
- * `not-found`, which it only answers once the seat has been freed, and freeing a seat ends every
- * session bound to it (`freeSlot` into `endForTarget`, on despawn, self-stop, reap and natural exit
- * alike). The sessions this would name have already been collected, so naming them would be
- * inventing work for someone who is about to close their terminal.
+ * Suppressed on `gone`, and that is not tidiness. That verdict exists only when the manager proves
+ * the live seat is absent: either `not-found`, or the namespaced durable static-slot observation
+ * after its process is gone. Freeing a seat ends every session bound to it (`freeSlot` into
+ * `endForTarget`, on despawn, self-stop, reap and natural exit alike). The sessions this would name
+ * have already been collected, so naming them would be inventing work for someone who is about to
+ * close their terminal.
  */
 export function heldSessionNotice(pending: number, verdict: AttachVerdict["kind"]): string | undefined {
   if (pending < 1 || verdict === "gone") return undefined;
@@ -567,9 +652,10 @@ async function establishAttachSession(
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
-  // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
-  // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
-  // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
+  // mesh. A static-auth mesh mints a per-session, rails-only caller cred from the resolved root's
+  // seed. A registered open mesh has no seed: the same bare connection `askManagerEp` already used
+  // for the control round trip opens the caller rail. USER mesh (bearer, no local seed): refuse LOUD
+  // — the 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
   const { grant } = reply.data as { grant: SessionGrant };
   // The trust material the TARGET resolved, not a second answer walked up from the cwd. This used
   // to be `loadSpaceAuth(authDir(findCotalRoot()), t.space)`, which is the defect behind issue #722:
@@ -593,17 +679,27 @@ async function establishAttachSession(
       `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space "${t.space}".\n` +
       `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,
     );
-  const auth = t.spaceAuth;
-  if (!auth)
-    return {
-      ok: false, kind: "fatal",
-      message: attachNoSeedMessage(t),
-    };
+  const tls = t.auth.tls === true;
   const id = newIdentity();
-  const creds = await mintCreds(auth, id, "session-caller", {
-    sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
-    expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
-  });
+  // WHICH CONTRACT redeems this grant is decided ONCE, by the recorded mesh mode, and the answer is
+  // a value this function then carries. It is never re-derived from the absence of a seed: that
+  // inference is issue #1205 itself, where an open mesh (which holds no seed BY DESIGN) was read as
+  // a static mesh whose seed had gone missing, and every open attach was refused.
+  const material = attachSessionMaterial(t);
+  if (material.kind === "fatal") return { ok: false, kind: "fatal", message: material.message };
+  const link: RedeemLink =
+    material.kind === "bare"
+      // An open mesh has no credential system: the same bare connection the control round trip
+      // already used opens the caller rail. Nothing is minted and nothing is invented.
+      ? { mode: "bare", tls }
+      : {
+          mode: "session-caller",
+          tls,
+          creds: await mintCreds(material.auth, id, "session-caller", {
+            sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
+            expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
+          }),
+        };
   // maxReconnectAttempts is the whole difference between the two modes, and it is deliberate.
   // ONE-SHOT keeps the old -1: the NATS layer redials forever under a single session.
   // RECONNECTING uses 0, because that redial is what breaks the attach rather than saving it — the
@@ -614,7 +710,7 @@ async function establishAttachSession(
   // real repaint, instead of a restored socket over a session that ended without us.
   const nc = await dialerFor(t.server)({
     servers: t.server,
-    ...standaloneConnectOpts({ creds, tls: false }),
+    ...redeemConnectOpts(link),
     inboxPrefix: `_INBOX_${id.id}`,
     maxReconnectAttempts: reconnect ? 0 : -1,
     // Detection latency is part of the defect, not a detail of it. A laptop waking from sleep does
@@ -628,7 +724,7 @@ async function establishAttachSession(
     // half-opens a link is what would grade this line, and it does not exist here yet.
     ...(reconnect ? { pingInterval: 10_000 } : {}),
   });
-  return { ok: true, nc, grant, creds, inbox: id.id, server: t.server };
+  return { ok: true, nc, grant, link, inbox: id.id, server: t.server };
 }
 
 /** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
@@ -644,7 +740,77 @@ async function establishAttachSession(
  *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
  *  rather than assumes. So that arm says what its own existence would mean instead of offering a
  *  remedy for a situation that cannot currently arise. */
-function attachNoSeedMessage(t: { space: string; server: string; root?: string; auth: { bearer?: unknown } }): string {
+/** The mesh contract that decides how attach redeems a session grant. The mode is the REGISTERED
+ *  one (`MeshTarget.mode`), carried forward from the resolve. It is the only input to the decision:
+ *  `spaceAuth` says whether a SEALED mesh's seed is present, and is never consulted to decide which
+ *  kind of mesh this is. */
+export type AttachSessionTarget = {
+  space: string;
+  server: string;
+  root?: string;
+  spaceAuth?: SpaceAuth;
+  mode?: "auth" | "open" | "user";
+  auth: { bearer?: unknown };
+};
+
+/**
+ * HOW this mesh's session grant is redeemed, as a closed union with no optional credential.
+ *
+ * `bare` and `session-caller` are structurally distinct rather than "session-caller, but the creds
+ * may be missing". That distinction is the whole fix for #1205. An optional `creds?: string` on the
+ * redeem path invites exactly one question at every call site — "is the seed there?" — and answering
+ * it with `!creds` is the defect: an OPEN mesh has no seed BY DESIGN, so absence means "bare",
+ * while on a SEALED mesh the same absence means "refuse". One field cannot carry both meanings, so
+ * the mode is named and the compiler makes every consumer read the name.
+ */
+export type RedeemLink =
+  | { mode: "bare"; tls: boolean }
+  | { mode: "session-caller"; tls: boolean; creds: string };
+
+/** The ONE place a {@link RedeemLink} becomes NATS connect options. Both connections on the redeem
+ *  path (the session link and the abandoned-session hand-back) go through here, so neither can
+ *  invent a credential for an open mesh or drop one on a sealed mesh, and a third caller gets the
+ *  same two arms for free. */
+export function redeemConnectOpts(link: RedeemLink): ReturnType<typeof standaloneConnectOpts> {
+  return link.mode === "bare"
+    ? standaloneConnectOpts({ tls: link.tls })
+    : standaloneConnectOpts({ creds: link.creds, tls: link.tls });
+}
+
+/**
+ * Which redeem contract this target gets: a bare open-mesh connection, a seed-backed mint, or a
+ * loud refusal. Graded by `smoke:attach-open-mode`, whose mutations flip each arm in turn.
+ *
+ * EXHAUSTIVE over the three recorded modes on purpose, with `user` named rather than reached by
+ * fallthrough. A `user` entry holds no local seed by design and its two-step redemption is not
+ * wired, so it must refuse even on the day a user-mode root happens to carry static material on
+ * disk; letting it fall through to the seed test would silently mint on the wrong identity plane.
+ * An UNRECORDED mode (a raw off-registry connection) is the conservative arm: it is not known to be
+ * open, so it takes the sealed test and refuses without a seed.
+ */
+export function attachSessionMaterial(t: AttachSessionTarget):
+  | { kind: "bare" }
+  | { kind: "mint"; auth: SpaceAuth }
+  | { kind: "fatal"; message: string } {
+  switch (t.mode) {
+    // An OPEN mesh: no credential system at all, so there is no seed to be missing and nothing to
+    // mint. This is the arm issue #1205 did not have.
+    case "open":
+      return { kind: "bare" };
+    // A USER mesh: refused by name, and refused EVEN IF a seed is present, because the bearer plane
+    // is the control surface there and static material would be the wrong identity.
+    case "user":
+      return { kind: "fatal", message: attachNoSeedMessage(t) };
+    // SEALED (`auth`) and unrecorded: the seed is required, and its absence is a refusal. A sealed
+    // mesh must never be rescued by the open arm — that is the failure a fix for #1205 is most
+    // likely to introduce, and `smoke:attach-open-mode` asserts the refusal by name against a live
+    // sealed broker.
+    default:
+      return t.spaceAuth ? { kind: "mint", auth: t.spaceAuth } : { kind: "fatal", message: attachNoSeedMessage(t) };
+  }
+}
+
+function attachNoSeedMessage(t: AttachSessionTarget): string {
   const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
   const shadowLine = shadow
     ? `\n  NOTE this directory resolves to ${shadow.cwdRoot}, which holds a DIFFERENT trust chain for "${t.space}"; it was NOT used.`
@@ -654,11 +820,13 @@ function attachNoSeedMessage(t: { space: string; server: string; root?: string; 
     return `${head}\n  broker ${t.server}\n  This is a USER-AUTH mesh, which holds no local seed by design; two-step user-mode redemption is not wired yet, so attach is unavailable on it from every directory, not just this one.${shadowLine}`;
   if (t.root === undefined)
     return `${head}\n  broker ${t.server}\n  This connection resolved NO checkout root, and no supported route reaches redemption in that state: an off-registry \`--server\` on an unregistered space is refused for missing credentials, and \`--creds\` is refused at the control surface, both before a session grant is asked for. Reaching this sentence means a route now exists that skips both refusals.${shadowLine}`;
-  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  A static-auth mesh keeps this space's seed under <root>/.cotal/auth. That root is what this command resolved and connected with, so if it is not the checkout holding this space's auth, re-register the mesh with \`cotal meshes add ${t.space} --server ${t.server} --root <dir>\`.${shadowLine}`;
+  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  This is a static-auth mesh. Attach still needs this space's seed under ${t.root}/.cotal/auth. Restore the seed at that checkout. This mesh is not open, so attach will not connect without the seed.${shadowLine}`;
 }
 
-/** A session this side can no longer reach, plus the one credential that can still speak for it. */
-type Abandoned = { grant: SessionGrant; creds: string; inbox: string; server: string };
+/** A session this side can no longer reach, plus the caller material that can still speak for it.
+ *  It carries the SAME {@link RedeemLink} the session came up on, so the hand-back cannot re-decide
+ *  the mesh contract from what it happens to hold. */
+type Abandoned = { grant: SessionGrant; link: RedeemLink; inbox: string; server: string };
 
 /**
  * Tell the manager a session is over, so it gets its slot back.
@@ -670,15 +838,16 @@ type Abandoned = { grant: SessionGrant; creds: string; inbox: string; server: st
  * to 2 — one slot per outage, held until the seat or the manager ends it, against a ceiling of 64.
  *
  * The mechanism is the advisory close frame the rail already defines; the manager's bridge ends on
- * it. It has to be published with THIS session's caller credential, the only one scoped to this
- * session's subjects, so a re-establishment cannot send it on the abandoned session's behalf — a
- * fresh session's credential covers a fresh session's subjects. Hence a short-lived connection
- * minted from the credential the abandoned session already had.
+ * it. On a static-auth mesh it has to be published with THIS session's caller credential, the only
+ * one scoped to this session's subjects, so a re-establishment cannot send it on the abandoned
+ * session's behalf. On a registered open mesh there is no session-caller seed: the same bare
+ * connection the session used hands the slot back. Hence a short-lived connection minted from the
+ * abandoned session's own material, never an invented seed.
  */
 async function releaseAbandonedSession(s: Abandoned): Promise<void> {
   const nc = await dialerFor(s.server)({
     servers: s.server,
-    ...standaloneConnectOpts({ creds: s.creds, tls: false }),
+    ...redeemConnectOpts(s.link),
     inboxPrefix: `_INBOX_${s.inbox}`,
     maxReconnectAttempts: 0,
     timeout: LINK_DEADLINE_MS,
@@ -880,7 +1049,7 @@ async function runAttachLoop(
         releaseStdin();
         const late = await attempting.catch(() => undefined);
         if (late?.ok) {
-          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });
+          abandoned.push({ grant: late.grant, link: late.link, inbox: late.inbox, server: late.server });
           // And CLOSE the link that session came up on. Nothing here will ever read it, and an open
           // NATS connection is a ref'd handle: measured, the attach printed `detached from` and then
           // sat there forever, because the hand-back mints its own short-lived connection from the
@@ -948,7 +1117,7 @@ async function runAttachLoop(
         handedBack = await flushed(est.nc);
       }
       if (!handedBack && reconnect) {
-        abandoned.push({ grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server });
+        abandoned.push({ grant: est.grant, link: est.link, inbox: est.inbox, server: est.server });
       }
       await closeLink(est.nc);
     }

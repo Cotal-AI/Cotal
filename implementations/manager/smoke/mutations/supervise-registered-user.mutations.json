@@ -10,8 +10,8 @@
     {
       "name": "registered user entries no longer take the remote-host authority refusal branch",
       "file": "implementations/manager/src/commands.ts",
-      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
-      "replace": "    if (false) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
+      "find": "target.mode === \"user\"",
+      "replace": "target.mode === \"auth\"",
       "expectRed": "registered participant without login/authority refuses before manager start, never false down/up advice",
       "cell": "registered participant without login/authority refuses before manager start, never false down/up advice",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
@@ -19,20 +19,22 @@
     {
       "name": "an explicit server mismatch is accepted instead of refusing a split target",
       "file": "implementations/manager/src/commands.ts",
-      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (v.server !== undefined && v.server !== target.server)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
-      "replace": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (false)\n        throw new Error(`--server ${v.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return { space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired };\n    }",
+      "find": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (ve.server !== undefined && ve.server !== target.server)\n        throw new Error(`--server ${ve.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return {\n        space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired,\n        eventsRequired: target.policy?.events === \"required\",\n        ...(target.policy ? { policy: target.policy } : {}),\n        agentBearerExchangeUrl: target.userAuth.endpoints?.url,\n      };\n    }",
+      "replace": "    if (target.mode === \"user\" && target.userAuth?.remote === true) {\n      if (false)\n        throw new Error(`--server ${ve.server} does not match registered space \"${target.space}\" at ${target.server} - supervise refuses to use a different broker than the meshes entry`);\n      return {\n        space: target.space, server: target.server, remoteUser: true, tlsRequired: target.tlsRequired,\n        eventsRequired: target.policy?.events === \"required\",\n        ...(target.policy ? { policy: target.policy } : {}),\n        agentBearerExchangeUrl: target.userAuth.endpoints?.url,\n      };\n    }",
       "expectRed": "explicit --server mismatch is named before remote-host refusal or dial",
       "cell": "explicit --server mismatch is named before remote-host refusal or dial",
-      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "note": "Re-anchored 2026-09-22: the parsed-values binding was renamed from `v` to `ve`; the refusal is unchanged."
     },
     {
       "name": "an absent registration falls through instead of emitting the host-or-join recovery",
       "file": "implementations/manager/src/commands.ts",
-      "find": "if (isWorkspaceTargetError(error) && error.code === \"unknown-space\")\n      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
-      "replace": "if (false)\n      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "find": "      throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \\`cotal up\\` to host, or \\`cotal meshes add\\` to join`);",
+      "replace": "      void 0;",
       "expectRed": "neither hosting nor registered gets the exact host-or-join recovery",
       "cell": "neither hosting nor registered gets the exact host-or-join recovery",
-      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "note": "Re-anchored 2026-09-22: the unknown-space arm gained braces and a hosting-root recovery above this throw. The mutation neutralizes the throw alone, so control falls through to the raw workspace error and the named recovery is the only thing lost; blanking the whole condition would also disable the hosting-root branch and prove something wider than the cell."
     }
   ]
 }

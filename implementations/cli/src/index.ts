@@ -1,7 +1,7 @@
 import { registry, type Command } from "@cotal-ai/core";
 import {
   serverFlag, spaceFlag, targetFlags,
-  DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
+  DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type LocalProcess,
 } from "@cotal-ai/workspace";
 import { up, upComplete, upFlags } from "./commands/up.js";
@@ -32,6 +32,8 @@ import { endpoints } from "./commands/endpoints.js";
 import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } from "./commands/describe.js";
 import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
+import { service, serviceComplete } from "./commands/service.js";
+import { sync, syncFlags } from "./commands/sync.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -98,6 +100,7 @@ const baseCommands: Command[] = [
     group: "Mesh",
     summary: "start a local mesh (nats-server + JetStream, JWT auth by default) - or `-f <cotal.yaml>` for a whole manifest",
     flags: upFlags,
+    prepareMeshTarget: false,
     run: up,
     complete: upComplete,
   },
@@ -110,17 +113,34 @@ const baseCommands: Command[] = [
   },
   {
     kind: "command",
+    name: "service",
+    group: "Manager",
+    summary: "run the manager as a user service (survives logout/reboot) - install/status/uninstall",
+    usage: "service <install [--mesh <name>] [--linger] | status [--mesh <name>] [--json] | uninstall [--mesh <name>]>",
+    positionals: "<install | status | uninstall>",
+    flags: [
+      { name: "mesh", type: "string", value: "<name>", description: "the mesh whose manager the service runs (default: this folder's)" },
+      { name: "linger", type: "boolean", description: "install: also enable user lingering so the service starts at boot and survives logout (never enabled silently)" },
+      { name: "json", type: "boolean", description: "status: machine-readable output" },
+    ],
+    run: service,
+    complete: serviceComplete,
+  },
+  {
+    kind: "command",
     name: "down",
     group: "Mesh",
-    summary: "stop the whole local stack, or name only the components to stop",
+    summary: "stop the whole local stack (managed agents stay running unless --with-agents), or name only the components to stop",
     positionals: "[<component> …]",
     flags: [
       { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "tear down this manifest's deploy" },
       { name: "run", type: "string", value: "<id>", description: "tear down one `spawn -f` run by id" },
       { name: "space", type: "string", value: "<name>", description: "with components: the mesh whose target-addressed components (e.g. web) to stop" },
       { name: "dry-run", type: "boolean", description: "print what would stop, mutate nothing" },
+      { name: "with-agents", type: "boolean", description: "bare whole stack: also stop and deprovision every managed agent" },
       { name: "preserve-state", type: "boolean", description: "bare whole stack: stop without logical teardown and publish an offline backup cut" },
       { name: "store-dir", type: "string", value: "<dir>", description: "with --preserve-state: actual JetStream store (default .cotal/nats)" },
+      { name: "session-store", type: "string", multiple: true, value: "<dir>", description: "with --preserve-state: a harness transcript store directory to capture with every continuation-capable seat (repeatable; no default and never inferred)" },
     ],
     run: down,
     complete: downComplete,
@@ -165,6 +185,14 @@ const baseCommands: Command[] = [
     flags: meshesFlags,
     run: meshes,
     complete: meshesComplete,
+  },
+  {
+    kind: "command",
+    name: "sync",
+    group: "Mesh",
+    summary: "refresh signed-in space catalogs and report registry changes",
+    flags: syncFlags,
+    run: sync,
   },
   {
     kind: "command",
@@ -452,7 +480,7 @@ const baseProcesses: LocalProcess[] = [
     label: "manager",
     order: 10,
     pidFile: MANAGER_PIDFILE,
-    artifacts: [MANAGER_DELIVERY_AWARE_MARKER],
+    artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
   },
   {
     kind: "local-process",

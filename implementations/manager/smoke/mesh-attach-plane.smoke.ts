@@ -18,6 +18,9 @@
  * handshake replays the pty screen; duplex byte flow through the echo child; endForTarget surfaces a
  * DISTINCT end reason to the client; a re-establish after target-despawn is a fresh session.
  */
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
@@ -46,6 +49,7 @@ import {
 // not import each other in production, but a cross-impl integration smoke may (like attach.smoke.ts).
 import { meshSessionTransport } from "../../cli/src/lib/attach-client.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller
 // sends comes back as output — a genuine duplex byte stream over the two eps rails. `process.execPath`
@@ -78,7 +82,8 @@ const resolveAnchor: AnchorResolver = (id) => anchors.get(id);
 
 // --- broker + auth-bucket KV (open mesh; the ledger's session.<id> rows live in the auth store) ---
 const PORT = 14273;
-const broker = spawn("nats-server", ["-p", String(PORT), "-js", "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-p", String(PORT), "-js", "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
 process.on("exit", () => broker.kill("SIGKILL"));
 let up = false;
 for (let i = 0; i < 60 && !up; i++) { try { const t = await connect({ servers: `nats://127.0.0.1:${PORT}` }); await t.close(); up = true; } catch { await wait(100); } }

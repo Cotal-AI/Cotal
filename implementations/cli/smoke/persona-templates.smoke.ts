@@ -77,6 +77,13 @@ ok(
   defaultAgent,
 );
 
+ok(
+  "default-workflow-capability: the default declares spawn and run",
+  Array.isArray(defaultAgent?.capabilities) &&
+    defaultAgent.capabilities.includes("spawn") && defaultAgent.capabilities.includes("run"),
+  defaultAgent?.capabilities,
+);
+
 const legacyFrontmatter = parseYaml(LEGACY_DEFAULT_AGENT.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "") as Record<string, unknown>;
 ok(
   "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
@@ -95,6 +102,14 @@ try {
     "legacy-default-upgrade: the byte-exact legacy template gains wildcard post permission",
     legacyResult === "migrated" && upgradedLegacy === DEFAULT_AGENT && /allowPublish: \[\">\"\]/.test(upgradedLegacy),
     legacyResult,
+  );
+
+  const spawnOnlyPath = join(fixtureRoot, "spawn-only.md");
+  const spawnOnly = DEFAULT_AGENT.replace("capabilities: [spawn, run]", "capabilities: [spawn]");
+  writeFileSync(spawnOnlyPath, spawnOnly, { flag: "wx" });
+  ok(
+    "spawn-only-default-preservation: setup leaves existing capabilities unchanged",
+    reconcileDefaultAgent(spawnOnlyPath) === "unchanged" && readFileSync(spawnOnlyPath, "utf8") === spawnOnly,
   );
 
   const editedPath = join(fixtureRoot, "edited", "default.md");

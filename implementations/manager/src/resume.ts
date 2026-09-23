@@ -3,7 +3,11 @@ import type { ManagerResumeInventory } from "./manager.js";
 
 export const MAX_RESUME_CONTROL_BYTES = 512 * 1024;
 export const MAX_RESUME_COMMIT_BYTES = 1024;
-const MAX_AGENTS = 50;
+/** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
+ *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call.
+ *  Declared here (not in manager.ts) so the resume inventory schema and the spawn/resume
+ *  capacity checks share one value; manager.ts imports it. */
+export const MAX_AGENTS = 50;
 const TOKEN = /^[A-Za-z0-9_]+$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -20,7 +24,15 @@ const fileRef = z.strictObject({ kind: z.literal("file"), path, sha256: digest }
 const lifecycleUid = z.string().regex(/^[a-z0-9]{26,32}$/, "must be a lifecycle uid token");
 const identity = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("open"), id: token, lifecycleUid }),
-  z.strictObject({ mode: z.literal("static"), id: token, lifecycleUid, credential: fileRef }),
+  z.strictObject({
+    mode: z.literal("static"),
+    id: token,
+    lifecycleUid,
+    credential: fileRef,
+    // The SPEC 13.15 issuance the credential was minted under; a resumed static agent renews
+    // under this generation, and a pre-issuance inventory carries none (its renewal refuses).
+    issued: z.strictObject({ generation: z.string().regex(/^[a-f0-9]{32}$/), acceptedToken: z.string().regex(/^[a-f0-9]{32}$/) }).optional(),
+  }),
   z.strictObject({
     mode: z.literal("user"),
     owner: token,
@@ -74,6 +86,10 @@ const agent = z.strictObject({
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     sessionId: z.string().min(1).max(4096).optional(),
+    // The connector's session pointer file. Optional because a seat whose connector declares no
+    // continuation has none, and because an inventory written before this field existed must still
+    // resume rather than be refused by a stricter reader.
+    sessionStatePath: path.optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
   }),
   dependencies: z.array(path).max(16),

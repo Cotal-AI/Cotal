@@ -175,7 +175,7 @@ try {
   console.log(`\nAUTH ATTENTION TESTS PASSED ✅  (${pass} checks)`);
   await agent.stop();
   await pub.stop();
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");
   await awaitExit(srv);

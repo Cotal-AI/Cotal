@@ -1,0 +1,261 @@
+{
+  "grades": "source",
+  "suite": [
+    "scripts/check-operator-literals.celltamper.selftest.mjs"
+  ],
+  "guard": "every cell in the operator-literal scanner is graded and its discriminator can still say no, so a hollowed-out probe, or a cell that nothing grades, is reported instead of passing silently",
+  "command": "node scripts/check-operator-literals.celltamper.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/check-operator-literals-cells.json",
+  "why": [
+    "This is the first fixture in the corpus naming scripts/check-operator-literals.mjs, so before it the selector reported `0 fixture(s) selected from 430` and `{\"shards\":[]}` for any diff touching the scanner, and the aggregate passed on the resulting skip. Measured at fe813fe390d3ef47ac54325f48be816ebaa84148, where the corpus held 430 fixtures; this is a DATED HISTORICAL figure and is deliberately not restated at the current corpus size, against controls of 3 selected for packages/core/src/membership-feed.ts and 2 for scripts/mutation-coverage.mjs.",
+    "Coverage is over CELLS, and the factory is only a grouping. The scanner builds 65 cells: 51 from 3 factories, where one case per factory genuinely grades every cell it builds, and 14 as INLINE object literals with a measure of their own and no factory at all. The partition is MEASURED rather than asserted: the suite's own census row prints `markers=65 parsed=65 (factory=51 inline=14)` from the AST inventory, and 65 is the scanner's own SELFTEST_SUMMARY_ROW cells=65/65, both re-derived at the head this fixture ships on. Two earlier versions of this sentence were stale: it said 34 cells as 27 + 7, then 61 as 51 + 10. #1614 added four INLINE cells (sentence-final-period-ipv6, sentence-final-period-ipv4, letter-adjacent-address, sentence-final-period-refuses-name) while this branch sat in review, so the total and the inline term both moved while the factory term held at 51. The 10 was stale TWICE OVER, and that is the more serious half: the INLINE_CELLS registry in the suite had also not been updated, and nothing could make that fail, because only the claimed->source direction was enforced while the comment above the array claimed both directions. Four inline cells existed in the scanner, never reached the registry, and the suite stayed green at 173/173. This revision brings the registry to 14 and adds the source->claimed direction with a planted control in each direction, so the next four cells cannot land the same way. An earlier version also enumerated FACTORIES and treated that as the denominator, which is this issue's own defect one level down: two reviewers independently hollowed an inline discriminator (workflow-host-exclusion's planted count, to a constant) and measured it SURVIVING at scanner cells=61/61 exit 0 - a DATED figure, measured at the then-current 61-cell head before #1614 and deliberately not restated here - each with a same-run positive control proving the cell was reached. No factory enumeration, however perfect, can see those 14. So the denominator is now the cell list itself and every cell must be graded, covered by its factory, or named as ungraded with a reason.",
+    "The suite kills them by the absence of a failure. It tampers each cell's planted subject so the asserted property is genuinely destroyed, then requires that cell's discriminator FIELD to read 0. A live reader flips; a reader returning a constant cannot, so the tamper stops going red and the suite goes red in its place. The field is read rather than the cell's PASS/FAIL status, because on a POSITIVE cell the destroyed subject fails the primary anyway and would mask a dead secondary: measured, that produced one red row and one green row for the same mutant.",
+    "The census is BIDIRECTIONAL and it reads CELLS, both established by review rather than by reasoning. Checking only that everything found is named cannot notice something the reader failed to find: the behaviour-neutral edit `function matchCell(` to `function matchCell (` once removed a factory from the census while the suite still reported unaccounted=0 and a full green, and a declaration-shaped line inside a template literal once stood in for a factory that had been refactored away. Both failures came from reading text rather than structure, and widening a pattern only moves the boundary to the next spelling. The denominator now comes from the `// SELFTEST_CELL <id> START/END` markers, the same reader the tampers key on, which review probed hard: a renamed cell reports `found 0/0`, a reformatted one `occurs 0 time(s)`, and a marker quoted in a comment `found 2/2`. A second independent reader parses the SELFTEST_CELLS array from the AST and the two must agree on the count. Each reader carries its own planted control, because a control on one reader says nothing about another.",
+    "Nothing is exempt. An earlier version recorded scanCell as a KNOWN LIMIT that reported no secondary reading. That was wrong, and hollowing its metricCount SURVIVED: the field is simply named for the cell's metric rather than `secondary`. A limitation asserted rather than measured is a gap with a label on it, and the label makes it less likely anyone looks again. Being LISTED is likewise not coverage: the suite knows which field each inline cell reports, and deliberately does not accept that as grading it.",
+    "The last three mutations guard the harness rather than the scanner: they blind each census direction and make the positional tamper silently do nothing. Any of them would let every case report a pass it did not earn. This matters more than usual here, because an absence-detector emits the same unaccounted=0 whether it is working or blinded, so it cannot be graded by reading its output.",
+    "The reader that DECIDES every kill is graded against SYNTHETIC rows it supplies itself, and three reviewers were needed to get this right. Grading it against real runs cannot work, because both halves of every kill correlate perfectly with run identity: the untampered copy always exits 0 and wants a nonzero, every tampered run exits 2 and wants a zero. Measured, `return \"0\"` passed the suite at 77/77, and after a nonzero-baseline check was added, `return run.exitCode === 0 ? \"1\" : \"0\"` still passed at 90/90 without reading a row. So the control hands the reader ONE run with an exit code that is neither 0 nor 2, carrying four mutually inconsistent field values plus two cases that must return undefined. No constant satisfies 2, 3, 5 and 7 at once, an oracle fails all four, and no value-returning shortcut produces undefined. All six reads print on one line, because the inconsistency is the mechanism and is only visible when the values appear together.",
+    "The last mutation guards WHERE EVERY TAMPER RUNS. `guardSafe` and `makeWorkdir` were ungraded, and they are load-bearing: if the guard stops rejecting, `makeWorkdir` returns a path whose URL form differs from the concatenation the scanner's self-execute guard compares against, every spawned copy exits 0 having run NOTHING, and every kill in this suite reads that silence as a pass. Hollowing the guard is a NO-OP on a healthy host, which is why it went ungraded by accident: on an unescaped tmpdir `guardSafe = () => true` changes nothing observable. So the added checks feed the guard both answers directly rather than waiting for a hostile host. Measured at this head: `() => true` gives exit 1 at 174/175 with the rejecting check red BY NAME, which is what this mutation scores. `() => false` is also red at exit 1, but it throws out of makeWorkdir at module load before any check row prints, so it is recorded in the file's docblock and deliberately NOT scored here, because a crash is not a graded reading. The makeWorkdir postcondition check is scored separately: returning `candidate + \"/\"` from the accepted branch keeps the guard intact (a trailing separator does not change the URL form) but breaks the realpath postcondition, because `realpathSync` normalises the separator away, and measured at this head it reds `makeWorkdir returns a realpath'd directory its own guard accepts` BY NAME at exit 1, 174/175."
+  ],
+  "mutations": [
+    {
+      "name": "the host-planted cell's secondary reader always reports the token as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "  matchCell('host-planted', `connect ${SELFTEST_HOST} now`, 'host-name', 1, (text) => Number(text.includes(SELFTEST_HOST)), 1),",
+      "replace": "  matchCell('host-planted', `connect ${SELFTEST_HOST} now`, 'host-name', 1, () => 1, 1),",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (positive cell) still discriminates",
+      "cell": "host-planted: destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (positive cell) still discriminates"
+    },
+    {
+      "name": "the host-substring cell's secondary reader always reports the token as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "  matchCell('host-substring', `connect x${SELFTEST_HOST}y now`, 'host-name', 0, (text) => Number(text.includes(SELFTEST_HOST)), 1),",
+      "replace": "  matchCell('host-substring', `connect x${SELFTEST_HOST}y now`, 'host-name', 0, () => 1, 1),",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (negative cell) still discriminates",
+      "cell": "host-substring: destroying the planted subject drives this cell's secondary to 0, so its inline host-token arrow (negative cell) still discriminates"
+    },
+    {
+      "name": "the IPv4 shape reader counts an address in text that carries none",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "function shapeIPv4Count(text) {\n  let count = 0;",
+      "replace": "function shapeIPv4Count(text) {\n  if (true) return 1;\n  let count = 0;",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its shapeIPv4Count still discriminates",
+      "cell": "ip-loopback: destroying the planted subject drives this cell's secondary to 0, so its shapeIPv4Count still discriminates"
+    },
+    {
+      "name": "the home-fragment reader reports a home path in text that has none",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "function homeFragmentCount(text) {\n  return /(?:home|Users)",
+      "replace": "function homeFragmentCount(text) {\n  if (text !== null) return 1;\n  return /(?:home|Users)",
+      "expectRed": "destroying the planted subject drives this cell's secondary to 0, so its homeFragmentCount still discriminates",
+      "cell": "home-relative: destroying the planted subject drives this cell's secondary to 0, so its homeFragmentCount still discriminates"
+    },
+    {
+      "name": "the CIDR boundary cells' planted probe always reports the address as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const planted = Number(\n        positive.includes(rule === 'shared-ipv4' ? SELFTEST_SHARED_IP : SELFTEST_PUBLIC_IP),\n      );",
+      "replace": "      const planted = 1;",
+      "expectRed": "destroying the planted subject drives this cell's planted to 0, so its cidrBoundaryCell planted probe still discriminates",
+      "cell": "public-cidr-alpha-tail: destroying the planted subject drives this cell's planted to 0, so its cidrBoundaryCell planted probe still discriminates"
+    },
+    {
+      "name": "the scanCell metric reader reports the expected count regardless of what was scanned",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const count = metricCount(result, metric);",
+      "replace": "      const count = expectedCount;",
+      "expectRed": "destroying the planted subject drives this cell's allowed to 0, so its scanCell metricCount still discriminates",
+      "cell": "allowlisted-fixture: destroying the planted subject drives this cell's allowed to 0, so its scanCell metricCount still discriminates"
+    },
+    {
+      "name": "the workflow-host-exclusion cell's planted-count filter always reports both texts as planted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const planted = [workflowText, nonWorkflowText].filter((text) => text.includes(SELFTEST_HOST)).length;",
+      "replace": "      const planted = 2;",
+      "expectRed": "destroying the planted subject drives this cell's planted to 0, so its inline planted-count filter still discriminates",
+      "cell": "workflow-host-exclusion: destroying the planted subject drives this cell's planted to 0, so its inline planted-count filter still discriminates"
+    },
+    {
+      "name": "the short-host-token cell reports a length rejection regardless of the token configured",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const failures = hostTokenLengthFailures(configured.configuredHostTokens);",
+      "replace": "      const failures = [{ source: 'argument', tokenLength: 5 }];",
+      "expectRed": "destroying the planted subject drives this cell's configured_errors to 0, so its hostTokenLengthFailures on a configured token still discriminates",
+      "cell": "short-host-token: destroying the planted subject drives this cell's configured_errors to 0, so its hostTokenLengthFailures on a configured token still discriminates"
+    },
+    {
+      "name": "the host-token-ceiling cell reports a ceiling rejection regardless of how many files match",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const failures = hostTokenCeilingFailures(entries, [\n        { token: SELFTEST_HOST, source: 'repository-variable' },\n      ]);",
+      "replace": "      const failures = [{ source: 'repository-variable', matchingFiles: HOST_TOKEN_FILE_CEILING + 1, tokenLength: SELFTEST_HOST.length }];",
+      "expectRed": "destroying the planted subject drives this cell's errors to 0, so its hostTokenCeilingFailures on an over-ceiling entry set still discriminates",
+      "cell": "host-token-ceiling: destroying the planted subject drives this cell's errors to 0, so its hostTokenCeilingFailures on an over-ceiling entry set still discriminates"
+    },
+    {
+      "name": "the binary-skip cell reports a skip regardless of what the scan actually skipped",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "        actual: `files_scanned=${tracked.entries.length}/1 binary_skipped=${tracked.binarySkipped}/1`,\n        pass: tracked.entries.length === 1 && tracked.binarySkipped === 1,",
+      "replace": "        actual: `files_scanned=${tracked.entries.length}/1 binary_skipped=1/1`,\n        pass: tracked.entries.length === 1,",
+      "expectRed": "destroying the planted subject drives this cell's binary_skipped to 0, so its trackedEntries binarySkipped accounting still discriminates",
+      "cell": "binary-skip: destroying the planted subject drives this cell's binary_skipped to 0, so its trackedEntries binarySkipped accounting still discriminates"
+    },
+    {
+      "name": "the production-main-wiring cell reports a skip row regardless of what main() emitted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const skipRows = result.rows.filter((row) => row.startsWith('SKIP_ROW '));",
+      "replace": "      const skipRows = [\"SKIP_ROW path=fixture.bin reason=nul-byte\"];",
+      "expectRed": "destroying the planted subject drives this cell's skip_rows to 0, so its SKIP_ROW emission from the real main() still discriminates",
+      "cell": "production-main-wiring: destroying the planted subject drives this cell's skip_rows to 0, so its SKIP_ROW emission from the real main() still discriminates"
+    },
+    {
+      "name": "the production-short-token-guard cell reports the guard's reason regardless of what main() emitted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const reasonRows = errors.filter(\n        (row) => row.includes('reason=\"host token is shorter than minimum\"'),\n      ).length;",
+      "replace": "      const reasonRows = 1;",
+      "expectRed": "destroying the planted subject drives this cell's reason_rows to 0, so its ERROR_ROW reason text from the real main() still discriminates",
+      "cell": "production-short-token-guard: destroying the planted subject drives this cell's reason_rows to 0, so its ERROR_ROW reason text from the real main() still discriminates"
+    },
+    {
+      "name": "the production-token-ceiling-guard cell reports the guard's reason regardless of what main() emitted",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const reasonRows = errors.filter(\n        (row) => row.includes('reason=\"host token matches too many files\"'),\n      ).length;",
+      "replace": "      const reasonRows = 1;",
+      "expectRed": "destroying the planted subject drives this cell's reason_rows to 0, so its ERROR_ROW reason text from the real main() at the ceiling still discriminates",
+      "cell": "production-token-ceiling-guard: destroying the planted subject drives this cell's reason_rows to 0, so its ERROR_ROW reason text from the real main() at the ceiling still discriminates"
+    },
+    {
+      "name": "the census stops checking that each cell this suite names is declared in the scanner",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const findMissing = (claimed, declared) => claimed.filter((name) => !declared.includes(name));",
+      "replace": "  const findMissing = () => [];",
+      "expectRed": "census control: a named cell absent from the scanner is reported, so the containment is a reading",
+      "cell": "census control: a named cell absent from the scanner is reported, so the containment is a reading"
+    },
+    {
+      "name": "the cell census is blinded, so a cell that nothing grades is never reported",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const findUnaccounted = (cellIds) => cellIds.filter((cellId) => accountFor(cellId) === undefined);",
+      "replace": "  const findUnaccounted = () => [];",
+      "expectRed": "census control: a cell nothing grades is reported, so the accounting above is a reading",
+      "cell": "census control: a cell nothing grades is reported, so the accounting above is a reading"
+    },
+    {
+      "name": "a cell tamper that changes nothing is accepted as a tamper that was applied",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const block = source.slice(from, to);\n  const occurrences = block.split(find).length - 1;\n  if (occurrences !== 1) {\n    throw new Error(`cell ${id}: tamper text occurs ${occurrences} time(s) in the block, expected exactly 1`);\n  }\n  const tamperedBlock = block.split(find).join(replace);\n  if (tamperedBlock === block) throw new Error(`cell ${id}: tamper was a no-op`);\n  return source.slice(0, from) + tamperedBlock + source.slice(to);",
+      "replace": "  return source;",
+      "expectRed": "the tamper lands inside the named cell block",
+      "cell": "host-planted: the tamper lands inside the named cell block"
+    },
+    {
+      "name": "the marker reader stops distinguishing a real comment from marker-shaped text in a string",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    const visit = (node) => {\n      collect(node.getFullStart());\n      for (const child of node.getChildren(sf)) visit(child);\n    };\n    visit(sf);",
+      "replace": "    for (const match of text.matchAll(/^[ \\t]*\\/\\/ SELFTEST_CELL (\\S+) (START|END)$/gm)) {\n      found.push({ id: match[1], kind: match[2], pos: match.index });\n    }",
+      "expectRed": "census control: the marker reader finds a real marker and refuses one in prose or any string",
+      "cell": "census control: the marker reader finds a real marker and refuses one in prose or any string"
+    },
+    {
+      "name": "the census accepts equal COUNTS of markers and parsed cells rather than equal identities",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const compareCellSets = (markerIds, parsedCellIds) => ({\n    onlyInMarkers: markerIds.filter((id) => !parsedCellIds.includes(id)),\n    onlyInParsed: parsedCellIds.filter((id) => !markerIds.includes(id)),\n  });",
+      "replace": "  const compareCellSets = (markerIds, parsedCellIds) => ({\n    onlyInMarkers: markerIds.length === parsedCellIds.length ? [] : markerIds,\n    onlyInParsed: [],\n  });",
+      "expectRed": "census control: two equal-length sets naming different cells are reported, so the comparison is by identity",
+      "cell": "census control: two equal-length sets naming different cells are reported, so the comparison is by identity"
+    },
+    {
+      "name": "the census stops reporting duplicated marker ids and unpaired START/END markers",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "      duplicates: starts.filter((id, index) => starts.indexOf(id) !== index),\n      unpaired: [\n        ...starts.filter((id) => !ends.includes(id)),\n        ...ends.filter((id) => !starts.includes(id)),\n      ],",
+      "replace": "      duplicates: [],\n      unpaired: [],",
+      "expectRed": "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading",
+      "cell": "census control: a duplicated id and an unpaired marker are both reported, so the check above is a reading"
+    },
+    {
+      "name": "the field reader becomes an exit-code oracle, which the rows-only signature reduces to always-undefined",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  return new RegExp(`\\\\b${field}=(\\\\d+)\\\\/`).exec(row ?? \"\")?.[1];",
+      "replace": "  return rows.exitCode === 0 ? \"1\" : \"0\";",
+      "expectRed": "unit test: the field reader returns each named field for each named cell, and undefined for a miss",
+      "cell": "unit test: the field reader returns each named field for each named cell, and undefined for a miss"
+    },
+    {
+      "name": "the parsed reader silently skips an element it cannot classify, so a spread cell is never counted",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "          unclassified.push(ts.SyntaxKind[element.kind]);",
+      "replace": "          void element;",
+      "cell": "census: the cell array holds nothing the parsed reader cannot classify, and the reader is proven able to say so",
+      "expectRed": "census: the cell array holds nothing the parsed reader cannot classify, and the reader is proven able to say so"
+    },
+    {
+      "name": "the executed-cell reader returns nothing, so a cell that ran without being declared is invisible",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \"))\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);",
+      "replace": "    .filter((row) => row.startsWith(\"SELFTEST_RESULT_ROW \") && false)\n    .map((row) => /\\bcell=([^\\s]+)/.exec(row)?.[1])\n    .filter(Boolean);",
+      "cell": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran",
+      "expectRed": "census: every cell the scanner actually EXECUTED is one the source readers declared, and every declared cell ran"
+    },
+    {
+      "name": "the executed-cell census stops reporting an undeclared cell, so a cell that ran ungraded passes",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    return executed.length > 0 && ranButUndeclared.length === 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
+      "replace": "    return executed.length > 0 && declaredButNeverRan.length === 0\n      && executed.length === declared.length\n      && new Set(executed).size === executed.length;",
+      "cell": "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it",
+      "expectRed": "census control: the verdict accepts an honest census and refuses an undeclared cell, a length mismatch, a duplicate and an empty run, each planted so that deleting exactly one clause would accept it"
+    },
+    {
+      "name": "the reader is found by scanning arguments backward for a plausible shape, so a wrapped reader is attributed to an earlier argument",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  if (ts.isIdentifier(arg)) return arg.text;",
+      "replace": "  for (let i = args.length - 1; i >= 1; i -= 1) { const a = args[i]; if (ts.isArrowFunction(a) || ts.isFunctionExpression(a)) return `inline@${cellId}`; if (ts.isIdentifier(a)) return a.text; }",
+      "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+      "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
+    },
+    {
+      "name": "an unclassifiable reader shape is given the benefit of the doubt and shares its factory's class instead of standing alone",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  return `opaque@${cellId}`;",
+      "replace": "  return `owned@${factoryName}`;",
+      "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+      "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
+    },
+    {
+      "name": "the factory arity is not checked, so a signature change silently moves the reader while the table keeps reading the old slot",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  if (!contract || args.length !== contract.arity) return `opaque@${cellId}`;",
+      "replace": "  if (!contract) return `opaque@${cellId}`;",
+      "expectRed": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument",
+      "cell": "census control: the reader is read at the factory's contract position, so a wrapped reader is refused rather than attributed to an earlier argument"
+    },
+    {
+      "name": "the ungraded-cell exemption is honoured on its cell id alone, so a reasonless exemption silences an ungraded cell",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "  const allExemptions = validateUngraded(\n    [...UNGRADED_CELLS, ...PLANTED_EXEMPTIONS],\n    declaredCellSet,\n    baselineFieldFor,\n  );",
+      "replace": "  const allExemptions = { valid: new Set([...UNGRADED_CELLS, ...PLANTED_EXEMPTIONS].map((entry) => entry.cell)), malformed: [] };",
+      "expectRed": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies",
+      "cell": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies"
+    },
+    {
+      "name": "an exemption's claim is accepted as written instead of being checked against the cell's own baseline row",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "      } else if (observed !== undefined) {\n        malformed.push(`${label}: claims no gradable field, baseline reports ${observed}`);\n      } else valid.add(cell);",
+      "replace": "      } else valid.add(cell);",
+      "expectRed": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies",
+      "cell": "census control: an exemption must name a declared cell, give a reason, and make a claim the baseline row can refute, and no cell currently qualifies"
+    },
+    {
+      "name": "the workdir guard accepts any path, so a silently-inert copy can be chosen",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "const guardSafe = (path) => pathToFileURL(path).href === `file://${path}`;",
+      "replace": "const guardSafe = (path) => true;",
+      "expectRed": "guardSafe rejects a path that needs URL escaping, so a silently-inert copy cannot be chosen",
+      "cell": "guardSafe rejects a path that needs URL escaping, so a silently-inert copy cannot be chosen"
+    },
+    {
+      "name": "makeWorkdir returns a path that is not the realpath'd directory its guard accepted",
+      "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
+      "find": "    if (guardSafe(candidate)) return { dir: candidate, base, created: candidate };",
+      "replace": "    if (guardSafe(candidate)) return { dir: candidate + \"/\", base, created: candidate };",
+      "expectRed": "makeWorkdir returns a realpath'd directory its own guard accepts",
+      "cell": "makeWorkdir returns a realpath'd directory its own guard accepts"
+    }
+  ]
+}

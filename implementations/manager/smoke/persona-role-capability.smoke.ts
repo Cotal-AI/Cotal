@@ -256,7 +256,7 @@ try {
 
   // ---- 2. THE REFUSAL: role: manager on a no-capability persona is refused at accept -----------
   console.log("2. a manager-role spawn of a no-capability persona is refused, loudly");
-  const refused = await spawnTool.run(definer, cfg, { name: WIRE, role: "manager", agent: "p966-stub" });
+  const refused = await spawnTool.run(definer, cfg, { name: WIRE, role: "manager", agent: "p966-stub", events: false });
   const rt = String(refused.text ?? "");
   check("the spawn is refused (the tool result is an error)", refused.isError === true, refused);
   check("the refusal names the persona", rt.includes(WIRE), rt);
@@ -274,7 +274,7 @@ try {
 
   // ---- 3. the file's own role is held to the same standard -------------------------------------
   console.log("3. a persona file declaring role: manager without the grant refuses identically");
-  const fileRefused = await spawnTool.run(definer, cfg, { name: "p966-file-manager", agent: "p966-stub" });
+  const fileRefused = await spawnTool.run(definer, cfg, { name: "p966-file-manager", agent: "p966-stub", events: false });
   check("the file-role manager spawn is refused too", fileRefused.isError === true, fileRefused);
   check(
     "its refusal also names the missing spawn capability",
@@ -284,11 +284,11 @@ try {
 
   // ---- 4. the guard is narrow: every legitimate spawn still spawns -----------------------------
   console.log("4. non-regression: legitimate spawns still work");
-  const capped = await spawnTool.run(definer, cfg, { name: "p966-manager-capped", agent: "p966-stub" });
+  const capped = await spawnTool.run(definer, cfg, { name: "p966-manager-capped", agent: "p966-stub", events: false });
   check("a manager persona WITH capabilities: [spawn] still spawns", capped.isError !== true, capped);
-  const worker = await spawnTool.run(definer, cfg, { name: "p966-plain-worker", agent: "p966-stub" });
+  const worker = await spawnTool.run(definer, cfg, { name: "p966-plain-worker", agent: "p966-stub", events: false });
   check("a plain worker persona with no capabilities still spawns", worker.isError !== true, worker);
-  const overridden = await spawnTool.run(definer, cfg, { name: WIRE, role: "worker", agent: "p966-stub" });
+  const overridden = await spawnTool.run(definer, cfg, { name: WIRE, role: "worker", agent: "p966-stub", events: false });
   check("a non-manager role OVERRIDE on the same file spawns (effective role, both directions)", overridden.isError !== true, overridden);
 
   // ---- 5. a refused spawn mints nothing --------------------------------------------------------
@@ -314,7 +314,7 @@ try {
     (async () => {
       await definer?.stop().catch(() => {});
       await provisioner?.stop().catch(() => {});
-      await mgr.stop().catch(() => {});
+      await mgr.stop({ withAgents: true }).catch(() => {});
     })(),
     sleep(10_000),
   ]);

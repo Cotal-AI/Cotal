@@ -3,19 +3,17 @@
  * existing bucket, so a presence/lease bucket created by a cotal that predated the TTL keeps NO `max_age` and
  * never expires dead presence records / stale leases — a raw-KV reader (a dashboard) then shows a crashed agent
  * as live forever. `setupSpaceStreams` reconciles the three TTL'd buckets' `max_age` (STREAM.UPDATE), which
- * requires the `provisioner` cred to hold STREAM.UPDATE on exactly those three streams (provision.ts).
+ * requires the `provisioner` cred to hold STREAM.UPDATE plus one exact reserved canary key on each of
+ * those three streams (provision.ts).
  *
  * Runs against a REAL auth-callout broker AS the REAL provisioner credential, so it proves THE GRANT — the one
- * thing unique to auth mode. A fresh `cotal up` never exercises it (a just-created bucket already has the TTL, so
- * the reconcile skips the update), so we stage the old-deployment shape: pre-create the three buckets WITHOUT
+ * thing unique to auth mode. We stage the old-deployment shape: pre-create the three buckets WITHOUT
  * max_age (as the provisioner's STREAM.CREATE), then run setupSpaceStreams as the provisioner and assert all
  * three `max_age` values flip from 0 to their TTLs. Without the STREAM.UPDATE grant, setupSpaceStreams throws a
- * permissions violation at the reconcile — so reaching the post-asserts IS the proof.
+ * permissions violation at the reconcile or canary publish — so reaching the post-asserts IS the proof.
  *
- * The behavioral consequence (a stale record then ages out; an active lease, always younger than its TTL,
- * survives) is plain NATS `max_age` semantics, proven live in open mode by `_r286-mig.ts` / `_r286.ts` — not
- * re-proven here, where writing presence/lease records would need agent/delivery creds (the provisioner writes
- * neither). Needs `nats-server` on PATH. Run: pnpm smoke:presence-ttl-migration:auth
+ * The canary proves expiry without granting the provisioner arbitrary presence or lease writes. Needs
+ * `nats-server` on PATH. Run: pnpm smoke:presence-ttl-migration:auth
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -26,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { connect, nanos } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, reconcileBucketTtl, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket } from "../src/index.js";
+import { isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, reconcileBucketTtl, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket, TTL_RECONCILE_CANARY_KEY } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker } from "./_ephemeral-only.js";
@@ -99,26 +97,32 @@ try {
   check("delivery-lease max_age reconciled to 30s", (await maxAge(deliveryBucket(space))) === nanos(DELIVERY_MS), (await maxAge(deliveryBucket(space))) / 1e6);
   check("manager-lease max_age reconciled to 10s", (await maxAge(managerBucket(space))) === nanos(MANAGER_MS), (await maxAge(managerBucket(space))) / 1e6);
 
-  // Idempotent: a second reconcile pass (a normal repeat `cotal up`) is a no-op — matching max_age, no UPDATE.
+  // A repeat pass keeps the config idempotent. Successful proof left no canary, so matching INFO plus
+  // an absent canary is the read-only fast path; a failed proof would leave the canary for retry.
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
-  check("second reconcile is a no-op (max_age still 6s — idempotent)", (await maxAge(presenceBucket(space))) === nanos(PRESENCE_MS));
+  check("second reconcile keeps max_age at 6s after re-proving enforcement", (await maxAge(presenceBucket(space))) === nanos(PRESENCE_MS));
+  const canarySubject = `$KV.${presenceBucket(space)}.${TTL_RECONCILE_CANARY_KEY}`;
+  const canaryCount = (await jsm.streams.info(`KV_${presenceBucket(space)}`, { subjects_filter: canarySubject })).state.subjects?.[canarySubject] ?? 0;
+  check("the reserved canary expires and leaves no synthetic presence key", canaryCount === 0, canaryCount);
 
   // ---- the ALREADY-CORRECT bucket, proven at the branch rather than at the value ----------------
   // The assert above cannot tell "skipped" from "re-updated": re-running the UPDATE with the same
   // max_age leaves the same value behind, so a reconcile that had LOST its skip would still pass it.
   // Drive the seam with a jsm whose `update` FAILS THE TEST IF CALLED: the bucket already carries the
-  // intended TTL, so a correct reconcile returns without ever issuing STREAM.UPDATE. This proves the
-  // branch was taken, not merely that the value survived.
+  // intended TTL and carries no pending canary, so a correct reconcile issues neither UPDATE nor publish.
+  // This proves the steady-state fast path without restoring the unsafe INFO-only acceptance from #404.
   let updateCalls = 0;
+  let canaryPublishes = 0;
   const alreadyCorrect = {
     streams: {
-      info: async () => ({ config: { max_age: nanos(PRESENCE_MS), duplicate_window: nanos(2_000) } }),
+      info: async () => ({ config: { max_age: nanos(PRESENCE_MS), duplicate_window: nanos(2_000) }, state: { subjects: {} } }),
       update: async () => { updateCalls++; throw new Error("STREAM.UPDATE issued against an already-correct bucket"); },
     },
   } as unknown as Awaited<ReturnType<typeof jetstreamManager>>;
+  const canaryPublisher = { publish: async () => { canaryPublishes++; return {} as never; } };
   let skipped = true;
-  try { await reconcileBucketTtl(alreadyCorrect, "KV_already_correct", PRESENCE_MS); } catch { skipped = false; }
-  check("already-correct bucket SKIPS the update (no STREAM.UPDATE issued at all)", skipped && updateCalls === 0, { updateCalls });
+  try { await reconcileBucketTtl(alreadyCorrect, canaryPublisher, "KV_already_correct", "already_correct", PRESENCE_MS); } catch { skipped = false; }
+  check("already-correct bucket with no pending canary stays read-only", skipped && updateCalls === 0 && canaryPublishes === 0, { updateCalls, canaryPublishes });
 
   // ---- the read-back FAILS CLOSED (ratified review condition (a)) --------------------------------
   // The guarantee is not "we sent an UPDATE" — but it is NOT "the TTL is now in force" either, which
@@ -139,7 +143,7 @@ try {
     },
   } as unknown as Awaited<ReturnType<typeof jetstreamManager>>;
   let threw: Error | undefined;
-  try { await reconcileBucketTtl(lyingBroker, "KV_lying_broker", PRESENCE_MS); } catch (e) { threw = e as Error; }
+  try { await reconcileBucketTtl(lyingBroker, canaryPublisher, "KV_lying_broker", "lying_broker", PRESENCE_MS); } catch (e) { threw = e as Error; }
   check("STREAM.UPDATE accepted but NOT applied => reconcile THROWS (fails closed, no silent drift)", threw !== undefined);
   check("...and the throw names the stream and both max_age values", /KV_lying_broker/.test(threw?.message ?? "") && /did not take/.test(threw?.message ?? ""), threw?.message);
 
@@ -155,7 +159,7 @@ try {
     },
   } as unknown as Awaited<ReturnType<typeof jetstreamManager>>;
   let partialErr: Error | undefined;
-  try { await reconcileBucketTtl(partialApply, "KV_partial_apply", PRESENCE_MS); } catch (e) { partialErr = e as Error; }
+  try { await reconcileBucketTtl(partialApply, canaryPublisher, "KV_partial_apply", "partial_apply", PRESENCE_MS); } catch (e) { partialErr = e as Error; }
   check("max_age applied but duplicate_window left ABOVE it => reconcile THROWS (partial apply refused)", partialErr !== undefined);
   check("...and the throw names the window and the max_age it exceeds", /duplicate_window/.test(partialErr?.message ?? "") && /exceeds max_age/.test(partialErr?.message ?? ""), partialErr?.message);
 
@@ -164,12 +168,12 @@ try {
   // seam throws unconditionally (a reconcile that always threw would satisfy it too).
   const honestBroker = {
     streams: {
-      info: (() => { let applied = false; return async () => { const c = { config: { max_age: applied ? nanos(PRESENCE_MS) : 0, duplicate_window: nanos(2_000) } }; applied = true; return c; }; })(),
+      info: (() => { let applied = false; return async () => { const c = { config: { max_age: applied ? nanos(PRESENCE_MS) : 0, duplicate_window: nanos(2_000) }, state: { subjects: {} } }; applied = true; return c; }; })(),
       update: async () => ({}),
     },
   } as unknown as Awaited<ReturnType<typeof jetstreamManager>>;
   let honestThrew = false;
-  try { await reconcileBucketTtl(honestBroker, "KV_honest_broker", PRESENCE_MS); } catch { honestThrew = true; }
+  try { await reconcileBucketTtl(honestBroker, canaryPublisher, "KV_honest_broker", "honest_broker", PRESENCE_MS); } catch { honestThrew = true; }
   check("control: an update that DOES take is accepted (the guard is not throwing unconditionally)", !honestThrew);
 
   await nc.close();

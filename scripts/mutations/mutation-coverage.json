@@ -1,0 +1,704 @@
+{
+  "grades": "tool",
+  "suite": [
+    "scripts/mutation-coverage.selftest.mjs"
+  ],
+  "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
+  "command": "node scripts/mutation-coverage.selftest.mjs",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
+  "why": [
+    "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
+    "The continuation mutation restores the first-error abort. The subprocess mutation restores the false refusal for declared entrypoints. The fraction parser mutation restores a completed-but-ungraded N/N. The banner mutation restores presence-as-completion, which must stay unparsed. The final mutation makes incomplete grading look green again."
+  ],
+  "mutations": [
+    {
+      "name": "a refused config aborts the process before later configs are examined",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    refusals.push([path, reason]);\n    console.error(`REFUSED ${path}: ${reason}`);\n    continue;",
+      "replace": "    throw new Error(`REFUSED ${path}: ${reason}`);",
+      "expectRed": "an invalid progress regex is refused without hiding the next config",
+      "cell": "an invalid progress regex is refused without hiding the next config"
+    },
+    {
+      "name": "declared subprocess entrypoints are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (executedWitness(suite, source, command, mutation, cfg.executes ?? [])) return;",
+      "replace": "    void executedWitness(suite, source, command, mutation, cfg.executes ?? []);",
+      "expectRed": "a spawned repo entrypoint plus target-package build is gradable",
+      "cell": "a spawned repo entrypoint plus target-package build is gradable"
+    },
+    {
+      "name": "a suite mutating its own directly executed source is rejected",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "replace": "    if (false) return;",
+      "expectRed": "a suite is gradable when it directly executes the file being mutated",
+      "cell": "a suite is gradable when it directly executes the file being mutated"
+    },
+    {
+      "name": "a suite launching the exact mutated repo script is rejected",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (launchedPaths(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;",
+      "replace": "    if (false) return;",
+      "expectRed": "a suite is gradable when it launches the exact mutated script path",
+      "cell": "a suite is gradable when it launches the exact mutated script path"
+    },
+    {
+      "name": "any quoted mutation path is treated as a direct execution witness",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (resolve(mutation.file) === resolve(suite)) return;",
+      "replace": "    if (resolve(mutation.file) === resolve(suite)) return;\n    if (readFileSync(suite, \"utf8\").includes(mutation.file)) return;",
+      "expectRed": "a quoted script path without an invocation is refused",
+      "cell": "a quoted script path without an invocation is refused"
+    },
+    {
+      "name": "launcher aliases are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (anyName || originals.includes(orig)) names.add(el.name.text);",
+      "replace": "        if (anyName || originals.includes(orig)) names.add(orig);",
+      "expectRed": "a launcher imported under an alias still witnesses the script it runs",
+      "cell": "a launcher imported under an alias still witnesses the script it runs"
+    },
+    {
+      "name": "bound entry names are ignored",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (declared !== undefined) return evalPath(declared);",
+      "replace": "        if (declared !== undefined) return \"\";",
+      "expectRed": "a target bound to a const before the launcher call still witnesses it",
+      "cell": "a target bound to a const before the launcher call still witnesses it"
+    },
+    {
+      "name": "a bound entry anywhere after a launcher is treated as its argument",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        for (const candidate of argvCandidates(argv, arrays, 0, argv)) {\n          const script = launchedScriptArg(evalPath, candidate);\n          const value = script ? evalPath(script) : undefined;\n          if (typeof value === \"string\") found.push(value);\n          for (const loaded of evaluatedProgramLoads(evalPath, candidate)) found.push(loaded);\n        }",
+      "replace": "        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(sf);",
+      "expectRed": "a name bound to the target but never passed to a launcher is still refused",
+      "cell": "a name bound to the target but never passed to a launcher is still refused"
+    },
+    {
+      "name": "any spawn-arg subtree is treated as the launched script",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);",
+      "replace": "      const direct = command ? evalPath(command) : undefined;\n      if (typeof direct === \"string\") found.push(direct);\n      for (const arg of node.arguments) {\n        const visitAll = (n) => {\n          const v = evalPath(n);\n          if (typeof v === \"string\") found.push(v);\n          ts.forEachChild(n, visitAll);\n        };\n        visitAll(arg);\n      }",
+      "expectRed": "a path after -e is not a launched script",
+      "cell": "a path after -e is not a launched script"
+    },
+    {
+      "name": "a separator is scanned before the flags preceding it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  for (let i = 0; i < tokens.length; i++) {\n    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);\n    const text = typeof raw === \"string\" ? raw : \"\";\n    if (text === \"--\") return tokens[i + 1];\n",
+      "replace": "  const sep = tokens.findIndex((token) => (stringValue(token) ?? evalPath(token)) === \"--\");\n  if (sep >= 0) return tokens[sep + 1];\n  for (let i = 0; i < tokens.length; i++) {\n    const raw = stringValue(tokens[i]) ?? evalPath(tokens[i]);\n    const text = typeof raw === \"string\" ? raw : \"\";\n",
+      "expectRed": "a path after -e and -- is not a launched script",
+      "cell": "a path after -e and -- is not a launched script"
+    },
+    {
+      "name": "a string mentioning ../src is treated as a source import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (packageRoot(mutation.file) === packageRoot(suite) && importsSource(suite, source, mutation.file)) return;",
+      "replace": "    if (packageRoot(mutation.file) === packageRoot(suite) && readFileSync(suite, \"utf8\").includes(\"../src/\")) return;",
+      "expectRed": "a string mentioning ../src is not a source import",
+      "cell": "a string mentioning ../src is not a source import"
+    },
+    {
+      "name": "an unused join of a declared root is treated as a copy",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const from = node.arguments[0];\n      if (from && !ts.isSpreadElement(from) && coversPath(evalPath(from), root)) hit = true;",
+      "replace": "      for (const arg of node.arguments) {\n        if (!ts.isSpreadElement(arg) && coversPath(evalPath(arg), root)) hit = true;\n      }",
+      "expectRed": "a root appearing as a copy's DESTINATION is not a copy of that root",
+      "cell": "a root appearing as a copy's DESTINATION is not a copy of that root"
+    },
+    {
+      "name": "a skipped build segment is still treated as a package build",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (tokens.includes(\"||\")) continue;\n",
+      "replace": "",
+      "expectRed": "a package build that never runs is refused",
+      "cell": "a package build that never runs is refused"
+    },
+    {
+      "name": "completed all-passed fractions are not parsed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }",
+      "replace": "    void completeFraction;",
+      "expectRed": "a completed all-passed fraction supplies the executed total",
+      "cell": "a completed all-passed fraction supplies the executed total"
+    },
+    {
+      "name": "banner presence is restored as an executed-cell total",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const completeFraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }\n  }\n  return undefined;\n};",
+      "replace": "  if (typeof cfg.completionMarker === \"string\") {\n    const line = output.split(/\\r?\\n/).filter((candidate) => candidate.includes(cfg.completionMarker)).at(-1);\n    const completeFraction = line?.match(/\\b(\\d+)\\s*\\/\\s*(\\d+)\\b/);\n    if (completeFraction && Number(completeFraction[1]) === Number(completeFraction[2])) {\n      return { executed: Number(completeFraction[2]), failures: 0 };\n    }\n  }\n  if (typeof cfg.progressPattern === \"string\" && Number.isInteger(cfg.minTicks) && cfg.minTicks > 0) {\n    const terminal = output.trimEnd().split(/\\r?\\n/).at(-1) ?? \"\";\n    const completed = typeof cfg.completionMarker === \"string\" && terminal.includes(cfg.completionMarker);\n    const executed = (output.match(new RegExp(cfg.progressPattern, \"gm\")) ?? []).length;\n    if (completed && executed >= cfg.minTicks) return { executed, failures: 0 };\n  }\n  return undefined;\n};",
+      "expectRed": "a declared terminal banner is not an executed-cell total",
+      "cell": "a declared terminal banner is not an executed-cell total"
+    },
+    {
+      "name": "incomplete aggregate grading exits successfully",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;",
+      "replace": "void refusals; void unparsed; void failed; void examined; void graded; void refused; void fencedDiscovered;",
+      "expectRed": "a by-name same-package import without ../src is refused",
+      "cell": "a by-name same-package import without ../src is refused"
+    },
+    {
+      "name": "the audit summary omits the checkout tree",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  checkoutHead = execFileSync(\"git\", [\"rev-parse\", \"HEAD\"], { encoding: \"utf8\" }).trim();",
+      "replace": "  checkoutHead = \"unknown\";",
+      "expectRed": "the audit summary names the exact checkout tree",
+      "cell": "the audit summary names the exact checkout tree"
+    },
+    {
+      "name": "progress configs are unparsed without naming that ticks are not a total",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      why += \"; progress ticks are not an executed-cell total; the instrument grades only a number the suite printed\";",
+      "replace": "      void why;",
+      "expectRed": "a terminal banner without a printed number is unparsed",
+      "cell": "a terminal banner without a printed number is unparsed"
+    },
+    {
+      "name": "an invalid progress regex escapes per-config validation",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    try { new RegExp(cfg.progressPattern, \"gm\"); } catch (error) { throw new Error(`\"progressPattern\" is invalid: ${error.message}`); }",
+      "replace": "    void cfg.progressPattern;",
+      "expectRed": "an invalid progress regex is refused without hiding the next config",
+      "cell": "an invalid progress regex is refused without hiding the next config"
+    },
+    {
+      "name": "commented imports count as entrypoint dependencies",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    for (const specifier of relativeImports(actual, source)) {",
+      "replace": "    for (const specifier of [...relativeImports(actual, source), ...(source.match(/@cotal-ai\\/[a-z-]+/g) ?? [])]) {",
+      "expectRed": "comment-import cannot fabricate executes evidence",
+      "cell": "comment-import cannot fabricate executes evidence"
+    },
+    {
+      "name": "non-Node executables count as source entrypoint launches",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (command && isNodeExecutable(evalPath, command) && argv) {",
+      "replace": "      if (command && argv) {",
+      "expectRed": "wrong-executable cannot fabricate executes evidence",
+      "cell": "wrong-executable cannot fabricate executes evidence"
+    },
+    {
+      "name": "printed build text counts as a package build",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  for (const segment of expandScripts(command).split(/&&|;/)) {",
+      "replace": "  if (command.includes(\"pnpm build\")) return true;\n  for (const segment of expandScripts(command).split(/&&|;/)) {",
+      "expectRed": "printed-build cannot fabricate executes evidence",
+      "cell": "printed-build cannot fabricate executes evidence"
+    },
+    {
+      "name": "the pnpm --filter=value form is refused",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    const value = tokens[filter].startsWith(\"--filter=\") ? tokens[filter].slice(9) : tokens[filter + 1];",
+      "replace": "    const value = tokens[filter + 1];",
+      "expectRed": "the pnpm --filter=value build form is accepted",
+      "cell": "the pnpm --filter=value build form is accepted"
+    },
+    {
+      "name": "coverage executes a live-shaped command instead of refusing it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (liveReason) {\n    refused.push([path, cfg.command, liveReason]);\n    continue;\n  }\n",
+      "replace": "",
+      "expectRed": "a glob-shaped argv still fences a live-suite command",
+      "cell": "a glob-shaped argv still fences a live-suite command"
+    },
+    {
+      "name": "always-live suite names are ignored by the detector",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const liveReason = liveShapedCommandReason(cfg.command, { cwd: process.cwd() });",
+      "replace": "  const liveReason = /:live\\b|-live\\b/.test(cfg.command) ? \"live-named\" : null;",
+      "expectRed": "an always-live suite name is fenced without a :live suffix",
+      "cell": "an always-live suite name is fenced without a :live suffix"
+    },
+    {
+      "name": "a discovered run executes configs without --execute-discovered",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (discovered && !executeDiscovered) {\n    fencedDiscovered++;\n    console.error(`FENCED ${path}: discovered configs are not executed; pass --execute-discovered to run them`);\n    continue;\n  }",
+      "replace": "  void discovered; void executeDiscovered;",
+      "expectRed": "a discovered run does not execute any config",
+      "cell": "a discovered run does not execute any config"
+    },
+    {
+      "name": "gradable-only still executes the named suite",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (gradableOnly) {\n    console.log(`ACCEPTED ${path}`);\n    graded++;\n    continue;\n  }\n",
+      "replace": "",
+      "expectRed": "gradable-only accepts a named config without executing it",
+      "cell": "gradable-only accepts a named config without executing it"
+    },
+    {
+      "name": "new URL paths are not evaluated, so a URL-built launch is invisible",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isNewExpression(node) && calleeText(node.expression) === \"URL\") {\n      const spec = evalPath(node.arguments?.[0]);\n      const base = node.arguments?.[1] ? evalPath(node.arguments[1]) : undefined;\n      if (typeof spec === \"string\" && typeof base === \"string\") return resolve(dirname(base), spec);\n      if (typeof spec === \"string\" && spec.startsWith(\"file:\")) return spec.slice(\"file://\".length);\n    }\n",
+      "replace": "",
+      "expectRed": "a launched path built with new URL still witnesses the file",
+      "cell": "a launched path built with new URL still witnesses the file"
+    },
+    {
+      "name": "a runner CLI is treated as the launched script itself",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (RUNNER_CLI.test(text.replaceAll(\"\\\\\", \"/\"))) return launchedScriptArg(evalPath, tokens.slice(i + 1));\n",
+      "replace": "",
+      "expectRed": "a script run through the tsx CLI slot is witnessed",
+      "cell": "a script run through the tsx CLI slot is witnessed"
+    },
+    {
+      "name": "a launched entrypoint's own imports are not followed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    for (const specifier of relativeImports(path, source)) {\n      if (!specifier.startsWith(\".\")) continue;\n      const next = candidateFiles(resolve(dirname(path), specifier));\n      if (next !== undefined && !seen.has(next)) queue.push(next);\n    }",
+      "replace": "    // the walk stops at the entrypoint and never follows its own imports",
+      "expectRed": "a launched entrypoint's own relative import is reached",
+      "cell": "a launched entrypoint's own relative import is reached"
+    },
+    {
+      "name": "the entrypoint reach resolves bare specifiers through the package map",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!specifier.startsWith(\".\")) continue;\n      const next = candidateFiles(resolve(dirname(path), specifier));\n",
+      "replace": "      const found = specifier.startsWith(\".\") ? undefined : manifestByName.get(specifier);\n      const next = found !== undefined\n        ? candidateFiles(resolve(dirname(found.path), \"src\", \"index.ts\"))\n        : candidateFiles(resolve(dirname(path), specifier));\n",
+      "expectRed": "a by-name package the launched entrypoint imports is not reached in source",
+      "cell": "a by-name package the launched entrypoint imports is not reached in source"
+    },
+    {
+      "name": "a dist import is a witness without the build that produces it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (buildsPackage(command, packageName(mutation.file))\n      && importsBuiltOutput(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;",
+      "replace": "    if (importsBuiltOutput(suite, source).some((entry) => sourceReaches(entry, mutation.file))) return;",
+      "expectRed": "a value import of built output without the build is refused",
+      "cell": "a value import of built output without the build is refused"
+    },
+    {
+      "name": "type-only dist imports count as loads of built output",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && node.moduleSpecifier) {\n      record(stringValue(node.moduleSpecifier));\n    }",
+      "replace": "    if (ts.isImportDeclaration(node) && node.moduleSpecifier) {\n      record(stringValue(node.moduleSpecifier));\n    }",
+      "expectRed": "a type-only import of built output is not a load",
+      "cell": "a type-only import of built output is not a load"
+    },
+    {
+      "name": "package scripts are not expanded, hiding an indirectly named build",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  for (const segment of expandScripts(command).split(/&&|;/)) {",
+      "replace": "  for (const segment of command.split(/&&|;/)) {",
+      "expectRed": "a build named indirectly through a package script still counts",
+      "cell": "a build named indirectly through a package script still counts"
+    },
+    {
+      "name": "a bound argument list is not resolved, so a real launch is missed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  if (ts.isIdentifier(node)) return (arrays.get(node.text, use) ?? []);\n",
+      "replace": "",
+      "expectRed": "a launch whose argument list is bound first still witnesses the script",
+      "cell": "a launch whose argument list is bound first still witnesses the script"
+    },
+    {
+      "name": "a read of any file is treated as a read of the mutated one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (target && !ts.isSpreadElement(target) && coversPath(evalPath(target), file)\n        && !isSourceModule(file)) hit = true;",
+      "replace": "      if (target && !ts.isSpreadElement(target)\n        && !isSourceModule(file)) hit = true;",
+      "expectRed": "reading some OTHER file is not a witness for the mutated one",
+      "cell": "reading some OTHER file is not a witness for the mutated one"
+    },
+    {
+      "name": "an env assignment is a witness without anything reading it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (under && (recursive || dirname(want) === base) && listingIsRead(node, readers, evalPath)) hit = true;",
+      "replace": "        if (under && (recursive || dirname(want) === base)) hit = true;",
+      "expectRed": "a listing that only observes names is refused",
+      "cell": "a listing that only observes names is refused"
+    },
+    {
+      "name": "a dynamic import counts even when nothing evaluates it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (specOk(stringValue(node.arguments[0])) && evaluated(node, sf)) {",
+      "replace": "        if (specOk(stringValue(node.arguments[0]))) {",
+      "expectRed": "a dynamic import in a function nobody calls never loads",
+      "cell": "a dynamic import in a function nobody calls never loads"
+    },
+    {
+      "name": "a dist import covers the whole package again",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    const entry = sourceOfBuilt(resolve(dirname(path), v));\n    if (entry !== undefined) roots.push(entry);",
+      "replace": "    const abs = resolve(dirname(path), v);\n    const cut = abs.replaceAll(\"\\\\\\\\\", \"/\").indexOf(\"/dist/\");\n    roots.push(cut >= 0 ? abs.slice(0, cut) : dirname(abs));",
+      "expectRed": "a value import of built output plus the build that produces it is gradable",
+      "cell": "a value import of built output plus the build that produces it is gradable"
+    },
+    {
+      "name": "an identifier spelled like a root is treated as the repo root",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const rootish = (node) => {\n    if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === \"process.cwd\") return true;",
+      "replace": "  const rootish = (node) => {\n    if (ts.isIdentifier(node) && (node.text === \"root\" || node.text.endsWith(\"Root\"))) return true;\n    if (ts.isCallExpression(node) && node.arguments.length === 0 && node.expression.getText() === \"process.cwd\") return true;",
+      "expectRed": "an identifier merely SPELLED like a root is not the repo root",
+      "cell": "an identifier merely SPELLED like a root is not the repo root"
+    },
+    {
+      "name": "an argv binding is resolved without regard to scope",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const arrays = {\n    get: (name, use) => {\n      for (let scope = use?.parent; scope !== undefined; scope = scope.parent) {\n        const initializer = declaresIn(scope, name);\n        if (initializer !== undefined) return argvCandidates(initializer, arrays, 0, initializer);\n      }\n      return undefined;\n    },\n  };",
+      "replace": "  const flatMap = new Map();\n  const arrays = { get: (name) => flatMap.get(name) ?? [] };\n  const bindAll = (node) => {\n    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {\n      const candidates = argvCandidates(node.initializer, arrays);\n      if (candidates.length > 0) flatMap.set(node.name.text, candidates);\n    }\n    ts.forEachChild(node, bindAll);\n  };\n  bindAll(sf);",
+      "expectRed": "a same-named argv array in another scope cannot stand in for the launcher's",
+      "cell": "a same-named argv array in another scope cannot stand in for the launcher's"
+    },
+    {
+      "name": "a read is a witness even where control never reaches it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isCallExpression(node) && readers(node.expression) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && readers(node.expression)) {",
+      "expectRed": "a read inside a function nobody calls never happens",
+      "cell": "a read inside a function nobody calls never happens"
+    },
+    {
+      "name": "a launcher is a witness even where control never reaches it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isCallExpression(node) && launchers(node.expression) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && launchers(node.expression)) {",
+      "expectRed": "a launch inside a function nobody calls never runs",
+      "cell": "a launch inside a function nobody calls never runs"
+    },
+    {
+      "name": "any reference to a function counts as running it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const isCallee = parentNode\n          && (ts.isCallExpression(parentNode) || ts.isNewExpression(parentNode))\n          && parentNode.expression === n;",
+      "replace": "        const isCallee = parentNode !== undefined;",
+      "expectRed": "referencing a function without calling it does not run its body",
+      "cell": "referencing a function without calling it does not run its body"
+    },
+    {
+      "name": "any call argument is treated as an invoked callback",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          && invokesArgument(parentNode, n);",
+      "replace": "          && parentNode.arguments?.includes(n);",
+      "expectRed": "passing a function to a call that never invokes it is not execution",
+      "cell": "passing a function to a call that never invokes it is not execution"
+    },
+    {
+      "name": "a copy is a witness even where control never reaches it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isCallExpression(node) && copiers(node.expression) && evaluated(node, sf)) {",
+      "replace": "    if (ts.isCallExpression(node) && copiers(node.expression)) {",
+      "expectRed": "a copy inside a function nobody calls never happens",
+      "cell": "a copy inside a function nobody calls never happens"
+    },
+    {
+      "name": "a call a literal condition excludes still counts as execution",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isIdentifier(n) && n.text === name && n !== cur.name && !inDeadBranch(n)) {",
+      "replace": "      if (ts.isIdentifier(n) && n.text === name && n !== cur.name) {",
+      "expectRed": "a call a literal condition excludes never runs",
+      "cell": "a call a literal condition excludes never runs"
+    },
+    {
+      "name": "a named text read of a source module counts as executing it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "const isSourceModule = (file) => SOURCE_MODULE.has(extname(file));",
+      "replace": "const isSourceModule = (file) => false;",
+      "expectRed": "reading a SOURCE module as text is not executing it",
+      "cell": "reading a SOURCE module as text is not executing it"
+    },
+    {
+      "name": "a worker entry handed over as a value is invisible",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isPropertyAssignment(node) && node.name.getText() === \"entry\" && handedToImportedCall(node, sf, imported)) {\n      record(distUrlText(node.initializer));\n    }",
+      "replace": "",
+      "expectRed": "a dist entry handed to a worker plus its build is gradable",
+      "cell": "a dist entry handed to a worker plus its build is gradable"
+    },
+    {
+      "name": "any build: prefixed script counts as producing dist",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (typeof body !== \"string\") return false;\n    return /(^|\\s|&&|;)(tsc|tsup|rollup|esbuild|vite|swc|babel)(\\s|$)/.test(body);",
+      "replace": "    return true;",
+      "expectRed": "a build: script that emits no dist is not the build",
+      "cell": "a build: script that emits no dist is not the build"
+    },
+    {
+      "name": "a scalar binding resolves by name instead of by scope",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      for (let scope = scopeOf(node); scope !== undefined;\n        scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope.parent)) {\n        const declared = declaredIn(scope, node.text, node);\n        if (declared === OPAQUE) return undefined;\n        if (declared !== undefined) return evalPath(declared);\n      }\n      return undefined;",
+      "replace": "      let flat;\n      const flatScan = (n) => {\n        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === node.text && n.initializer) flat = n.initializer;\n        ts.forEachChild(n, flatScan);\n      };\n      flatScan(sf);\n      return flat === undefined || flat === node.parent ? undefined : evalPath(flat);",
+      "expectRed": "a same-named scalar in another scope cannot witness an entrypoint launch",
+      "cell": "a same-named scalar in another scope cannot witness an entrypoint launch"
+    },
+    {
+      "name": "an inner block's let and const are visible outside it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, true)); return; }",
+      "replace": "      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, false)); return; }",
+      "expectRed": "a binding in a block the launch is not inside cannot witness it (decoy first)",
+      "cell": "a binding in a block the launch is not inside cannot witness it (decoy first)"
+    },
+    {
+      "name": "a declaration after the use is still resolved",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);",
+      "replace": "          record(node.initializer === undefined || usePos === undefined ? OPAQUE : node.initializer);",
+      "expectRed": "a use before its declaration cannot witness an entrypoint launch",
+      "cell": "a use before its declaration cannot witness an entrypoint launch"
+    },
+    {
+      "name": "a parameter is not a binding",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!hoistedOnly && ts.isParameter(node) && bindsName(node.name, name)) record(OPAQUE);",
+      "replace": "      if (false) record(OPAQUE);",
+      "expectRed": "a parameter shadows an outer binding rather than letting it witness a launch",
+      "cell": "a parameter shadows an outer binding rather than letting it witness a launch"
+    },
+    {
+      "name": "textual position is treated as execution order",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const executionPos = (use, scope) => {\n    let pos = use.getStart(sf);\n    for (let s = use.parent; s !== undefined && s !== scope; s = s.parent) {\n      if (!functionLike(s)) continue;\n      const name = namedFunction(s);\n      if (name === undefined) return undefined;\n      const call = earliestCall(name, scope);\n      if (call === undefined) return undefined;\n      pos = call;\n    }\n    return pos;\n  };",
+      "replace": "  const executionPos = (use) => use.getStart(sf);",
+      "expectRed": "a launcher called after the declaration witnesses the launch it makes",
+      "cell": "a launcher called after the declaration witnesses the launch it makes"
+    },
+    {
+      "name": "a destructuring pattern is not a binding",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {\n      return nameNode.elements.some((element) => ts.isBindingElement(element) && bindsName(element.name, name));\n    }",
+      "replace": "    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) return false;",
+      "expectRed": "a destructured parameter shadows an outer binding rather than letting it witness a launch",
+      "cell": "a destructured parameter shadows an outer binding rather than letting it witness a launch"
+    },
+    {
+      "name": "a destructured declaration is not a binding",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        } else if (!ts.isIdentifier(node.name) && bindsName(node.name, name)) record(OPAQUE);",
+      "replace": "        }",
+      "expectRed": "a destructured declaration shadows an outer binding rather than letting it witness a launch",
+      "cell": "a destructured declaration shadows an outer binding rather than letting it witness a launch"
+    },
+    {
+      "name": "a sweep narrowed to one entry still counts as a sweep",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (mentions(arg) && !narrowedToOneEntry(n)) read = true;",
+      "replace": "        if (mentions(arg)) read = true;",
+      "expectRed": "a sweep narrowed to one literal path is a named read",
+      "cell": "a sweep narrowed to one literal path is a named read"
+    },
+    {
+      "name": "only a string literal narrows a sweep, a computed constant does not",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;",
+      "replace": "      const known = (n) => stringValue(n) !== undefined;",
+      "expectRed": "a narrowing against a computed constant is refused",
+      "cell": "a narrowing against a computed constant is refused"
+    },
+    {
+      "name": "a parenthesized narrowing is unwrapped before it is classified",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isParenthesizedExpression(cond)) return pins(cond.expression, holds, depth + 1);",
+      "replace": "      if (ts.isParenthesizedExpression(cond)) return false;",
+      "expectRed": "a narrowing in parentheses is still a named read",
+      "cell": "a narrowing in parentheses is still a named read"
+    },
+    {
+      "name": "a prefix `!` flips the sense of the guard rather than being dropped",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        return pins(cond.operand, !holds, depth + 1);",
+      "replace": "        return pins(cond.operand, holds, depth + 1);",
+      "expectRed": "a narrowing spelled as a negated inequality is still a named read",
+      "cell": "a narrowing spelled as a negated inequality is still a named read"
+    },
+    {
+      "name": "a true `&&` carries an operand that pins to the whole branch",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;",
+      "replace": "          return false;",
+      "expectRed": "a narrowing in one operand of an && guard is still a named read",
+      "cell": "a narrowing in one operand of an && guard is still a named read"
+    },
+    {
+      "name": "`&&` decomposes only when it HELD, never when it failed",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return holds ? (pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1)) : false;\n        }",
+      "replace": "          return pins(cond.left, true, depth + 1) || pins(cond.right, true, depth + 1);\n        }",
+      "expectRed": "a false && leaves the entry free, so the sweep is still open",
+      "cell": "a false && leaves the entry free, so the sweep is still open"
+    },
+    {
+      "name": "a false `||` carries an operand that pins to the fallthrough",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return holds ? false : (pins(cond.left, false, depth + 1) || pins(cond.right, false, depth + 1));",
+      "replace": "          return false;",
+      "expectRed": "a narrowing in one operand of an || exit guard is still a named read",
+      "cell": "a narrowing in one operand of an || exit guard is still a named read"
+    },
+    {
+      "name": "`a !== b` is graded as `a === b` with the sense flipped",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return pinsEquality(eq, !holds);",
+      "replace": "          return pinsEquality(eq, holds);",
+      "expectRed": "a sweep narrowed to one literal path is a named read",
+      "cell": "a sweep narrowed to one literal path is a named read"
+    },
+    {
+      "name": "an equality pins only when it HOLDS, so skipping one entry is not selecting one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!holds) return false;\n      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;",
+      "replace": "      const known = (n) => (stringValue(n) ?? evalPath(n)) !== undefined;",
+      "expectRed": "a sweep that skips one entry is still open",
+      "cell": "a sweep that skips one entry is still open"
+    },
+    {
+      "name": "the compared side must be the loop entry, not merely mention it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      return (entryIdentity(cond.left) && known(cond.right)) || (entryIdentity(cond.right) && known(cond.left));",
+      "replace": "      return (mentions(cond.left) && known(cond.right)) || (mentions(cond.right) && known(cond.left));",
+      "expectRed": "an extension filter written as an equality is still a sweep",
+      "cell": "an extension filter written as an equality is still a sweep"
+    },
+    {
+      "name": "a ternary is evaluated rather than left unclassified",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isConditionalExpression(cond)) {",
+      "replace": "      if (false && ts.isConditionalExpression(cond)) {",
+      "expectRed": "a narrowing spelled as a ternary with boolean arms is still a named read",
+      "cell": "a narrowing spelled as a ternary with boolean arms is still a named read"
+    },
+    {
+      "name": "a ternary with boolean arms reduces to its condition",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          return pins(cond.condition, whenTrue === holds, depth + 1);",
+      "replace": "          return pins(cond.condition, whenTrue !== holds, depth + 1);",
+      "expectRed": "a narrowing spelled as a ternary with boolean arms is still a named read",
+      "cell": "a narrowing spelled as a ternary with boolean arms is still a named read"
+    },
+    {
+      "name": "every ternary branch that can yield the sense must pin, not just one",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        return (viaTrue || viaFalse) && truePins && falsePins;",
+      "replace": "        return (viaTrue || viaFalse) && (truePins || falsePins);",
+      "expectRed": "a ternary guard pins only when every arm that reaches the read pins",
+      "cell": "a ternary guard pins only when every arm that reaches the read pins"
+    },
+    {
+      "name": "a type assertion around the entry is transparent",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e)\n        || ts.isTypeAssertionExpression(e)) return entryIdentity(e.expression, depth + 1);",
+      "replace": "      if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e)\n        || ts.isTypeAssertionExpression(e)) return false;",
+      "expectRed": "a type assertion around the entry does not hide the narrowing",
+      "cell": "a type assertion around the entry does not hide the narrowing"
+    },
+    {
+      "name": "a loop-local const alias is followed to what it was bound to",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const declaration = aliasDeclaration(e);\n        return declaration !== undefined && entryIdentity(declaration.initializer, depth + 1);",
+      "replace": "        return false;",
+      "expectRed": "a loop-local alias of the entry is still the entry",
+      "cell": "a loop-local alias of the entry is still the entry"
+    },
+    {
+      "name": "an aliased entry still reaches the reader that is handed the alias",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        const declaration = aliasDeclaration(e);\n        return declaration !== undefined && mentions(declaration.initializer, visited);",
+      "replace": "        return false;",
+      "expectRed": "binding the entry before reading it is still an open sweep",
+      "cell": "binding the entry before reading it is still an open sweep"
+    },
+    {
+      "name": "the callee is RESOLVED to the global String, not matched by its terminal name",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      return ts.isCallExpression(e) && resolvesToGlobalString(e.expression)",
+      "replace": "      return ts.isCallExpression(e) && calleeText(e.expression) === \"String\"",
+      "expectRed": "a projection through a property named String is not the global conversion",
+      "cell": "a projection through a property named String is not the global conversion"
+    },
+    {
+      "name": "a scope that declares String stops it resolving to the global",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        if (declaresLocally(s, \"String\")) return false;",
+      "replace": "        if (false && declaresLocally(s, \"String\")) return false;",
+      "expectRed": "a local binding that shadows String is not the global conversion",
+      "cell": "a local binding that shadows String is not the global conversion"
+    },
+    {
+      "name": "a guard with no rule is OPEN, so an unknown spelling makes the sweep count",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      return false;\n    };\n    const exits = (stmt) => {",
+      "replace": "      return true;\n    };\n    const exits = (stmt) => {",
+      "expectRed": "a guard the classifier cannot evaluate leaves the sweep counting",
+      "cell": "a guard the classifier cannot evaluate leaves the sweep counting"
+    },
+    {
+      "name": "a name is admitted with no import provenance, so a local shadow reads as the real callee",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "  const names = new Set();",
+      "replace": "  const names = new Set(originals);",
+      "expectRed": "a reader imported from a module that is not fs is not a reader",
+      "cell": "a reader imported from a module that is not fs is not a reader"
+    },
+    {
+      "name": "a namespace import is credited as bare canonical names rather than as a namespace",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        namespaces.add(named.name.text);",
+      "replace": "        for (const orig of originals) names.add(orig);",
+      "expectRed": "a reader called through an imported namespace still witnesses the file it reads",
+      "cell": "a reader called through an imported namespace still witnesses the file it reads"
+    },
+    {
+      "name": "the callee binding is not resolved at the call site, so a shadowing parameter still reads as the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    return names.has(expr.text) && !shadowed(expr, expr.text);",
+      "replace": "    return names.has(expr.text);",
+      "expectRed": "a destructured parameter shadowing an imported reader is not that reader",
+      "cell": "a destructured parameter shadowing an imported reader is not that reader",
+      "note": "Removing the call-site resolution breaks EVERY shadow form at once, so five cells go red together: the destructured parameter and local, the plain parameter, the named function expression, and the class declaration. The selftest stops at its first failure, so only the first of those is ever printed, and expectRed therefore names that one. The earlier wording named the plain-parameter cell, which the mutant does redden but which the run never reaches, so the harness graded it WRONG-RED. Entry 79 is what keeps this row honest: it breaks the binding-pattern arm ALONE, so the same cell firing there is attributable to the destructuring, while this row is the whole-check removal."
+    },
+    {
+      "name": "a binding pattern binds nothing, so a destructured shadow reads as the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {",
+      "replace": "    if (false) {",
+      "expectRed": "a destructured parameter shadowing an imported reader is not that reader",
+      "cell": "a destructured parameter shadowing an imported reader is not that reader"
+    },
+    {
+      "name": "the scope walk descends past nested scopes, so a closed sibling block shadows the call after it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const inner = varsOnly || isScope(node);",
+      "replace": "      const inner = varsOnly;",
+      "expectRed": "a local in a closed sibling block does not shadow the module-scope call",
+      "cell": "a local in a closed sibling block does not shadow the module-scope call"
+    },
+    {
+      "name": "a catch binding hoists like a var, so a sibling clause shadows the call after it",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (ts.isCatchClause(node)) {",
+      "replace": "      if (false) {",
+      "expectRed": "a catch binding in a sibling clause does not shadow the module-scope call",
+      "cell": "a catch binding in a sibling clause does not shadow the module-scope call"
+    },
+    {
+      "name": "the packed-tarball witness accepts a launcher by spelling, with no import provenance",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "        && launchers(node.expression)) {",
+      "replace": "        && true) {",
+      "expectRed": "a local function spelled like a launcher does not pack anything",
+      "cell": "a local function spelled like a launcher does not pack anything"
+    },
+    {
+      "name": "a named function expression does not bind its own name, so it cannot shadow the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "    if ((ts.isFunctionExpression(scope) || ts.isClassExpression(scope)) && scope.name?.text === name) return true;",
+      "replace": "    if (false) return true;",
+      "expectRed": "a named function expression shadows the imported reader inside its own body",
+      "cell": "a named function expression shadows the imported reader inside its own body"
+    },
+    {
+      "name": "a class declaration is not a binding, so it cannot shadow the import",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))",
+      "replace": "      if (!varsOnly && (ts.isFunctionDeclaration(node))",
+      "expectRed": "a class declaration named like the reader shadows it",
+      "cell": "a class declaration named like the reader shadows it"
+    },
+    {
+      "name": "a function expression's self-name binds everywhere, not only inside its own body",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))\n        && node.name?.text === name) { found = true; return; }",
+      "replace": "      if (!varsOnly && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)\n        || ts.isFunctionExpression(node) || ts.isClassExpression(node))\n        && node.name?.text === name) { found = true; return; }",
+      "expectRed": "a function expression's own name binds only inside its body",
+      "cell": "a function expression's own name binds only inside its body"
+    }
+  ]
+}

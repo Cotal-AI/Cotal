@@ -35,6 +35,7 @@ export function hashAgent(a: PreparedAgent): string {
     // Only when set: a prompt-less agent must keep its pre-`prompt:` hash, or upgrading flips
     // every already-deployed manifest agent to stale.
     ...(a.prompt !== undefined ? { prompt: a.prompt } : {}),
+    ...(a.events !== undefined ? { events: a.events } : {}),
     capabilities: [...a.capabilities].sort(),
     subscribe: [...a.policy.subscribe].sort(),
     allowSubscribe: [...a.policy.allowSubscribe].sort(),
@@ -56,6 +57,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
     description: a.description,
     body: a.body,
     prompt: a.prompt,
+    events: a.events,
     capabilities: a.capabilities.length ? a.capabilities : undefined,
     subscribe: a.policy.subscribe,
     allowSubscribe: a.policy.allowSubscribe,

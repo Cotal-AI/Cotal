@@ -50,7 +50,8 @@
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
  * depends on those functions. The reachability it does not prove is proven beside it: cell E
- * drives `attachRefusal("not-found")` through the real `cotal attach` binary end to end, cells
+ * drives the durable static-slot `failed-precondition` detail through `attachRefusal` and the real
+ * `cotal attach` binary end to end, while cell F separately pins plain `not-found`; cells
  * A to D drive `isTransportEnd` the same way, cell A drives `reconnectNotice`'s SILENT branch
  * end to end (the mesh preflight refuses at the reconnect step for several attempts there, and the
  * cell asserts its remedy line never reaches the terminal), and cell B drives `heldSessionNotice`'s
@@ -299,7 +300,7 @@ try {
 
   manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const spawned = await manager.startAgent({ name: SEAT, agent: "rc-seat", cwd: repoRoot });
+  const spawned = await manager.startAgent({ name: SEAT, agent: "rc-seat", cwd: repoRoot, events: false });
   if (!spawned.ok) throw new Error(`seat did not start: ${JSON.stringify(spawned)}`);
 
   // ---------------------------------------------------------------------------------------------
@@ -497,7 +498,7 @@ try {
     // the manager ends it.
     const QUIET = "rcquiet";
     writeFileSync(join(root, ".cotal", "agents", `${QUIET}.md`), `---\nname: ${QUIET}\nrole: worker\n---\n`);
-    const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot });
+    const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot, events: false });
     if (!q.ok) throw new Error(`quiet seat did not start: ${JSON.stringify(q)}`);
     // The manager's own accounting, read off the plane the ceiling is enforced against.
     const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
@@ -677,7 +678,7 @@ try {
 } finally {
   for (const a of started) a.kill();
   await sever();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

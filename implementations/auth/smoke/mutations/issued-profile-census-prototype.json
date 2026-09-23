@@ -1,0 +1,227 @@
+{
+  "suite": [
+    "implementations/auth/smoke/issued-profile-census.smoke.ts",
+    "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+    "packages/core/smoke/prototypes/issued-accepted-row.ts",
+    "packages/core/src/endpoint-subjects.ts",
+    "packages/core/src/provision.ts",
+    "packages/core/smoke/prototypes/CLAIMS.md",
+    "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+    "implementations/auth/smoke/issued-callout-binding.smoke.ts"
+  ],
+  "guard": "Every Profile and generic callout view is represented in a direction-specific census. Native controls detect broad publication in the real operator builder. These are baseline migration observations; representative variants are not all option combinations and endpoint-serve uses raw grant rows.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-profile-census-prototype.json",
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "one declared profile is omitted",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "supervisor: () => one(\"supervisor\"),",
+      "replace": "",
+      "expectRed": "profile and view producers cover their declared sets",
+      "cell": "profile and view producers cover their declared sets"
+    },
+    {
+      "name": "one generic callout view is omitted",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "for (const view of USER_TOKEN_VIEWS) {",
+      "replace": "for (const view of USER_TOKEN_VIEWS.filter((view) => view !== \"deployer\")) {",
+      "expectRed": "profile and view producers cover their declared sets",
+      "cell": "profile and view producers cover their declared sets"
+    },
+    {
+      "name": "broad subject tails are ignored",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "if (pattern[i] === \">\") return true;",
+      "replace": "if (pattern[i] === \">\") return false;",
+      "expectRed": "namespace detector recognizes broad grants and honors explicit deny-all",
+      "cell": "namespace detector recognizes broad grants and honors explicit deny-all"
+    },
+    {
+      "name": "read grants are replaced with publish grants",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "const value = permissions[direction] as",
+      "replace": "const value = permissions.pub as",
+      "expectRed": "namespace detector recognizes broad grants and honors explicit deny-all",
+      "cell": "namespace detector recognizes broad grants and honors explicit deny-all"
+    },
+    {
+      "name": "production operator publication is widened",
+      "file": "packages/core/src/provision.ts",
+      "find": "if (profile === \"operator\") return operatorPermissions(space, pr);",
+      "replace": "if (profile === \"operator\") return { ...operatorPermissions(space, pr), pub: { allow: [\">\"] } };",
+      "expectRed": "current profile excludes issued namespace: operator/default",
+      "cell": "current profile excludes issued namespace: operator/default"
+    },
+    {
+      "name": "the raw-read overlap detector stops matching writes",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  return [...rawRead].filter(writable).sort();",
+      "replace": "  return [];",
+      "expectRed": "the write-plus-raw-read detector finds the known trusted overlaps",
+      "cell": "the write-plus-raw-read detector finds the known trusted overlaps"
+    },
+    {
+      "name": "a profile with a known overlap is treated as peer-held",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\"])",
+      "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"run-mediator\"])",
+      "expectRed": "no peer-held profile can both write and raw-read one stream",
+      "cell": "no peer-held profile can both write and raw-read one stream"
+    },
+    {
+      "name": "the shipped-source scan skips a whole tier",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  for (const tier of [\"packages\", \"implementations\", \"extensions\"]) {",
+      "replace": "  for (const tier of [\"extensions\"]) {",
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
+    },
+    {
+      "name": "a shipped file outside the builders spells the issued rail",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "const admission = await this.admit(ctx, runId);",
+      "replace": "const admission = await this.admit(ctx, runId); void \"ep.v1\";",
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
+    },
+    {
+      "name": "the server-view detector stops matching",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  return pub.some((row) => row === \">\" || row === \"$SYS.>\" || row.startsWith(\"$SYS.REQ.USER\"));",
+      "replace": "  return pub.some((row) => row.startsWith(\"$SYS.REQ.USER.INFO.\"));",
+      "expectRed": "no current profile can request its own server view",
+      "cell": "no current profile can request its own server view"
+    },
+    {
+      "name": "an unclassified JetStream grant is waved through",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  throw new Error(`unclassified JetStream grant \"${subject}\"; decide which delivery class it is before the origin argument can quantify over it`);",
+      "replace": "  return \"no-delivery\";",
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "a raw stored read is classified as an API envelope",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  [/^\\$JS\\.API\\.DIRECT\\.GET\\./, \"stored-marked\"],",
+      "replace": "",
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "the prototype-import scan looks for the wrong path",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "      else if (entry.name.endsWith(\".ts\") && !entry.name.endsWith(\".d.ts\")) found.push(full);",
+      "replace": "      else if (entry.name.endsWith(\".tsx\")) found.push(full);",
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
+    },
+    {
+      "name": "a new profile drifts into the trusted half",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  \"control-caller-admin\", \"backup\", \"restore\", \"endpoint-evictor\", \"retirement-requester\",",
+      "replace": "  \"control-caller-admin\", \"backup\", \"restore\", \"endpoint-evictor\",",
+      "expectRed": "every profile is classified peer-held or trusted",
+      "cell": "every profile is classified peer-held or trusted"
+    },
+    {
+      "name": "the candidate issued stores are not modelled",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "    [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),",
+      "replace": "",
+      "expectRed": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap",
+      "cell": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap"
+    },
+    {
+      "name": "a stream-configuring verb folds into an envelope class",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],",
+      "replace": "  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],\n  [/^\\$JS\\.API\\.STREAM\\./, \"api-envelope\"],",
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "a ledger citation names a cell that no longer exists",
+      "file": "packages/core/smoke/prototypes/CLAIMS.md",
+      "find": "cell \"denies override listed or unrestricted native allows\"",
+      "replace": "cell \"denies override listed native allows\"",
+      "expectRed": "every cell and mutation the claim ledger cites still exists",
+      "cell": "every cell and mutation the claim ledger cites still exists"
+    },
+    {
+      "name": "the citation extractor reads surrounding prose as a citation",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "/\\b(cells?|mutations?)\\b((?:\\s*(?:and\\s+)?\"[^\"]+\"\\s*[,;]?)+)/g",
+      "replace": "/\\b(cells?|mutations?)\\b((?:(?!\\b(?:cells?|mutations?)\\b)[^|])*)/g",
+      "expectRed": "every cell and mutation the claim ledger cites still exists",
+      "cell": "every cell and mutation the claim ledger cites still exists"
+    },
+    {
+      "name": "the legacy consumer-create door is treated as an envelope",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],",
+      "replace": "  [/^\\$JS\\.API\\.CONSUMER\\.DURABLE\\.CREATE\\./, \"api-envelope\"],\n  [/^\\$JS\\.API\\.CONSUMER\\.CREATE\\./, \"creates-push-delivery\"],",
+      "expectRed": "every API verb the client library can call is classified or refused",
+      "cell": "every API verb the client library can call is classified or refused"
+    },
+    {
+      "name": "a delivery-configuring verb is dropped from the pairing",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  \"STREAM.CREATE\", \"STREAM.UPDATE\", \"CONSUMER.CREATE\", \"CONSUMER.DURABLE.CREATE\",",
+      "replace": "  \"STREAM.CREATE\", \"STREAM.UPDATE\", \"CONSUMER.CREATE\",",
+      "expectRed": "every API verb the client library can call is classified or refused",
+      "cell": "every API verb the client library can call is classified or refused"
+    },
+    {
+      "name": "a hold cell goes back to sampling once against its writer",
+      "file": "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
+      "find": "      for (let i = 0; i < 15; i++) {\n        assert.equal(await state(a.ref), \"prepared\", `activated at sample ${i} while the finalizer was blocked`);\n        assert.equal(settled, false);\n        await wait(20);\n      }",
+      "replace": "      assert.equal(await state(a.ref), \"prepared\");\n      assert.equal(settled, false);",
+      "expectRed": "no cell asserts a concurrent operation has not settled from one sample",
+      "cell": "no cell asserts a concurrent operation has not settled from one sample"
+    },
+    {
+      "name": "a peer-held profile is granted a stream-update door",
+      "file": "packages/core/src/provision.ts",
+      "find": "      `$JS.ACK.${CHAT}.>`,\n      `$JS.API.CONSUMER.CREATE.${KV}.>`,",
+      "replace": "      `$JS.ACK.${CHAT}.>`,\n      `$JS.API.STREAM.UPDATE.${KV}`,\n      `$JS.API.CONSUMER.CREATE.${KV}.>`,",
+      "expectRed": "every broker grant a peer can hold has a decided delivery class",
+      "cell": "every broker grant a peer can hold has a decided delivery class"
+    },
+    {
+      "name": "a second peer profile is granted the push-consumer door",
+      "file": "packages/core/src/provision.ts",
+      "find": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\")] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
+      "replace": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\"), `$JS.API.CONSUMER.CREATE.KV_cotal_presence_${space}.>`] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
+      "expectRed": "peers hold the push-consumer door and none of the republish doors",
+      "cell": "peers hold the push-consumer door and none of the republish doors"
+    },
+    {
+      "name": "the shipped-source corpus stops covering the published composition root",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  walk(join(root, \"bin\"));",
+      "replace": "",
+      "expectRed": "the issued rail is spelled only by core's endpoint subject and grant builders",
+      "cell": "the issued rail is spelled only by core's endpoint subject and grant builders"
+    },
+    {
+      "name": "the option sweep loses a dimension",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "  const caps = [undefined, [], [\"spawn\"], [\"spawn\", \"run\"]];",
+      "replace": "  const caps = [undefined];",
+      "expectRed": "no peer option combination pairs a write with a raw stream read",
+      "cell": "no peer option combination pairs a write with a raw stream read"
+    },
+    {
+      "name": "the sweep's raw-read detector stops seeing DIRECT.GET",
+      "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
+      "find": "export function writeAndRawReadStreams(permissions: Record<string, unknown>, space: string): string[] {",
+      "replace": "export function writeAndRawReadStreams(permissions: Record<string, unknown>, space: string): string[] {\n  if (space === \"issuedcensus\") return [];",
+      "expectRed": "the write-plus-raw-read detector finds the known trusted overlaps",
+      "cell": "the write-plus-raw-read detector finds the known trusted overlaps"
+    }
+  ]
+}

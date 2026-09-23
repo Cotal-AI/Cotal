@@ -69,7 +69,7 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    return this.inner.read(cursor ?? this.start);",
       "replace": "    return this.inner.read(this.start);",
-      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, WITHOUT the tool bytes"
     },
     {
       "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
@@ -90,7 +90,7 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
       "replace": "  private firstRead = true;\n\n  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    const from = this.firstRead && cursor !== undefined ? this.start : cursor ?? this.start;\n    this.firstRead = false;\n    return this.inner.read(from);\n  }",
-      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included"
+      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, WITHOUT the tool bytes"
     },
     {
       "name": "L14 the replacement mapper starts empty instead of inheriting the WAL's open run, so recovery drops its completion and collides at the next start",

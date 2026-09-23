@@ -62,6 +62,7 @@ import {
   assertCommandToken,
   spacePrefix,
   mintLifecycleUid,
+  managedRetirementOpId,
   parseEpSubject,
   principalKey,
   retirementFrontierStreams,
@@ -158,10 +159,8 @@ function parseRetireArgs(raw: unknown): RetireArgs {
       typeof a.serveEpoch !== "number" || !Number.isInteger(a.serveEpoch) || a.serveEpoch < 0)
     throw new EpEnvelopeError("failed-precondition", `retireLifecycle requires args ${shape} (serveEpoch a non-negative integer)`);
   return {
-    // opId is OPERATION IDENTITY, not an authz input: it is the stable per-lifecycle id that makes
-    // a retry, a same-name-spawn nudge, and a boot resume converge on ONE operation. It has no
-    // subject counterpart to be cross-checked against (the subject's nonce varies per request,
-    // which is the opposite property), and it authorizes nothing.
+    // opId is OPERATION IDENTITY, not an authz input: the terminal rail independently derives it
+    // from the broker-pinned lifecycle target below. This parse only enforces the token grammar.
     opId: assertLifecycleToken(a.opId, "opId"),
     // LOOKUP COORDINATES, not authz inputs: they select WHICH gate row to read. The row they
     // select must then survive the principal cross-check below, so naming a foreign row buys a
@@ -170,6 +169,15 @@ function parseRetireArgs(raw: unknown): RetireArgs {
     serveInstanceId: assertLifecycleToken(a.serveInstanceId, "serveInstanceId"),
     serveEpoch: a.serveEpoch,
   };
+}
+
+/** The terminal rail's operation-identity authorization. The requester credential pins the target
+ * in the subject, while this check binds the body operation to that broker-authenticated target.
+ * Run it before any gate/head read so a foreign operation id is a full no-op. */
+export function authorizeRetirementOperation(targetLifecycleUid: string, opId: string): void {
+  const expected = managedRetirementOpId(targetLifecycleUid);
+  if (opId !== expected)
+    throw new EpEnvelopeError("permission-denied", `retireLifecycle operation ${opId} is not the derived terminal operation ${expected} for lifecycle ${targetLifecycleUid}; nothing was applied`);
 }
 
 export interface AuthAdminListener {
@@ -260,13 +268,9 @@ export async function openAuthAdminListener(opts: {
   // resume racing the rail) share ONE runAgentRetirementBarrier, so the barrier body never dual-executes
   // (dual contain/drain mutating past a frontier the other task closes). A joiner awaits the same result.
   //
-  // The flight is BOUND to its operation coordinates (owner, actor, lifecycleUid). opId is caller-supplied
-  // at this generic rail (`retireOpId(uid)` is a manager convention, NOT a broker- or barrier-enforced
-  // bind), so a coordinate-BLIND join would let an ACTIVE lifecycle B reuse A's in-flight opId, skip the
-  // barrier's durable intent-coordinate check (retirement-barrier.ts), and receive A's `ok:true` naming B
-  // — freeing B's alias over a still-live principal (the exact alias-reuse class #1 exists to close). So a
-  // same-opId join whose coordinates differ is REFUSED as a full no-op; only a coordinate-IDENTICAL
-  // request (the intended nudge/retry) joins the in-flight barrier.
+  // The flight remains BOUND to its operation coordinates (owner, actor, lifecycleUid) as defense in
+  // depth. The rail now derives one opId per target before this map, so different lifecycles cannot
+  // collide here. A coordinate-identical nudge, retry, or boot race still joins the one barrier run.
   const barrierFlight = new Map<string, { owner: string; actor: string; lifecycleUid: string; promise: ReturnType<typeof runAgentRetirementBarrier> }>();
 
   const handle = async (request: ParsedEpRequest, body: Uint8Array): Promise<{ ok: boolean; id?: string; data?: unknown; error?: string }> => {
@@ -289,6 +293,10 @@ export async function openAuthAdminListener(opts: {
     if (req.op !== "retireLifecycle")
       return { ok: false, error: `op "${String(req.op)}" not supported on the auth admin service` };
     const args = parseRetireArgs(req.args);
+    // TARGET comes from the broker-authorized subject. Bind the body's opId to it BEFORE the serve
+    // gate, lifecycle head, intent, or barrier is touched, so mint-time validation is not the only
+    // fence and the same target can never start a second durable terminal operation.
+    authorizeRetirementOperation(target.lifecycleUid, args.opId);
 
     // THE RAIL-TIME REGISTRATION RE-CHECK (fresh, leader-served, fail-closed) — P2 item 3 (3b-3):
     // the requesting manager instance's SERVE GRANT must be current. Read the serve-issuance gate

@@ -42,11 +42,11 @@ import {
   gateObserve, gateFreeze, gateRetire, headBeginRetirement, headCompleteRetirement,
   staticSlotKey,
   loadAgentFile, saveAgentFile,
-  epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
+  epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError, readAcceptedRow,
   contractStoreContext, fetchContractClosure, contractRefToHex, compileContract,
   resolveService, invokeCommand,
   registry,
-  type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
+  type Connector, type ControlReply, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
@@ -131,7 +131,7 @@ registry.register(cwdCon);
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
   managerInstanceId: string;
-  agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string } }>;
+  agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
   goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
     pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
@@ -316,7 +316,7 @@ try {
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
-  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot });
+  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("ep spawn accepts (acceptance floor) + the agent joins the mesh",
     acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerInstanceId && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
   {
@@ -448,14 +448,14 @@ try {
     // launch record just as it folds def.variant. Before the fix, launch.model stayed undefined and
     // ps reported the model ABSENT while the connector ran the seat on the persona's model.
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nrole: worker\nmodel: persona-m\n---\n`);
-    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot });
+    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psP = await A.call("ps");
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
     check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
     // #651 fix: an empty/whitespace persona model is not a pin - it coerces to undefined and
     // serializes ABSENT, never present-but-empty (which a key-presence consumer misreads as a pin).
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
-    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot });
+    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psE = await A.call("ps");
     const erow = ((psE.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === we.name);
     check("an empty/whitespace persona model serializes ABSENT, not present-empty", erow !== undefined && !("model" in erow), erow);
@@ -474,7 +474,7 @@ try {
   }
 
   console.log("4. baseline self-stop: the agent's OWN cred halts itself over ep.one");
-  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot });
+  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("w2 spawned + joined", acc2.name === "w2", acc2);
   {
     const w2 = M.agents.get("w2")!;
@@ -485,7 +485,12 @@ try {
     check("w2's lifecycle-keyed creds file exists", existsSync(credsPath), credsPath);
     const w2Creds = readFileSync(credsPath, "utf8");
     const w2Nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: w2Creds, tls: false }), maxReconnectAttempts: 0 });
-    const selfCaller: EpCaller = { owner: DEV_OWNER, actor: w2.id, uid: w2.lifecycleUid };
+    // A spawned seat's credential is an issuance (SPEC 13.15): its request rows live on the
+    // versioned rail, so the caller carries the generation the seat discovers the way a real
+    // client does, by reading the accepted row under its own per-key grant.
+    const w2Ref = await readAcceptedRow(w2Nc, space, w2.issued!.acceptedToken);
+    check("w2's own credential reads its accepted row, and it names this incarnation", w2Ref.actor === w2.id && w2Ref.uid === w2.lifecycleUid && w2Ref.generation === w2.issued!.generation, w2Ref);
+    const selfCaller: EpCaller = { owner: DEV_OWNER, actor: w2.id, uid: w2.lifecycleUid, generation: w2Ref.generation } as IssuedCaller;
     const rSelf = await epCall(w2Nc, space, { mode: "one" }, {
       endpoint: MANAGER_ENDPOINT, command: "stop", contract: MANAGER_CONTRACTS.stop, caller: selfCaller,
       args: { graceful: true }, target: { mode: "self" },
@@ -503,7 +508,7 @@ try {
     const runId = `run${name}`;
     const spec = {
       apiVersion: "cotal-launch/v1", space, runId,
-      agents: [{ name, agent: "cwd-stub", ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
+      agents: [{ name, agent: "cwd-stub", events: false, ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
     };
     const launched = await A.call("launch", { runId, name, spec });
     check(`manifest ${name} is accepted through the registered launch door`, launched.reply.ok === true, launched.reply);
@@ -535,6 +540,31 @@ try {
     const defined = loadAgentFile(join(workspaceRoot, ".cotal", "agents", "eppersona.md"));
     check("a wire-defined persona reads no channels", JSON.stringify(defined.subscribe) === "[]", defined.subscribe);
     check("and records that the caller could not choose", defined.meta?.scope_source === "wire-default", defined.meta);
+
+    const frontPrompt = [
+      "---",
+      "role: reviewer",
+      "agent: jcode",
+      "model: from-prompt",
+      "subscribe: [ops]",
+      "allowSubscribe: [ops]",
+      "allowPublish: [ops]",
+      "---",
+      "Reviewer body.",
+    ].join("\n");
+    const rFm = await A.call("define-persona", { name: "epfront", persona: frontPrompt });
+    const fmPath = join(workspaceRoot, ".cotal", "agents", "epfront.md");
+    const fmLoaded = existsSync(fmPath) ? loadAgentFile(fmPath) : undefined;
+    const fmRaw = existsSync(fmPath) ? readFileSync(fmPath, "utf8") : "";
+    check("definePersona merges a frontmattered prompt (one fence pair, authored grants)",
+      rFm.reply.ok === true && fmLoaded?.role === "reviewer" && fmLoaded?.agent === "jcode"
+      && JSON.stringify(fmLoaded?.subscribe) === JSON.stringify(["ops"])
+      && fmLoaded?.persona === "Reviewer body."
+      && [...fmRaw.matchAll(/^---$/gm)].length === 2, { reply: rFm.reply, loaded: fmLoaded, fences: [...fmRaw.matchAll(/^---$/gm)].length });
+    const rBad = await A.call("define-persona", { name: "epbadfm", persona: "---\nsubscribe: [ops]\nno closing fence\n" });
+    check("a malformed leading frontmatter block is refused by name",
+      rBad.reply.ok === false && String(rBad.reply.error?.message ?? rBad.reply.error ?? "").includes("prompt-frontmatter")
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epbadfm.md")), rBad.reply);
 
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",
@@ -575,7 +605,7 @@ try {
       rModels.reply.ok === true && Array.isArray(catalogs) && catalogs.some((c) => c.agent === "e2e-stub" && c.supported === false), rModels.reply);
     const rPurge = await A.call("purge", {});
     check("purge clears the space history (typed {chat} result)", rPurge.reply.ok === true && typeof (rPurge.reply.data as { chat: number }).chat === "number", rPurge.reply);
-    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("w3 spawned for attach", acc3.name === "w3", acc3);
     const rAttach = await A.call("attach", undefined, { actor: w3.id, lifecycleUid: w3.lifecycleUid });
     // P2 item 6: attach returns the holder-bound §13.6 session grant (no ws:// URL).
@@ -605,7 +635,7 @@ try {
       // here is what made a numbering change surface as a mystery failure. Two interfering tests
       // look like a smell and isolating them reads as tidying — but isolation would convert a
       // coupled proof into two independent constants that can both drift green.
-      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       check("M6 setup: a live incarnation holds the name", held.name === "m6pin", held);
 
       // THE BREAKING ARM: a manifest-declared name colliding with that live incarnation.
@@ -625,7 +655,7 @@ try {
       // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
       // the same base name still numbers. Same live occupant, same base name, opposite outcome —
       // that contrast is the whole content of M6.
-      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       // DERIVED from the shipped allocator, not spelled: this assertion previously hard-coded the
       // numbering separator, so changing the scheme failed here as a mystery rather than as a
       // deliberate update — and the literal was invisible to a search for the scheme itself.
@@ -664,7 +694,7 @@ try {
     const rTravRef = await A.call("spawn", { name: "../evil" });
     check("a traversal spawn ref refuses (bare ref = safe token, no path escape)",
       rTravRef.reply.ok === false && String(rTravRef.reply.error?.message ?? "").includes("unsafe name"), rTravRef.reply);
-    const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil" });
+    const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil", events: false });
     check("a traversal identity override refuses at the FINAL allocation-site grammar",
       rTravId.reply.ok === false && String(rTravId.reply.error?.message ?? "").includes("unsafe name"), rTravId.reply);
     const rTravDef = await A.call("define-persona", { name: "../evil", persona: "x" });
@@ -718,17 +748,24 @@ try {
   console.log("9. escalation negative: a spawn-cap-only agent cred is broker-refused on admin-class ep commands");
   {
     const S = await instrument([{ command: "spawn" }]); // spawn only - NO manager.admin capability
+    // A missing publish grant is refused BY THE BROKER: epCall watches the connection for the
+    // violation and names the refused subject, so the refusal is permission-denied carrying the
+    // broker's words. A handler refusal would carry the same code without them, and a dead
+    // responder would be unavailable or the deadline, so the words are what pin the tier.
     let refused: string | undefined;
+    let detail = "";
     try {
       const r = await epCall(S.nc, space, { mode: "one" }, {
         endpoint: MANAGER_ENDPOINT, command: "purge", contract: MANAGER_CONTRACTS.purge, caller: S.caller, args: {},
       }, { deadlineMs: 2500, currentEpoch: async () => 0 });
       refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+      detail = r.reply.ok === false ? r.reply.error?.message ?? "" : "";
     } catch (e) {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+      detail = (e as Error).message;
     }
-    check("purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: dropped by the broker, no reply)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+    check("purge from a spawn-cap-only cred NEVER reaches the handler (no publish grant: refused by the broker, naming the subject)",
+      refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { refused, detail: detail.slice(0, 200) });
     await S.nc.drain().catch(() => S.nc.close());
   }
 
@@ -744,7 +781,7 @@ try {
     const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
     const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
     const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds, tls: false }), maxReconnectAttempts: 0 });
-    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
@@ -767,27 +804,30 @@ try {
   console.log("12. any-mode is operator-policy-mintable ONLY: an agent cred's any-mode request never reaches the handler");
   {
     // B holds the spawn set's OWNER-mode despawn row. The ANY-mode form of the SAME command is a
-    // different subject its credential does not carry — the broker drops the publish (default
-    // deny), so the admin path is structurally unreachable from every agent-grade credential.
+    // different subject its credential does not carry, so the broker refuses the publish (default
+    // deny) and the admin path is structurally unreachable from every agent-grade credential.
     let refused: string | undefined;
+    let detail = "";
     try {
       const r = await epCall(B.nc, space, { mode: "one" }, {
         endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller: B.caller,
         args: { graceful: false }, target: { mode: "any", owner: DEV_OWNER, actor: B.caller.actor, lifecycleUid: B.caller.uid },
       }, { deadlineMs: 2500, currentEpoch: async () => 0 });
       refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+      detail = r.reply.ok === false ? r.reply.error?.message ?? "" : "";
     } catch (e) {
       refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+      detail = (e as Error).message;
     }
-    check("a spawn-capable agent publishing the any-mode despawn subject is broker-dropped (no reply, never served)",
-      refused === "unavailable" || refused === "deadline-exceeded", refused);
+    check("a spawn-capable agent publishing the any-mode despawn subject is refused by the broker (permission-denied naming the subject, never served)",
+      refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { refused, detail: detail.slice(0, 200) });
   }
 
   }
 
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });

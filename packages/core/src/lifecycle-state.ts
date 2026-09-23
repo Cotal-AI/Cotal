@@ -499,6 +499,12 @@ export interface StaticManagedSlotRow {
    *  option. Absent on a legacy row and on every phase before the cleanup step, which a resume reads
    *  as not-known-complete and re-runs the idempotent cleanup — the totality-preserving default. */
   cleanupComplete?: boolean;
+  /** The runtime's durable reference to the incarnation's process custody (an `AgentHandle.reference`),
+   *  recorded when the slot goes `active` and re-recorded when a same-lifecycle restart or resume binds
+   *  a new handle. A successor's terminal reaps the orphaned OS process through it, so a manager crash
+   *  never leaves a seat running outside every manager. Absent for a runtime without durable custody
+   *  (nothing to reap by reference) and on a row written before this field existed. */
+  runtime?: { kind: string; id: string };
 }
 
 /** The slot key prefix in the records store. Core-owned so permission builders and the manager
@@ -512,6 +518,12 @@ export function staticSlotKey(owner: string, alias: string): string {
 
 /** Validate a slot row at the consuming boundary — CLOSED schema, and the embedded identity
  *  MUST rebuild the row's own key, so a key-mismatched row never drives a resume or terminal. */
+function isRuntimeReference(v: unknown): v is { kind: string; id: string } {
+  if (!isRec(v)) return false;
+  for (const k of Object.keys(v)) if (k !== "kind" && k !== "id") return false;
+  return typeof v.kind === "string" && v.kind.length > 0 && typeof v.id === "string" && v.id.length > 0;
+}
+
 export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedSlotRow {
   let o: unknown;
   try {
@@ -520,7 +532,7 @@ export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedS
     throw new EpEnvelopeError("internal", `the static slot row ${key} is not JSON; garbled trusted-path state never drives supervision (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the static slot row ${key} is not an object`);
-  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance", "ownerInstanceId", "cleanupComplete"]);
+  const allowed = new Set(["owner", "alias", "actor", "lifecycleUid", "phase", "credentialIds", "managerInstance", "ownerInstanceId", "cleanupComplete", "runtime"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the static slot row ${key} carries the unknown field "${k}" (closed schema)`);
   if (
     typeof o.owner !== "string" || typeof o.alias !== "string" || typeof o.actor !== "string" ||
@@ -528,9 +540,10 @@ export function parseStaticSlotRow(raw: Uint8Array, key: string): StaticManagedS
     typeof o.phase !== "string" || !STATIC_SLOT_PHASES.has(o.phase) ||
     (o.ownerInstanceId !== undefined && (typeof o.ownerInstanceId !== "string" || o.ownerInstanceId.length === 0)) ||
     (o.cleanupComplete !== undefined && typeof o.cleanupComplete !== "boolean") ||
+    (o.runtime !== undefined && !isRuntimeReference(o.runtime)) ||
     !Array.isArray(o.credentialIds) || !o.credentialIds.every((c) => typeof c === "string" && c.length > 0)
   )
-    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance/ownerInstanceId/cleanupComplete)`);
+    throw new EpEnvelopeError("internal", `the static slot row ${key} does not validate (owner/alias/actor/uid/phase/credentialIds/managerInstance/ownerInstanceId/cleanupComplete/runtime)`);
   assertLifecycleToken(o.lifecycleUid);
   for (const c of o.credentialIds) assertCredentialIdTail(c, `slot row ${key} credentialId`);
   if (staticSlotKey(o.owner, o.alias) !== key)

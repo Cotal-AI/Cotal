@@ -1,4 +1,4 @@
-import type { RunHostPlanes } from "@cotal-ai/core";
+import type { RunHostPlanes, RunAdmissionView } from "@cotal-ai/core";
 import { digest, type EffectContext, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
 import { createRunPauseHost } from "./run-pause-host.js";
@@ -17,10 +17,11 @@ export function createRunEffectHost(
   broker: RunHostPlanes,
   binding: MeshHandlerBinding,
   authority: RunScopeAuthority,
+  admission: () => Promise<RunAdmissionView>,
 ): RunEffectHost {
   const pinned = structuredClone(binding);
   const pauses = createRunPauseHost(broker, pinned, authority);
-  const waits = createRunWaitHost(broker, authority);
+  const waits = createRunWaitHost(broker, authority, admission);
   const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, {
     async awaitSettle(ref) {
       for (;;) {
@@ -29,7 +30,7 @@ export function createRunEffectHost(
         await new Promise((resolve) => setTimeout(resolve, 2_000).unref());
       }
     },
-  }, Date.now, { pauses, waits, authority });
+  }, Date.now, { pauses, waits, authority, admission });
 
   async function dispatch<R, T>(kind: string, req: R, ctx: EffectContext, call: (request: R, context: EffectContext) => Promise<T>): Promise<T> {
     const request = structuredClone(req);
@@ -58,6 +59,12 @@ export function createRunEffectHost(
     checkpoint: (req, ctx) => dispatch("checkpoint", req, ctx, (request, current) => handler.checkpoint(request, current)),
     sleep: (req, ctx) => dispatch("sleep", req, ctx, (request, current) => handler.sleep(request, current)),
     wait: (req, ctx) => dispatch("wait", req, ctx, (request, current) => handler.wait(request, current)),
+    // Through the same authority dispatch as every other effect: a cadence pause is world state
+    // this driver arms under a lease, so it must re-read the entry it belongs to and re-assert the
+    // lease at each observation, exactly as a `sleep` does. A `waitUntil` parks many times under
+    // one step, so this is the one effect where that re-assertion happens repeatedly, which is a
+    // stronger reason to route it here rather than a reason to shortcut it.
+    observe: (req, ctx) => dispatch("waitUntil", req, ctx, (request, current) => handler.observe(request, current)),
     notify: (req, ctx) => dispatch("notify", req, ctx, (request, current) => handler.notify(request, current)),
     monitor: (req, ctx) => dispatch("monitor", req, ctx, (request, current) => handler.monitor(request, current)),
     openConclave: (req, ctx) => dispatch("conclave", req, ctx, (request, current) => handler.openConclave(request, current)),

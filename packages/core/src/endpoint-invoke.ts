@@ -29,7 +29,7 @@ import {
 import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall, epScatterService } from "./endpoint-verbs.js";
 import { epGoalProgressGrantRow } from "./endpoint-grants.js";
-import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
+import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
 import type { EpVerbTarget, EpAttributedReply, EpScatterResult, EpInstanceLiveness } from "./endpoint-verbs.js";
 
@@ -112,6 +112,11 @@ export async function describeEndpoint(
   // class anycast (mode "one"), unchanged for every existing caller.
   const route: EpRoute = opts.instanceId !== undefined ? { mode: "inst", instanceId: opts.instanceId } : { mode: "one" };
   const subject = epRequestSubject(space, { route, endpoint, command: "describe", caller, nonce: n });
+  // The plane this describe rides, recorded on the unanswered marker so a surface that renders a
+  // reachability verdict can scope it (SPEC 13.15: the legacy and versioned rails are disjoint subject spaces,
+  // an endpoint serves both, and a caller holds rows on one of them only). Silence on the versioned rail is
+  // therefore consistent with a responder that predates the versioned rail and serves `ep` alone.
+  const rail = epPlaneTokens(caller).join(".");
   const env = {
     v: 1, id: requestId, op: { endpoint, command: "describe" }, class: "ephemeral",
     replyExpected: true, deadlineMs, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor },
@@ -160,7 +165,7 @@ export async function describeEndpoint(
         }
       }, DESCRIBE_RETRY_MS);
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: "describe" }])), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }])), deadlineMs); });
     const { body: reply, responder } = await Promise.race([got, timeout, denialWatch.denied]);
     if (reply.ok !== true) {
       // A responder ANSWERED with a refusal: it is rethrown under the responder's own code (which

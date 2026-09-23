@@ -8,18 +8,69 @@ on:
     - cron: '17 5 * * *'
   workflow_dispatch:
 
+# Same policy as ci.yml: a new push to a PR supersedes the reproof already running for that PR; a
+# merge to main queues behind the previous main run instead of evicting it. Without this block every
+# PR head kept its own 12-shard matrix queued, so a PR pushed three times held 36 shard jobs of the
+# org's 20-job concurrency cap, and on 2026-09-10 the queue reached 151 jobs with 24 of them for heads
+# their PRs no longer had.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # `queue: max` with `cancel-in-progress: true` is a validation error, so this tracks the line above.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
+
 jobs:
+  plan:
+    # One checkout runs the selector and names the shards that hold a selected fixture. Before this
+    # job every push fanned all 12 shards; on 2026-09-10, 107 of 228 shard jobs installed and built
+    # the tree and then printed "No selected mutation fixtures are assigned to shard N", 173
+    # job-minutes of setup against the org's 20 concurrent jobs. The plan uses the same selector,
+    # the same UNMEASURED refusals and the same dangling check as a shard run, so a shard that is
+    # not fanned is one the selector would have emptied. No install and no build: selection reads
+    # git and fixture JSON only.
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Plan the fan-out
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          # Both selector sites resolve the base through the same script. Two copies of this logic is
+          # how the plan and the shard could disagree about which fixtures exist.
+          base="$(bash scripts/mutation-reproof-base.sh "$EVENT" "$BASE" HEAD)"
+          out="$(node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --list-shards 12)"
+          printf '%s\n' "$out"
+          # The plan's last line is the JSON. A selector refusal exits non-zero above and fails this
+          # job, which fails the gate: an unmeasured selection must not read as an empty fan-out.
+          shards="$(printf '%s\n' "$out" | tail -n 1 | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8"));if(!Array.isArray(p.shards))process.exit(3);console.log(JSON.stringify(p.shards))')"
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+
   changed_shard:
     # At dfbb4550f, PR #1350 selected 32 fixtures and exhausted the 145-minute serial step.
     # Each path is assigned to one shard by the runner's existing hash. Shards use separate
     # checkouts because mutation-proof temporarily changes source and compiled artifacts.
-    if: github.event_name != 'schedule'
+    # Only the shards the plan named are fanned; the shard run re-selects for itself, so a shard
+    # that disagrees with the plan prints its own selection rather than trusting the plan's.
+    if: github.event_name != 'schedule' && needs.plan.outputs.shards != '[]'
+    needs: [plan]
     timeout-minutes: 150
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     name: changed shard ${{ matrix.shard }}/12
     steps:
       - uses: actions/checkout@v6
@@ -53,14 +104,13 @@ jobs:
         # Leave time after a step timeout to report elapsed time for that shard.
         timeout-minutes: 145
         env:
+          EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          base="$BASE"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base="$(git rev-parse HEAD~1)" || { echo "no base commit or first parent"; exit 2; }
-            echo "no base commit on this event; using first parent $base"
-          fi
+          # The same resolver the plan uses. A shard that resolved its own base differently would
+          # re-prove a different set than the one the plan fanned it for.
+          base="$(bash scripts/mutation-reproof-base.sh "$EVENT" "$BASE" HEAD)"
           # A file survives a timed-out step even when its environment-file updates do not.
           date +%s > "$RUNNER_TEMP/mutation-started"
           node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --shard "${{ matrix.shard }}/12"
@@ -76,25 +126,38 @@ jobs:
 
   changed:
     if: github.event_name != 'schedule' && always()
-    needs: [changed_shard]
+    needs: [plan, changed_shard]
     runs-on: ubuntu-latest
     steps:
       - name: Gate
         env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PLAN_SHARDS: ${{ needs.plan.outputs.shards }}
           SHARD_RESULT: ${{ needs.changed_shard.result }}
         run: |
-          echo "changed_shard=$SHARD_RESULT"
-          test "$SHARD_RESULT" = success
+          set -euo pipefail
+          echo "plan=$PLAN_RESULT shards=$PLAN_SHARDS changed_shard=$SHARD_RESULT"
+          # A failed plan is UNMEASURED and fails the gate. An empty plan skips the fan-out, and the
+          # skipped matrix reads `skipped`, which passes only when the plan itself succeeded and
+          # said `[]`; a skipped fan-out for any other reason is a failure. `set -e` is explicit so
+          # the first test is a gate under any shell, not only under the runner's default `-e`.
+          test "$PLAN_RESULT" = success
+          if [ "$PLAN_SHARDS" = "[]" ]; then test "$SHARD_RESULT" = skipped; else test "$SHARD_RESULT" = success; fi
 
-  full:
+  full_shard:
     # A daily sweep keeps the remaining ambient-drift window bounded without making every pull
-    # request pay for all 1,714 mutations. It is manually runnable after an infrastructure repair.
+    # request pay for the full corpus. The corpus takes roughly 20 hours as one serial process, so
+    # the runner's deterministic path hash partitions it across 12 independent mutation trees.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 360
+    timeout-minutes: 240
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    name: full shard ${{ matrix.shard }}/12
     permissions:
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -123,29 +186,72 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Build
         run: pnpm build
-      - name: Re-prove every mutation fixture
-        run: node scripts/mutation-reproof.mjs --all
-      - name: File a tracking issue when the sweep fails
-        # The scheduled sweep runs on no pull request, so a red run is otherwise visible only to
-        # whoever opens the Actions tab. This turns a failed sweep into one open, labelled tracking
-        # issue: a run that fails while the marker issue is still open comments on it instead of
-        # opening a second. The key is the label, read through the Issues API, not title search
-        # (tokenised and eventually consistent). No failure here is swallowed: the job is already
-        # red, so an aborted filing step hides nothing, while a false "no marker" would file a
-        # duplicate, which is the one thing this step exists to prevent.
-        if: failure()
+      - name: Re-prove every mutation fixture assigned to this shard
+        # Leave 15 minutes after a step timeout for teardown and elapsed reporting.
+        timeout-minutes: 225
+        run: |
+          date +%s > "$RUNNER_TEMP/mutation-started"
+          node scripts/mutation-reproof.mjs --all --shard "${{ matrix.shard }}/12"
+      - name: Report elapsed
+        if: always()
+        run: |
+          marker="$RUNNER_TEMP/mutation-started"
+          if [ -s "$marker" ]; then
+            echo "mutation reproof: full shard ${{ matrix.shard }}/12 elapsed $(( $(date +%s) - $(cat "$marker") ))s (step budget 225m; job budget 240m)"
+          else
+            echo "mutation reproof: no start marker; the job ended before the full re-prove step began"
+          fi
+
+  full:
+    name: full sweep aggregate
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && always()
+    needs: [full_shard]
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate
+        env:
+          SHARD_RESULT: ${{ needs.full_shard.result }}
+        run: |
+          set -euo pipefail
+          echo "full_shard=$SHARD_RESULT"
+          test "$SHARD_RESULT" = success
+
+  full-alarm:
+    # The alarm lives outside the aggregate gate it watches. A shard timeout makes the matrix result
+    # non-success, and the always-running aggregate turns that into a failure before this job reads
+    # it. The alarm therefore still turns a failed or cancelled full sweep into one open, labelled
+    # tracking issue: a run that ends
+    # that way while the marker issue is still open comments on it instead of opening a second.
+    # The key is the label, read through the Issues API, not title search (tokenised and
+    # eventually consistent). A skipped sweep (any other event) leaves this job skipped too.
+    needs: full
+    if: always() && (needs.full.result == 'failure' || needs.full.result == 'cancelled')
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File a tracking issue for the sweep
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SWEEP_RESULT: ${{ needs.full.result }}
         run: |
           set -euo pipefail
           label="ci:mutation-reproof"
           title="mutation-reproof: full sweep failing"
           gh label create "$label" --description "Open while the scheduled mutation-reproof full sweep is failing" --color B60205 --force
           existing="$(gh issue list --state open --label "$label" --json number --jq '.[0].number // empty')"
-          body="The daily mutation-reproof full sweep failed: $RUN_URL
+          if [ "$SWEEP_RESULT" = cancelled ]; then
+            outcome="did not finish (aggregate job result: cancelled)"
+          else
+            outcome="failed (job result: $SWEEP_RESULT)"
+          fi
+          body="The daily mutation-reproof full sweep $outcome: $RUN_URL
 
-          Read the run log. A fatal verdict (SURVIVED, UNGRADABLE, WRONG-RED, ERROR) means a guarded suite no longer discriminates its named mutant or the fixture's anchor is broken; an UNMEASURED refusal names dangling or malformed fixtures; a failure before the sweep step (checkout, install, build) has no verdict lines at all. Repair the fixture or file the named finding, then close this issue once a scheduled sweep is green."
+          Read the run log. A fatal verdict (SURVIVED, UNGRADABLE, WRONG-RED, ERROR) means a guarded suite no longer discriminates its named mutant or the fixture's anchor is broken; an UNMEASURED refusal names dangling or malformed fixtures; a failure before the sweep step (checkout, install, build) has no verdict lines at all; a sweep that hit its timeout has a partial log and no final tally. Repair the fixture or the budget, then close this issue once a scheduled sweep is green."
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else

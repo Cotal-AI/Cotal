@@ -9,7 +9,7 @@ the normal `cotal_*` tool surface through Jcode's documented stdio MCP configura
 **Beta** means the supported path is deliberately narrow: a fresh private session, prompt
 injection, presence, managed start/stop, requested reasoning effort, and an attached TUI work.
 Features that do not preserve that private session's mesh surface fail loud: `--resume`,
-exact-session continuation, `--share-tools`, `--events`, and connector `--opt` values are not
+exact-session continuation, `--share-tools`, and connector `--opt` values are not
 supported.
 
 ## Install
@@ -158,13 +158,18 @@ line. A one-line log with no route line is not that signal. The proof itself is 
 same three minutes the connector declares to the manager (`readinessTimeoutMs` is the exported
 `JCODE_READINESS_TIMEOUT_MS`). Tests may shorten the host bound through
 `COTAL_JCODE_READINESS_TIMEOUT_MS`; that override is not an operator setting and does not change
-the window the connector declares to the manager. If the turn overruns that bound the host
-exits `readiness_timeout` and never joins, rather than working invisibly. That teardown does not
-wait for the in-flight turn: it kills the private Jcode tree and discards whatever that turn had
-generated. Nothing from it is recoverable; inspect the seat connector log for the timeout
-outcome, then spawn again. The manager's wait can still report `uncertain` when join itself is
-slow after a passing proof; that is not a cleanup verdict, and it is not the same as a host
-`readiness_timeout`. Use `cotal attach <name>` or `cotal ps` to inspect an `uncertain` launch. The
+the window the connector declares to the manager. The bound is a call-observation deadline: the
+host proves readiness on the orientation `tool_done` event as it arrives, without waiting for
+`turn_done`. If that call never arrives inside the window the host exits `readiness_timeout` and
+never joins, rather than working invisibly. That teardown does not wait for the in-flight turn:
+it kills the private Jcode tree and discards whatever that turn had generated. Nothing from it
+is recoverable; inspect the seat connector log for the timeout outcome, then spawn again. The
+timeout line names whether the orientation call was observed. A seat that already made the call
+joins even if that proof turn is still open; the host does not destroy a functional session
+solely because `turn_done` has not arrived. The manager's wait can still report `uncertain` when
+join itself is slow after a passing proof; that is not a cleanup verdict, and it is not the same
+as a host `readiness_timeout`. Use `cotal attach <name>` or `cotal ps` to inspect an `uncertain`
+launch. The
 host then waits for the mesh connection and presence bind to complete before it adds a no-reply
 notice that the bootstrap orientation predates the join and that a new orientation is live
 context. During a broker outage, it stays waiting and sends no connected notice.
@@ -178,6 +183,26 @@ The startup prompt excludes the automatic inbox. Messages buffered before it run
 turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic remains available only
 through an explicit inbox pull. The connector log names a startup prompt waiting on in-flight
 steering and a turn deferred because native state changed during that wait.
+
+## Event plane
+
+A spawned seat publishes run boundaries, assistant text, reasoning,
+and tool starts and ends on `events.<owner>.<actor>`. Tool arguments and results are not published.
+The channel and grant rules are the same as the other connectors; see
+[Connect Claude Code](connect-claude.md#event-plane) for how to grant and read one.
+
+Jcode's live Harness API reports token-sized text and reasoning deltas, but that stream cannot be
+read again after a host crash. The connector therefore reads Jcode's native append-only session
+journal under the seat's private home. The journal supplies a durable byte cursor and is keyed by
+the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
+stored in its event write-ahead log and does not republish records already acknowledged.
+
+The journal records settled message blocks rather than live deltas. Text and reasoning therefore
+arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
+blocks. User prompt text is not republished onto the event channel. The launcher sets
+`COTAL_EVENTS` by default; pass `--no-events` to opt out.
+On an open mesh, a default event-enabled Jcode seat uses its managed seat name as the stable actor
+token; with `--no-events`, open-mode identity keeps its ordinary self-minted behavior.
 
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
@@ -196,15 +221,23 @@ shows those messages without clearing them.
 ## Model limits
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
-against the active provider, then the connector reads runtime identity back and refuses startup if
-it is not the requested model; a seat is never allowed to join under a model label it did not
-receive.
+against the active provider, and an accepted selection becomes the session pin and the seat's model
+label. The connector does not require `RuntimeInfo.model` to echo that pin immediately because the
+runtime field can temporarily report the previous model after selection.
 
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
-Jcode rejected that bare id, and `model_mismatch` means Jcode accepted the request but reported a
-different effective model. `private_state` names a different step: the seat's private home, its
-credential mirror, or its short socket alias could not be prepared.
+Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
+active provider route for the selected model. `private_state` names a different step: the seat's
+private home, its credential mirror, or its short socket alias could not be prepared.
+
+Stored sessions have their own refusals. `sessions_enumeration_failed` means listing the home's
+prior sessions killed the harness. `sessions_unwritable` means the home's `sessions/` directory
+exists but will not take a write: the harness would accept the seat and die only while persisting
+its first session, so the connector refuses before that launch and names the directory and the
+errno. Fix the directory's permissions on the seat's private state and start again; the connector
+never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
+alone.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
@@ -212,7 +245,9 @@ and any declared `reasoning_efforts`. This is the same config Jcode copies into 
 instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
 without model entries.
 
-The listed effort tiers are declarations, not provider-verified capabilities. `cotal models` prints
+The listed effort tiers are display declarations, not Jcode runtime capabilities. Jcode's named
+model config does not assign effort support per model. A named provider profile enables it through
+provider configuration or Jcode's model-family detection. `cotal models` prints
 that caveat inline as `variants (declared, not provider-verified)` beside each configured tier list,
 so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
 so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
@@ -230,13 +265,15 @@ default and `--variant` overrides it, the same way `model:` and `--model` work:
 cotal spawn --agent jcode --model gpt-5.6-sol --variant high
 ```
 
-Which tiers exist depends on the provider **and** model. The connector does not carry a copy of
-those ladders: it passes the requested tier to Jcode, which validates it against the active model's
-ladder. A rejected tier, or a model with no reasoning-effort surface, ends the launch rather than
-quietly starting the seat at another effort. The external observer/UI receives only the requested
-tier, effective model, fixed `invalid_request` provider code, and an accepted-tier ladder when it
-can be safely parsed; arbitrary provider rejection text stays private. Omit `--variant` to keep
-Jcode's configured default.
+Which tiers exist depends on the provider, profile, and model. The connector does not carry a copy
+of those rules. After model selection it uses the accepted session pin with Jcode's runtime provider
+and route catalog to verify one active provider route, then passes the tier to that route. For a
+variant-only launch, where there is no requested pin, the runtime model identifies the selection.
+A duplicate model id on another route cannot receive the setting by accident. A rejected tier ends
+the launch with a safely parsed accepted ladder when Jcode supplies one. A verified route with no
+reasoning-effort surface also ends before the first turn, but reports unsupported capability instead
+of suggesting another tier. Arbitrary provider rejection text stays private. Omit `--variant` to
+keep Jcode's configured default.
 
 If the mandatory readiness turn receives a provider `invalid_request` refusal for a model id or
 reasoning-effort value, the launch diagnostic names only the provider error code and rejected
@@ -251,8 +288,6 @@ or at connector launch as a backstop:
 - **Tool sharing:** Jcode resolves its MCP configuration from several global and project sources.
   The connector owns a private configuration containing only `cotal`, rather than claim a chosen
   subset can be safely merged.
-- **Events:** Jcode's Harness API does not provide the durable structured rollout surface required
-  by Cotal's event plane.
 - **Launch options:** the connector does not map arbitrary flags/config into the Harness API.
 - **Containers:** the current deploy image does not bundle Jcode, so there is no containerized Jcode connector today.
 

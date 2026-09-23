@@ -1,0 +1,36 @@
+{
+  "suite": [
+    "implementations/cli/smoke/install.smoke.ts"
+  ],
+  "guard": "the re-exec argv builder refuses an entry that is not the cotal composition root, and still accepts the three shapes a real install runs under",
+  "command": "pnpm smoke:install",
+  "completionMarker": "install smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/reexec-entry-guard.json",
+  "why": [
+    "#1629: a fixture under tsx has `process.argv[1]` pointing at the suite, so the detached manager",
+    "`startManagerDetached` spawns IS the suite. On a persistent host that produced 970 generations",
+    "in 4.7 hours, each holding a nats-server and a delivery holder. The child is unref'd by design,",
+    "so no teardown owner can adopt it and the refusal has to be where the argv is built.",
+    "",
+    "Both directions are mutated, because narrowness is the half that bites. `npm i -g cotal-ai`",
+    "publishes `<prefix>/bin/cotal` as a SYMLINK and Node leaves argv[1] on the link, which has no",
+    "extension: a guard that demanded one would refuse every global install's manager start while",
+    "still passing the headline cell. That was measured here before the regex was widened."
+  ],
+  "mutations": [
+    {
+      "name": "the guard is removed and any entry builds a re-exec argv again",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "export function selfArgv(): string[] {\n  const entry = process.argv[1];\n  if (entry === undefined || !CLI_ENTRY_FILE.test(basename(entry)))\n    throw new Error(\n      `refusing to re-exec this process as \\`cotal\\`: it was started from ${entry === undefined ? \"no entry file\" : entry}, which is not the CLI's own entry (\\`bin/cotal.ts\\` in a checkout, \\`dist/cotal.js\\` in an install).\\n` +\n        \"A child spawned from that entry re-runs it with a cotal subcommand appended, which it does not read; if that file reaches this call on load, every child spawns the next one.\\n\" +\n        \"NEXT: reach this through the `cotal` binary. A fixture that means to start a real daemon points `process.argv[1]` at the cotal entry first; one that does not must not call ensureManager, ensureDelivery or ensureControlPlane.\",\n    );\n  return [process.execPath, ...process.execArgv, entry];\n}",
+      "replace": "export function selfArgv(): string[] {\n  return [process.execPath, ...process.execArgv, process.argv[1]];\n}",
+      "expectRed": "a `.smoke.ts` entry is REFUSED, not re-execed as a daemon"
+    },
+    {
+      "name": "the entry must carry an extension, so a global install's bin symlink is refused",
+      "file": "implementations/cli/src/lib/self-exec.ts",
+      "find": "const CLI_ENTRY_FILE = /^cotal(?:\\.(?:ts|js|mjs|cjs))?$/;",
+      "replace": "const CLI_ENTRY_FILE = /^cotal\\.(?:ts|js|mjs|cjs)$/;",
+      "expectRed": "a bare `cotal` bin symlink (the global-install shape) builds a re-exec argv"
+    }
+  ]
+}

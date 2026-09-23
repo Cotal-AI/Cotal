@@ -6,20 +6,21 @@ import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { peerCredentials } from "./peercred.js";
 import {
-  CONFIRM_INTERVAL_MS,
+  CONFIRM_TIMEOUT_MS,
   DEFAULT_COLS,
   DEFAULT_ROWS,
   FrameReader,
   GRACE_MS,
-  MAX_CONFIRMS,
   MAX_FRAME_SIZE,
   PROTOCOL_VERSION,
   SCROLLBACK_ROWS,
+  UNATTENDED_MS as UNATTENDED_DEFAULT_MS,
   encodeFrame,
   type ClientRequest,
   type ServerMessage,
 } from "./protocol.js";
-import { RECORD_VERSION, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, bootToken, processStartToken, writeRecord, type SeatRecord } from "./record.js";
+import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
   id: string;
@@ -32,7 +33,14 @@ export interface CustodianLaunch {
   token: string;
   recordPath: string;
   logPath?: string;
-  confirm?: boolean;
+  confirm?: string;
+  /** Who started this custodian: the launcher's run marker, carried so a census can attribute an
+   *  orphan to its run without walking `/proc/*\/cwd` (#1648). */
+  run?: string;
+  /** How long to stay up with no authenticated controller before stopping the child and exiting.
+   *  Resolved by the LAUNCHER, because the launcher scrubs the environment it hands this process
+   *  (the child must not inherit the caller's), so an env override read here would never see one. */
+  unattendedMs?: number;
 }
 
 function send(sock: Socket, msg: ServerMessage): void {
@@ -59,6 +67,15 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     cwd: launch.cwd,
     env: launch.env,
   });
+  // Pin both start identities NOW, before the child can exit and be reaped: a successor that finds
+  // these pids later must be able to tell this custodian and this child from an unrelated process
+  // that inherited the pid. A zombie still reports its start token, a reaped pid does not: a child
+  // whose exec failed can be gone already, and then the record carries no child identity, which a
+  // reader takes as "exited before custody began" (its exit is observed below like any other).
+  const custodianStart = processStartToken(process.pid);
+  if (custodianStart === undefined) throw new Error(`cannot read the process start identity of custodian ${process.pid} from /proc`);
+  const childStart = processStartToken(proc.pid);
+  const bootId = bootToken();
 
   const term = new Headless.Terminal({
     cols: DEFAULT_COLS,
@@ -70,26 +87,42 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   term.loadAddon(serializer);
 
   let alive = true;
+  let ready = false;
+  let settling = false;
+  let seenClient = false;
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
   let exit: { code?: number; signal?: number } | undefined;
   const dataSubs = new Map<number, Set<Socket>>();
   const waiters = new Map<Socket, Set<number>>();
   const controllers = new Set<Socket>();
+  const clients = new Set<Socket>();
   let nextSub = 1;
   let early = "";
-  let confirmTimer: ReturnType<typeof setInterval> | undefined;
+  const confirmMatcher = launch.confirm ? new StartupConfirmMatcher(launch.confirm) : undefined;
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
+  let unattendedTimer: ReturnType<typeof setTimeout> | undefined;
+  let reap: ReturnType<typeof setInterval> | undefined;
+  let server: ReturnType<typeof createServer> | undefined;
+  /** Wait for the first adopter when the child has already exited at listen. */
+  const LAUNCH_HANDOFF_MS = 5_000;
+  const UNATTENDED_MS = launch.unattendedMs ?? UNATTENDED_DEFAULT_MS;
 
-  if (launch.confirm) {
-    let presses = 0;
-    confirmTimer = setInterval(() => {
-      if (!alive || presses++ >= MAX_CONFIRMS) {
-        clearInterval(confirmTimer);
-        confirmTimer = undefined;
-        return;
+  if (confirmMatcher) {
+    confirmTimer = setTimeout(() => {
+      if (!alive) return;
+      const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
+      term.write(`\r\n${message}\r\n`);
+      const encoded = Buffer.from(`\r\n${message}\r\n`, "utf8").toString("base64");
+      for (const [sub, socks] of dataSubs) {
+        for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
       }
-      proc.write("\r");
-    }, CONFIRM_INTERVAL_MS);
+      if (launch.logPath) appendFileSync(launch.logPath, `${message}\n`, { mode: 0o600 });
+      proc.kill("SIGTERM");
+      killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
+    }, CONFIRM_TIMEOUT_MS);
   }
 
   const snapshot = (): Promise<string> =>
@@ -111,19 +144,146 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   };
 
+  const settleTerminal = (): void => {
+    if (alive || settling || !ready) return;
+    // Only an AUTHENTICATED peer holds this custodian open. A connected socket that never said
+    // hello owns no session, no output subscription and no wait, so it is owed nothing by a settle,
+    // and counting it kept a custodian whose child had already exited resident for nothing: one
+    // unauthenticated dial (a probe, a half-open connect) pinned ~65 MB for the life of the host.
+    // Every authed socket is added to `controllers` by the same `hello` that authenticates it and
+    // removed by `drop`, so this is exactly "someone can still be told something".
+    if (controllers.size > 0) return;
+    if (!seenClient) return;
+    settling = true;
+    if (confirmTimer) {
+      clearTimeout(confirmTimer);
+      confirmTimer = undefined;
+    }
+    if (killTimer) {
+      clearTimeout(killTimer);
+      killTimer = undefined;
+    }
+    if (handoffTimer) {
+      clearTimeout(handoffTimer);
+      handoffTimer = undefined;
+    }
+    if (unattendedTimer) {
+      clearTimeout(unattendedTimer);
+      unattendedTimer = undefined;
+    }
+    if (reap) {
+      clearInterval(reap);
+      reap = undefined;
+    }
+    try {
+      term.dispose();
+    } catch {
+      /* already gone */
+    }
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+    server?.close();
+    for (const sock of clients) {
+      try {
+        sock.destroy();
+      } catch {
+        /* already gone */
+      }
+    }
+    clients.clear();
+    controllers.clear();
+    waiters.clear();
+    dataSubs.clear();
+    try {
+      unlinkSync(launch.socket);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    try {
+      unlinkSync(launch.recordPath);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    process.exit(0);
+  };
+
+  /**
+   * Bound the time this custodian runs with NOBODY authenticated to it. A manager that crashed, or a
+   * suite that returned without reaping, leaves a live child and a custodian that will otherwise wait
+   * forever for a controller that no longer exists (#1648).
+   *
+   * Armed whenever the controller set is empty and disarmed the moment one authenticates, so an
+   * ordinary detach-and-re-adopt never trips it: the window restarts from the last disconnect, not
+   * from launch. The child is stopped rather than left behind, because this custodian owns the only
+   * reader of its PTY; the settle that follows its exit is the ordinary one.
+   */
+  const armUnattended = (): void => {
+    if (settling || !ready || unattendedTimer || controllers.size > 0) return;
+    unattendedTimer = setTimeout(() => {
+      unattendedTimer = undefined;
+      if (settling || controllers.size > 0) return;
+      // An unattended custodian has nobody to tell, so record the reason where an operator reading
+      // an empty seat directory can still find it.
+      const note = `${JSON.stringify({ unattended: true, afterMs: UNATTENDED_MS, childPid: proc.pid, custodianPid: process.pid, run: launch.run })}\n`;
+      if (launch.logPath) {
+        try {
+          appendFileSync(launch.logPath, note, { mode: 0o600 });
+        } catch {
+          /* the seat directory may already be gone */
+        }
+      }
+      if (alive) {
+        // `seenClient` gates the settle, and a custodian nobody ever adopted must still be able to
+        // exit: without this the stop below kills the child and the settle refuses, which is the
+        // orphan again with a dead child instead of a live one.
+        seenClient = true;
+        stopChild("graceful");
+        // The settle runs off the child's exit. If the child ignores SIGTERM, `stopChild`'s own
+        // SIGKILL escalation takes it within GRACE_MS and `markExited` follows from that.
+        return;
+      }
+      seenClient = true;
+      settleTerminal();
+    }, UNATTENDED_MS);
+    unattendedTimer.unref();
+  };
+
+  const disarmUnattended = (): void => {
+    if (!unattendedTimer) return;
+    clearTimeout(unattendedTimer);
+    unattendedTimer = undefined;
+  };
+
+  const armUnobservedHandoff = (): void => {
+    if (alive || seenClient || settling || !ready || handoffTimer) return;
+    handoffTimer = setTimeout(() => {
+      handoffTimer = undefined;
+      seenClient = true;
+      settleTerminal();
+    }, LAUNCH_HANDOFF_MS);
+    handoffTimer.unref();
+  };
+
   const markExited = (info?: { code?: number; signal?: number }): void => {
     if (!alive) {
       resolveWaiters();
+      settleTerminal();
+      armUnobservedHandoff();
       return;
     }
     alive = false;
     exit = info ?? exit ?? {};
     if (confirmTimer) {
-      clearInterval(confirmTimer);
+      clearTimeout(confirmTimer);
       confirmTimer = undefined;
     }
     for (const sock of controllers) send(sock, { event: "exit" });
     resolveWaiters();
+    settleTerminal();
+    armUnobservedHandoff();
   };
 
   proc.onData((d) => {
@@ -135,13 +295,19 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     for (const [sub, socks] of dataSubs) {
       for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
     }
+    if (confirmMatcher?.push(d)) {
+      proc.write("\r");
+      if (confirmTimer) clearTimeout(confirmTimer);
+      confirmTimer = undefined;
+    }
   });
   proc.onExit(({ exitCode, signal }) => {
     markExited({ code: exitCode, ...(signal === undefined ? {} : { signal }) });
   });
-  const reap = setInterval(() => {
+  reap = setInterval(() => {
     if (!alive) {
-      clearInterval(reap);
+      if (reap) clearInterval(reap);
+      reap = undefined;
       return;
     }
     if (childGone()) markExited({});
@@ -155,7 +321,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       return;
     }
     proc.kill("SIGTERM");
-    setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
+    if (killTimer) clearTimeout(killTimer);
+    killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
   };
 
   const record: SeatRecord = {
@@ -166,13 +333,20 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     token: launch.token,
     custodianPid: process.pid,
     childPid: proc.pid,
+    custodianStart,
+    ...(childStart === undefined ? {} : { childStart }),
+    // Bind the pids to THIS boot: their start tokens are ticks since boot and the record outlives a
+    // reboot on disk, so without this a survivor could match an innocent process on the next boot.
+    ...(bootId === undefined ? {} : { bootId }),
   };
 
-  const server = createServer((sock) => {
+  server = createServer((sock) => {
     const reader = new FrameReader();
     let authed = false;
     const owned = new Set<number>();
+    clients.add(sock);
     const drop = (): void => {
+      clients.delete(sock);
       controllers.delete(sock);
       for (const sub of owned) {
         const socks = dataSubs.get(sub);
@@ -182,6 +356,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
       owned.clear();
       waiters.delete(sock);
+      settleTerminal();
+      // A settle exits the process, so reaching here means this custodian is staying up. If that was
+      // the last controller, it is now unattended and the bound starts from this disconnect.
+      armUnattended();
     };
     sock.on("data", (chunk) => {
       let messages: unknown[];
@@ -243,6 +421,16 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           return;
         }
         session.setAuthed(true);
+        seenClient = true;
+        // Join the controller set BEFORE anything below can settle. `markExited` runs the settle,
+        // and a settle with no controller tears this socket down mid-`hello`, so the peer that just
+        // authenticated would see "custodian socket closed" instead of its reply.
+        controllers.add(sock);
+        disarmUnattended();
+        if (handoffTimer) {
+          clearTimeout(handoffTimer);
+          handoffTimer = undefined;
+        }
         if (alive && childGone()) markExited({});
         send(sock, {
           id: req.id,
@@ -255,7 +443,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           status: alive ? "running" : "exited",
           ...(exit ? { exit } : {}),
         });
-        controllers.add(sock);
         if (!alive) send(sock, { event: "exit" });
         return;
       }
@@ -286,8 +473,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "write": {
-        if (alive) proc.write(req.data);
-        send(sock, { id: req.id, ok: true, op: "write" });
+        if (!alive) throw new Error(`seat ${launch.name} is not running; the PTY rejected the write`);
+        proc.write(req.data);
+        send(sock, { id: req.id, ok: true, op: "write", bytes: Buffer.byteLength(req.data, "utf8") });
         return;
       }
       case "resize": {
@@ -340,15 +528,43 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   }
 
+  const listening = server;
+  if (!listening) throw new Error("custodian server missing");
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(launch.socket, () => {
-      chmodSync(launch.socket, 0o600);
-      writeRecord(launch.recordPath, record);
-      const ready = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
-      if (launch.logPath) appendFileSync(launch.logPath, ready, { mode: 0o600 });
-      else process.stdout.write(ready);
-      resolve();
+    listening.once("error", reject);
+    listening.listen(launch.socket, () => {
+      // EVERY throw in here must reach `reject`. A callback is not on the promise's call stack, so an
+      // exception raised inside it becomes an UNCAUGHT exception: it bypasses the `.catch` at the
+      // bottom of this file that writes the log, and the process dies having explained nothing. The
+      // launcher then reports only `custodian exited before ready: pid N gone`, which is what made a
+      // silently-truncated socket path unattributable.
+      try {
+        // The bind can land on a DIFFERENT path than the one requested: libuv copies into a fixed
+        // 108-byte `sun_path` and truncates rather than failing. `launchSeat` refuses an overlong
+        // path up front, but a custodian can also be started directly, so verify what was actually
+        // created rather than trusting that listen succeeded on the name we asked for.
+        const bound = listening.address();
+        if (typeof bound === "string" && bound !== launch.socket)
+          throw new Error(`custodian bound ${bound} but was asked for ${launch.socket}; the path was truncated, so it would clean up a socket it never created`);
+        chmodSync(launch.socket, 0o600);
+        writeRecord(launch.recordPath, record);
+        ready = true;
+        const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
+        if (launch.logPath) appendFileSync(launch.logPath, announced, { mode: 0o600 });
+        else process.stdout.write(announced);
+        armUnobservedHandoff();
+        armUnattended();
+        settleTerminal();
+        resolve();
+      } catch (e) {
+        // The child outlives this process otherwise: nothing else holds its PTY.
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
+        reject(e as Error);
+      }
     });
   });
 }

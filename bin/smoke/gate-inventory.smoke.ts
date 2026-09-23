@@ -62,7 +62,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BROKEN = "BROKEN:";
 
 type UngatedExemption = { reason: string; recheckBy: string };
-const EXPECTED_EXEMPTIONS = 26;
+// 26 → 25: `smoke:delivery-broker-coupling` left the untriaged set by being gated, not by being
+// re-explained. It had been exempt as debt while silently grading nothing, the daemon it spawned
+// refused at startup, and the refusal satisfied its own "exits when the broker is gone" assertion.
+const EXPECTED_EXEMPTIONS = 25;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 
@@ -97,7 +100,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:attention": untriagedExemption("UNTRIAGED"),
   "smoke:attention:auth": untriagedExemption("UNTRIAGED"),
  "smoke:delivery-boot-retry:auth": untriagedExemption("UNTRIAGED"),
-  "smoke:delivery-broker-coupling": untriagedExemption("UNTRIAGED"), "smoke:delivery-old-manager": untriagedExemption("UNTRIAGED"),
+  "smoke:delivery-old-manager": untriagedExemption("UNTRIAGED"),
   "smoke:feedback": untriagedExemption("UNTRIAGED"),
   "smoke:lifecycle-files": untriagedExemption("UNTRIAGED"), "smoke:manager-console": untriagedExemption("UNTRIAGED"),
   "smoke:plane3-activation:auth": untriagedExemption("UNTRIAGED"),
@@ -178,7 +181,7 @@ function suitesIn(body: string): string[] {
  *  would go quiet on 228 suites at once — the reachability walk would call every one of them
  *  ungated, and the resolver would stop checking that any of them exists. Grading the synthesized
  *  chain keeps both directions pointed at the same suites they were pointed at when the chain was a
- *  string; the file is the source, this is the projection of it that the existing checks can read. */
+ *  string; the file is the source. This is the projection of it that the existing checks can read. */
 const bodyOf = (name: string): string => (name === "smoke:ci" ? ciChainBody() : pkg.scripts[name] ?? "");
 
 // REACHED MEANS REACHABLE FROM A ROOT THAT ACTUALLY RUNS, transitively — not "mentioned somewhere".

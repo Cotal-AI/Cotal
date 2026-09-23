@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import {
   isReachable,
   createSpaceAuth,
@@ -44,12 +45,23 @@ import {
   timerWriterConsumerConfig,
   timerWriterDurable,
   armCheckpointTimer,
+  readCheckpointSpec,
+  readCheckpointStatus,
+  resumeCheckpoint,
   eptReqStreamName,
   eptSubject,
   chatSubject,
+  admissionBucket,
+  createRunAdmission,
+  readRunAdmission,
+  revokeRunAdmission,
+  RunAdmissionDenied,
   recordsKvStreamName,
+  type RunAdmission,
+  type IssuedSubjectPermissions,
   wfjStreamName,
   wfjSubject,
+  waitConsumerName,
   DEV_OWNER,
   type CotalMessage,
 } from "@cotal-ai/core";
@@ -61,6 +73,7 @@ import { createRunWaitHost } from "../src/run-wait-host.js";
 import { createRunPauseHost } from "../src/run-pause-host.js";
 import { createRunRecordHost, runRecordView } from "../src/run-record-host.js";
 import { createRunEffectHost } from "../src/run-effect-host.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const S = "rdauth";
 const EP = "manager";
@@ -89,13 +102,22 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
     if (timer !== undefined) clearTimeout(timer);
   }
 };
+const until = async (fn: () => Promise<boolean>, ms: number): Promise<boolean> => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await fn()) return true;
+    await wait(50);
+  }
+  return false;
+};
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
-const dir = mkdtempSync(join(tmpdir(), "cotal-rdauth-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rdauth-`));
 const auth = await createSpaceAuth(S);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(broker);
 const conns: NatsConnection[] = [];
 const done = () => {
   for (const nc of conns) { try { nc.close(); } catch { /* closing */ } }
@@ -117,9 +139,37 @@ const open = async (creds: string): Promise<NatsConnection> => {
   conns.push(nc);
   return nc;
 };
+/** The admission a run's host enforces (SPEC 14.8): written once per run by a `run-admitter`
+ *  pinned to that run, under the suite's channel as the whole ceiling. Idempotent per run so the
+ *  successor hosts below read the same record. */
+const admitted = new Set<string>();
+const suiteCeiling = (runId: string): IssuedSubjectPermissions => {
+  const caller = runDriverCaller(runId);
+  return {
+    publish: { allow: { mode: "patterns", patterns: [chatSubject(S, caller.owner, caller.actor, CHANNEL)] }, deny: [] },
+    subscribe: { allow: { mode: "patterns", patterns: [chatSubject(S, "*", "*", CHANNEL)] }, deny: [] },
+  };
+};
+const withAdmitter = async <T>(runId: string, fn: (kv: import("@nats-io/kv").KV) => Promise<T>): Promise<T> => {
+  const nc = await open(await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId } }));
+  try { return await fn(await new Kvm(nc).open(admissionBucket(S))); } finally { await nc.drain(); }
+};
+const admit = async (runId: string, ceiling: IssuedSubjectPermissions = suiteCeiling(runId), caller = runDriverCaller(runId)): Promise<void> => {
+  if (admitted.has(runId)) return;
+  admitted.add(runId);
+  const admission: RunAdmission = {
+    version: 1, space: S, endpoint: EP, runId, instanceId: IID, caller, ceiling,
+    provenance: { kind: "operator", by: "run-driver-auth.smoke", reason: "suite admission" },
+    admittedAt: Date.now(),
+  };
+  await withAdmitter(runId, (kv) => createRunAdmission(kv, admission));
+};
+const admissionOf = (planes: { jsm: Awaited<ReturnType<typeof jetstreamManager>> }, runId: string) => () => readRunAdmission(planes.jsm, S, EP, runId);
+
 /** The same split the manager uses: raw driver connection plus host-only mediation. */
 const driver = async (runId: string, takeoverId: string, epoch = EPOCH, holder = "manager", fencingToken = 1) => {
   const pin = { endpoint: EP, runId, takeoverId, instanceId: IID, epoch };
+  await admit(runId);
   const nc = await open(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: pin }));
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
@@ -130,7 +180,7 @@ const driver = async (runId: string, takeoverId: string, epoch = EPOCH, holder =
   const handler = { ...createRunEffectHost(hostPlanes, {
     space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID, epoch,
     holder: { id: holder, lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h",
-  }, authority) };
+  }, authority, admissionOf(hostPlanes, runId)) };
   const kv = runRecordView(rawKv, createRunRecordHost(hostPlanes, EP, runId), S);
   return { nc, js, jsm, kv, rawKv, hostPlanes, handler };
 };
@@ -200,9 +250,30 @@ try {
 // ── 2) the run-driver credential drives a program across every plane its rows name ───────────
 const A = await driver(RUN_A, TK_A);
 {
-  const driven = startRun(A.js, A.jsm, { space: S, endpoint: EP, runId: RUN_A, source: PROGRAM, kv: A.kv, lease: lease(TK_A, 1), handler: A.handler });
-  // The wait arms after the sleep's real second has passed and its fire has been taken.
-  await wait(4_000);
+  let waitRequestId: string | undefined;
+  const handler = {
+    ...A.handler,
+    wait(req: Parameters<typeof A.handler.wait>[0], ctx: Parameters<typeof A.handler.wait>[1]) {
+      waitRequestId = ctx.requestId;
+      return A.handler.wait(req, ctx);
+    },
+  };
+  const driven = startRun(A.js, A.jsm, { space: S, endpoint: EP, runId: RUN_A, source: PROGRAM, kv: A.kv, lease: lease(TK_A, 1), handler });
+  // Publish only after the wait's DeliverPolicy.New durable exists. A wall-clock delay races the
+  // host's journal and admission reads: a slow but healthy host can create the durable after the
+  // message, correctly exclude it as history, and wait the full program timeout.
+  const waitReady = await until(async () => {
+    if (waitRequestId === undefined) return false;
+    try {
+      await A.hostPlanes.jsm.consumers.info(`CHAT_${S}`, waitConsumerName(waitRequestId));
+      return true;
+    } catch (error) {
+      if ((error as { code?: unknown })?.code === 10014) return false;
+      throw error;
+    }
+  }, 10_000);
+  c("the driven wait durable is observable before the test publishes its message", waitReady);
+  if (!waitReady) throw new Error("the driven wait durable did not become observable");
   await say("the build is green");
   const out = await withDeadline(driven.then((o) => ({ o }), (e: unknown) => ({ e })), 30_000, "the driven run");
   const entries = out !== undefined && "o" in out && out.o.status === "completed" ? out.o.result.journal.entries() : [];
@@ -270,7 +341,7 @@ const A = await driver(RUN_A, TK_A);
   const takeover = newTakeoverId();
   const H = await driver(runId, takeover);
   const authority = createRunScopeAuthority(H.hostPlanes, runId, lease(takeover, 1));
-  const host = createRunWaitHost(H.hostPlanes, authority);
+  const host = createRunWaitHost(H.hostPlanes, authority, admissionOf(H.hostPlanes, runId));
   const refused = async (action: () => Promise<unknown>) => action().then(() => false, (e) => e instanceof RunScopeDenied);
   H.handler.wait = async (_req, ctx) => {
     await ctx.bind({ waitChannel: CHANNEL });
@@ -326,9 +397,97 @@ const A = await driver(RUN_A, TK_A);
     .then(() => "allowed", (e: Error) => e.message);
   c("the previous host refuses operations after the next activation", oldHost.includes("superseded host"), oldHost);
   const nextAuthority = createRunScopeAuthority(successor.hostPlanes, runId, nextLease);
-  const nextHost = createRunWaitHost(successor.hostPlanes, nextAuthority);
+  const nextHost = createRunWaitHost(successor.hostPlanes, nextAuthority, admissionOf(successor.hostPlanes, runId));
   const recovered = await nextHost.messageAt(waited.requestId!, waited.external!.chatSeq as number);
   c("the current host can recover the same recorded match", recovered.length > 0);
+
+  // SPEC 14.8: the admitted ceiling, not the mediator's own reach, is what a wait may read.
+  const admitDenied = async (action: () => Promise<unknown>) => action().then(() => "allowed", (e) => e instanceof RunAdmissionDenied ? "denied" : short(e));
+  const narrow = "run-admitted-none";
+  const narrowTakeover = newTakeoverId();
+  await admit(narrow, { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } });
+  const N = await driver(narrow, narrowTakeover);
+  const narrowHost = createRunWaitHost(N.hostPlanes, createRunScopeAuthority(N.hostPlanes, narrow, lease(narrowTakeover, 1)), admissionOf(N.hostPlanes, narrow));
+  let narrowOpen = "", narrowFetch = "";
+  N.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    narrowOpen = await admitDenied(() => narrowHost.open(ctx.requestId, CHANNEL));
+    narrowFetch = await admitDenied(() => narrowHost.fetch(ctx.requestId));
+    return null;
+  };
+  await startRun(N.js, N.jsm, {
+    space: S, endpoint: EP, runId: narrow, source,
+    kv: runRecordView(N.kv, createRunRecordHost(N.hostPlanes, EP, narrow), S),
+    lease: lease(narrowTakeover, 1), handler: N.handler,
+  });
+  c("a run admitted with an explicit `none` ceiling cannot open a wait on any channel, though the mediator itself could", narrowOpen === "denied", narrowOpen);
+  c("nor fetch from it", narrowFetch === "denied", narrowFetch);
+  const denyWins = "run-admitted-deny";
+  const denyTakeover = newTakeoverId();
+  await admit(denyWins, { ...suiteCeiling(denyWins), subscribe: { allow: { mode: "all" }, deny: [chatSubject(S, "*", "*", CHANNEL)] } });
+  const D = await driver(denyWins, denyTakeover);
+  const denyHost = createRunWaitHost(D.hostPlanes, createRunScopeAuthority(D.hostPlanes, denyWins, lease(denyTakeover, 1)), admissionOf(D.hostPlanes, denyWins));
+  let denied = "";
+  D.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    denied = await admitDenied(() => denyHost.open(ctx.requestId, CHANNEL));
+    return null;
+  };
+  await startRun(D.js, D.jsm, {
+    space: S, endpoint: EP, runId: denyWins, source,
+    kv: runRecordView(D.kv, createRunRecordHost(D.hostPlanes, EP, denyWins), S),
+    lease: lease(denyTakeover, 1), handler: D.handler,
+  });
+  c("a deny row on the admitted ceiling wins over an unrestricted allow", denied === "denied", denied);
+  const unadmitted = "run-never-admitted";
+  const unTakeover = newTakeoverId();
+  admitted.add(unadmitted); // the driver helper must NOT write one
+  const U = await driver(unadmitted, unTakeover);
+  const unHost = createRunWaitHost(U.hostPlanes, createRunScopeAuthority(U.hostPlanes, unadmitted, lease(unTakeover, 1)), admissionOf(U.hostPlanes, unadmitted));
+  let missing = "";
+  U.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    missing = await unHost.open(ctx.requestId, CHANNEL).then(() => "allowed", (e) => (e as { code?: string }).code === "permission-denied" ? "denied" : short(e));
+    return null;
+  };
+  await startRun(U.js, U.jsm, {
+    space: S, endpoint: EP, runId: unadmitted, source,
+    kv: runRecordView(U.kv, createRunRecordHost(U.hostPlanes, EP, unadmitted), S),
+    lease: lease(unTakeover, 1), handler: U.handler,
+  });
+  c("a run with no admission record is refused at its first channel effect, never served under the host's scope", missing === "denied", missing);
+  // Revocation lands within one poll: the wait is open and fetching, the record is revoked
+  // under the admitter, and the next fetch refuses while the recovered match stays unreadable.
+  const revokable = "run-revoked-midwait";
+  const revTakeover = newTakeoverId();
+  const R = await driver(revokable, revTakeover);
+  const revHost = createRunWaitHost(R.hostPlanes, createRunScopeAuthority(R.hostPlanes, revokable, lease(revTakeover, 1)), admissionOf(R.hostPlanes, revokable));
+  let before = 0, after = "", recoveredAfter = "";
+  R.handler.wait = async (_req, ctx) => {
+    await ctx.bind({ waitChannel: CHANNEL });
+    await revHost.open(ctx.requestId, CHANNEL);
+    await say("before revocation");
+    const first = await revHost.fetch(ctx.requestId);
+    before = first.length;
+    await ctx.bind({ waitChannel: CHANNEL, chatSeq: first[0]!.sequence });
+    await withAdmitter(revokable, (kv) => revokeRunAdmission(kv, EP, { version: 1, runId: revokable, reason: "suite revoke", by: "operator", revokedAt: Date.now() }));
+    after = await revHost.fetch(ctx.requestId).then(() => "allowed", (e) => (e as { code?: string }).code === "permission-denied" ? "revoked" : short(e));
+    recoveredAfter = await revHost.messageAt(ctx.requestId, first[0]!.sequence).then(() => "allowed", (e) => (e as { code?: string }).code === "permission-denied" ? "revoked" : short(e));
+    await revHost.close(ctx.requestId);
+    return null;
+  };
+  await startRun(R.js, R.jsm, {
+    space: S, endpoint: EP, runId: revokable, source,
+    kv: runRecordView(R.kv, createRunRecordHost(R.hostPlanes, EP, revokable), S),
+    lease: lease(revTakeover, 1), handler: R.handler,
+  });
+  c("a wait fetches under its admission before revocation", before === 1, before);
+  c("a revocation written under the admitter refuses the next fetch of an open wait", after === "revoked", after);
+  c("and the already-matched message is no longer readable once revoked", recoveredAfter === "revoked", recoveredAfter);
+  const twice = await withAdmitter(revokable, (kv) => revokeRunAdmission(kv, EP, { version: 1, runId: revokable, reason: "again", by: "operator", revokedAt: Date.now() })).then(() => "ok", short);
+  c("revocation is idempotent: a second revoke is not an error and does not rewrite the first", twice === "ok" && (await readRunAdmission(R.hostPlanes.jsm, S, EP, revokable)).revoked?.reason === "suite revoke", twice);
+  const reAdmit = await withAdmitter(revokable, (kv) => createRunAdmission(kv, { version: 1, space: S, endpoint: EP, runId: revokable, instanceId: IID, caller: runDriverCaller(revokable), ceiling: suiteCeiling(revokable), provenance: { kind: "operator", by: "x", reason: "widen" }, admittedAt: Date.now() })).then(() => "written", (e) => (e as { code?: string }).code ?? short(e));
+  c("an admission is immutable: a second record for the same run is a conflict, never a replacement", reAdmit === "conflict", reAdmit);
 
   const vault = new WaitReceipts();
   let acknowledgements = 0;
@@ -443,6 +602,127 @@ const A = await driver(RUN_A, TK_A);
   c("an inherited settled token cannot read the parent's live checkpoint plane", readParent === "denied", readParent);
 }
 
+// A settled wait does not leave its fire pump running: the drive returns with the pump drained
+// (#1460). The pump's `takeFire` is a journal replay under the drive's takeover id — the same
+// durable a successor authority for the run and lease reads through — and `settleOnce` used to
+// flip `wait.over` and return without awaiting the pump's in-flight fire. The reproduction is
+// deterministic here because the suite owns the pump's queue position: the pause host is wrapped
+// so the pump's NEXT `takeFire` is parked after being called (a busy broker holds the replay in
+// exactly that state, and every mediated read joins one process-wide replay queue), and the
+// pause is settled from OUTSIDE the drive by presenting the arming holder's claim on the raw
+// plane. At base, `startRun` resolved with the parked fire still in flight and the pump's replay
+// consumer opened under the drive's takeover id only after the drive had returned; a second
+// authority under that takeover then hits `RunJournalReplayRaced` about a driver that does not
+// exist. ROUNDS keep the cell honest against a fix that drains only most of the time.
+{
+  console.log("• the settle pump drains before the drive returns (#1460)");
+  const ROUNDS = 5;
+  let drainedLate = 0, settledFactReturned = 0;
+  for (let round = 1; round <= ROUNDS; round += 1) {
+    const runId = `run-pump-drain-${round}`;
+    const takeoverId = `pump${round}`;
+    const L = { holder: "manager", epoch: EPOCH, fencingToken: 1, takeoverId };
+    await admit(runId);
+    const pin = { endpoint: EP, runId, takeoverId, instanceId: IID, epoch: EPOCH };
+    const hostNc = await open(await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: pin }));
+    const hostPlanes = { nc: hostNc, js: jetstream(hostNc), jsm: await jetstreamManager(hostNc), kv: await openRecordsBucket(hostNc, S), space: S };
+    const drvNc = await open(await mintCreds(auth, newIdentity(), "run-driver", { runDriver: pin }));
+    const drvJs = jetstream(drvNc);
+    const drvJsm = await jetstreamManager(drvNc);
+    const authority = createRunScopeAuthority(hostPlanes, runId, L);
+    const inner = createRunPauseHost(hostPlanes, { endpoint: EP, instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" } }, authority);
+    // The park: the pump's NEXT takeFire is called and held before its journal replay opens.
+    const park = { armed: false, release: null as (() => void) | null, started: 0, settled: 0 };
+    const release = () => { park.armed = false; if (park.release) { park.release(); park.release = null; } };
+    const pauses = {
+      ...inner,
+      async takeFire(token: string): Promise<boolean> {
+        park.started += 1;
+        if (park.armed) await new Promise<void>((r) => { park.release = r; });
+        try { return await inner.takeFire(token); } finally { park.settled += 1; }
+      },
+    };
+    const waits = createRunWaitHost(hostPlanes, authority, admissionOf(hostPlanes, runId));
+    const watcher: import("../src/index.js").SettleWatcher = {
+      // A 50ms observing poll: the settle fact is written while the pump's fire is parked, so the
+      // next poll observes it and the race decides — against a pump whose fire is still in flight.
+      async awaitSettle(ref) {
+        for (;;) {
+          const settled = await inner.readSettle(ref.token);
+          if (settled !== undefined) return settled;
+          await wait(50);
+        }
+      },
+    };
+    const handler = new MeshHandler(hostPlanes.nc, hostPlanes.kv, hostPlanes.js, hostPlanes.jsm, {
+      space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID, epoch: EPOCH,
+      holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h",
+    }, watcher, () => Date.now(), { pauses, waits, authority, admission: admissionOf(hostPlanes, runId) });
+    const driven = startRun(drvJs, drvJsm, {
+      space: S, endpoint: EP, runId,
+      source: 'await sleep("10m", { name: "nap" });',
+      kv: runRecordView(await openRecordsBucket(drvNc, S), createRunRecordHost(hostPlanes, EP, runId), S),
+      lease: L, handler,
+    }).then((o) => ({ o }), (e: unknown) => ({ e }));
+
+    // The pending sleep's token, read the way a successor authority would read it: through the
+    // mediator's replay rows, under the drive's own takeover id (the driver credential holds no
+    // replay durable but its own).
+    let token: string | undefined;
+    let lastProbe: unknown = "none";
+    for (let i = 0; i < 500 && token === undefined; i += 1) {
+      token = await replayRunJournal(hostPlanes.js, hostPlanes.jsm, S, runId, L.takeoverId)
+        .then((r) => {
+          lastProbe = `records=${r.records.length}`;
+          const e = r.records.flatMap(({ record }) => record.kind === "step" ? [record.entry as { kind?: string; state?: string; requestId?: string }] : [])
+            .find((x) => x.kind === "sleep" && x.state === "pending");
+          return e?.requestId;
+        }, (e) => { lastProbe = short(e); return undefined; });
+      if (token === undefined) await wait(40);
+    }
+    if (token === undefined) {
+      console.log("  pump-drain journal probe:", lastProbe, "park:", park.started, park.settled);
+      driven.then((r) => console.log("  pump-drain drive finished early:", "o" in r ? r.o.status : short(r.e)), () => {});
+      await wait(200);
+      throw new Error("the pump-drain run never reached its sleep");
+    }
+    for (let i = 0; i < 200 && (await readCheckpointStatus(hostPlanes.kv, { endpoint: EP, token })) === undefined; i += 1) await wait(20);
+    park.armed = true;
+    for (let i = 0; i < 1_000 && park.release === null; i += 1) await wait(5);
+    // The settle arrives from outside the drive: the arming holder's claim, on the raw plane.
+    const spec = await readCheckpointSpec(hostPlanes.kv, { endpoint: EP, token });
+    await resumeCheckpoint(hostPlanes.kv, hostPlanes.js, hostPlanes.jsm, S, { ref: { endpoint: EP, token }, presenter: spec!.holder, now: Date.now() });
+
+    // The defect window: the settle fact is written and the pump's fire is parked mid-flight, so a
+    // drive that resolves in this window resolved while its fire was still in flight. At base the
+    // drive returns as soon as the settle is observed (the race), leaving the fire in the air; the
+    // fix holds the return until the pump drains, so the drive cannot resolve here at all.
+    let early: Awaited<typeof driven> | undefined;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 300);
+      driven.then((out) => { clearTimeout(timer); early = out; resolve(); });
+    });
+    if (early !== undefined && "o" in early && early.o.status === "completed" && park.started - park.settled > 0) drainedLate += 1;
+
+    // Release the park and let the drive end: the fire lands, `wait.over` ends the pump, and only
+    // then may the drive return.
+    release();
+    const out = await withDeadline(driven, 10_000, `the pump-drain run ${round}`);
+    if (out !== undefined && "o" in out && out.o.status === "completed" && park.started - park.settled > 0) drainedLate += 1;
+    // The settled entry says the settle FACT returned to the program, not a cancellation: the
+    // settle won the race while its pump fire was mid-flight.
+    const settled = out !== undefined && "o" in out && out.o.status === "completed"
+      ? out.o.result.journal.entries().find((e) => e.kind === "sleep" && e.state === "settled")
+      : undefined;
+    if (settled !== undefined) settledFactReturned += 1;
+    await hostNc.close(); await drvNc.close();
+  }
+  c("a settled wait returns with its fire pump drained: no takeFire in flight when the drive resolves (#1460)",
+    drainedLate === 0, `drainedLate=${drainedLate}/${ROUNDS}`);
+  c("and the settle fact still won the race while the pump's fire was mid-flight",
+    settledFactReturned === ROUNDS, `settledFactReturned=${settledFactReturned}/${ROUNDS}`);
+}
+
 // A valid own-run step must not turn a forged bound plan into foreign registry authority.
 {
   const runId = "run-conclave-forgery";
@@ -471,6 +751,50 @@ const A = await driver(RUN_A, TK_A);
   const after = await channels.get(foreign);
   c("a forged conclave plan leaves the existing channel unchanged",
     after?.operation === "PUT" && Buffer.from(after.value).equals(Buffer.from(value)), after?.operation);
+}
+
+// The ceiling a hosted run is admitted under is the STARTING CALLER's: an agent credential's
+// publish rows name the agent's own triple (`chat.<owner>.<agent>.<channel>`), and the manager
+// admits the run with that caller and that ceiling verbatim. The handler runs as the run-driver
+// principal, which holds no chat row at all, so a conclave check against the driver's triple
+// would deny every room the caller may in fact hold. The suite's other admissions are driver-
+// shaped, which is why this hole was invisible to them: this one is agent-shaped.
+{
+  const runId = "run-conclave-caller";
+  const takeover = newTakeoverId();
+  const agent = { owner: DEV_OWNER, actor: "ALICEAGENT12", uid: "a".repeat(26) };
+  const room = "triage";
+  await admit(runId, {
+    publish: { allow: { mode: "patterns", patterns: [chatSubject(S, agent.owner, agent.actor, room)] }, deny: [] },
+    subscribe: { allow: { mode: "patterns", patterns: [chatSubject(S, "*", "*", room)] }, deny: [] },
+  }, agent);
+  const H = await driver(runId, takeover);
+  const out = await startRun(H.js, H.jsm, {
+    space: S, endpoint: EP, runId,
+    source: `const r = await conclave([], async (ch) => ch.channel, { name: "room", channel: ${JSON.stringify(room)} }); log("room", r);`,
+    kv: H.kv, lease: lease(takeover, 1), handler: H.handler,
+  }).then((o) => ({ out: o }), (error: Error) => ({ error: error.message }));
+  c("a conclave on a channel the admitted caller may publish to is admitted under THAT caller's triple, not the run-driver's",
+    "out" in out && out.out.status === "completed", "out" in out ? out.out.status : out.error);
+  const elsewhere = "run-conclave-elsewhere";
+  const takeover2 = newTakeoverId();
+  await admit(elsewhere, {
+    publish: { allow: { mode: "patterns", patterns: [chatSubject(S, agent.owner, agent.actor, room)] }, deny: [] },
+    subscribe: { allow: { mode: "patterns", patterns: [chatSubject(S, "*", "*", room)] }, deny: [] },
+  }, agent);
+  const H2 = await driver(elsewhere, takeover2);
+  const openConclave = H2.handler.openConclave;
+  let why = "";
+  H2.handler.openConclave = async (req, ctx) => {
+    try { return await openConclave(req, ctx); }
+    catch (error) { why = (error as Error).message; throw error; }
+  };
+  await startRun(H2.js, H2.jsm, {
+    space: S, endpoint: EP, runId: elsewhere,
+    source: 'try { await conclave([], async (ch) => ch.channel, { name: "room", channel: "war-room" }); } catch (e) { log("refused", true); }',
+    kv: H2.kv, lease: lease(takeover2, 1), handler: H2.handler,
+  });
+  c("and a room outside the admitted caller's publish ceiling is still refused for that same caller", why.includes("not admitted to publish to"), why);
 }
 
 // Cross-run controls use resources created through run B's own connection.

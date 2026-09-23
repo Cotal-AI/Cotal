@@ -38,6 +38,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentHandle, AttachSession } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
+import type { FreeSlotCause } from "../src/manager.js";
 import { PtyRuntime } from "../src/runtime/pty.js";
 
 let failures = 0;
@@ -86,7 +87,7 @@ writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\n-
 
 interface ManagedLike {
   id: string; name: string; lifecycleUid: string; handle: AgentHandle;
-  suppressCleanup: boolean; terminalizing: boolean; startedAt: number;
+  suppressCleanup: boolean; terminalizing: boolean; startedAt: number; spawner?: string;
 }
 
 function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<string, ManagedLike> } {
@@ -96,7 +97,7 @@ function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<strin
   (manager as unknown as { ep: unknown }).ep = {
     ref: () => ({ id: "local.manager", name: "manager", role: "manager" }),
     getRoster: () => [], on: () => {}, off: () => {},
-    releaseManagerLease: async () => {}, stop: async () => {},
+    releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {},
   };
   (manager as unknown as { attach: unknown }).attach = { stop: async () => {} };
   agents.set(handle.name, {
@@ -114,11 +115,25 @@ function capture(fn: () => void): string[] {
   return lines;
 }
 
+/** Same instrument across an await: the stop doors free the slot on a microtask after the door's
+ *  own `await`s, so a sync capture closes before the line prints. Its swallow is spelled
+ *  differently from `capture`'s on purpose: the mutation control anchors that original line, and
+ *  a second copy would make this anchor non-unique. */
+async function captureAsync<T>(fn: () => Promise<T>): Promise<{ lines: string[]; ret: T }> {
+  const real = console.error;
+  const lines: string[] = [];
+  const swallow = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  console.error = swallow;
+  let ret!: T;
+  try { ret = await fn(); } finally { console.error = real; }
+  return { lines, ret };
+}
+
 /** Drive the real free path for one cause and return what the operator would have seen. */
-function reap(handle: AgentHandle, cause: string): { lines: string[]; seat: string | undefined } {
+function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; seat: string | undefined } {
   const { manager } = managerWith(handle);
   const lines = capture(() =>
-    (manager as unknown as { freeSlot(a: unknown, f: boolean, c: string): void })
+    (manager as unknown as { freeSlot(a: unknown, f: boolean, c: FreeSlotCause): void })
       .freeSlot((manager as unknown as { agents: Map<string, ManagedLike> }).agents.get(handle.name), true, cause),
   );
   return { lines, seat: lines.find((l) => /seat reaped/i.test(l)) };
@@ -136,9 +151,66 @@ function reap(handle: AgentHandle, cause: string): { lines: string[]; seat: stri
   check("a self-driven exit is logged, naming the seat", seat !== undefined && seat.includes("worker") && seat.includes("uid-worker"), seat);
   check("…and says the manager did NOT stop it", /did not stop it/i.test(seat ?? ""), seat);
 }
+// ── Cells 2a-2d — WHO STOPPED IT: every manager-initiated stop names its path and its principal ─
+// #1423: all four stop paths used to render one sentence — `this manager stopped it (despawn or
+// shutdown)` — with no requester, so a despawn by one peer read identically to a despawn by
+// another, to a self-stop, to a recursive reap, and a shutdown printed NOTHING. These cells drive
+// the REAL doors (not a hand-built freeSlot string): the authenticated principal on the line must
+// come out of the door the caller actually went through, and a string-driven cell cannot prove the
+// door carried it. The rows use a raw-nkey id (`workernkey123`) so `managedPrincipal` derives the
+// wire form `local.workernkey123` — the form a real static seat's self-stop carries.
 {
-  const { seat } = reap(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }), "stopped");
-  check("an operator despawn is logged as this manager stopping it", /this manager stopped it/i.test(seat ?? ""), seat);
+  // The named despawn doors: opStop (ctl `stop`) and the served `despawn` both run despawnCore →
+  // despawnAuthorized with the AUTHENTICATED caller. authorizeNamed admits the spawner, so the
+  // row's spawner is the requester.
+  const { manager, agents } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
+  agents.get("worker")!.id = "workernkey123";
+  const m = manager as unknown as { opStop(a: Record<string, unknown>, c: string, b: boolean): Promise<{ ok: boolean }> };
+  const row = agents.get("worker")!;
+  row.spawner = "u_alice.actor";
+  const { lines, ret } = await captureAsync(() => m.opStop({ name: "worker", graceful: true }, "u_alice.actor", false));
+  const reply = ret;
+  const seat = lines.find((l) => /seat reaped/i.test(l));
+  check("a requested despawn names the AUTHENTICATED principal that asked", reply.ok && seat !== undefined && seat.includes("u_alice.actor") && /stopped it at u_alice\.actor's request/.test(seat), { reply, seat });
+  check("…and the despawn-by-another is separable: the second principal names itself on the line", await (async () => {
+    const { manager: m2, agents: a2 } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
+    const r2 = a2.get("worker")!;
+    r2.id = "workernkey123";
+    r2.spawner = "u_alice.actor";
+    const out = await captureAsync(() => (m2 as unknown as { opStop(a: Record<string, unknown>, c: string, b: boolean): Promise<{ ok: boolean }> }).opStop({ name: "worker", graceful: true }, "u_bob.actor", true));
+    const rep2 = out.ret;
+    const bob = out.lines.find((l) => /seat reaped/i.test(l));
+    return rep2.ok && bob !== undefined && /stopped it at u_bob\.actor's request/.test(bob);
+  })(), "admin despawn by u_bob.actor did not name itself");
+}
+{
+  const { manager, agents } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
+  agents.get("worker")!.id = "workernkey123";
+  const lines = capture(() =>
+    (manager as unknown as { opStopSelf(c: string, a: Record<string, unknown>): { ok: boolean } })
+      .opStopSelf("local.workernkey123", { graceful: true }),
+  );
+  const seat = lines.find((l) => /seat reaped/i.test(l));
+  check("a self-stop is its own sentence", /it stopped itself \(self-stop\)/i.test(seat ?? ""), seat);
+  check("…and no stop line still says the combined (despawn or shutdown) text", !lines.some((l) => /despawn or shutdown/.test(l)), lines);
+}
+{
+  const { manager, agents } = managerWith(fakeHandle("child", { exitInfo: () => ({ code: 0 }) }));
+  agents.get("child")!.id = "childnkey123";
+  agents.get("child")!.spawner = "u_parent.actor";
+  const { lines } = await captureAsync(async () => {
+    (manager as unknown as { reapChildrenOf(p: string): void }).reapChildrenOf("u_parent.actor");
+    await new Promise((r) => setTimeout(r, 10)); // the reap frees the slot only after its awaited exit proof
+  });
+  const seat = lines.find((l) => /seat reaped/i.test(l));
+  check("a recursive reap names the parent that left", /recursive reap/i.test(seat ?? "") && /u_parent\.actor/.test(seat ?? ""), seat);
+}
+{
+  const { manager, agents } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
+  const lines = capture(() => { void (manager as unknown as { teardownManagedAgents(): Promise<void> }).teardownManagedAgents(); });
+  await new Promise((r) => setTimeout(r, 50));
+  const seat = lines.find((l) => /seat reaped/i.test(l));
+  check("a manager shutdown reaps with its own sentence, not silence", /stopped it on manager shutdown/i.test(seat ?? ""), lines);
 }
 {
   const { seat } = reap(fakeHandle("worker", { exitInfo: () => ({ code: 1 }) }), "pi-crash-loop");

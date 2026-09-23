@@ -18,16 +18,21 @@ import {
 import { wsconnect } from "@nats-io/nats-core";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
+import {
+  parseSecretStoreIdentity,
+  type SecretStoreIdentity,
+} from "./secret-store.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
-import type { EpCaller } from "./endpoint-subjects.js";
-import { assertIdToken } from "./endpoint-subjects.js";
+import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
+import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
+import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -58,9 +63,11 @@ import type {
   Part,
   Presence,
   PresenceStatus,
+  PresenceCondition,
   AttentionMode,
   ChannelMode,
   CotalMessage,
+  HistoryMessage,
   DeliveryClass,
   MembershipRecord,
   ChannelMembership,
@@ -110,6 +117,7 @@ import {
   leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
+  MANAGER_RENEWAL_LEASE_KEY,
   managerLeaseKey,
   chatWildcard,
   assertValidChannel,
@@ -184,6 +192,13 @@ export interface EndpointOptions {
    *  lifecycle-keyed messaging durables (`dm_…-<uid>`, `dlv_…-<uid>`, `chathist_…-<uid>`) — an
    *  endpoint without one (a pure operator/daemon connection) can not consume DM/chat history. */
   lifecycleUid?: string;
+  /** The accepted-row token of this credential's issuance (SPEC 13.15). Set when the launcher
+   *  minted the credential as an issuance: after connecting, the endpoint reads the generation the
+   *  ISSUER bound under this token (a broker-enforced per-key read) and pins it into every caller
+   *  rail it forms. A token that resolves to no row, or to another incarnation's reference, fails
+   *  the connect: the rails would be refused at the broker anyway, and a silent legacy fallback is
+   *  exactly what the versioned rail exists to rule out. */
+  acceptedToken?: string;
   servers?: string;
   /** Connection token (soft-shared auth). Mutually exclusive with user/pass. */
   token?: string;
@@ -378,6 +393,12 @@ export class CotalEndpoint extends EventEmitter {
   /** The freshest bearer — what every (re)connect attempt presents. */
   private currentBearer?: string;
   private bearerTimer?: NodeJS.Timeout;
+  /** Arms against the credential authenticated on the current wire. nats-core 3.4.0 discards the
+   *  promise returned by its async transport-close continuation; if that continuation enters the
+   *  reconnect dial loop with an expired JWT, its terminal auth error becomes an unhandled rejection.
+   *  Cotal knows the JWT expiry, so it disables the library reconnect before the broker closes the
+   *  transport. The endpoint's observed `closed()` supervisor remains responsible for rebuilding. */
+  private authExpiryReconnectTimer?: NodeJS.Timeout;
   private readonly sentinelCreds?: string;
   private readonly tls: boolean;
   private readonly heartbeatMs: number;
@@ -400,12 +421,20 @@ export class CotalEndpoint extends EventEmitter {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   private channelWatchIter?: Awaited<ReturnType<KV["watch"]>>;
+  /** The daemon's lease-loss watch (#1596): the INTENT that survives a connection rebuild, plus the
+   *  live iterator. See {@link watchDeliveryLease}. */
+  private leaseWatchIntent?: { shardIndex: number; onEvent: (info: DeliveryLeaseInfo | undefined) => void };
+  private leaseWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
   private aclKv?: KV;
   private deliveryKv?: KV;
   private managerLeaseKv?: KV;
+  /** Our revision of the per-space daemon-credential renewal lease (#1634), or undefined when we do
+   *  not hold it. Cleared with the bound KV handle: a revision from a dead connection is not a lease
+   *  we can prove we still hold. */
+  private daemonRenewalLeaseRevision?: number;
   private membershipFeedKv?: KV;
   /** Caller-owned membership watches survive a connection rebuild as INTENT. Their iterators are
    *  connection-scoped and are stopped/re-created around the epoch swap. */
@@ -417,6 +446,9 @@ export class CotalEndpoint extends EventEmitter {
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
+  /** True once {@link quiescePlane3} has stopped serving this shard pending an ownership answer.
+   *  Guards {@link armPlane3} so a RECONNECT cannot silently resume serving mid-question. */
+  private plane3Quiesced = false;
   private plane3?: {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>;
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
@@ -435,6 +467,10 @@ export class CotalEndpoint extends EventEmitter {
      *  call). The READ half of {@link evictPrincipal}: read-only by construction, so a repair path
      *  can refuse on a live holder's behalf instead of killing it to find out. */
     principalLiveness?: (principal: string) => Promise<unknown>;
+    /** Composition-root hook: name the SecretStore this daemon reloads standing creds from.
+     *  The manager challenges it at start and before every remint so a two-root composition
+     *  is refused rather than twelve hours later on a fingerprint mismatch. */
+    reloadStoreIdentity?: () => SecretStoreIdentity;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -487,6 +523,18 @@ export class CotalEndpoint extends EventEmitter {
   private firstConnect = true;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
+  /** #1356: when the presence bucket started refusing writes; undefined once one succeeds. */
+  private presenceWriteFailingSince?: number;
+  /** #1356: the broker's last refusal message, kept alongside the start time for diagnosis. */
+  private lastPresenceWriteError?: string;
+  /** #1461: monotonic per-put generation on the presence path, so a settle can tell whether it is
+   *  the latest evidence on its epoch. {@link publishPresence} snapshots it at put start and every
+   * settle records its generation here: a settle is the latest evidence only while no put that
+   * started after it has already settled. */
+  private presencePutGeneration = 0;
+  /** #1461: the generation of the newest presence put that has SETTLED (succeeded or rejected),
+   * or `undefined` when none ever has. A put that is merely in flight is not evidence yet. */
+  private presencePutSettled?: number;
   private readonly roster = new Map<string, Presence>();
   /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
   private presenceSnapshot = Promise.resolve();
@@ -501,8 +549,25 @@ export class CotalEndpoint extends EventEmitter {
   private lastPresenceWatchAt = 0;
   /** Last emitted presence-view state. Suppresses duplicate `presence-view` events. */
   private presenceViewState: PresenceView["state"] = "unpopulated";
+  /** A presence-watch rebind in flight (see {@link rebindStalePresenceWatch}); one at a time. */
+  private presenceRebind?: Promise<void>;
+  /** Bumped by every connection-scoped teardown and by {@link stop}. A presence bind that was
+   *  awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
+   *  iterator it got and installs nothing (see {@link startPresenceWatch}). */
+  private presenceEpoch = 0;
+  /** The current watch was bound onto a bucket with NO keys (see {@link markPresenceBucketEmpty}).
+   *  Such a watch cannot deliver until someone writes, so its silence is not staleness. */
+  private presenceWatchEmpty = false;
+  /** Wall-clock of the last rebind attempt, so a bucket that is silent because it is EMPTY (or a
+   *  broker that keeps refusing the consumer create) is retried once per TTL, not per sweep tick. */
+  private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
+  private condition?: PresenceCondition;
+  /** Advances on every condition change so an older in-flight put cannot be the final KV state. */
+  private conditionRevision = 0;
+  /** Read once at construction. Core publishes this opaque provider reference and never parses it. */
+  private readonly environment?: string;
   /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
    *  endpoint never reads these back into delivery — they exist only to broadcast. */
   private attentionMode?: AttentionMode;
@@ -542,6 +607,9 @@ export class CotalEndpoint extends EventEmitter {
   readonly actorIsEphemeral: boolean;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
+  private readonly acceptedToken?: string;
+  /** The issuer-bound generation, learned once per connection from the accepted row. */
+  private issuedGeneration?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
@@ -552,6 +620,8 @@ export class CotalEndpoint extends EventEmitter {
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
+  /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key. */
+  private presenceBindingDrops = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
@@ -563,6 +633,11 @@ export class CotalEndpoint extends EventEmitter {
    *  Pull it, or listen for `split-recovered` — the event can be missed, the count cannot. */
   get splitRecoveryCount(): number {
     return this.splitsRecovered;
+  }
+
+  /** Mis-keyed presence rows this reader rejected. The warning event may be missed; the count cannot. */
+  get presenceBindingDropCount(): number {
+    return this.presenceBindingDrops;
   }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
@@ -665,10 +740,15 @@ export class CotalEndpoint extends EventEmitter {
         : this.authed
           ? undefined
           : mintLifecycleUid();
+    if (opts.acceptedToken !== undefined) {
+      if (!opts.creds) throw new Error("EndpointOptions.acceptedToken names a static issuance and needs creds beside it (SPEC 13.15)");
+      this.acceptedToken = assertGeneration(opts.acceptedToken, "acceptedToken");
+    }
     // `card.id` is the principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries;
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
     this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
+    this.environment = process.env.COTAL_ENVIRONMENT?.trim() || undefined;
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
@@ -738,8 +818,44 @@ export class CotalEndpoint extends EventEmitter {
       const claims = decodeBearerPrincipal(bearer);
       if (claims.owner !== this.owner || claims.actor !== this.actor)
         throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
+      // Two refusals, answering different questions, and both of them are about protecting what is
+      // ALREADY held. So both are scoped to there BEING something held, which is the same set as
+      // `!initial` but names the thing the rules actually depend on: on the first fetch there is no
+      // cache to lose, `start()` has to come up on whatever the source has, and the pre-dial guard
+      // in {@link bindConnection} is what speaks for a dead first token.
+      const expiryMs = bearerExpiryMs(bearer);
+      const held = this.currentBearer;
+      if (held !== undefined) {
+        // ALREADY DEAD, whatever else is true of it. Advancement is deliberately not part of this
+        // test: a candidate expiring at now-5s does advance a held one that died at now-60s, so an
+        // advance-only rule adopts it - overwriting the cache with material nothing can dial,
+        // skipping the recoverable warning because the fetch did not throw, and arming the next
+        // read off a non-positive delay. The creds path draws its line on expiry alone too, in
+        // {@link presentableCreds} (#1572).
+        if (expiryMs <= Date.now())
+          throw new Error("the bearer source returned a token that has already expired - nothing adopted");
+        // THE SAME BYTES BACK AGAIN from a source whose token cannot carry the next cycle: the
+        // delay it arms is non-positive, `armBearerRefresh` floors that to 5s, and the next read
+        // returns that same token - a 5s loop against the auth service for the rest of its life,
+        // with BEARER_RETRY_MS bypassed because the fetch did not FAIL. It succeeded and returned
+        // nothing new (#1561).
+        //
+        // The test is byte identity, not expiry, and not advancement. `exp` carries one second of
+        // resolution, so a key rotation re-signing the same claims under a new key - and a healthy
+        // short-TTL source read twice inside one wall-clock second - both hand back a token whose
+        // `exp` has not moved. That is genuinely re-issued material, which an advancement test
+        // refuses and this one adopts. It is the question the creds path asks with
+        // `credsFingerprint`: did the source re-issue ANYTHING (#1572).
+        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)
+          throw new Error("the bearer source re-served the token already held and it cannot carry another cycle (the auth service has not issued a fresh one) - nothing adopted");
+      }
       this.currentBearer = bearer;
-      this.armBearerRefresh(bearerExpiryMs(bearer) - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
+      // A non-positive delay is NOT clamped to BEARER_RETRY_MS. A deployment whose whole token TTL
+      // sits inside the margin is legitimate - `expiry-renewal` mints 5s bearers against the 60s
+      // margin - and for it the 5s floor IS the renewal cadence. Backing that source off to 15s
+      // leaves a 5s token dead for two thirds of every cycle. What made #1561 a pointless loop was
+      // the source returning nothing new, which is refused above, not the cadence itself.
+      this.armBearerRefresh(expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS);
     } catch (e) {
       if (initial) throw e;
       this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current token's expiry if the auth service stays down`));
@@ -757,6 +873,84 @@ export class CotalEndpoint extends EventEmitter {
   /** How soon a FAILED creds refresh retries. Successful refreshes schedule by lifetime fraction
    *  (75% of iat→exp), not a fixed margin — standing creds span hours to days, bearers minutes. */
   private static readonly CREDS_RETRY_MS = 60_000;
+
+  /** THE ONE PLACE a credential is cleared for presentation to a broker.
+   *
+   *  The property is unconditional — this endpoint never presents a credential it has already
+   *  decoded as expired — so it is a property of the SUPPLY, not of any one dial site. It used to
+   *  live inside {@link bindConnection}, which only `start()` and `doRebuild` reach; the
+   *  authenticator nats.js re-evaluates on ITS OWN reconnects read the cache directly and so
+   *  presented whatever was last fetched, expired included. Two such reconnects exist and neither
+   *  passes through bindConnection: the one the broker forces at JWT `exp`, and an ALREADY RUNNING
+   *  dial loop from an earlier drop that crosses `exp` while it retries (the pre-expiry
+   *  reconnect fence flips a policy flag nats-core only reads when it observes a NEW drop, so it
+   *  cannot stop a loop already in flight).
+   *
+   *  Putting the refusal here instead means a future caller cannot miss it: the only way to reach a
+   *  dial is through {@link credsForWire}, and the one presentation that does not read the cache
+   *  (the adoption preflight, which presents a fresh CANDIDATE) calls this same function on it.
+   *
+   *  An unbounded credential (no numeric `exp`) is presentable: bounded lifetimes are the renewal
+   *  seam's concern, and a cred with no expiry has none to be past. */
+  private static presentableCreds(creds: string, opts: { renewable: boolean }): string {
+    const { exp } = credsClaims(creds); // throws on a structurally-unusable file (fail-loud)
+    if (typeof exp === "number" && exp * 1000 <= Date.now())
+      throw new Error(
+        opts.renewable
+          ? "this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
+          : "this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)",
+      );
+    return creds;
+  }
+
+  /** The cached credential, checked. Handed to nats.js as the authenticator's source on EVERY auth
+   *  mode (renewed or static), so each (re)connect attempt — ours or the library's — re-reads a
+   *  CHECKED value. A refusal throws out of the authenticator, which nats-core turns into a closed
+   *  connection rather than a CONNECT carrying dead material; the endpoint's own supervisor then
+   *  rebuilds on capped backoff, and {@link bindConnection} re-fetches from the source on each of
+   *  those attempts, so a renewal that starts working recovers the endpoint without presenting
+   *  anything expired in the meantime. Deliberately side-effect free: kicking the renewal timer
+   *  from here would retry the source once per dial attempt, which is the flat load on a dead
+   *  broker that {@link RETRY_BACKOFF_CAP_MS} exists to prevent. */
+  private credsForWire(): string {
+    if (!this.currentCreds)
+      throw new Error(
+        this.credsSource
+          ? "this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material"
+          : "this endpoint was constructed with an empty creds string - not dialing without auth material (an empty credential is not anonymous access)",
+      );
+    return CotalEndpoint.presentableCreds(this.currentCreds, { renewable: Boolean(this.credsSource) });
+  }
+
+  /** Refuses a fetched generation there is nothing to renew FROM, so the caller's failure posture
+   *  ({@link CREDS_RETRY_MS}) applies instead of the renewal schedule (issue #1523).
+   *
+   *  A source that hands back the SAME generation past its own renewal point has not re-signed yet:
+   *  that is a missed remint, not a candidate. Adopting it re-arms from a non-positive delay, which
+   *  {@link armCredsRefresh} floors to 1s, which fetches again, which is the same generation — a 1s
+   *  read loop against a store that is already having a bad day, for the JWT's remaining 25% of life,
+   *  with the 60s backoff that exists for exactly this bypassed because the fetch did not FAIL.
+   *
+   *  The membership feed's rw-cred renewal already refuses it this way (`membership-feed.ts`,
+   *  `adoptRwCreds`: "the rw source still holds the previous generation past its renewal point");
+   *  this is the same rule on the endpoint's `delivery.creds` seam, so the two renewal paths answer
+   *  a dead source identically.
+   *
+   *  An ALREADY-EXPIRED generation is refused whatever it is: the delay is non-positive for it too,
+   *  but it is dead rather than merely due, so it is named separately and refused even when the
+   *  source keeps returning a different one. */
+  private static assertRenewableGeneration(candidate: string, current: string | undefined, delayMs: number): void {
+    const { exp } = credsClaims(candidate);
+    if (typeof exp === "number" && exp * 1000 <= Date.now())
+      throw new Error("the creds source returned an already-expired credential (its `exp` is in the past) - nothing adopted; the renewal owner has not re-signed it, or the store is serving a stale generation");
+    // Compared by GENERATION, not by envelope. `EndpointOptions.creds` takes opaque file content and
+    // promises no canonical whitespace: `jwtFromCreds` pads with `\s*` and trims, so a store, editor or
+    // filesystem round trip that adds a newline re-serves the SAME credential in bytes `===` calls
+    // different - and the refusal would be skipped for the one case it exists to catch. The envelope
+    // also carries the nkey seed, which is why `credsFingerprint` hashes the JWT instead.
+    if (current !== undefined && credsFingerprint(candidate) === credsFingerprint(current) && delayMs <= 0)
+      throw new Error("the creds source still holds the previous generation past its renewal point (the renewal owner has not re-signed it) - nothing adopted");
+  }
 
   /** The disposable-preflight connect bound for the EXPLICIT reload proof (D5 class-2 adoption). A
    *  rogue or unreachable candidate must resolve well UNDER the manager's delivery-admin request
@@ -786,8 +980,12 @@ export class CotalEndpoint extends EventEmitter {
     const id = idFromCreds(creds);
     if (id !== this.connId)
       throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+    // Before the commit, so a refusal leaves the cache holding the last generation that was renewable
+    // from (and, on the initial fetch, fails loud rather than dialling with dead material).
+    const delay = credsRenewalDelayMs(creds);
+    CotalEndpoint.assertRenewableGeneration(creds, this.currentCreds, delay);
     this.currentCreds = creds;
-    this.armCredsRefresh(credsRenewalDelayMs(creds));
+    this.armCredsRefresh(delay);
     const { iat, exp } = credsClaims(creds);
     return { iat, exp };
   }
@@ -795,12 +993,59 @@ export class CotalEndpoint extends EventEmitter {
   /** Swap the live connection onto the freshest cached cred with a controlled `nc.reconnect()`
    *  (nats.js re-evaluates the creds getter per attempt). Swapping now, instead of waiting for the
    *  broker to close the connection at `exp`, means the wire never carries a near-dead JWT and the
-   *  operator never sees a spurious "authentication expired" — the broker's expiry-close remains the
-   *  BACKSTOP if a swap is missed, not the mechanism. Already-closed/draining rejections are the
-   *  supervise loop's to own (its rebuild re-fetches); an already-disconnected client is a no-op
-   *  (its own reconnect loop presents the fresh cred). */
+   *  operator never sees a spurious "authentication expired". After the reconnect succeeds, re-arm
+   *  the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
-    if (this.nc && !this.stopped) await this.nc.reconnect().catch(() => {});
+    const nc = this.nc;
+    if (nc && !this.stopped) {
+      await nc.reconnect().catch(() => {});
+      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+    }
+  }
+
+  /** nats-core keeps its reconnect switch on the protocol handler. This pinned internal shape is the
+   *  same last-resort surface used by {@link closeFailedBind}; there is no public API for changing the
+   *  reconnect policy of an existing connection. Disabling it does not disable Cotal self-heal: the
+   *  `nc.closed()` supervisor below rebuilds the endpoint with freshly checked auth material. */
+  private disableLibraryReconnect(nc: NatsConnection): void {
+    const protocol = (nc as unknown as { protocol?: { options?: { reconnect?: boolean } } }).protocol;
+    if (protocol?.options) protocol.options.reconnect = false;
+  }
+
+  /** Close a connection whose library reconnect has already been disabled. `drain()` flushes with a
+   *  PING and waits for the matching PONG; nats-core only rejects that waiter inside reconnect
+   *  `prepare()`, so a half-open socket with reconnect=false leaves drain pending until the 2-minute
+   *  ping interval times out. `close()` tears the transport down without that round-trip, which is
+   *  the same public path {@link closeFailedBind} already uses when there is no graceful delivery
+   *  contract left. */
+  private async closeWithoutLibraryReconnect(nc: NatsConnection | undefined): Promise<void> {
+    if (!nc) return;
+    this.disableLibraryReconnect(nc);
+    try {
+      await nc.close();
+    } catch {
+      /* already closing */
+    }
+  }
+
+  /** Disable nats-core reconnect shortly before the JWT authenticated on this wire expires. The small
+   *  lead makes the policy change precede the broker's expiry close even when both timers wake in the
+   *  same event-loop turn. A credential adoption does not move this fence until the resident reconnect
+   *  is requested, so the old wire remains protected during the prove-then-adopt window. */
+  private armAuthExpiryReconnectFence(nc: NatsConnection): void {
+    clearTimeout(this.authExpiryReconnectTimer);
+    this.authExpiryReconnectTimer = undefined;
+    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;
+    const expiryMs = this.userMode && this.currentBearer
+      ? bearerExpiryMs(this.currentBearer)
+      : typeof credsExp === "number"
+        ? credsExp * 1000
+        : undefined;
+    if (expiryMs === undefined || this.stopped) return;
+    this.authExpiryReconnectTimer = setTimeout(() => {
+      if (this.nc === nc) this.disableLibraryReconnect(nc);
+    }, Math.max(0, expiryMs - Date.now() - 500));
+    this.authExpiryReconnectTimer.unref?.();
   }
 
   /** The connectAndBind PRE-CONNECT fetch: pull the freshest source cred and pin it into
@@ -867,7 +1112,13 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error("reloadCreds: re-read credential generation did not match the expected re-signed generation (a different store, or a torn/stale read); nothing adopted");
     // PREFLIGHT = the proof. A disposable connection presenting exactly the candidate BEFORE the live
     // cache is touched; a refused cred throws here, leaving the resident connection untouched.
-    const probe = await probeConnect(this.servers, { creds: candidate, tls: this.tls, timeoutMs: Math.max(500, Math.min(CotalEndpoint.PREFLIGHT_MS, deadline - Date.now())) });
+    // The candidate goes through the SAME checkpoint the resident getter uses: this is the one
+    // presentation that does not read the cache, so routing it here is what makes the refusal a
+    // property of every path rather than of the cached one. An already-dead re-signed generation is
+    // refused locally instead of spending a round trip to be told so, and — because this throws
+    // BEFORE the commit below — it can never become the resident connection's next-presented cred.
+    const proven = CotalEndpoint.presentableCreds(candidate, { renewable: true });
+    const probe = await probeConnect(this.servers, { creds: proven, tls: this.tls, timeoutMs: Math.max(500, Math.min(CotalEndpoint.PREFLIGHT_MS, deadline - Date.now())) });
     if (!probe.ok)
       throw new Error(`reloadCreds: the broker did not accept the re-signed credential (${probe.reason}); nothing adopted`);
     if (Date.now() > deadline)
@@ -876,6 +1127,7 @@ export class CotalEndpoint extends EventEmitter {
     // lacking a numeric `exp`, and that throw must not leave currentCreds flipped to a candidate the
     // authenticator would present on the next reconnect (a post-preflight validation failure is a no-op).
     const delay = credsRenewalDelayMs(candidate);
+    CotalEndpoint.assertRenewableGeneration(candidate, this.currentCreds, delay);
     this.currentCreds = candidate;
     this.armCredsRefresh(delay);
     return credsClaims(candidate);
@@ -990,13 +1242,13 @@ export class CotalEndpoint extends EventEmitter {
           ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
           : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
       );
-    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;
-    if (typeof credsExp === "number" && credsExp * 1000 <= Date.now())
-      throw new Error(
-        this.credsSource
-          ? "this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff"
-          : "this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)",
-      );
+    // The CREDS refusal is NOT repeated here. It lives on the supply itself ({@link credsForWire}),
+    // which the authenticator below re-reads per attempt, so it covers this dial AND the reconnects
+    // nats.js runs on its own. Raising it early here too would only duplicate it on the one path
+    // that was already covered, and a fourth dial site added later would silently miss the copy.
+    // The refusal still surfaces on this path: the authenticator throws during the CONNECT, the
+    // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
+    // the source re-fetch above is what recovers a renewable endpoint.
     this.nc = await dialerFor(this.servers)({
       servers: this.servers,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
@@ -1012,12 +1264,33 @@ export class CotalEndpoint extends EventEmitter {
       inboxPrefix: `_INBOX_${this.connId}`,
       // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
       // attempt, so internal reconnects present whatever refreshBearer last fetched.
-      // Creds likewise ride a GETTER when a source renews them, so internal reconnects (incl. the
-      // one the broker forces at JWT `exp`) present whatever refreshCreds last fetched.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.credsSource ? () => this.currentCreds! : this.currentCreds, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
+      // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
+      // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
+      // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
+      // just been proven unexpired rather than whatever the cache happens to hold.
+      // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
+      // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
+      // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
+      // (an empty credential) was never named. Routing it into the checked getter fails it loud
+      // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
+      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
+    this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();
     this.js = jetstream(this.nc);
+
+    // Discovery of the issued generation (SPEC 13.15): the ISSUER wrote the accepted reference
+    // under the token this launch was handed; the broker admits the read only under this
+    // connection's own per-key grant. What comes back must name this incarnation, and a fresh
+    // connection re-reads it: the generation is bound to the credential the transport presented,
+    // never to a file that may have been replaced under it.
+    if (this.acceptedToken !== undefined) {
+      const ref = await readAcceptedRow(this.nc, this.space, this.acceptedToken);
+      const uid = this.requireLifecycleUid("an issued endpoint");
+      if (ref.owner !== this.owner || ref.actor !== this.actor || ref.uid !== uid)
+        throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
+      this.issuedGeneration = ref.generation;
+    }
 
     if (this.doWatch || this.doRegister) {
       const kvm = new Kvm(this.nc);
@@ -1046,6 +1319,12 @@ export class CotalEndpoint extends EventEmitter {
       this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.authed });
       if (watchChannels) await this.startChannelWatch();
     }
+
+    // Rebind the daemon's lease-loss watch onto the fresh connection (#1596). The intent survived
+    // clearConnectionScoped; a bind that completes after a stop or another rebuild found no intent
+    // and released itself. The replay re-delivers the row's current state, so a change that landed
+    // in the null window still reaches the trigger.
+    if (this.leaseWatchIntent) await this.bindDeliveryLeaseWatch();
 
     // FAIL BEFORE PRESENCE (SPEC 13.1): an AUTHED endpoint that will register on the roster or
     // bind lifecycle-keyed consumers must hold its launcher-supplied lifecycle uid BEFORE anything
@@ -1090,7 +1369,21 @@ export class CotalEndpoint extends EventEmitter {
     }
 
     if (this.doRegister) {
-      await this.publishPresence();
+      // #1356: this await is bounded already — a refused presence write returns no response at all,
+      // so it surfaces as the JetStream request TIMEOUT (~5s), once, with no retry here. What it did
+      // NOT do was say what failed: the bare `timeout` names no bucket, no space and no subsystem,
+      // and a launcher that catches it has nothing to act on. The lifecycle-proof failure a few lines
+      // above throws a fully explanatory message; this one is held to the same standard. Still fails
+      // rather than degrading — SPEC 13.1 fail-before-presence means a registering agent that cannot
+      // publish presence must not come up as though it had.
+      try {
+        await this.publishPresence();
+      } catch (e) {
+        const detail = (e as Error)?.message ?? String(e);
+        throw new Error(
+          `presence registration failed for ${this.card.id}: the space's presence KV bucket "${presenceBucket(this.space)}" did not accept this endpoint's first write (${detail}). The bucket can be OPENED and WATCHED while refusing every write, so a healthy-looking connection does not rule this out; a broker whose store has latched refuses until it is restarted, and no client can clear it (#1356).`,
+        );
+      }
       this.heartbeatTimer = setInterval(() => {
         this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }, this.heartbeatMs);
@@ -1127,6 +1420,10 @@ export class CotalEndpoint extends EventEmitter {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   private clearConnectionScoped(): void {
+    if (this.authExpiryReconnectTimer) {
+      clearTimeout(this.authExpiryReconnectTimer);
+      this.authExpiryReconnectTimer = undefined;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
@@ -1143,6 +1440,8 @@ export class CotalEndpoint extends EventEmitter {
       }
     }
     this.streamMsgs.length = 0;
+    this.presenceEpoch++;
+    this.presenceRebind = undefined;
     try {
       this.presenceWatchIter?.stop();
     } catch {
@@ -1155,6 +1454,7 @@ export class CotalEndpoint extends EventEmitter {
       /* already closed with the connection */
     }
     this.channelWatchIter = undefined;
+    this.stopDeliveryLeaseWatch();
     for (const sub of this.chatSubs.values()) {
       try {
         sub.unsubscribe();
@@ -1166,7 +1466,15 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
     this.roster.clear();
+    // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
+    // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
+    // connection that observed it. Left behind, a later failure on a different connection inherits it
+    // and is reported as a bucket refusal — measured: a failed bind against an unreachable server
+    // still printed the refusal sentence while `connectionIssue` already said "connection refused".
+    this.clearPresenceWriteFailure();
     this.lastPresenceWatchAt = 0;
+    this.presenceRebindAt = 0;
+    this.presenceWatchEmpty = false;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
     this.joinSeq.clear();
@@ -1201,6 +1509,7 @@ export class CotalEndpoint extends EventEmitter {
    * retry starts with the same empty state as a first attempt. */
   private async closeFailedBind(): Promise<void> {
     const failedNc = this.nc;
+    if (failedNc) this.disableLibraryReconnect(failedNc);
     this.clearConnectionScoped();
     this.nc = undefined;
     this.js = undefined;
@@ -1212,6 +1521,7 @@ export class CotalEndpoint extends EventEmitter {
     this.membershipFeedKv = undefined;
     this.deliveryKv = undefined;
     this.managerLeaseKv = undefined;
+    this.daemonRenewalLeaseRevision = undefined;
     // Handles that armDeliveryControl created on a previous connection: null them so a rebind
     // does not carry a dead protocol's subs forward. Best-effort unsubscribe first (the sub is
     // dead with its connection either way; unsubscribing an already-dead sub is a noop).
@@ -1228,6 +1538,10 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.subs.length = 0;
     if (!failedNc) return;
+    // The old status iterator is stale after nc is cleared, so its close cannot report this edge.
+    // As in doRebuild, teardown itself must announce the no-nc window before closing the socket.
+    this.emit("transport", { connected: false } satisfies TransportState);
+    this.emit("connection", { connected: false });
     // Layered teardown, comments kept OUT of the code span below on purpose: the mutation fixture
     // bin/smoke/mutations/failed-bind-cleanup.json anchors on that span verbatim and the fixture
     // census (bin/smoke/mutation-fixtures.smoke.ts) reddens an anchor that crosses a comment line.
@@ -1275,12 +1589,9 @@ export class CotalEndpoint extends EventEmitter {
   private async tearDownIfStopped(): Promise<boolean> {
     if (!this.stopped) return false;
     const nc = this.nc;
+    if (nc) this.disableLibraryReconnect(nc);
     this.clearConnectionScoped();
-    try {
-      await nc?.drain();
-    } catch {
-      /* already closing */
-    }
+    await this.closeWithoutLibraryReconnect(nc);
     this.nc = undefined;
     return true;
   }
@@ -1323,15 +1634,16 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** The transition: stop the connection-scoped timers FIRST (so nothing live touches
-   *  this.nc during the null window), drop the connection refs, drain the old nc, then
+   *  this.nc during the null window), drop the connection refs, close the old nc, then
    *  rebind + re-arm the supervisor on the fresh connection. clearConnectionScoped is
    *  idempotent, so connectAndBind's own call here is a noop. */
   private async doRebuild(): Promise<void> {
     const oldNc = this.nc;
+    if (oldNc) this.disableLibraryReconnect(oldNc);
     this.reconnecting = true;
     try {
       this.clearConnectionScoped();
-      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before drain.
+      // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
       // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
       if (oldNc && !oldNc.isClosed())
         await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
@@ -1350,16 +1662,13 @@ export class CotalEndpoint extends EventEmitter {
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
+      this.daemonRenewalLeaseRevision = undefined;
       // This is an application-requested epoch teardown, not a transient nats.js blip. The old
       // status iterator is now stale by construction and its close is epoch-dropped, so this line is
       // the authoritative raw-liveness edge for the no-nc window until the new watcher seeds true.
       this.emit("transport", { connected: false } satisfies TransportState);
       this.emit("connection", { connected: false });
-      try {
-        await oldNc?.drain();
-      } catch {
-        /* already closing */
-      }
+      await this.closeWithoutLibraryReconnect(oldNc);
       await this.connectAndBind();
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
@@ -1441,9 +1750,15 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The presence epoch moves first: a bind still awaiting the broker must find it moved
+   *  before any await below gives it a window to install a watch on a stopped endpoint
+   *  (see {@link startPresenceWatch}). */
   async stop(): Promise<void> {
     if (this.stopped) return;
+    if (this.nc) this.disableLibraryReconnect(this.nc);
     this.stopped = true;
+    this.presenceEpoch++;
+    this.presenceRebind = undefined;
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
@@ -1451,6 +1766,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.bearerTimer) clearTimeout(this.bearerTimer);
     if (this.credsTimer) clearTimeout(this.credsTimer);
+    if (this.authExpiryReconnectTimer) clearTimeout(this.authExpiryReconnectTimer);
     for (const watch of this.membershipFeedWatches) {
       watch.stopped = true;
       watch.arm = watch.arm.catch(() => {}).then(async () => {
@@ -1488,6 +1804,7 @@ export class CotalEndpoint extends EventEmitter {
       /* already closed */
     }
     this.channelWatchIter = undefined;
+    this.stopDeliveryLeaseWatch();
     try {
       if (this.doRegister) {
         this.status = "offline";
@@ -1497,10 +1814,16 @@ export class CotalEndpoint extends EventEmitter {
       /* best-effort graceful leave */
     }
     try {
-      await this.nc?.drain();
+      await this.closeWithoutLibraryReconnect(this.nc);
     } catch {
       /* ignore */
     }
+    // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
+    // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
+    // way out. A stopped endpoint has no live basis for "this bucket is refusing writes", and the
+    // duration is computed from `Date.now()`, so a retained record does not merely go stale: it keeps
+    // COUNTING UP for as long as the dead object is held.
+    this.clearPresenceWriteFailure();
   }
 
   // ---- messaging -----------------------------------------------------------
@@ -1726,6 +2049,7 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error("multicastExpecting requires at least one part");
 
     const message = this.casEnvelope(opts);
+    assertPartsSerializable(message.parts);
     // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
     // the ack, and publishMsg deliberately does neither.
     const ack = await this.js.publish(
@@ -1903,7 +2227,10 @@ export class CotalEndpoint extends EventEmitter {
    *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
-    return { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+    const triple = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
+    if (this.acceptedToken === undefined) return triple;
+    if (this.issuedGeneration === undefined) throw new Error("invokeService: the issued generation is not yet discovered on this connection");
+    return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
@@ -2113,6 +2440,7 @@ export class CotalEndpoint extends EventEmitter {
   presenceView(): PresenceView {
     if (!this.doWatch) return { state: "current", fresh: true };
     if (!this.presenceSnapshotPopulated) return { state: "unpopulated", fresh: false };
+    if (this.presenceWatchEmpty) return { state: "current", fresh: true };
     const staleSince = this.lastPresenceWatchAt + this.ttlMs;
     if (Date.now() < staleSince) return { state: "current", fresh: true };
     return { state: "stale", fresh: false, staleSince };
@@ -2140,6 +2468,13 @@ export class CotalEndpoint extends EventEmitter {
 
   async setStatus(status: PresenceStatus): Promise<void> {
     this.status = status;
+    await this.publishPresence();
+  }
+
+  /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.condition = condition ?? undefined;
+    this.conditionRevision++;
     await this.publishPresence();
   }
 
@@ -2584,11 +2919,14 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
-   *  reclaims its ephemeral consumer before the promise rejects. */
+   *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
+   *  (#1413): every field present on a row was checked by the drain before the row was
+   *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
+   *  returned with that member silently `undefined`. */
   async channelHistory(
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal },
-  ): Promise<CotalMessage[]> {
+  ): Promise<HistoryMessage[]> {
     // history from any sender
     return (await this.streamHistory(
       chatStream(this.space),
@@ -2638,7 +2976,7 @@ export class CotalEndpoint extends EventEmitter {
   async multiChannelHistory(
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
-  ): Promise<{ channel: string; msg: CotalMessage }[]> {
+  ): Promise<{ channel: string; msg: HistoryMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
       if (!isConcreteChannel(channel))
         throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
@@ -2670,7 +3008,7 @@ export class CotalEndpoint extends EventEmitter {
     const batches: string[][] = [];
     for (let i = 0; i < subjects.length; i += size)
       batches.push(subjects.slice(i, i + size));
-    const pages: { seq: number; subject: string; msg: CotalMessage }[][] = new Array(batches.length);
+    const pages: { seq: number; subject: string; msg: HistoryMessage }[][] = new Array(batches.length);
     let next = 0;
     const readBatch = async (): Promise<void> => {
       for (;;) {
@@ -2747,8 +3085,11 @@ export class CotalEndpoint extends EventEmitter {
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
    *  active pull and reclaims its ephemeral consumer. God-view only:
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
-   *  skips for them — only an `admin`-profile cred can read it. */
-  async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<CotalMessage[]> {
+   *  skips for them — only an `admin`-profile cred can read it. Returns `HistoryMessage[]`
+   *  (#1413): every field present on a row was checked by the drain before the row was
+   *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
+   *  returned with that member silently `undefined`. */
+  async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
     // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
     return (await this.streamHistory(
       dmStream(this.space),
@@ -2788,7 +3129,7 @@ export class CotalEndpoint extends EventEmitter {
     limit: number,
     before?: number,
     signal?: AbortSignal,
-  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
+  ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     if (!this.nc) throw new Error("endpoint not started");
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
@@ -2991,9 +3332,9 @@ export class CotalEndpoint extends EventEmitter {
     ceiling: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<{ seq: number; subject: string; msg: CotalMessage }[]> {
+  ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     signal?.throwIfAborted();
-    const out: { seq: number; subject: string; msg: CotalMessage }[] = [];
+    const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
@@ -3078,6 +3419,7 @@ export class CotalEndpoint extends EventEmitter {
           continue;
         }
         if (s.type === "reconnect") {
+          this.armAuthExpiryReconnectFence(nc);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
           continue;
         }
@@ -3124,6 +3466,7 @@ export class CotalEndpoint extends EventEmitter {
 
   private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
+    assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
     await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
   }
@@ -3298,8 +3641,27 @@ export class CotalEndpoint extends EventEmitter {
     return this.deliveryKv;
   }
 
+  /** This endpoint instance's LEASE INCARNATION: which run of this principal a lease row was written
+   *  by. Minted per construction and never re-derived, because the credential cannot supply it, the
+   *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
+   *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
+  private readonly leaseIncarnation = randomUUID();
+
   private encodeLease(ready: boolean): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+  }
+
+  /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
+   *  just failed has to answer before it decides whether it still owns the shard.
+   *
+   *  Both halves are required. `holder` alone is not sufficient (a successor daemon re-reading the
+   *  same creds file presents the same principal, so its row would read as ours), and `incarnation`
+   *  alone is not sufficient either, it is a bare uuid with no claim to the principal, so a row
+   *  bearing ours but a foreign holder is not something we should ever adopt. A row with NO
+   *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
+   *  to the takeover path rather than to serving on someone else's claim. */
+  ownsDeliveryLease(info: DeliveryLeaseInfo): boolean {
+    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
   }
 
   /** Acquire the single-flight delivery lease for a shard via an ATOMIC CAS create, marked NOT-ready.
@@ -3318,6 +3680,19 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(true), revision);
   }
 
+  /** Flip the held lease back to NOT-ready, the counterpart to {@link markDeliveryLeaseReady}, for a
+   *  holder that has UNBOUND its loops and control responder but has not given up the shard.
+   *
+   *  `ready` is a claim about the RESPONDER, not about the row's existence: `ensureDelivery` waits on
+   *  it and the channel-health surface reports it. A daemon that goes quiet to re-check its ownership
+   *  still holds the key, so without this the space would be told a responder is up while nothing is
+   *  bound, a readiness lie of exactly the kind #1318 is about, just pointed the other way. Keeping
+   *  the row (rather than deleting it) is deliberate: the shard is still claimed, so no third daemon
+   *  should be invited in; what is being withdrawn is only the claim to be answering. */
+  async markDeliveryLeaseNotReady(shardIndex: number, revision: number): Promise<number> {
+    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(false), revision);
+  }
+
   /** Renew the held lease (CAS `kv.update` against `revision`, keeping `ready:true`) to refresh it before
    *  the bucket TTL expires it. Returns the new revision. Throws if the revision moved (lost the lease —
    *  the daemon should exit). */
@@ -3326,12 +3701,31 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort — a crash just lets the bucket TTL expire it). */
-  async releaseDeliveryLease(shardIndex: number): Promise<void> {
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex)); }
+   *  effort, a crash just lets the bucket TTL expire it).
+   *
+   *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
+   *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
+   *  paths that matter most are precisely the ones where another daemon has taken the shard, so the
+   *  departing process would delete the REPLACEMENT's lease on its way out and leave the shard with
+   *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
+   *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
+   *  on is left alone.
+   *
+   *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
+   *  process no longer holds a revision it can argue for", which is the takeover paths' honest
+   *  answer and correctly releases nothing, the bucket TTL is the crash-safe authority and expires
+   *  a genuinely stale row. But if that were the DEFAULT, every existing `releaseDeliveryLease(0)`
+   *  call site would keep compiling and silently stop releasing: the same omission hole
+   *  `standaloneConnectOpts` closed by deleting its `= {}`. Measured, not theorised, this landed as
+   *  a red in `smoke:delivery-lease`, where a caller that genuinely held the lease released nothing
+   *  and the next acquire was refused. A caller must now say which it means. */
+  async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
+    if (revision === undefined) return;
+    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
     catch {
       // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
-      // and clean shutdown must continue even when the broker is already gone or draining.
+      // and clean shutdown must continue even when the broker is already gone or draining. A refused
+      // CAS lands here too, which is the correct outcome, someone else owns the row.
     }
   }
 
@@ -3339,9 +3733,68 @@ export class CotalEndpoint extends EventEmitter {
    *  READ-ONLY surface — drives Component 6's `cotal_channels` delivery-health field (an agent reads it
    *  under its own cred, which holds lease-bucket read but no write). */
   async readDeliveryLease(shardIndex: number): Promise<DeliveryLeaseInfo | undefined> {
+    return (await this.readDeliveryLeaseEntry(shardIndex))?.info;
+  }
+
+  /** Watch THIS shard's lease key and nothing else, for the daemon's loss trigger (#1596).
+   *
+   *  A KV watch is the native JetStream push for "the row changed hands NOW": a filtered ordered
+   *  consumer on the lease bucket delivers the row's own writes the moment the broker applies them,
+   *  instead of the daemon waiting for its next renew tick to notice. The watch is a TRIGGER, never a
+   *  decision: every event is handed to `onEvent` with the row as the broker now states it (PUT) or
+   *  the fact it is gone (DEL/PURGE, `info` undefined), and the caller re-runs the SAME decision tree
+   *  its renew tick would (`leaseAction`, `mayServeOn`, `readOwnLease`-style ownership tests). An
+   *  event the daemon itself caused (its acquire, its renew, its ready flip) is an ordinary input to
+   *  that tree — the row still reads `held` by this endpoint — so it never quiesces on its own write;
+   *  no event filtering happens here.
+   *
+   *  Like the presence watch, this survives a connection rebuild as INTENT: the iterator dies with
+   *  its connection and {@link connectAndBind} rebinds it onto the fresh one, so a reconnect can
+   *  never leave the daemon blind to the row for the rest of its life. The rebind replays the
+   *  bucket's current last-per-subject state, so a change that landed during the null window is
+   *  delivered on the fresh watch. Resolves a stop handle. */
+  async watchDeliveryLease(shardIndex: number, onEvent: (info: DeliveryLeaseInfo | undefined) => void): Promise<() => void> {
+    this.leaseWatchIntent = { shardIndex, onEvent };
+    await this.bindDeliveryLeaseWatch();
+    return () => {
+      if (this.leaseWatchIntent?.onEvent !== onEvent) return; // a later watch owns the slot
+      this.leaseWatchIntent = undefined;
+      this.stopDeliveryLeaseWatch();
+    };
+  }
+
+  private stopDeliveryLeaseWatch(): void {
+    try { this.leaseWatchIter?.stop(); } catch { /* already closed with its connection */ }
+    this.leaseWatchIter = undefined;
+  }
+
+  private async bindDeliveryLeaseWatch(): Promise<void> {
+    const intent = this.leaseWatchIntent!;
+    const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
+    if (this.leaseWatchIntent !== intent) {
+      try { iter.stop(); } catch { /* already closed */ }
+      return;
+    }
+    this.leaseWatchIter = iter;
+    void (async () => {
+      for await (const e of iter) {
+        if (this.leaseWatchIter !== iter) break;
+        if (e.operation === "DEL" || e.operation === "PURGE") { intent.onEvent(undefined); continue; }
+        try { intent.onEvent(e.json<DeliveryLeaseInfo>()); } catch { intent.onEvent(undefined); }
+      }
+    })().catch((e) => this.emit("error", e as Error));
+  }
+
+  /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
+   *  CAS release are argued against, so a caller re-establishing ownership after a failed renew
+   *  needs the BROKER's sequence, not the one it last cached: a renew can fail with its write
+   *  already applied (a lost reply, a reconnect mid-request), which leaves the cached revision one
+   *  behind forever and every subsequent CAS refused over a sequence this process itself moved ,
+   *  read as somebody else's takeover, which is the #1318 misreading in a second costume. */
+  async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
     const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
     if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-    try { return e.json<DeliveryLeaseInfo>(); } catch { return undefined; }
+    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }
   }
 
   /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):
@@ -3375,6 +3828,52 @@ export class CotalEndpoint extends EventEmitter {
     }
     return this.managerLeaseKv;
   }
+  /** Take or keep the per-SPACE daemon-credential renewal lease (#1634), returning whether THIS
+   *  instance now holds it. One atomic CAS `create` per pass: it succeeds for whoever arrives first
+   *  and throws for everyone else, so exactly one manager remints even when several share the
+   *  daemon's store. The holder re-`update`s its own key by revision, which both keeps it and proves
+   *  it never lost it. Losing the CAS is an ordinary outcome (a peer holds it) and returns false; it
+   *  never fails a start. A crashed holder's key TTL-expires with the bucket, so the next pass hands
+   *  the lease to a survivor with no operator step. */
+  async holdDaemonRenewalLease(instanceId: string): Promise<boolean> {
+    const kv = await this.managerLeaseRegistry();
+    const held = this.daemonRenewalLeaseRevision;
+    if (held !== undefined) {
+      try {
+        this.daemonRenewalLeaseRevision = await kv.update(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId), held);
+        return true;
+      } catch {
+        // The revision moved (our key TTL-expired and a peer took it). Re-contend below rather than
+        // keep reminting on a lease we no longer hold.
+        this.daemonRenewalLeaseRevision = undefined;
+      }
+    }
+    try {
+      this.daemonRenewalLeaseRevision = await kv.create(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId));
+      return true;
+    } catch {
+      return false; // another manager holds it: exactly one owner is the point
+    }
+  }
+
+  /** Release the renewal lease on a clean stop so a peer takes over at once rather than at the TTL.
+   *  CAS-guarded, so a lease we already lost is never deleted out from under its new holder. */
+  async releaseDaemonRenewalLease(): Promise<void> {
+    const held = this.daemonRenewalLeaseRevision;
+    this.daemonRenewalLeaseRevision = undefined;
+    if (held === undefined) return;
+    try {
+      await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
+    } catch {
+      // Best-effort, like releaseManagerLease: a moved revision means it is not ours, and a broker
+      // failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+    }
+  }
+
+  private encodeDaemonRenewalLease(instanceId: string): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ instanceId, since: Date.now() }));
+  }
+
   private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
     return new TextEncoder().encode(JSON.stringify(info));
   }
@@ -3681,10 +4180,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown> } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity };
     await this.armPlane3();
   }
 
@@ -3692,7 +4191,28 @@ export class CotalEndpoint extends EventEmitter {
    *  id is the authenticated subject sender ({@link serveControl} fail-closes on a mismatch). Validation
    *  is against the durable ACL registry — the SAME KV the reader re-auths against (single source of
    *  truth, no in-memory ledger to drift). */
+  /** Whether an ALREADY-DISPATCHED unit of Plane-3 work may still take effect.
+   *
+   *  Unsubscribing stops NEW work; it cannot recall work already in flight. A handler that entered
+   *  before {@link quiescePlane3} and awaited broker I/O inside it resumes AFTER the freeze, and a
+   *  reviewer traced the ordering that makes that a split rather than a latency blip: the loser
+   *  accepts a unit and awaits, the loser is descheduled, the successor acquires the shard and flips
+   *  its lease READY, then the loser resumes and answers or acks for a shard it no longer holds.
+   *  Subscription counts and parked-pull readings cannot see it, because the effect is the reply and
+   *  the ack rather than the binding.
+   *
+   *  So each work path re-asks HERE, at the point of effect, after its awaits and before it acts.
+   *  The lease keeps one ROW, not one SERVER; this is the half that keeps one server. An unacked
+   *  message is not lost by refusing: a stopped consumer redelivers it to whoever holds the shard
+   *  next, which is the same property quiescing already relies on. */
+  private plane3MayAct(): boolean {
+    return !this.plane3Quiesced;
+  }
+
   private async handleDeliveryControl(req: ControlRequest): Promise<ControlReply> {
+    // FENCE: entered before a quiesce, resuming after it. Answering now would put a second server on
+    // this shard's control rail while the winner is already READY.
+    if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     const caller = req.from.id;
     const args = req.args ?? {};
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
@@ -3704,12 +4224,18 @@ export class CotalEndpoint extends EventEmitter {
       let uid: string;
       try { uid = assertLifecycleToken(args.lifecycleUid); }
       catch (e) { return { ok: false, error: (e as Error).message }; }
-      return { ok: true, data: { memberships: await this.ownerMemberships(caller, uid) } };
+      const memberships = await this.ownerMemberships(caller, uid);
+      // FENCE AFTER THE AWAIT, which is the one that matters. The entry check above cannot catch the
+      // case this exists for: a request admitted WHILE SERVING, then descheduled inside its broker
+      // read, resuming after a successor has taken the shard and reached READY. Re-ask at the point
+      // of effect, so the answer is never served by a daemon that has stood down.
+      if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon stopped serving this shard while the request was in flight; retry" };
+      return { ok: true, data: { memberships } };
     }
     return { ok: false, error: `op "${req.op}" not supported on the delivery control service` };
   }
 
-  /** Validate the channel ARG shape only — non-blank, valid, concrete (NO ACL check, that is op-specific).
+  /** Validate the channel ARG shape only: non-blank, valid, concrete (NO ACL check, that is op-specific).
    *  Returns the channel on success or a ControlReply error to short-circuit. */
   private checkDurableChannelArg(args: Record<string, unknown>, op: string): string | ControlReply {
     const channel = typeof args.channel === "string" ? args.channel.trim() : "";
@@ -3869,6 +4395,77 @@ export class CotalEndpoint extends EventEmitter {
     return Math.max(1, Math.floor(max * 0.9));
   }
 
+  /** Stop serving Plane-3 WITHOUT tearing down the connection, so a daemon that has just learned its
+   *  lease may no longer be its own can stop acting on the shard while it finds out for certain.
+   *
+   *  A COMPARE-AND-SWAP KEEPS ONE LEASE ROW; IT DOES NOT KEEP ONE SERVER. That distinction is the
+   *  reason this exists, and it was a review finding. When a renew fails, the daemon re-reads the
+   *  key and may then re-acquire it, and across that read-then-create it was still consuming the
+   *  fan-out durable, still running the inbox reader, and still answering ctl.delivery. If a
+   *  replacement acquired the shard in that window, both processes served the same durables until
+   *  the loser's create was refused and its teardown finished. The old code did not have this
+   *  window, because it began shutting down on the first renew failure; treating that failure as a
+   *  question instead of a verdict is right, but asking the question while still serving is not.
+   *
+   *  So the daemon goes quiet FIRST and re-arms only once it has proof: `held` on a re-read, or a
+   *  won atomic create. `unknown` stays quiet, the whole point is that not being able to ask is not
+   *  permission to keep acting. Quiescing costs delivery latency for a few seconds; the alternative
+   *  costs a SPLIT durable, which is a correctness failure rather than an availability one.
+   *
+   *  Deliberately not `stop()`: the connection, the lease KV handles and the control rails must stay
+   *  up, because the daemon still has to ask the broker who owns the shard. */
+  async quiescePlane3(): Promise<void> {
+    this.plane3Quiesced = true;
+    if (this.deliveryServeSub) {
+      try { this.deliveryServeSub.unsubscribe(); } catch { /* already dead */ }
+      this.deliveryServeSub = undefined;
+    }
+    if (this.deliveryAdminServeSub) {
+      try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* already dead */ }
+      this.deliveryAdminServeSub = undefined;
+    }
+    // Stopping the consumers ends the `for await` loops that drive fan-out and the reader. In-flight
+    // messages are NOT acked by a stopped consumer, so they redeliver to whoever holds the shard
+    // next: quiescing loses no message, it only stops this process from claiming them.
+    for (const msgs of this.streamMsgs.splice(0)) {
+      try { msgs.stop(); } catch { /* already draining */ }
+    }
+  }
+
+  /** Whether Plane-3 is currently quiesced: unbound, and refusing to re-bind until ownership is proven.
+   *  Read-only. The flag is the daemon's own answer to "am I serving this shard", so a cell that asserts
+   *  a recovery worked can check the endpoint's state rather than inferring it from a log line. */
+  plane3IsQuiesced(): boolean {
+    return this.plane3Quiesced;
+  }
+
+  /** Resume serving Plane-3 after {@link quiescePlane3}, once ownership has been re-established.
+   *  Idempotent, and a no-op when the daemon was never quiesced.
+   *
+   *  The flag is cleared ONLY after every binding is up, and restored if any of them throws. Clearing
+   *  it first looks equivalent and is not: `armPlane3` binds in four stages (`manager`, the two control
+   *  responders, the fan-out consumer, the reader), so a failure at any one leaves the endpoint recorded
+   *  as un-quiesced while some of those are missing. From there every later `rearmPlane3` returns at the
+   *  `!plane3Quiesced` guard WITHOUT attempting to bind, and the caller goes on to flip the lease READY.
+   *  That is a readiness lie surviving a transient broker error, the daemon claims a responder it does
+   *  not have, which is the #1318 outage wearing the readiness flag instead of the exit path. */
+  async rearmPlane3(): Promise<void> {
+    if (!this.plane3Quiesced) return;
+    // `armPlane3` refuses while quiesced (a reconnect must not resume mid-question), so the flag is
+    // lowered for the attempt and RAISED AGAIN on failure. A partial bind leaves the endpoint quiesced,
+    // which is the honest state: not serving, and a later retry will attempt the whole sequence again.
+    this.plane3Quiesced = false;
+    try {
+      await this.armPlane3();
+    } catch (e) {
+      this.plane3Quiesced = true;
+      // Drop whatever DID bind. Leaving half-bound responders up would answer control requests for a
+      // shard this process has just declared itself not to be serving.
+      this.quiescePlane3();
+      throw e;
+    }
+  }
+
   /** (Re)bind the Plane-3 fan-out writer + trusted reader. Idempotent — the durables resume from their
    *  cursor. Called by {@link startPlane3} once AND by {@link connectAndBind} on every (re)connect, so
    *  the delivery daemon's reconnect RE-ARMS the backstop + the ctl.delivery responder. Without this, a broker blip would silently kill
@@ -3876,6 +4473,10 @@ export class CotalEndpoint extends EventEmitter {
    *  unless this endpoint hosts Plane-3 (`this.plane3` set). */
   private async armPlane3(): Promise<void> {
     if (!this.plane3 || !this.js) return;
+    // A quiesced endpoint must not be re-armed by a RECONNECT: the reconnect path calls this too,
+    // and silently resuming there would restore exactly the double-serving this guards against
+    // while the ownership question is still open.
+    if (this.plane3Quiesced) return;
     await this.manager(); // the manager runs consume:false, so this.jsm is lazy — ensure it
     this.armDeliveryControl();
     await this.runFanout();
@@ -3910,6 +4511,8 @@ export class CotalEndpoint extends EventEmitter {
    *  feed's rw connection, and reply with proof (identities + the adopted JWT windows) — or a
    *  structured failure (e.g. the file was never re-signed), never a silent partial. */
   private async handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> {
+    // FENCE: same reason as the runtime rail above.
+    if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {
       // The renewal owner's EXPECTED-generation tokens (SHA-256 of each JWT it re-signed), per
       // component. A missing entry means "no expectation" (the passive backstop still adopts).
@@ -3989,6 +4592,20 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: (e as Error).message };
       }
     }
+    if (req.op === "reloadStoreIdentity") {
+      // Proof that this daemon reloads standing creds from ONE named store. The manager
+      // compares it to its remint store before every renewal pass. Absent hook
+      // is a daemon that cannot name its store, which is itself a divergent composition.
+      if (!this.plane3?.reloadStoreIdentity)
+        return { ok: false, error: "reloadStoreIdentity: this daemon did not name the SecretStore it reloads from" };
+      try {
+        const identity = this.plane3.reloadStoreIdentity();
+        // Round-trip through the closed parser so a hook cannot smuggle extra fields onto the rail.
+        return { ok: true, data: parseSecretStoreIdentity(identity) };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
     return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
@@ -4014,6 +4631,12 @@ export class CotalEndpoint extends EventEmitter {
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  Members KV is scanned FRESH per message (no cache — red-team BLOCKER-1 catch-up correctness). */
   private async fanOutMessage(m: JsMsg): Promise<void> {
+    // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
+    // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
+    // this daemon no longer serves. Returning WITHOUT acking is the whole point - a stopped consumer
+    // redelivers to whoever holds the shard next, so refusing here loses no message, while acking it
+    // would consume the successor's work.
+    if (!this.plane3MayAct()) return;
     const parsed = parseSubject(m.subject);
     if (!parsed || parsed.kind !== "chat") { m.ack(); return; }
     const channel = parsed.rest;
@@ -4022,6 +4645,11 @@ export class CotalEndpoint extends EventEmitter {
     if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
+    // SECOND FENCE, AT THE COMMIT POINT. The entry check above cannot cover this unit's own awaits:
+    // the class read and the member scan below both hit the broker, and a daemon descheduled inside
+    // them can resume after a successor owns the shard. Re-ask immediately before the first WRITE,
+    // and again return without acking so the entry redelivers rather than being consumed here.
+    if (!this.plane3MayAct()) return;
     if ((await this.deliveryClassFresh(channel)) === "durable") {
       for (const rec of await listMembers(await this.membersRegistry(), { channel })) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
@@ -4030,6 +4658,11 @@ export class CotalEndpoint extends EventEmitter {
         // retired lifecycle's inbox, never the alias's new occupant (SPEC 13.1 cross-plane scoping).
         // Store the AUTHENTICATED-channel copy (main's normalization): the durable frame validates
         // msg.channel === frame.channel, and payload to/toService are stripped.
+        // Per-copy, because the scan above and every publish below is a broker round trip: a fan-out
+        // to fifty members can straddle a quiesce in its middle. Stopping part-way is safe where
+        // stopping late is not - the entry is never acked here, so the successor redelivers it and
+        // re-sends the whole set; publishDinbox is idempotent per (owner, lifecycle, msgID).
+        if (!this.plane3MayAct()) return;
         await this.publishDinbox(rec.owner, rec.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "durable-channel", generation: rec.generation });
       }
     } else {
@@ -4043,9 +4676,14 @@ export class CotalEndpoint extends EventEmitter {
         try { row = await this.aclForAlias(owner); }
         catch (e) { this.emit("error", e as Error); continue; }
         if (!row || !channelInAllow(row.allowSubscribe, channel)) continue; // @mention can't bypass the read ACL
+        if (!this.plane3MayAct()) return;   // same rule on the live-mention path
         await this.publishDinbox(owner, row.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
       }
     }
+    // FINAL FENCE, BEFORE THE ACK ITSELF, which is the real commit: acking tells the stream this
+    // shard's work is done. A daemon that stopped serving mid-fan-out must not make that claim, or
+    // the successor never sees the entry and the message is lost outright rather than duplicated.
+    if (!this.plane3MayAct()) return;
     m.ack();
   }
 
@@ -4070,6 +4708,9 @@ export class CotalEndpoint extends EventEmitter {
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
   private async readerHandle(m: JsMsg): Promise<void> {
+    // FENCE, same rule as the fan-out writer: no effect and no ack once this daemon has stopped
+    // serving the shard. The entry redelivers to the holder rather than being consumed here.
+    if (!this.plane3MayAct()) return;
     const pr = parseDinboxPrincipal(m.subject);
     if (!pr) { m.ack(); return; } // unparseable subject (incl. a pre-cut 5-segment form) — not a real entry
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
@@ -4104,6 +4745,11 @@ export class CotalEndpoint extends EventEmitter {
       // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut.
       if (!rec || !durableEligible(rec.record, entry.seq)) { m.ack(); return; }
     }
+    // COMMIT-POINT FENCE. Everything above this line is broker I/O - the ACL read and the member
+    // re-read - so the entry check at the top of the handler is stale by now if this unit was
+    // descheduled inside either. The transfer below is the effect that must not happen on behalf of
+    // a shard we no longer serve; returning without acking leaves it for the holder.
+    if (!this.plane3MayAct()) return;
     try {
       // DLV has no original chat subject, so preserve the channel the trusted fan-out reader derived
       // from CHAT. Never let the publisher-controlled payload label choose connector attention.
@@ -4133,6 +4779,11 @@ export class CotalEndpoint extends EventEmitter {
       m.nak(2000);
       return;
     }
+    // The ack is the last commit: the transfer above already happened, so the only question left is
+    // whether THIS daemon may retire the source entry. If it stopped serving mid-transfer, leave the
+    // entry pending - the successor re-transfers and stream-wide dedupe on the msgID collapses the
+    // duplicate, which is the recoverable direction. Acking here is the unrecoverable one.
+    if (!this.plane3MayAct()) return;
     m.ack();
   }
 
@@ -4829,6 +5480,8 @@ export class CotalEndpoint extends EventEmitter {
       // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
       ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
       status: this.status,
+      condition: this.condition,
+      environment: this.environment,
       activity: this.activity,
       attention: this.attentionMode,
       channelModes: this.channelModes,
@@ -4838,18 +5491,119 @@ export class CotalEndpoint extends EventEmitter {
     // the publisher — this covers stop(), setStatus("offline"), and any future offline publish site, so
     // the raw KV record is compliant, not only the observer-side roster materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
-    await this.kv.put(this.card.id, JSON.stringify(record));
+    // #1356: this put can still be in flight when a teardown runs, because a rebind reaches
+    // publishPresence through onPresenceBucketEmpty and no teardown awaits that flight. Take the same
+    // epoch fence {@link startPresenceWatch} takes, so a put that outlives its epoch still throws to
+    // its caller but no longer writes presence-refusal state belonging to a later connection. Without
+    // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
+    // refusal on the connection that just published successfully.
+    const epoch = this.presenceEpoch;
+    const conditionRevision = this.conditionRevision;
+    // #1461: snapshot the put's generation BEFORE the put. A settle (success or rejection) is the
+    // latest evidence on its epoch only while no put that started after it has ALREADY settled —
+    // a newer put merely in flight is not evidence yet. Same-epoch puts overlap routinely
+    // (heartbeat 2s against a ~5s JetStream put timeout), so "succeeded" alone is not "newest".
+    const generation = ++this.presencePutGeneration;
+    try {
+      await this.kv.put(this.card.id, JSON.stringify(record));
+    } catch (e) {
+      // #1356: a broker can put this bucket into a state where it refuses every write and never
+      // recovers, and the write is the ONLY thing that fails — open and watch both still succeed, so
+      // nothing else here notices. Record WHEN the refusals started, at the one site that knows the
+      // failing write was a presence write; a caller cannot infer that from the generic `warning`
+      // stream, which carries any recoverable error.
+      //
+      // #1461: a rejection speaks when it is the newest SETTLED evidence — a newer put that has
+      // merely started does not silence it, but a newer put that already settled (either way)
+      // does.
+      const superseded = (this.presencePutSettled ?? 0) > generation;
+      this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
+      if (epoch === this.presenceEpoch && !this.stopped && !superseded) {
+        this.presenceWriteFailingSince ??= Date.now();
+        this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
+      }
+      throw e;
+    }
+    // A late SUCCESS cannot erase a refusal from newer evidence. Two fences, each answering half:
+    // the epoch fence (#1356) keeps a put that outlives its connection from writing or erasing a
+    // record that belongs to a later connection; the generation fence (#1461) orders puts WITHIN
+    // one epoch by SETTLE order, not start order: a settle is the latest evidence only while no
+    // put that started after it has already settled, whichever way that newer put settled. So an
+    // earlier put settling AFTER a later put settled no longer speaks — success cannot clear a
+    // newer refusal (#1461's original case), and a newer settle is not blocked by being merely
+    // started (panel round 1). Without the fence, an earlier put succeeding late cleared a later
+    // put's refusal while the bucket still refused writes (heartbeat 2s against a ~5s put timeout,
+    // so the overlap is routine rather than a corner).
+    const superseded = (this.presencePutSettled ?? 0) > generation;
+    this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
+    if (epoch !== this.presenceEpoch || this.stopped || superseded) return;
+    // Presence writes may overlap. If this put carried an older condition, repair the KV with the
+    // latest local state before returning so a late failure publish cannot resurrect after a new
+    // turn cleared it. The revision is condition-specific; unrelated heartbeat overlap is unchanged.
+    if (conditionRevision !== this.conditionRevision) {
+      await this.publishPresence();
+      return;
+    }
+    this.clearPresenceWriteFailure();
   }
 
-  private async startPresenceWatch(): Promise<void> {
-    if (!this.kv) return;
+  /** #1356: drop the presence-refusal record when the connection that OBSERVED those refusals goes
+   *  away. "This bucket is refusing writes" is a claim about a specific broker connection; once that
+   *  connection is torn down or rebuilt the claim has no remaining basis, and a later failure on a
+   *  fresh connection must establish it again from its own evidence.
+   *
+   *  Cleared at the SOURCE rather than guarded at each reader, because a guard protects one consumer
+   *  and clearing protects every consumer, including ones not yet written. Measured: without this, a
+   *  failed bind against an unreachable server still reported the presence-refusal sentence while the
+   *  endpoint's own `connectionIssue` already said "connection refused". */
+  private clearPresenceWriteFailure(): void {
+    this.presenceWriteFailingSince = undefined;
+    this.lastPresenceWriteError = undefined;
+  }
+
+  /** #1356: the presence bucket has been refusing writes since this time, or `undefined` when the
+   *  last publish succeeded. Cleared by a successful write that is the latest evidence on its
+   *  epoch (#1461), so a survived blip reads as healthy and only a SUSTAINED failure carries a
+   *  duration.
+   *
+   *  Presence writes are the CANARY, not the scope: the broker can disable JetStream account-wide
+   *  while the NATS connection stays up, so a caller must not read this as "only presence is
+   *  affected". It reports what was observed, not how far the fault extends. */
+  presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+    if (this.presenceWriteFailingSince === undefined) return undefined;
+    return {
+      since: this.presenceWriteFailingSince,
+      forMs: Date.now() - this.presenceWriteFailingSince,
+      error: this.lastPresenceWriteError,
+      bucket: presenceBucket(this.space),
+    };
+  }
+
+  /** Bind a presence watch on the current connection. Resolves true when the watch was
+   *  installed, false when the endpoint stopped or rebuilt while the bind was in flight: that
+   *  bind's iterator is released here and nothing is installed, because the epoch that asked
+   *  for it is gone and the epoch that replaced it binds its own watch through
+   *  {@link connectAndBind}. Without this fence a bind that completes after {@link stop} would
+   *  resurrect a watch on a stopped endpoint, and one that completes after a rebuild would
+   *  overwrite the fresh epoch's watch with a dead-connection iterator. */
+  private async startPresenceWatch(): Promise<boolean> {
+    if (!this.kv) return false;
+    const epoch = this.presenceEpoch;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
+    if (epoch !== this.presenceEpoch) {
+      try { iter.stop(); } catch { /* its connection may already be gone */ }
+      hydrated();
+      return false;
+    }
     this.presenceWatchIter = iter;
     void (async () => {
       let ready = false;
       for await (const e of iter) {
+        // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
+        // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
+        if (this.presenceWatchIter !== iter) break;
         this.handleKvEntry(e);
         // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
         if (!ready && e.isUpdate) {
@@ -4861,6 +5615,58 @@ export class CotalEndpoint extends EventEmitter {
       }
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
+    return true;
+  }
+
+  /**
+   * Replace a presence watch that has gone silent past TTL while the connection is up. The new
+   * ordered consumer starts from the bucket's current last-per-subject state, so a peer that is
+   * heartbeating is re-observed within one replay and a peer that is gone is aged out by the
+   * next sweep exactly as if the watch had never stalled. Rate-limited to one attempt per TTL
+   * per observer, never overlapping, never on a stopped or rebuilding endpoint (those own their
+   * watch through {@link connectAndBind}). A stop or rebuild that lands while the bind is in
+   * flight retires it: {@link startPresenceWatch} releases the late iterator and reports
+   * nothing, since the epoch that was silent no longer exists. A failed bind is reported and
+   * the view stays stale.
+   */
+  private rebindStalePresenceWatch(now: number): void {
+    if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
+    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;
+    this.presenceRebindAt = now;
+    const old = this.presenceWatchIter;
+    const epoch = this.presenceEpoch;
+    this.presenceRebind = (async () => {
+      try {
+        const silentMs = now - this.lastPresenceWatchAt;
+        // Bind the replacement FIRST. A rebind the broker refuses (stream gone, create denied) or
+        // one a held link never answers must leave the old watch in place: on a plain stall that
+        // watch is the one that recovers by itself, and its replay is still guarded against
+        // expired PUTs. Only a successfully bound watch retires its predecessor.
+        const installed = await this.startPresenceWatch();
+        // Retired mid-bind (stop or rebuild moved the epoch): the late iterator is already
+        // released and the old watch was torn down by whoever moved the epoch. Nothing to
+        // retire, nothing to report.
+        if (!installed) return;
+        if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
+        // A bucket with no keys replays nothing, so the new watch cannot refresh
+        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. Read
+        // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
+        // from the same `info(true)` it used to place the isUpdate marker.
+        const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
+        if (pending === 0) await this.onPresenceBucketEmpty();
+        this.emit("warning", new Error(
+          `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
+        ));
+      } catch (e) {
+        // A bind the epoch swap itself rejected (connection drained under it) is not a fault of
+        // the epoch that replaced it; only a refusal on a still-current epoch is reported.
+        if (epoch === this.presenceEpoch) this.emit("error", e as Error);
+      } finally {
+        // An epoch swap already disowned this flight (and may own a successor's by now); only
+        // a flight still in its own epoch clears the slot. Within one epoch there is one flight.
+        if (epoch === this.presenceEpoch) this.presenceRebind = undefined;
+      }
+    })();
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
@@ -4898,8 +5704,64 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The watch was just bound onto a bucket with no keys.
+   *
+   *  A NON-REGISTERING observer (a `cotal status` probe, a lease checker) has real knowledge:
+   *  nobody is present. Every peer still in its roster is known gone (its key is not there to
+   *  replay), so it is marked offline now rather than aged out against a delivery that cannot
+   *  come; the silence gate is disarmed and the view reads current until the first write lands.
+   *  Without that the empty-bucket view relapsed to stale one window later and rebound again on
+   *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
+   *
+   *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
+   *  empty bucket under it means the bucket was wiped since its last heartbeat (the stream
+   *  recreation), and the same wipe took every peer's record: their absence says the bucket is
+   *  new, not that they left. a reviewer reproduced the previous behaviour at default timing:
+   *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
+   *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
+   *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
+   *  which the new watch delivers, and lets the ordinary per-peer age-out run from that delivery:
+   *  a peer that is still heartbeating rewrites its key within its own heartbeat interval and is
+   *  re-observed live; one that is gone ages out exactly as after a plain rebind. The roster is
+   *  not touched here and the view is not held; the delivery is what makes it current.
+   *
+   *  What neither branch covers: a consumer that dies again while the bucket is still empty is
+   *  not detectable by silence, so the first write after that is missed until the observer
+   *  restarts. */
+  private async onPresenceBucketEmpty(): Promise<void> {
+    if (this.doRegister) {
+      // Our own key is missing from a bucket we write to: put it back. publishPresence throws on
+      // a refused write; that surfaces through the rebind flight's error path with the epoch
+      // fence intact, and the view stays stale, which is the honest state for an observer that
+      // cannot even record itself.
+      await this.publishPresence();
+      return;
+    }
+    this.markPresenceBucketEmpty();
+  }
+
+  /** See {@link onPresenceBucketEmpty}: the non-registering branch. */
+  private markPresenceBucketEmpty(): void {
+    this.presenceWatchEmpty = true;
+    this.lastPresenceWatchAt = 0;
+    let changed = false;
+    for (const [id, p] of this.roster) {
+      if (p.status === "offline") continue;
+      const offline = this.toOffline(p);
+      this.roster.set(id, offline);
+      this.emit("presence", { type: "offline", presence: offline });
+      changed = true;
+    }
+    if (changed) this.emit("roster", this.getRoster());
+    this.emitPresenceViewIfChanged();
+  }
+
   private handleKvEntry(e: KvEntry): void {
+    // Provisioning uses this one reserved key to prove the bucket's max_age is enforced (#404).
+    // It is maintenance traffic, never a peer identity, an offline transition, or view freshness.
+    if (e.key === TTL_RECONCILE_CANARY_KEY) return;
     this.lastPresenceWatchAt = Date.now();
+    this.presenceWatchEmpty = false;
     if (e.operation === "DEL" || e.operation === "PURGE") {
       this.markOffline(e.key);
       return;
@@ -4919,7 +5781,11 @@ export class CotalEndpoint extends EventEmitter {
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
     // mis-keyed record even if a broad writer slips one in under another agent's key.
-    if (raw.card?.id !== id) return;
+    if (raw.card?.id !== id) {
+      this.presenceBindingDrops++;
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(id)}: card.id ${JSON.stringify(raw.card?.id)} does not match its KV key`));
+      return;
+    }
     const prev = this.roster.get(id);
     const stale = Date.now() - raw.ts > this.ttlMs;
     // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
@@ -4961,6 +5827,8 @@ export class CotalEndpoint extends EventEmitter {
       prev.lifecycleUid === p.lifecycleUid &&
       prev.status === p.status &&
       prev.activity === p.activity &&
+      sameCondition(prev.condition, p.condition) &&
+      prev.environment === p.environment &&
       prev.attention === p.attention &&
       sameChannelModes(prev.channelModes, p.channelModes)
     ) {
@@ -5011,11 +5879,29 @@ export class CotalEndpoint extends EventEmitter {
     // watch freshness; surface the view as stale instead.
     if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
       this.emitPresenceViewIfChanged();
+      // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
+      // the transport is up and the watch's own consumer is what died. Measured on a live deployment
+      // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
+      // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
+      // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client
+      // never reset again, the iterator never closed, and the manager's roster stayed frozen at
+      // the pre-recreation snapshot for hours: `cotal ps` read every older seat "mesh offline"
+      // and every newer seat "not in roster" while all of them were heartbeating. The same
+      // end state follows a plain consumer delete (an operator, or the 5-minute inactive
+      // threshold after a long stall). Rebind the watch from the bucket's CURRENT state; a held
+      // link's rebind fails or stays silent and the view simply stays stale, as before.
+      this.rebindStalePresenceWatch(now);
       return;
     }
     let changed = false;
     for (const [id, p] of this.roster) {
-      if (p.status !== "offline" && now - p.ts > this.ttlMs) {
+      // A peer's own `ts` always trails the observer's last delivery, so "older than TTL by the
+      // wall clock" alone ages peers out on the tick just before the whole-bucket gate above
+      // trips (#1311's flap; measured as 3 offline verdicts per silence in the rebind suite).
+      // Require that the watch itself delivered for a full TTL after this peer's last heartbeat:
+      // then other peers were heard and this one was not, which is the only silence that is the
+      // peer's rather than the observer's.
+      if (p.status !== "offline" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {
         const offline = this.toOffline(p);
         this.roster.set(id, offline);
         this.emit("presence", { type: "offline", presence: offline });
@@ -5062,23 +5948,24 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
  *  unparseable subject, or `from.id !== parsed.sender` (SPEC §5). This derives the remaining
  *  routing tokens from the subject for rows that survived — it does not rewrite a mismatched
  *  `from.id`. Live tails, channel backfill, and channel recall skip the mismatch; history
- *  does the same (#388). */
-function authenticatedMessage(msg: CotalMessage, parsed: ParsedSubject): CotalMessage {
+ *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
+ *  row type already verified stays verified (#1413). */
+function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
   if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
   if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
   return msg;
 }
 
-function authenticatedChannelMessage(msg: CotalMessage, channel: string): CotalMessage {
-  if (msg.channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
+function authenticatedChannelMessage<M extends CotalMessage>(msg: M, channel: string): CotalMessage & M {
+  if ((msg as CotalMessage).channel === channel && msg.to === undefined && msg.toService === undefined) return msg;
   const { to: _to, toService: _toService, ...base } = msg;
-  return { ...base, channel } as CotalMessage;
+  return { ...base, channel } as CotalMessage & M;
 }
 
-function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
-  if (msg.to === to && msg.channel === undefined && msg.toService === undefined) return msg;
+function authenticatedDmMessage<M extends CotalMessage>(msg: M, to: string): CotalMessage & M {
+  if (msg.to === to && (msg as CotalMessage).channel === undefined && msg.toService === undefined) return msg;
   const { channel: _channel, toService: _toService, ...base } = msg;
-  return { ...base, to } as CotalMessage;
+  return { ...base, to } as CotalMessage & M;
 }
 
 /** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
@@ -5086,7 +5973,7 @@ function authenticatedDmMessage(msg: CotalMessage, to: string): CotalMessage {
  *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
  *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
  *  god-view history must include the viewer's own sends. */
-function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): CotalMessage | undefined {
+function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): HistoryMessage | undefined {
   let raw: unknown;
   try {
     raw = m.json();
@@ -5094,10 +5981,55 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): C
     return undefined;
   }
   if (!isHistoryDrainEnvelope(raw)) return undefined;
+  if (!isVerifiedHistoryRow(raw)) return undefined;
   const parsed = parseSubject(m.subject);
   if (!parsed || !isPrincipalOwnerToken(parsed.owner)) return undefined;
   if (raw.from.id !== parsed.sender) return undefined;
   return authenticatedMessage(raw, parsed);
+}
+
+/** A row `isHistoryDrainEnvelope` admitted: object envelope, usable `id`, object `from` — the
+ *  drain's own MINIMAL row type, what it checked and nothing more (#1413). Distinct from both
+ *  `CotalMessage` (which promises more than the drain verified) and `HistoryMessage` (the
+ *  PUBLIC row, whose every present field the drain checked before returning it). */
+type HistoryDrainEnvelope = {
+  id: string;
+  from: { id: unknown; name?: unknown; role?: unknown };
+  [key: string]: unknown;
+};
+
+/** The members `HistoryMessage` promises beyond the drain envelope (#1413): a full
+ *  `EndpointRef` (`from.name`, and `from.role` only when a string), a finite `ts`, a string
+ *  `space`, `parts` the drain could read, and the optional members in their promised shape
+ *  when present. Every field the PUBLIC row type promises is checked here, before the row is
+ *  returned. A row missing one is dropped, never returned with that member silently
+ *  `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`
+ *  or `msg.from.name` must not be able to reach one that was never there. Nothing is invented
+ *  for an absent field.
+ *
+ *  `parts` is held to READABLE, not to `isMessagePart`: every member must be an object with a
+ *  string `kind` (so `partsToText` can read `part.kind` without throwing), but a keyless
+ *  `{kind:"data"}` row from a pre-#1404 producer is not dropped — history must surface it.
+ *  `mentions`, `replyTo`, and `contextId` keep exactly their `CotalMessage` shapes when
+ *  present: an array of strings, a string, a string. */
+function isVerifiedHistoryRow(row: HistoryDrainEnvelope): row is HistoryDrainEnvelope & HistoryMessage {
+  if (typeof row.from.name !== "string") return false;
+  if (row.from.role !== undefined && typeof row.from.role !== "string") return false;
+  if (typeof row.ts !== "number" || !Number.isFinite(row.ts)) return false;
+  if (typeof row.space !== "string") return false;
+  if (!Array.isArray(row.parts) || !row.parts.every(isReadableMessagePart)) return false;
+  if (row.mentions !== undefined &&
+      (!Array.isArray(row.mentions) || !row.mentions.every((name) => typeof name === "string"))) return false;
+  if (row.replyTo !== undefined && typeof row.replyTo !== "string") return false;
+  if (row.contextId !== undefined && typeof row.contextId !== "string") return false;
+  return true;
+}
+
+/** A part `partsToText` can read without throwing: an object with a string `kind` (#1413).
+ *  Deliberately weaker than `isMessagePart` — a keyless `{kind:"data"}` part passes here —
+ *  because history must surface rows a pre-#1404 producer wrote, not drop them. */
+function isReadableMessagePart(value: unknown): boolean {
+  return isRecord(value) && typeof value.kind === "string";
 }
 
 /**
@@ -5106,13 +6038,15 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): C
  * lets `authenticatedMessage` take the row without a cast.
  *
  * Does NOT verify SPEC §5 message shape. It does not require a string `from.id` (the SPEC §5
- * comparison still rejects a mismatch), exactly one route key, a finite `ts`, a string
- * `space`, a full EndpointRef `from` (`name`/`role`), or well-formed `parts`. Those belong
- * to `isCotalMessage` (Plane-3). History must not use that guard: a public
- * `unicast(..., { parts: [{ kind: "data", data: undefined }] })` serializes to `{kind:"data"}`
- * and must still surface.
+ * comparison still rejects a mismatch) or exactly one route key. The members the PUBLIC
+ * history row promises beyond this envelope — a full EndpointRef `from` (`name`/`role`), a
+ * finite `ts`, a string `space` — are checked by {@link isVerifiedHistoryRow} before the row
+ * is returned (#1413). Well-formed `parts` still belong to `isCotalMessage` (Plane-3), and
+ * history must not use that guard: a publisher now REFUSES a `data` part carrying a non-JSON
+ * value, but a keyless `{kind:"data"}` row from a pre-fix producer can still sit in a stream,
+ * and history must surface it rather than drop it.
  */
-function isHistoryDrainEnvelope(value: unknown): value is CotalMessage {
+function isHistoryDrainEnvelope(value: unknown): value is HistoryDrainEnvelope {
   return isRecord(value) && isUsableMessageId(value.id) && isRecord(value.from);
 }
 
@@ -5161,6 +6095,77 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+/** A `data` part value the wire can carry faithfully: a JSON value at EVERY depth (SPEC §5's
+ *  `<any JSON value>`). `JSON.stringify` does not reject what it cannot represent — it silently
+ *  rewrites: `undefined` (and a function-valued member) drops the key, `NaN`/`Infinity` store as
+ *  `null`, a `Date` stores as a string, a sparse array's holes store as `null`, a `Map` stores as
+ *  `{}`, a `Buffer` stores as `{"type":"Buffer",...}`. A reader then cannot tell a stored `null`
+ *  from a real one (#1404 fix round). So the producer checks structurally, matching the exported
+ *  `JsonValue`: null, boolean, finite number, string, an array whose every slot (holes included)
+ *  passes, or a plain object (prototype `null` or `Object.prototype`) whose every defined member
+ *  passes. A cycle is refused here too, never left for stringify's TypeError.
+ *
+ *  THE OBJECT/ARRAY ASYMMETRY ON `undefined`: an `undefined`-valued MEMBER of a plain object is
+ *  allowed — stringify drops just that key, which is faithful (and the exported type says so) —
+ *  while `undefined` at the top level or in an ARRAY SLOT is refused, because there stringify
+ *  cannot drop a position: it stores `null`, which is a rewrite a reader cannot distinguish from
+ *  a real `null`.
+ *
+ *  `seen` is the set of ANCESTORS on the current path, not every object visited: it is deleted
+ *  from on the way out, so a SHARED subtree (`{a: x, b: x}`) passes — stringify carries it twice,
+ *  which is faithful — while an object that contains itself at any depth still reports its path. */
+function jsonPathProblem(path: string, value: unknown, seen: Set<object>): string | undefined {
+  if (value === null) return undefined;
+  const t = typeof value;
+  if (t === "boolean" || t === "string") return undefined;
+  if (t === "number") return Number.isFinite(value) ? undefined : `${path} is not a finite number`;
+  if (t === "undefined" || t === "function" || t === "symbol" || t === "bigint") return `${path} is not a JSON value`;
+  if (typeof value === "object") {
+    if (seen.has(value)) return `${path} is cyclic`;
+    seen.add(value);
+    let problem: string | undefined;
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        problem = jsonPathProblem(`${path}[${i}]`, value[i], seen);
+        if (problem) return problem;
+      }
+    } else {
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== null && proto !== Object.prototype) {
+        seen.delete(value);
+        return `${path} is not a plain object`;
+      }
+      for (const key of Object.keys(value)) {
+        // A member whose value is undefined is the allowed key-drop, not a defect: stringify omits
+        // the key, the object stays a JSON object, so skip it rather than walk it.
+        if (value[key as keyof typeof value] === undefined) continue;
+        problem = jsonPathProblem(`${path}.${key}`, value[key as keyof typeof value], seen);
+        if (problem) return problem;
+      }
+    }
+    seen.delete(value);
+    return undefined;
+  }
+  return `${path} is not a JSON value`;
+}
+
+/** Refuse, at publish, a `data` part `JSON.stringify` would silently rewrite. The guard is the
+ *  runtime half of `Part`'s `data: JsonValue` arm: with it, a non-JSON value at any depth never
+ *  reaches the wire, so every reader (live core-sub, Plane-3 durable, history) gives one answer —
+ *  the message was never sent — instead of the old split where history returned a rewritten row
+ *  while Plane-3 terminated a keyless one as malformed. The error names the path to the offending
+ *  value (e.g. `data[2].at`), so a caller learns which member to fix rather than that stringify
+ *  would have mangled something. Throws rather than coercing: no fallback. */
+function assertPartsSerializable(parts: readonly Part[]): void {
+  for (const p of parts) {
+    if (p.kind !== "data") continue;
+    const problem = jsonPathProblem("data", (p as { data?: unknown }).data, new Set());
+    if (problem !== undefined) {
+      throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
+    }
+  }
+}
+
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention
  *  toggle isn't swallowed as a quiet heartbeat. Absent and empty compare equal. */
@@ -5172,6 +6177,13 @@ function sameChannelModes(
   const bk = b ? Object.keys(b) : [];
   if (ak.length !== bk.length) return false;
   return ak.every((k) => a![k] === b?.[k]);
+}
+
+function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | undefined): boolean {
+  return a?.code === b?.code
+    && a?.source === b?.source
+    && a?.message === b?.message
+    && a?.since === b?.since;
 }
 
 /** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a
@@ -5333,8 +6345,14 @@ export function wsServers(servers: string): boolean {
  *  probe dials; a ws(s) broker is by definition published through an HTTPS edge (CDN tunnel,
  *  reverse proxy), where TLS + upgrade + INFO + the auth round-trip routinely exceeds 1s cold —
  *  measured ~60% spurious "not reachable" against a Cloudflare-fronted broker. Callers passing an
- *  explicit `timeoutMs` are untouched. */
-function defaultProbeTimeoutMs(servers: string): number {
+ *  explicit `timeoutMs` are untouched.
+ *
+ *  EXPORTED because a caller that judges a probe by WHEN it answered has to compare against the
+ *  deadline this function actually handed the probe. The delivery watchdog does exactly that, and
+ *  hardcoding 1000 there silently misread every ws broker: honest refusals arrive at 2-5s, past a
+ *  budget that was never theirs, and would be classified as this process's starvation rather than
+ *  the server's refusal. The budget and the judgment must come from one place. */
+export function defaultProbeTimeoutMs(servers: string): number {
   return wsServers(servers) ? 5000 : 1000;
 }
 

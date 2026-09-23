@@ -6,6 +6,14 @@
  * assistant/tool record maps to nothing. Only `source: "startup"` names a genuinely new session;
  * resume, fork, clear and compact all point at retained history and must keep ordinary adopt-at-end
  * semantics.
+ *
+ * A forked session (`--resume <id> --fork-session`) is retained history in a NEW file: Claude
+ * copies the parent transcript under the fork's own session id after its SessionStart hook has
+ * fired. Measured live with a manager-launched seat, the connector's first flush reached the source
+ * before that copy existed, `open` threw ENOENT, and the holder, terminal on its first error, took
+ * the whole session dark with one stderr line the harness does not retain. So `fork` waits for the
+ * real file with the same bounded wait the startup path uses, and then still adopts at the end of
+ * it: the copied history is the parent's, never republished here.
  */
 import { JsonlFileSource, type DurableSource, type SourceRead } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
@@ -19,7 +27,8 @@ const isMissingFile = (error: unknown): error is NodeJS.ErrnoException =>
   error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT";
 
 export interface ClaudeTranscriptSourceOpts {
-  /** Production defaults to five seconds. Tests can shorten only the fail-loud deadline. */
+  /** Production defaults to five seconds for both the startup and the fork wait. Tests can shorten
+   *  only the fail-loud deadline. */
   startupFileWaitMs?: number;
 }
 
@@ -34,7 +43,7 @@ export async function readStartupTranscriptWhenReady<T>(
   let retryMs = STARTUP_TRANSCRIPT_RETRY_INITIAL_MS;
   const timeout = (cause?: unknown): StartupTranscriptTimeout =>
     new StartupTranscriptTimeout(
-      `Claude AG-UI source: startup transcript did not appear within ${opts.waitMs}ms; ` +
+      `Claude AG-UI source: session transcript did not appear within ${opts.waitMs}ms; ` +
         `refusing to lose the first run`,
       { cause },
     );
@@ -67,20 +76,24 @@ class StartupClaudeTranscriptSource implements DurableSource<ClaudeEntry> {
   constructor(
     private readonly file: JsonlFileSource<ClaudeEntry>,
     private readonly waitMs: number,
+    /** Where a virgin thread adopts once the file exists: byte zero for a new session, the current
+     *  complete-record boundary for a fork whose file is a copy of retained history. */
+    private readonly virginRead: "from-beginning" | "adopt-at-end",
   ) {}
 
   get kind(): string {
     return this.file.kind;
   }
 
-  private readFromBeginningWhenReady(): Promise<SourceRead<ClaudeEntry>> {
-    return readStartupTranscriptWhenReady(() => this.file.readFromBeginning(), { waitMs: this.waitMs });
+  private readWhenReady(): Promise<SourceRead<ClaudeEntry>> {
+    const read = this.virginRead === "from-beginning" ? () => this.file.readFromBeginning() : () => this.file.read(undefined);
+    return readStartupTranscriptWhenReady(read, { waitMs: this.waitMs });
   }
 
   read(cursor: string | undefined): Promise<SourceRead<ClaudeEntry>> {
     // A recovered WAL always wins. `undefined` is only the virgin-thread case; once any source
     // cursor was durably folded, even a process launched as `startup` resumes strictly after it.
-    return cursor === undefined ? this.readFromBeginningWhenReady() : this.file.read(cursor);
+    return cursor === undefined ? this.readWhenReady() : this.file.read(cursor);
   }
 }
 
@@ -93,9 +106,10 @@ export function createClaudeTranscriptSource(
   const file = new JsonlFileSource<ClaudeEntry>(path);
   switch (sessionSource) {
     case "startup":
-      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS);
-    case "resume":
+      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS, "from-beginning");
     case "fork":
+      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS, "adopt-at-end");
+    case "resume":
     case "clear":
     case "compact":
       return file;

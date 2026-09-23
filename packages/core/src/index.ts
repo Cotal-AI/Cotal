@@ -50,7 +50,17 @@ export * from "./lease.js";
 export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
-export * from "./secret-fs.js";
+// Explicit, NOT `export *`, and deliberately so: a star export would put the test-only seam
+// `__setPublishLinkForTest` on this package's public root, where any dependent could swap the
+// publish primitive of the code that writes secrets. Everything a consumer legitimately needs is
+// named here; the seam stays reachable from the suite via a deep import of the module itself.
+export {
+  hardenPrivate,
+  mkSecretDir,
+  writeSecretFile,
+  writeSecretFileAtomic,
+  writeSecretFileCreateOnly,
+} from "./secret-fs.js";
 export * from "./launch-material.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";
@@ -60,6 +70,7 @@ export * from "./connector.js";
 export * from "./connector-setup.js";
 export * from "./command.js";
 export * from "./runtime.js";
+export * from "./environment.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";
@@ -79,3 +90,6 @@ export * from "./run-migration.js";
 export * from "./run-program.js";
 export * from "./run-driver-grants.js";
 export * from "./run-host.js";
+export * from "./issued-authority.js";
+export * from "./run-admission.js";
+export * from "./issuer-session.js";

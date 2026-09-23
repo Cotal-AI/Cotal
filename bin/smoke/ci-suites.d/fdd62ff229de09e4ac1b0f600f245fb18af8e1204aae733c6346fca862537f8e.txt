@@ -1,0 +1,2 @@
+# Refuse live-shaped mutation commands before they execute.
+smoke:mutation-command-safety

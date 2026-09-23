@@ -1134,7 +1134,7 @@ export class AguiBracketStateLost extends AguiVocabularyError {
 
 export class AguiEmitterHalted extends Error {
   constructor(
-    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy",
+    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property",
     message: string,
   ) {
     super(message);
@@ -1268,6 +1268,87 @@ const EGRESS_FORBIDDEN_TYPES: ReadonlySet<string> = new Set([
   AGUI_EVENT_TYPE.TOOL_CALL_RESULT,
 ]);
 
+/** Every `type` the vocabulary defines. An element outside it cannot be classified, only refused. */
+const KNOWN_AGUI_EVENT_TYPES: ReadonlySet<string> = new Set(Object.values(AGUI_EVENT_TYPE));
+
+// ---------------------------------------------------------------------------
+// Closed-schema tables.
+//
+// The egress fence must validate the WHOLE envelope, not just `.events[].type`.
+// A frame with extra properties at any level passes the event-kind check and
+// publishes its payload untouched. These tables define the closed shape so the
+// fence can refuse an envelope carrying unknown properties and name the path.
+//
+// `cotal` is an allowed extension key on every event (WithCotal<E>). AG-UI
+// schemas are `.passthrough()`, so the upstream schema would not refuse it;
+// this fence enforces the closed shape Cotal publishes.
+// ---------------------------------------------------------------------------
+
+/** The ONLY keys a frame part may carry at the top level. */
+const KNOWN_FRAME_KEYS: ReadonlySet<string> = new Set([
+  "kind", "protocol", "threadId", "runId", "epoch", "seq", "events",
+]);
+
+/**
+ * The allowed keys per event type. Each set includes the AG-UI schema keys for
+ * that type PLUS `cotal` (the Cotal extension key carried via `WithCotal<E>`).
+ *
+ * The source of truth is the AG-UI 0.0.57 schema shapes, measured at build time
+ * by the conformance smoke. `rawEvent` is an AG-UI schema key on every type.
+ */
+const KNOWN_EVENT_KEYS_BY_TYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [AGUI_EVENT_TYPE.RUN_STARTED, new Set(["type", "timestamp", "rawEvent", "threadId", "runId", "parentRunId", "input", "cotal"])],
+  [AGUI_EVENT_TYPE.RUN_FINISHED, new Set(["type", "timestamp", "rawEvent", "threadId", "runId", "result", "outcome", "cotal"])],
+  [AGUI_EVENT_TYPE.RUN_ERROR, new Set(["type", "timestamp", "rawEvent", "message", "code", "cotal"])],
+  [AGUI_EVENT_TYPE.TEXT_MESSAGE_START, new Set(["type", "timestamp", "rawEvent", "messageId", "role", "name", "cotal"])],
+  [AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, new Set(["type", "timestamp", "rawEvent", "messageId", "delta", "cotal"])],
+  [AGUI_EVENT_TYPE.TEXT_MESSAGE_END, new Set(["type", "timestamp", "rawEvent", "messageId", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_START, new Set(["type", "timestamp", "rawEvent", "toolCallId", "toolCallName", "parentMessageId", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_ARGS, new Set(["type", "timestamp", "rawEvent", "toolCallId", "delta", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_END, new Set(["type", "timestamp", "rawEvent", "toolCallId", "cotal"])],
+  [AGUI_EVENT_TYPE.TOOL_CALL_RESULT, new Set(["type", "timestamp", "rawEvent", "messageId", "toolCallId", "content", "role", "cotal"])],
+  [AGUI_EVENT_TYPE.REASONING_MESSAGE_START, new Set(["type", "timestamp", "rawEvent", "messageId", "role", "cotal"])],
+  [AGUI_EVENT_TYPE.REASONING_MESSAGE_CONTENT, new Set(["type", "timestamp", "rawEvent", "messageId", "delta", "cotal"])],
+  [AGUI_EVENT_TYPE.REASONING_MESSAGE_END, new Set(["type", "timestamp", "rawEvent", "messageId", "cotal"])],
+  [AGUI_EVENT_TYPE.CUSTOM, new Set(["type", "timestamp", "rawEvent", "name", "value", "cotal"])],
+]);
+
+/**
+ * Find the first extra property on a parsed frame, returning its JSON-path
+ * string, or `undefined` when the envelope is closed.
+ *
+ * Checks two levels:
+ * 1. Frame-level keys against {@link KNOWN_FRAME_KEYS}.
+ * 2. Per-event keys against {@link KNOWN_EVENT_KEYS_BY_TYPE} for the event's
+ *    `type`. An event whose `type` is not in the map has already been refused
+ *    by `parseAguiFrame`; if it somehow reaches here it is reported as
+ *    `events[i]` with no key.
+ *
+ * Returns the dotted path of the first unknown property found, e.g.
+ * `"recovery"` for a frame-level extra or `"events[0].leaked"` for an
+ * event-level extra. The caller turns this into a named verdict.
+ */
+export function extraPropertyPath(part: Record<string, unknown>): string | undefined {
+  // Frame-level extra keys.
+  for (const key of Object.keys(part)) {
+    if (!KNOWN_FRAME_KEYS.has(key)) return key;
+  }
+  // Per-event extra keys.
+  const events = part.events;
+  if (!Array.isArray(events)) return undefined; // parseAguiFrame already validated
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i] as Record<string, unknown> | null;
+    if (typeof e !== "object" || e === null) continue; // parseAguiFrame already validated
+    const t = e.type as string;
+    const allowed = KNOWN_EVENT_KEYS_BY_TYPE.get(t);
+    if (!allowed) return `events[${i}]`; // unknown type
+    for (const key of Object.keys(e)) {
+      if (!allowed.has(key)) return `events[${i}].${key}`;
+    }
+  }
+  return undefined;
+}
+
 export function isForbiddenEgressEventType(type: unknown): boolean {
   return typeof type === "string" && EGRESS_FORBIDDEN_TYPES.has(type);
 }
@@ -1277,21 +1358,94 @@ export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[]
   return events.filter((e) => !isForbiddenEgressEventType((e as { type?: unknown }).type));
 }
 
+/** What a frozen body is, as far as the egress policy can tell. */
+export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable" | "extra-property";
+
 /**
- * Does this frozen body carry a forbidden kind? Used on retry, where the body is already on disk
- * and must not be rewritten. Reads `.events[].type` through {@link parseAguiFrame} when the part
- * is a frame (live object or JSON-round-tripped WAL body — the same shape). A part that is not a
- * frame is not this policy's to refuse.
+ * Classify a frozen body for egress. Used on retry, where the body is already on disk and must not
+ * be rewritten. A part that is not a frame is not this policy's to judge.
+ *
+ * THREE ANSWERS, BECAUSE TWO WERE NOT ENOUGH. A boolean forced every frame this policy could not
+ * read into one of two wrong buckets. Reading it through the strict {@link parseAguiFrame} made an
+ * unreadable frame throw a bare vocabulary error out of a machine whose every other abnormal
+ * outcome is a named halt. Skipping it instead PUBLISHED the frame: measured, a body whose `events`
+ * is the string `"TOOL_CALL_RESULT: <bytes>"` survives a JSON round-trip, carries the bytes as its
+ * event list, and reaches the wire. The confidentiality boundary is the wire, not what a renderer
+ * folds, so a frame this policy cannot interpret is `unreadable` and the caller halts on it by name.
+ *
+ * THE INVARIANT, AND IT IS THE WHOLE DESIGN: this function's READ PATTERN IS ITS PREDECESSOR'S. It
+ * validates the part through the same `parseAguiFrame` and scans the events of that call's result,
+ * in that order, exactly as the strict read it replaces did. Every difference between them is a
+ * throw becoming a named answer. Nothing else moved, so no input can make this weaker than the code
+ * it replaced — not a malformed envelope, not a stateful accessor, not a representation nobody has
+ * thought of. Equivalence is structural here rather than enumerated, and that is the point.
+ *
+ * WHY IT IS WRITTEN THIS WAY AND NOT AS A DIRECT SCAN. Four repairs tried to answer the forbidden-
+ * kind question by reading `events` off the part itself and validating separately. Each one shipped
+ * a classifier that was weaker than the strict read on some input the author had not pictured: a
+ * non-array `events` that used to throw (`1698fe253`), an empty array the scan looped over zero
+ * times (`350b8eb7a`), an envelope whose `protocol`, `threadId`, `runId`, `epoch` and `seq` were
+ * never checked at all (`071233483`), and a check/use split where the scan and the validator read
+ * `events` at different times and could disagree (`6502b213e`). The last of those tried to close the
+ * split by DETECTING the objects that could exhibit it, which held for an own accessor and lost
+ * immediately to an inherited one and to a Proxy reporting a data descriptor while its `get` trap
+ * returned something else. A guard that enumerates representations loses to the next representation.
+ * Reading the way the predecessor read cannot lose that way, because there is no second reader whose
+ * answer could differ.
+ *
+ * ORDERING, STATED BECAUSE IT IS OBSERVABLE. The parse runs before the scan, so a frame that both
+ * fails to parse and carries a forbidden event answers `unreadable`, not `forbidden-kind`. That is
+ * the predecessor's order too — it threw before it ever reached its scan — so this is equivalence,
+ * not a new preference. Both answers halt the publish and neither claims a cause it did not see.
+ * `forbidden-kind` still wins over `unreadable` ACROSS parts: an earlier unparseable part does not
+ * stop a later part's forbidden event from being named as the more specific diagnosis.
+ *
+ * A part whose `kind` is not `AGUI_FRAME_KIND` is skipped, as it was before. That is the
+ * pre-existing non-frame gap and this function neither widens nor closes it.
+ *
+ * TOTAL: no input makes this throw. That covers iterating `body` itself, not only reading a part's
+ * properties: a Proxy whose `Symbol.iterator` traps, or an array with a throwing index accessor,
+ * raises before any per-part catch can see it, and an abort there is fail-closed rather than
+ * `clean`. `isAguiFramePart` in core makes the same promise for the same stated reason, that a
+ * function accepting `unknown` and throwing on some of it is a trap for its next caller. This takes
+ * `readonly unknown[]`.
  */
-export function frozenBodyViolatesEgressPolicy(body: readonly unknown[]): boolean {
-  for (const part of body) {
-    if (!isAguiFramePart(part)) continue;
-    const frame = parseAguiFrame(part);
-    for (const e of frame.events) {
-      if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return true;
+export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgressVerdict {
+  let unreadable = false;
+  // The outer catch covers the ITERATION. A Proxy whose `Symbol.iterator` traps, or an array with a
+  // throwing index accessor, raises before the per-part catch below can see it. Neither can come off
+  // a WAL, which is JSON, but the exported signature takes `readonly unknown[]` and has to mean it.
+  // Aborting mid-iteration is fail-closed: a forbidden part already seen has returned, and anything
+  // unseen is unread rather than assumed harmless.
+  try {
+    for (const part of body) {
+      // The per-part catch is what turns the predecessor's throw into a named answer, and it is the
+      // ONLY difference between the two functions. `parseAguiFrame` throws on every envelope defect
+      // it knows -- protocol, threadId, runId, epoch, seq, an absent or empty event list, an
+      // unrecognised event type -- and each of those used to escape as a bare `AguiVocabularyError`.
+      // `0492bcd11` stopped calling it so an old-protocol or replayed-WAL frame would be EVALUATED
+      // rather than die on one. That rationale is about not throwing; it is not about publishing,
+      // and collapsing the two is what let three regressions ship. Such a frame now takes the named
+      // `egress-unreadable` halt instead of either outcome.
+      try {
+        if (!isAguiFramePart(part)) continue;
+        const frame = parseAguiFrame(part);
+        for (const e of frame.events) {
+          if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return "forbidden-kind";
+        }
+        // Closed-schema check: refuse any property not in the known set.
+        // This is the fix for #1432: the fence previously checked only
+        // .events[].type and let sibling/extra properties ride through.
+        const extra = extraPropertyPath(part as Record<string, unknown>);
+        if (extra !== undefined) return "extra-property";
+      } catch {
+        unreadable = true;
+      }
     }
+  } catch {
+    unreadable = true;
   }
-  return false;
+  return unreadable ? "unreadable" : "clean";
 }
 
 /**
@@ -1774,7 +1928,8 @@ export class AguiEmitter<T> {
    * the state that means "we do not know", and the next boot retries the same frozen frame.
    */
   private async attempt(o: { id: string; E: number; body: Part[]; retry: boolean }): Promise<void> {
-    if (frozenBodyViolatesEgressPolicy(o.body)) {
+    const egress = frozenBodyEgressVerdict(o.body);
+    if (egress === "forbidden-kind") {
       throw this.halt(
         "egress-policy",
         `event emitter for ${this.channel}: refusing to ${o.retry ? "republish a frozen" : "publish a"} ` +
@@ -1785,6 +1940,40 @@ export class AguiEmitter<T> {
           `disk and wire would break the recovery machine. An upgrade across a pending pre-fix ` +
           `frame therefore HALTS rather than leaks. Clear the pending frame only as an explicit ` +
           `abandonment of this epoch.`,
+      );
+    }
+    if (egress === "unreadable") {
+      throw this.halt(
+        "egress-unreadable",
+        `event emitter for ${this.channel}: refusing to ${o.retry ? "republish a frozen" : "publish a"} ` +
+          `frame whose event list this policy cannot read onto ${this.channel}. A frame-shaped body ` +
+          `whose \`events\` is absent, or is not an array, cannot be checked for TOOL_CALL_ARGS or ` +
+          `TOOL_CALL_RESULT, and a body whose \`events\` is a bare string carries its bytes exactly ` +
+          `where the check would have looked. The boundary is the wire and not what a renderer ` +
+          `folds, so an uninspectable body is withheld rather than published opaque onto a channel ` +
+          `with a different read ACL. \`aguiFrame\` enforces a non-empty events ARRAY at ` +
+          `construction, so no frame this version writes can land here; one that does was frozen by ` +
+          `something else. Clear the pending frame only as an explicit abandonment of this epoch.`,
+      );
+    }
+    if (egress === "extra-property") {
+      // Re-scan to name the path. This is the error path; the cost is negligible.
+      let path = "(unknown)";
+      for (const part of o.body) {
+        if (!isAguiFramePart(part)) continue;
+        const p = extraPropertyPath(part as Record<string, unknown>);
+        if (p !== undefined) { path = p; break; }
+      }
+      throw this.halt(
+        "egress-extra-property",
+        `event emitter for ${this.channel}: refusing to ${o.retry ? "republish a frozen" : "publish a"} ` +
+          `frame whose body carries an unknown property at \`${path}\` onto ${this.channel}. ` +
+          `The egress fence validates the whole envelope against a closed schema: known top-level ` +
+          `frame keys (kind, protocol, threadId, runId, epoch, seq, events) and known per-event ` +
+          `keys per type. A property outside that schema could carry tool output or other content ` +
+          `that bypasses the event-kind check. The body is not rewritten: the WAL froze it at ` +
+          `beginSend, and mutating it between disk and wire would break the recovery machine. ` +
+          `Clear the pending frame only as an explicit abandonment of this epoch.`,
       );
     }
     let ack: { seq: number; duplicate: boolean };
@@ -1881,7 +2070,7 @@ export class AguiEmitter<T> {
     );
   }
 
-  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy", message: string): AguiEmitterHalted {
+  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property", message: string): AguiEmitterHalted {
     this.halted = new AguiEmitterHalted(reason, message);
     return this.halted;
   }

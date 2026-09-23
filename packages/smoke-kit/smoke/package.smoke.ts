@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "../src/index.js";
+import { assertSmokeSandboxDown, emitSentinel, recordSmokeSandbox } from "../src/index.js";
 
 let checks = 0;
 const check = (name: string, run: () => void): void => {
@@ -28,3 +28,4 @@ try {
 }
 
 console.log(`SMOKE-KIT PACKAGE TESTS: ${checks} tests executed`);
+emitSentinel({ passed: checks, failed: 0 });

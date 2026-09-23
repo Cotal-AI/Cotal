@@ -1,0 +1,54 @@
+{
+  "suite": [
+    "packages/workspace/smoke/manager-shutdown.smoke.ts"
+  ],
+  "guard": "a destructive manager shutdown is one-shot and bound to the exact live down reservation owner",
+  "command": "pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/fixtures/manager-shutdown.mutations.json",
+  "why": [
+    "The intent names both the verified manager target and the exact stop process holding the manager pidfile's .stopping reservation.",
+    "A target-only intent can survive a CLI crash before SIGTERM and make a later bare stop destructive. The negative controls prove a different reservation and a dead stopper both spare agents."
+  ],
+  "mutations": [
+    {
+      "name": "a successor stop target may reuse the predecessor spare capability",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "  if (target && (target.pid !== expected.pid || target.token !== expected.token))\n    throw new Error(\"refusing bare manager stop: stop attempt target does not match the recorded manager process\");",
+      "replace": "  void target;",
+      "expectRed": "a successor target cannot reuse the predecessor's spare capability",
+      "cell": "a successor target cannot reuse the predecessor's spare capability"
+    },
+    {
+      "name": "the spare capability record itself is not checked",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "  if (Object.keys(row).sort().join(\",\") !== \"process,version\" || row.version !== 1 || !process ||\n      Object.keys(process).sort().join(\",\") !== \"pid,token\" || process.pid !== expected.pid || process.token !== expected.token)\n    throw new Error(`refusing bare manager stop: spare capability at ${path} is malformed, stale, or belongs to a different manager process`);",
+      "replace": "  void row; void process;",
+      "expectRed": "a successor capability record cannot authorize the predecessor target",
+      "cell": "a successor capability record cannot authorize the predecessor target"
+    },
+    {
+      "name": "a different stop attempt is allowed to inherit the destructive intent",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "    if (reservationOwner !== parsed.stopper.pid)\n      return { withAgents: false, warning: \"ignored stale manager shutdown intent from a different stop attempt; managed agents were spared\" };",
+      "replace": "    void reservationOwner;",
+      "expectRed": "a different stop reservation cannot inherit destructive policy",
+      "cell": "a different stop reservation cannot inherit destructive policy"
+    },
+    {
+      "name": "a crashed stopper is treated as authorization for destructive shutdown",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "    if (stopperVerdict.kind !== \"match\")\n      return { withAgents: false, warning: `ignored manager shutdown intent with ${stopperVerdict.kind} stopper identity; managed agents were spared` };",
+      "replace": "    void stopperVerdict;",
+      "expectRed": "a crashed stopper cannot poison a later bare shutdown",
+      "cell": "a crashed stopper cannot poison a later bare shutdown"
+    },
+    {
+      "name": "a no-token destructive intent is not bound to the live stop reservation",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "      if (reservationOwner !== parsed.stopper.pid)\n        return { withAgents: false, warning: \"ignored stale legacy manager shutdown intent from a different stop attempt; managed agents were spared\" };",
+      "replace": "      void reservationOwner;",
+      "expectRed": "a no-token platform cannot replay destructive policy into another stop reservation",
+      "cell": "a no-token platform cannot replay destructive policy into another stop reservation"
+    }
+  ]
+}

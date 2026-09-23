@@ -267,7 +267,7 @@ try {
             : `. Nothing was started.`),
       );
     }
-    const down = await cotal(["down"], 60_000);
+    const down = await cotal(["down", "--with-agents"], 60_000);
     // `cotal()` resolves for a timeout, a signal death and a launch failure alike, so an unchecked
     // `await` would read every one of those as a successful stop.
     mustHaveRun(down, "`cotal down`");

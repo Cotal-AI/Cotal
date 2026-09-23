@@ -11,11 +11,13 @@ import {
   type InboxItem,
   controlFromEnv,
   scrubLaunchMaterial,
+  resolveEventsStateRoot,
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
+import { PiEvents } from "./events.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
@@ -28,6 +30,7 @@ interface PiRuntime {
   personaCleaned: boolean;
   sessionId?: string;
   expectedSessionId?: string;
+  events?: PiEvents;
 }
 
 type GlobalWithPi = typeof globalThis & { [RUNTIMES]?: Map<string, PiRuntime> };
@@ -130,12 +133,16 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   const config = configFromEnv();
+  const eventsEnabled = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired;
+  if (eventsEnabled) resolveEventsStateRoot(process.env);
   // CLI startup opens/creates/forks the session BEFORE extension factories run, so the first
   // session_start may already be past. Pi publishes the active id through PI_SESSION_ID for exactly
   // this host-integration case. Later in-process /resume/new/fork transitions are captured by the
   // session_start handler below.
   const startupSessionId = process.env.PI_SESSION_ID?.trim() || undefined;
   const expectedSessionId = process.env.COTAL_PI_EXPECTED_SESSION?.trim() || undefined;
+  const freshManagedSession = process.env.COTAL_PI_FRESH_SESSION === "1";
+  delete process.env.COTAL_PI_FRESH_SESSION;
   delete process.env.COTAL_PI_EXPECTED_SESSION;
   // The socket path rides the env; the first-frame token rides the launch material, so a shell this
   // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub
@@ -155,6 +162,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime = createRuntime(config, control);
     runtimes.set(key, runtime);
   }
+  if (eventsEnabled) runtime.events ??= new PiEvents(runtime.mesh, config.space);
   runtime.expectedSessionId = expectedSessionId;
   if (startupSessionId) {
     if (expectedSessionId && startupSessionId !== expectedSessionId)
@@ -167,16 +175,23 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   registerCotalTools(pi, runtime.mesh, runtime.config);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
 
-  pi.on("session_start", (_event, context) => {
+  pi.on("session_start", async (_event, context) => {
     cleanPersonaFile(runtime);
     runtime.sessionId = context.sessionManager.getSessionId();
     if (runtime.expectedSessionId && runtime.sessionId !== runtime.expectedSessionId)
       throw new Error(`pi connector: expected session ${runtime.expectedSessionId}, host opened ${runtime.sessionId}`);
     runtime.expectedSessionId = undefined;
     persistSessionId(runtime.sessionId);
+    await runtime.events?.start(runtime.sessionId, context.sessionManager.getSessionFile(),
+      _event.reason === "new" || _event.reason === "fork" ||
+      (_event.reason === "startup" && (freshManagedSession || !startupSessionId && !expectedSessionId)));
     runtime.driver.onSessionStart(asContext(context));
   });
-  pi.on("agent_start", (_event, context) => runtime.driver.onAgentStart(asContext(context)));
+  pi.on("agent_start", async (_event, context) => {
+    await runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile(),
+      freshManagedSession || !startupSessionId && !expectedSessionId);
+    runtime.driver.onAgentStart(asContext(context));
+  });
   pi.on("message_start", (event) => runtime.driver.onMessageStart(event.message));
   pi.on("context", (event) => runtime.driver.onContext(event.messages));
   pi.on("after_provider_response", (event) => runtime.driver.onProviderResponse(event.status));
@@ -184,8 +199,14 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   pi.on("tool_execution_end", () => runtime.driver.onToolEnd());
   pi.on("session_before_compact", (event) => runtime.driver.onBeforeCompact(event.reason, event.willRetry));
   pi.on("agent_end", (event, context) => runtime.driver.onAgentEnd(event.messages, asContext(context)));
-  pi.on("session_shutdown", async (event) => {
+  pi.on("turn_end", (_event, context) => {
+    runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+  });
+  pi.on("session_shutdown", async (event, context) => {
     runtime.driver.onSessionShutdown();
+    runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    await runtime.events?.shutdown();
     if (event.reason !== "quit") return;
     if (runtime.sessionId) persistSessionId(runtime.sessionId, "quit");
     await runtime.driver.quit();

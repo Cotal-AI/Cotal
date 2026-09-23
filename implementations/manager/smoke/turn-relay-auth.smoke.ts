@@ -27,9 +27,9 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
-  DEV_OWNER, epCall, invokeCommand, resolveService, readGoalResult, readGoalIndex, registry,
+  DEV_OWNER, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
   startTimerWriter,
-  type Connector, type EpCaller, type LaunchOpts, type LaunchSpec, type TimerWriterHandle,
+  type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -77,7 +77,10 @@ let seatNc: Awaited<ReturnType<typeof connect>> | undefined;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: broker.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+  });
   // The timer writer the delivery daemon hosts on a live mesh, under the delivery credential: the
   // deadline cell below waits on a pause armed through it, never through a suite pump.
   writerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }), maxReconnectAttempts: 0 });
@@ -85,7 +88,7 @@ try {
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
-  const M = manager as unknown as { agents: Map<string, { id: string; lifecycleUid: string }> };
+  const M = manager as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string } }> };
 
   // The run driver's OWN instrument: `cotal run` connects as `control-caller-admin`, spawns the
   // seat under it, and turns the seat on owner reach exactly as the runtime submits it (a static
@@ -124,7 +127,6 @@ try {
   check("the seat started (its spawn goal succeeded on a real presence join)",
     (spawned as { ok?: boolean }).ok === true && readiness?.state === "succeeded", { spawned, readiness });
   const seat = M.agents.get("seat")!;
-  const seatTriple: EpCaller = { owner: DEV_OWNER, actor: seat.id, uid: seat.lifecycleUid };
   const seatCreds = readFileSync(agentLifecycleSecretFilePaths(workspaceRoot, space, "seat", seat.lifecycleUid).creds, "utf8");
   const turnOf = (goalId: string, deadlineMs: number) => call("turn",
     { payload: JSON.stringify({ run: "r1", step: "turn:seat", context: "do the thing" }), deadlineMs },
@@ -140,6 +142,10 @@ try {
 
   console.log("\n3. the seat pulls and yields under ITS OWN credential: the relay rows are in the agent baseline");
   seatNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: seatCreds, tls: false }), maxReconnectAttempts: 0 });
+  // The seat's credential is an issuance (SPEC 13.15): its rows live on the versioned rail, so
+  // its caller carries the generation it discovers from the accepted row under its own grant.
+  const seatRef = await readAcceptedRow(seatNc, space, seat.issued!.acceptedToken);
+  const seatTriple: EpCaller = { owner: DEV_OWNER, actor: seat.id, uid: seat.lifecycleUid, generation: seatRef.generation } as IssuedCaller;
   const seatService = await resolveService(seatNc, space, MANAGER_ENDPOINT, seatTriple);
   const pulled = await invokeCommand(seatNc, space, seatService, "turn-pending", undefined, { target: { mode: "self" }, deadlineMs: 10_000 }).then((r) => r.reply, asValue);
   const turns = ((pulled as { data?: { turns?: Array<{ goalId?: string; payload?: string }> } }).data?.turns ?? []);
@@ -184,7 +190,7 @@ try {
 } finally {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await writer?.stop().catch(() => {});
   await writerNc?.drain().catch(() => writerNc?.close());
   await delivery?.stop().catch(() => {});

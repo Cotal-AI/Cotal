@@ -1,5 +1,6 @@
 /** Exact authority for the restore-only infrastructure phase (no broker, no test runner). */
 import { infrastructureMaintenancePermissions } from "../src/lib/isolated-broker.js";
+import { endpointPlaneStreamNames, hardenedAuthorityStreamNames } from "@cotal-ai/core";
 
 let pass = 0;
 let fail = 0;
@@ -22,6 +23,22 @@ check("every named stream gets exactly one INFO grant", count("$JS.API.STREAM.IN
 check("the named update stream gets exactly one UPDATE grant", count("$JS.API.STREAM.UPDATE.KV_records_space") === 1, allow);
 check("a non-update stream gets no UPDATE grant", count("$JS.API.STREAM.UPDATE.EPJ_space") === 0, allow);
 check("the infrastructure principal gets no wildcard JetStream authority", !allow.some((entry) => entry.includes(">") || entry.includes("*")), allow);
+
+// The restore-side login must carry an UPDATE row for every store the creation seam hardens, and
+// core names those in one list: a store added to the hardening step without its grant broke the
+// live restore at the listener-bind boundary ("Permissions Violation for Publish to
+// $JS.API.STREAM.UPDATE.KV_cotal_issued_<space>"), which no unit of either side could see alone.
+{
+  const space = "scope";
+  const hardened = hardenedAuthorityStreamNames(space);
+  const live = infrastructureMaintenancePermissions("SCOPE_TEST", [...endpointPlaneStreamNames(space)], hardened);
+  const liveAllow = ((live as { pub?: { allow?: string[] } }).pub?.allow ?? []);
+  check("the hardened list names the records, issued, accepted and admission stores",
+    hardened.length === 4 && hardened.every((s) => /^KV_cotal_(records|issued|accepted|admission)_scope$/.test(s)), hardened);
+  check("the restore login carries exactly one UPDATE row per hardened store and none for any other endpoint stream",
+    hardened.every((s) => liveAllow.filter((e) => e === `$JS.API.STREAM.UPDATE.${s}`).length === 1)
+      && liveAllow.filter((e) => e.startsWith("$JS.API.STREAM.UPDATE.")).length === hardened.length, liveAllow.filter((e) => e.includes("UPDATE")));
+}
 
 let outside = "";
 try {

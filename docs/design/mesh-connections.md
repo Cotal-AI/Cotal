@@ -168,14 +168,16 @@ them:
 
 **Decision: the manager stamps `origin: "manual"` on the record, explicitly.** `MeshEntry.origin` is
 optional, and its own documentation states that an omitted value IS `up`, meaning "THIS machine
-started the mesh: it is safe to drop on a liveness verdict or a local teardown"
-(`packages/workspace/src/mesh-registry.ts:62-64`). A record created through this path did not come
-from a local `cotal up`, so inheriting that default would make an agent-created record auto-prunable,
-removable by a teardown of an unrelated root, and claimable by a later `cotal up` for that space,
-with the seat's own `server` and `attachHost` inside it. That is the denial and hijack primitive this
-section refuses, arriving through the absence of a field rather than through a verb. `cotal meshes
-add` already writes `manual` (`implementations/cli/src/commands/meshes.ts:194`), and this path matches
-it. The field is not an argument: a seat cannot ask for `up`.
+started the mesh." A liveness miss keeps that record as `offline`; a local teardown (`cotal down` /
+`cotal clean all`) still drops it, and a mismatch (credentials rejected, mode flipped, stale auth
+root) still drops it (`packages/workspace/src/mesh-registry.ts:62-68`). A record created through this
+path did not come from a local `cotal up`, so inheriting that default would make an agent-created
+record removable by a teardown of an unrelated root, droppable on a mismatch the seat never chose,
+and claimable by a later `cotal up` for that space, with the seat's own `server` and `attachHost`
+inside it. That is the denial and hijack primitive this section refuses, arriving through the
+absence of a field rather than through a verb. `cotal meshes add` already writes `manual`
+(`implementations/cli/src/commands/meshes.ts:194`), and this path matches it. The field is not an
+argument: a seat cannot ask for `up`.
 
 **Decision: the request runs the same dial policy the CLI runs, and is refused by it identically.**
 `implementations/cli/src/lib/join-target.ts` is the existing authority: a loopback literal, or a

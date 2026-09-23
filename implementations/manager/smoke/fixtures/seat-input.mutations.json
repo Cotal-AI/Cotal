@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/seat-input-live.smoke.ts"
   ],
-  "guard": "the `input` op authorizes exactly as `attach` does before it writes, and `enter:false` really suppresses the carriage return",
+  "guard": "the `input` op authorizes exactly as `attach` does before it writes, `enter:false` suppresses the carriage return, and a sent receipt comes only from the runtime's acknowledged write",
   "command": "pnpm smoke:seat-input",
   "completionMarker": "SEAT INPUT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/seat-input.mutations.json",
@@ -48,6 +48,12 @@
     "with a FIXTURE FAILURE rather than letting a cell pass, and cell 1 asserts the marker exists, so",
     "a dead mechanism cannot be mistaken for a satisfied one.",
     "",
+    "THE ACKNOWLEDGED RECEIPT is the issue #1333 honesty boundary. The dropped-write cell replaces",
+    "the live handle write with a resolved no-op carrying no accepted-byte count. The real CLI must",
+    "exit non-zero, name the seat and the acknowledgement failure, print no `sent` receipt, and the",
+    "child must receive nothing. Its mutation restores the old intended-buffer arithmetic, which",
+    "turns that same cell back into the exact false success reported by triage.",
+    "",
     "NOT GRADED HERE, and named rather than implied: the refusal for a runtime with no `write` on",
     "its handle. That branch is reached by ABSENCE of an optional method, which no mutation of this",
     "source can produce and no fixture in this suite can spawn, so it is covered by the type and by",
@@ -57,7 +63,7 @@
     {
       "name": "the authorization is dropped from the `input` handler, keeping everything else",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));\n        if (denied) throw new EpEnvelopeError(\"permission-denied\", denied);\n        return this.inputAuthorized(a, args(ctx));",
+      "find": "        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);\n        if (denied) throw new EpEnvelopeError(\"permission-denied\", denied);\n        return this.inputAuthorized(a, args(ctx));",
       "replace": "        return this.inputAuthorized(a, args(ctx));",
       "expectRed": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
       "cell": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
@@ -66,11 +72,38 @@
     {
       "name": "the carriage return is appended unconditionally, so `enter:false` submits the line anyway",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    const data = `${String(args.text)}${args.enter !== false ? \"\\r\" : \"\"}`;",
-      "replace": "    const data = `${String(args.text)}\\r`;",
-      "expectRed": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
-      "cell": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
-      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count derived from what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply."
+      "find": "    const submit = args.enter !== false;",
+      "replace": "    const submit = true;",
+      "expectRed": "THE CHILD RECEIVED EXACTLY `part` as a bracketed paste with NO trailing carriage return",
+      "cell": "THE CHILD RECEIVED EXACTLY `part` as a bracketed paste with NO trailing carriage return",
+      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count acknowledged for what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply. RE-ANCHORED for #1649: the one-character ternary moved out of a fused `${text}${...}` template into the `submit` flag when the return became its own write, so the old anchor matched nothing and graded nothing. Same decision, same cell, same kill."
+    },
+    {
+      "name": "the manager restores an intended-buffer receipt and ignores the runtime's accepted-byte count",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      let accepted: number;\n      try {\n        accepted = await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n",
+      "replace": "      let accepted = Buffer.byteLength(part.data, \"utf8\");\n      try {\n        await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n",
+      "expectRed": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
+      "cell": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
+      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and counts what it INTENDED to write. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change. RE-ANCHORED for the bracketed-paste delivery: the loop now writes `part.data` and each write is length-checked, so the pre-paste anchor no longer matches."
+    },
+    {
+      "name": "the return is fused back onto the text, so a seat submits one call behind (issue #1649)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (submit) parts.push({ data: \"\\r\", counted: true });\n    let bytes = 0;\n    for (const [i, part] of parts.entries()) {",
+      "replace": "    parts.length = 0;\n    parts.push({ data: submit ? `${text}\\r` : text, counted: true });\n    let bytes = 0;\n    for (const [i, part] of parts.entries()) {",
+      "expectRed": "THE RETURN WAS WRITTEN ALONE, AFTER the paste close: the harness is handed a submit key, not a pasted newline",
+      "cell": "THE RETURN WAS WRITTEN ALONE, AFTER the paste close: the harness is handed a submit key, not a pasted newline",
+      "note": "The shipped defect, restored exactly: one write carrying the text and its return. The BYTES are identical either way, so the sink cells cannot see it and stay green - that is why #1649 shipped and why this mutation is worth a row. A TUI harness reads keystrokes, so a fused return is the text's last character rather than the submit key: the line waits in the composer and the next call's return submits the previous call's text, while the op reports the full byte count and the seat still starts a turn. Only the write shape separates them, which is why cell 10 records what the handler hands the pty through a pass-through rather than reading the child's sink. This mutation also reds the 4096-byte slice assertion, because the fused form re-introduces the oversized single write the kernel re-splits. Re-anchored onto a CODE-ONLY window: the previous target spanned the `enter:false` comment, so a prose tidy could have disarmed it. The window now starts at the separate-return write and rebuilds `parts` into the single fused write, which is byte-for-byte the shipped defect the previous `replace` produced (text and its return in one write, no bracketed paste framing, no slicing)."
+    },
+    {
+      "name": "the paste framing is dropped, keeping the lone return, so a multi-write text is still one call behind (issue #1649)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const parts: Array<{ data: string; counted: boolean }> = [{ data: PASTE_START, counted: false }];\n    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS)\n      parts.push({ data: text.slice(i, i + INPUT_SLICE_CHARS), counted: true });\n    parts.push({ data: PASTE_END, counted: false });",
+      "replace": "    const parts: Array<{ data: string; counted: boolean }> = [];\n    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS)\n      parts.push({ data: text.slice(i, i + INPUT_SLICE_CHARS), counted: true });",
+      "expectRed": "the child received the text wrapped in paste markers with the return after the close marker",
+      "cell": "the child received the text wrapped in paste markers with the return after the close marker",
+      "note": "The SECOND half of #1649, and the one that survived the first fix. Separating the return is necessary but not sufficient: a TUI classifies a fast burst as a paste and consumes the newline trailing it, so any text long enough to need more than one write still sat in the composer until the NEXT call's return. Measured on a real jcode seat through a real pty with this exact mutant shape: 120 and 700 bytes submitted on their own call, while 2500 and 3100 bytes did not, each appearing only on the following call. The end-to-end proof is `implementations/manager/smoke/acceptance-1649-e2e.mjs`, which went from `submitted match [true,true,false]` to `[true,true,true]` when the markers were added."
     }
   ]
 }

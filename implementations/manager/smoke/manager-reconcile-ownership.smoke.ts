@@ -133,7 +133,7 @@ try {
   check("the OWN row's principal IS in the refusal index after its terminal",
     M.retiredPrincipals.has(principalKey(DEV_OWNER, own.actor).key));
 } finally {
-  await mgr.stop().catch(() => {});
+  await mgr.stop({ withAgents: true }).catch(() => {});
   await broker.stop().catch(() => {});
 }
 

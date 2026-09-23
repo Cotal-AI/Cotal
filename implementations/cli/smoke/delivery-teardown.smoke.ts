@@ -23,10 +23,14 @@ const cotal = join(sandbox, ".cotal");
 mkdirSync(join(cotal, "delivery.creds"), { recursive: true }); // the un-deletable "creds"
 writeFileSync(join(cotal, "delivery.creds", "block"), "x");
 
-// A live stand-in daemon the teardown must still kill.
-const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+// A live stand-in daemon the teardown must still kill. Its argv carries the `deliver` token,
+// because that is the whole of what the record's attribution reads (#1528): a live pid that is
+// provably NOT a delivery daemon is deliberately never signalled, so a stand-in without it would be
+// spared and this suite would grade the wrong branch.
+const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "deliver"], { stdio: "ignore" });
 let victimExited = false;
 victim.on("exit", () => { victimExited = true; });
+await wait(300); // let it exec, so the argv read sees its final command line
 writeFileSync(join(cotal, "delivery.pid"), String(victim.pid));
 // #969: a real `up` pins the pidfile to its process start; the planted record must match that
 // shape or the identity gate correctly refuses it as a legacy record before the kill this suite

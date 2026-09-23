@@ -1,0 +1,65 @@
+{
+  "suite": [
+    "packages/core/smoke/free-port-retry.smoke.ts"
+  ],
+  "guard": "a port lost between pick and bind is retried on another port, within a bound, and a failure names what it tried",
+  "command": "pnpm smoke:free-port-retry",
+  "completionMarker": "free-port-retry.smoke",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/free-port-retry.json",
+  "why": [
+    "The recovery is the whole point, and three of its parts can rot independently: the retry itself,",
+    "the cleanup of the attempt that failed readiness, and what the give-up message carries. A suite that",
+    "only checked 'it eventually came up' would pass under a version that leaks a process per attempt and",
+    "under one whose failure names a single port \u2014 which is exactly how the original loss read as an",
+    "unhealthy runner rather than as a taken port.",
+    "The accept control is graded separately: an implementation that always retries would satisfy every",
+    "retry cell, so the one-attempt count on a free port is its own mutation."
+  ],
+  "mutations": [
+    {
+      "name": "readiness no longer decides, so the first attempt is always kept",
+      "file": "packages/core/smoke/_free-port.ts",
+      "find": "    if (await isUp(port)) return { started, port, attempts: attempt };",
+      "replace": "    return { started, port, attempts: attempt };",
+      "expectRed": "a stolen port is retried, not fatal",
+      "cell": "a stolen port is retried, not fatal",
+      "note": "The pre-fix behaviour in one line: pick, start, hand it back. The accept control still passes, because a free port was always fine; only the stolen-port cell separates the two."
+    },
+    {
+      "name": "a failed attempt is left running",
+      "file": "packages/core/smoke/_free-port.ts",
+      "find": "    await stop(started);",
+      "replace": "    void started;",
+      "expectRed": "every failed attempt was stopped",
+      "cell": "every failed attempt was stopped",
+      "note": "A spawned broker that started but never answered would survive every retry, so a suite that retries three times leaves two brokers behind. Invisible to any cell that only asks whether the run eventually succeeded."
+    },
+    {
+      "name": "the give-up message drops the ports it tried",
+      "file": "packages/core/smoke/_free-port.ts",
+      "find": "      tried.map((t) => `${t.port} (${t.reason})`).join(\", \"),",
+      "replace": "      String(tried.at(-1)?.port ?? \"\"),",
+      "expectRed": "the failure names every port it tried",
+      "cell": "the failure names every port it tried",
+      "note": "One port in the message is how this defect read as an unhealthy runner for as long as it did: 45019 appeared exactly once in the whole job log."
+    },
+    {
+      "name": "a zero bound is accepted and silently does nothing",
+      "file": "packages/core/smoke/_free-port.ts",
+      "find": "  if (attempts < 1) throw new Error(`startOnFreePort: attempts must be at least 1, got ${attempts}`);",
+      "replace": "  if (attempts < 0) throw new Error(`startOnFreePort: attempts must be at least 1, got ${attempts}`);",
+      "expectRed": "a zero bound is refused, not silently treated as one",
+      "cell": "a zero bound is refused, not silently treated as one",
+      "note": "Weakens the bound rather than assigning to `attempts`, which is a const from the options destructuring \u2014 assigning would crash the accept control and red the wrong cell. With 0 accepted the loop never runs and the give-up error names no port, which reads as 'nothing was free' rather than 'you asked for no attempts'."
+    },
+    {
+      "name": "the two failure kinds collapse into one string",
+      "file": "packages/core/smoke/_free-port.ts",
+      "find": "    tried.push({ port, reason: detail ? `never became reachable \u2014 ${detail}` : \"never became reachable\" });",
+      "replace": "    tried.push({ port, reason: \"never became reachable\" });",
+      "expectRed": "a start that DIED and one that went silent do not read the same",
+      "cell": "a start that DIED and one that went silent do not read the same",
+      "note": "Keeps the `describe` call \u2014 so the caller's callback still runs, and still throws where it would \u2014 and throws its answer away. This is the one that made the original loss read as an unhealthy runner. NOT split into a second mutation that drops the `describe` call itself: both produce the same give-up string, so the earlier cell (`a start that DIED and one that went silent do not read the same`) reds first for either, and a `describe`-ignored mutant is WRONG-RED by construction \u2014 measured, not assumed."
+    }
+  ]
+}

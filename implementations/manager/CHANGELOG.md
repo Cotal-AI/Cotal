@@ -1,5 +1,319 @@
 # @cotal-ai/manager
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 7bd1ce8: Add `cotal service` (install/status/uninstall): run the manager as a user service that survives logout and reboot. Linux installs a systemd user unit per mesh, macOS a launchd agent; other platforms fail with a message naming what is missing. The unit runs a bare `supervise` with mesh facts in a 0600 EnvironmentFile, a private COTAL_HOME (with the mesh registry entry snapshotted into it), and connectors pre-seeded synchronously by the installer. `supervise` reads COTAL_SPACE/COTAL_SERVER from the environment when the flags are absent, and pins its workspace root so a unit's WorkingDirectory owns the pidfiles.
+
+  Every path-derived value the unit writes (WorkingDirectory, EnvironmentFile, ExecStart tokens) is escaped for systemd percent specifiers, so a mesh root containing `%` starts over its real path instead of a path systemd rewrote while install reported success. Uninstall and status require the unit's recorded mesh to be present (and, for uninstall, to match the named mesh); a unit that carries the provenance marker but no recorded mesh is refused rather than treated as the requested mesh.
+
+- 92a8938: Run a manual registration's policy refresh where the policy is consumed. The refresh reached the
+  pinned exchange from the command dispatcher, ahead of every command's own refusals, so `cotal status`
+  on a pre-policy manual entry failed on a transport error and `cotal supervise` reported that error
+  instead of its `--server` mismatch or missing-login sentence. Spawn, join and supervise now refresh
+  after their local refusals; read-only commands never refresh. The bundle validator, the pinned fetch
+  and the dial classifier move to `@cotal-ai/workspace` so the manager can share them.
+- f50e20d: Restore an admitted seat checkpoint on the destination, before the preserved resume starts.
+
+  A destination used to admit a checkpoint and then launch the seat against whatever happened to be at `launch.cwd`. The captured bundle, the two diffs and the untracked archive were written, digested and admitted, and nothing consumed them. `cotal up` now puts those bytes back, as a step of the preserved-resume path that runs after every gate has passed over every checkpoint and before a single writer generation is claimed, so a refusal costs nothing for the same reason a gate failure does.
+
+  Each seat stages beside its own `cwd`. Every recorded digest is verified again over the files as they are now; the bundle is cloned into `<cwd>.incoming`, refused when that path already exists; the recorded base commit is verified in the clone and checked out detached; the index diff is applied with `--index` and the worktree diff without it, both `--binary --allow-empty`; the untracked archive is extracted. Every seat stages before any seat is promoted, and promotion moves an existing `cwd` aside to `<cwd>.superseded.<timestamp>` before renaming the staging directory into place. Those two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves every seat's live `cwd` as it was, promotes nothing and claims no generation. `git` and `tar` run as child processes with argument arrays, never a shell string.
+
+  The superseded name is claimed before anything moves, by exclusive directory create, with a numeric suffix when the name is taken. The timestamp has one-second resolution, so two promotions of the same seat within one second would otherwise compute the same path, and the second rename would either replace the tree the first one saved or fail on it. A name this step could not create is a name it does not use.
+
+  A leftover `<cwd>.incoming` refuses by name and is never removed automatically: a staging directory from a failed run is the only record of what failed, so an operator inspects it and removes it by hand. A pre-existing `cwd` is renamed rather than deleted, so a wrong checkpoint costs a rename instead of a tree.
+
+  The promoted tree is verified once more. A checkpoint now records the seat's `git status --porcelain` as the cut read it, under the same selection rule the untracked set was produced under, and the restore re-reads it in the promoted tree and refuses a difference. Both applies can return 0 and still leave an index the source did not have, and this is the only check that sees it.
+
+  The session files travel the same way. The manager's resume entry carries the connector's `sessionStatePath` when the seat has one, `cotal down --preserve-state` takes `--session-store <path>` (repeatable, applied to every continuation-capable retained seat, refused when the path does not exist or is not a directory), and each captured session file records where it lands as an anchor plus a relative path rather than the source host's absolute spelling. The restore places them before the seat launches, so a connector that declares exact continuation is sealed and resumed as `exact` rather than capped. A pointer whose recorded `sessionId` is not the one the retained inventory reopens is refused before anything is cloned, and a session file already present at its destination is judged by content: equal bytes are already restored, different bytes are refused with both digests rather than clobbered.
+
+  `up --restore <dir>` reaches the same admission and the same restore, after the store is restored and validated and before commit intent is journaled. It previously handed a retained inventory to the manager with no gate run, no generation claimed and no restore.
+
+  The incarnation check runs before the restore does. The recorded `lifecycleUid` is reconciled against the inventory the resume is about to hand the manager as a gate over the staged set, so a checkpoint describing a different incarnation refuses with both uids while every live working tree is still in place and no generation has been claimed. That comparison previously ran after admission returned, which is after a tree had been moved aside, another promoted over it and a generation claimed under the checkpoint's uid.
+
+  A restore never moves or replaces the destination's own control directory. A seat whose `cwd` holds a `.cotal/`, the layout an operator gets from running `up` and `spawn` in one directory, is refused before staging: a checkpoint excludes the control directory by design, so promoting a tree that cannot contain it would carry the destination's live trust material and maintenance state away under the superseded tree, and the restore would report success.
+
+  A continuity class of `exact` or `fork` now requires the pointer and at least one store file. A pointer alone names a session whose transcript the artifact does not hold, and it is capped like a cut carrying neither.
+
+- c18c055: A manager whose boot inventory has no available connector no longer takes unpinned `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this instance's `inst` rail, so a sibling that can launch them can win the queue, and a caller that pins this instance still gets a named harness refusal. `describe` still lists the commands. Manager `status` reports `classSpawn` for that skip (cluster revision 15). A partial inventory keeps the class rail; a harness refusal there names `--on`, because the standing serve credential cannot read sibling inventories.
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [314a12c]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/workspace@0.51.0
+  - @cotal-ai/seat@0.51.0
+
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+  - @cotal-ai/seat@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- 4ab8b4b: Serve a space from more than one manager, with one renewal owner
+
+  A manager whose workspace root differed from the delivery daemon's was refused at construction, so
+  an auth-mode space could only ever have one manager. A participant machine could not run a manager
+  for a space it had joined, and a second manager on one machine from another checkout could not start
+  either.
+
+  The store-identity proof stays and still runs before every remint, but a divergent answer now
+  decides ownership rather than admission. That alone is not enough: the comparison is pure equality
+  with no holder and no tiebreak, so every manager sharing one store passes it, and two owners
+  reminting on independent timers have no ordering between them. One write then lands between the
+  other's re-sign and its fingerprint-only `reloadCreds`, which is the adoption refusal the proof
+  exists to prevent.
+
+  Ownership therefore requires both the identity match and a per-space renewal lease, one
+  CAS-acquired key in the manager bucket. The lease is kept alive against that bucket's TTL and
+  claimed before the first remint, because that remint re-signs through the store and on a slow store
+  outlasts the TTL by itself. A holder that dies has its lease expire so a survivor takes over with no
+  operator step, and a clean stop hands it back at once. A manager that owns neither condition starts,
+  serves its seats, skips the remint, and writes no renewal record because it re-signed nothing.
+
+### Patch Changes
+
+- 58f0e2d: Strip every COTAL\_ key from the environment the #1649 acceptance harnesses hand their children
+
+  Both acceptance harnesses spread the ambient environment into a child process. Whatever runs
+  them may be a managed agent session, so that spread can hand the child a live credential and a
+  live broker URL. `smoke:suite-ambient-env` reported both files and was red on main.
+
+  The e2e harness did strip, but from a hand-enumerated list of four keys, which only covers the
+  names someone thought of at the time. It now drops them by prefix, and still sets the two keys
+  it needs afterwards. The other harness had no strip at all and now drops them at module scope,
+  because a scrub inside the function that performs the spread is a promise about execution order
+  rather than a fact about what the child can inherit.
+
+- 83ab007: Refuse a reap that could not read its custody record, instead of reporting it as a reaped seat.
+
+  `absent` says the record was unreadable, which is a fact about addressability rather than liveness. A custodian that dies after spawning its child and before writing the record leaves a live seat and no record, and so does a stale reference. Both of the manager's rendering sites turned that into "already forgotten" and carried on, so a successor could free an alias while the seat was still running. The refusal now lives in `requireRuntimeReap`, so `absent` cannot reach a caller at all.
+
+- 254f5da: Submit seat input on the call that sends it. `input` wrote the text and its carriage return as one pty write, so a TUI harness read the return as the last character of the text rather than as the submit key: the text waited in the composer and the next call's return submitted the previous call's text. The return is now written on its own, and the text is delivered as a bracketed paste (`ESC[200~ … ESC[201~`) in slices under the pty's 4096-byte input buffer. The paste markers matter on their own: a TUI classifies a fast burst of input as a paste and consumes the newline that trails it, so a text long enough to need more than one write stayed one call behind even with the return written alone. Measured on a real seat, texts of 120 and 700 bytes were submitted on their own call while 2500 and 3100 bytes were not; with the paste framing, 120, 2600 and 5912 bytes each submit on the call that sends them. The markers are framing rather than content, so the reported byte count still covers only the text and its return.
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+- Updated dependencies [e72dd07]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+  - @cotal-ai/seat@0.50.0
+
+## 0.49.0
+
+### Minor Changes
+
+- b0aeca4: Make bare `cotal down` and `Manager.stop()` spare managed agents by default. Use
+  `cotal down --with-agents` or `Manager.stop({ withAgents: true })` for deliberate destructive
+  teardown. Linux PTY seats release manager-local proxy custody while their detached custodians and
+  child processes continue running, and the CLI binds destructive intent to the exact live stop
+  attempt so an interrupted command cannot poison a later bare shutdown. Managers launched before
+  process identity pins existed remain stoppable after the documented reduced-guarantee warning:
+  bare down cannot prove which SIGTERM handler that running binary carries, so it never reports the
+  pre-signal seat inventory as confirmed spared. A genuinely older destructive handler may still reap
+  those agents. `--with-agents` uses a one-shot handoff bound to the manager pid and the live
+  stop-reservation inode, then signals unconditionally.
+- 18f3df0: Validate retained remote managed agents through the authenticated host authority service
+
+  Remote supervisors now send the retained actor token and sentinel credential only to the manager
+  authority route derived from the verified exchange origin. The host fresh-checks the interactive
+  operator's `supervise` grant, the host-authenticated current manager registration proof, the open
+  gate and serving epoch, the target owner, and the current retained managed row. It returns only the
+  non-secret authority shape.
+
+  The manager requires the host-issued activation receipt and independently binds every response
+  coordinate and authority field to the retained inventory. Missing, malformed, substituted, stale,
+  redirected, cross-origin, and widened responses fail closed.
+
+- cf6ced5: Make `cotal input` wait for the target runtime to acknowledge the PTY write before printing its byte receipt. Custodial and in-process PTY writes now return the accepted UTF-8 byte count or reject, and the manager refuses missing, partial, or failed acknowledgements with an error that names the seat. A dropped write therefore exits non-zero without a `sent` receipt instead of claiming delivery from the intended buffer.
+- 36d1779: Issued authority and run admission (SPEC 13.15, 14.8). A static credential is now an issuance: the issuer records its permission ceiling as evidence under a fresh generation before the material exists, its endpoint rows ride the versioned `ep.v1` rail with that generation pinned beside the caller triple, and a connected client reads its generation from an issuer-written accepted row. A hosted workflow run is admitted under the starting caller's resolved ceiling, recorded once per run in a dedicated admission store the driver cannot write, checked before every channel effect (wait open, fetch, recorded re-read, conclave writes), and revoked by an independent create-only marker that ends open waits at their next poll and refuses resume, takeover and reconcile. `run-start` on the legacy rail is refused with `permission-denied` and the `ai.cotal.ep.unbound-caller-authority` detail. `cotal run start --local` takes `--admit-read` and `--admit-publish` (required) and `cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker. Three new per-space stores (`cotal_issued_`, `cotal_accepted_`, `cotal_admission_`), immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup headers, message deletes and purges, so a holder of its own key row can neither widen nor erase what was recorded. Two new one-shot profiles (`issuer`, `run-admitter`), an admission read on the run mediator and operator profiles, and `COTAL_ACCEPTED_TOKEN` on every connector's spawn environment. Breaking pre-1.0 authority change.
+- c9ea091: Reclaim an endpoint governance slot left held by a stopped registration
+
+  An instance that stopped between taking the endpoint governance slot and publishing its spec left
+  the slot held with no registration behind it, and every later registration for that endpoint
+  refused while nothing was actually in flight. Neither documented recovery reached it:
+  `cotal reconcile-gate` reopens the holder's issuance gate and does not write the slot, and
+  `cotal deregister-instance` has no registration to remove.
+
+  `registerServiceInstance` now decides whether a foreign-held slot is abandoned instead of refusing
+  unconditionally. A slot is reclaimable only when the holder's issuance gate has reopened past the
+  generation the slot is stamped with, which proves the hold can never be promoted, since a promote
+  requires that same generation still frozen. The holder's gate is read through a new optional
+  `observeHolderGeneration` seam, mirroring `deregisterServiceInstance`'s `observeGeneration`, and
+  `readEndpointGateGeneration` is exported for callers to wire it. The manager wires it over the
+  auth-bucket read its existing registration credential already holds. No new grant and no new writer:
+  the registration path remains the governance head's only writer.
+
+  Everything else still refuses, and the refusals are the point. A slot whose holder's gate is still
+  at the stamped generation is a live registration and is never taken. An absent seam, an unreadable
+  gate, a garbled generation, and an observation behind the stamp all refuse. The conflict message
+  now names a remedy that reaches the state rather than one that does not.
+
+  SPEC §13.7 states the liveness guarantee this closes: a registration that stops before its spec
+  publication must not block an endpoint's registrations permanently, the abandoned determination
+  must rest on durable facts rather than a liveness probe, and an implementation that cannot make it
+  must refuse.
+
+- 6fd855f: Add a target-pinned hosted manager retirement phase that preserves host release ordering, uses the existing crash-resumable auth barrier, bounds activation to the canonical contract artifacts, and keeps remote manager maintenance on fresh host-owned admin authorization without copying host ledger state to participants.
+- dd6fea0: The seat record pins the custodian's and the child's process start identity, and a new `reapSeat` signals only a process whose identity matches. It also pins the boot those pids belong to: a start token counts ticks since boot, so a record that outlived a reboot names pids that now belong to other processes, and such a record is refused rather than signalled. The manager records each seat's custody reference on its static slot and, when a successor terminalizes a crashed manager's lifecycle, reaps the orphaned seat process through the runtime's custody `reap` before retiring the lifecycle. A runtime without it refuses by name and the lifecycle stays held. The custody reference is reserved before the seat is launched and rides the slot's first durable row, so a manager that dies between the launch and the slot activation still leaves a seat its successor can address; `Runtime.spawn` takes that reserved reference and must honour it. The same reference rides the rollback object a failed spawn hands its `finally`, so a manager that launched a seat and then threw reaps it in-process instead of retiring the lifecycle and freeing the alias over a running seat. Every seat id is checked against the shape `seatId` mints before it is joined to the custody root, so a forged reference is refused rather than resolved to a path outside it.
+
+  `reserve` and `reap` are NOT on the core `Runtime` contract. They live on a manager-local `CustodialRuntime` that the built-in pty runtime implements, because a backend that delegates to an external surface (`tmux`, `cmux`, `orca`, `herdr`) owns no process to signal and no custody record to pre-mint against, so the methods would have no meaning for it rather than merely no implementation. `adopt` stays on the generic contract.
+
+  The two crash scenarios and the in-process rollback are three suites, `smoke:orphan-seat-reap`, `smoke:orphan-seat-spawn-window` and `smoke:orphan-seat-rollback`, because one command carrying them crossed the mutation-proof command timeout.
+
+- b00f3c1: Refuse a two-root daemon-credential composition at construction. The manager challenges the delivery daemon's reload-store identity before the first remint, and the refusal names both stores. Fingerprint-only reloadCreds stays once both sides read one SecretStore. A store declares its authority identity, or an injected adapter names its coordinate in COTAL_SECRET_STORE on both processes.
+
+### Patch Changes
+
+- 9a334ae: Honor connector-declared startup confirmation prompts in PTY seats by matching normalized terminal output, pressing Enter only when the prompt appears, and failing with a named bounded error when it does not.
+- 9ff5c22: Make the first manager identity on a fresh root an exclusive create. Of N concurrent starts, exactly one process mints the instance file and the others adopt that identity or refuse with a named error, so they cannot take two leases.
+- 0a3e58a: `MAX_AGENTS` is declared once, exported from `resume.ts`, and imported by `manager.ts`. The two private copies (spawn/resume capacity checks and the resume inventory schema's array cap) could drift apart silently: raising the ceiling in `manager.ts` left resume inventories refused above 50 with a zod length error that never mentioned capacity. A derived smoke walks the production manager source tree and proves there is exactly one definition and that both consumers acquire it.
+- 062881a: Wire `--max-sessions` from the CLI into the manager's live-session ceiling.
+
+  `ManagerOptions.maxSessions` was documented as deployment-configurable, but nothing in the CLI
+  could set it, so every live manager sat at 64. `cotal supervise --max-sessions` and
+  `cotal up --max-sessions` now parse a positive integer, pass it into the manager, and record it on
+  the mesh so a same-root repair, resume, or `spawn -f` that restarts the manager does not silently
+  drop a raised ceiling. A refresh of an already-running manager refuses a different `--max-sessions`
+  rather than recording an unapplied setting. A capacity refusal names `--max-sessions`. Default
+  remains 64. Size for agents × panes: the browser console opens one session per pane.
+
+- 159c5f0: Merge a complete agent file passed as a cotal_persona prompt into one frontmatter block. Authored channel grants, role, and agent survive load, explicit tool arguments win, and a malformed leading fence is refused rather than wrapped.
+- 5079c89: Rebind a presence watch that goes silent under a live connection, and stop `cotal ps` from printing a liveness verdict while the manager's own presence view is stale.
+
+  On netcup on 2026-09-09 the presence stream was deleted and recreated while the manager kept its
+  connection. Its ordered consumer re-created itself from the old cursor against a stream whose
+  sequence had restarted, the broker kept sending it idle heartbeats, and nothing ever re-created the
+  watch. The manager's roster froze at the pre-recreation snapshot for hours: `cotal ps` printed
+  `mesh offline` for every seat older than the freeze and `not in roster` for every seat younger,
+  while a fresh observer saw all of them heartbeating. The lane watchdog stopped a working
+  orchestrator twice on that reading.
+
+  The endpoint's sweep already refused to age peers out while the whole bucket was silent and marked
+  the view stale; that was the right verdict for a held link and the wrong end state for a dead
+  consumer. When the view is stale and the transport is up, the endpoint now stops the old watch and
+  binds a new one from the bucket's current state, once per liveness window, and reports the rebind
+  as a warning that names the silent interval. The per-peer age-out also requires that the watch
+  delivered for a full window after the peer's last heartbeat, so an observer's own deafness no longer
+  emits one offline verdict per peer on the tick before the whole-bucket gate trips. A rebind that
+  is still awaiting the broker when the endpoint stops or rebuilds its connection is retired: it
+  installs nothing and reports nothing, so a stopped endpoint never regains a watch and a rebuilt
+  one keeps the watch its fresh connection bound. A rebind that lands on a bucket with no keys is
+  read two ways. An observer that does not register (a probe) learns that nobody is present: it
+  retires every peer still in its roster and holds the view current until the first write, instead of
+  reading its own silence as staleness and rebinding once per window while the mesh is empty. An
+  observer that registers (the manager) is one of the missing keys, so the bucket was wiped since its
+  last heartbeat: it re-publishes its own record, the new watch delivers it, and every other peer is
+  re-observed or aged out from that delivery. It never marks itself offline on a current view.
+
+  Each `ps` row now carries the manager's presence-view state (`meshView`: `current`, `stale`, or
+  `unpopulated`), and the CLI prints `mesh unknown` with the reason instead of `mesh offline` or
+  `not in roster` whenever that state is not `current`. Rows from an older manager carry no field and
+  render as before.
+
+- 1636927: Resume long manager re-registrations with fresh scoped authority and durable same-operation eviction progress, and document safe gate recovery and the last-resort JetStream store replacement procedure.
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [5b2281c]
+- Updated dependencies [3ad688e]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/workspace@0.49.0
+  - @cotal-ai/seat@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

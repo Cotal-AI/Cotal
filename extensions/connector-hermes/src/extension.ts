@@ -67,14 +67,22 @@ export const hermesConnector: Connector = {
       ...aclEnv(opts),
       // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
       // mints the control endpoint itself and merges the token into the same file (see launch.ts).
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
     if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;
+    // Adopt-home is a machine-wide operator decision ("put MY Hermes on the mesh"), not a
+    // per-session value the manager assigns, so it crosses from this process like the other
+    // operator knobs. launchEnv resets every other COTAL_* name precisely because those ARE
+    // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
+    // seat cannot opt in to its own profile.
+    const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
+    if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // An agent file carries identity + persona + model; the launcher applies the persona as
     // Hermes' SOUL.md (system prompt) at gateway startup, the one place it can be set.
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;

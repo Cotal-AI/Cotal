@@ -17,7 +17,12 @@
     "The empty-space mutation is the acceptance-boundary regression. The CLI treats an empty parsed space",
     "as absent, so the guard must refuse it rather than verify the empty-space record and let the CLI act",
     "on a different current mesh. Its expected failure names both argv cells because the separate empty",
-    "value and the repeated last-empty value reach the same parsed state through different routes."
+    "value and the repeated last-empty value reach the same parsed state through different routes.",
+    "",
+    "The destructive-policy flag is part of the same strict parser contract. If the guard does not declare",
+    "`--with-agents`, safe teardown in an exactly recorded sandbox is refused before the CLI can act. The",
+    "positive cell proves the flag is classifiable; the existing foreign-root cells still prove that parsing",
+    "the flag does not weaken directory identity enforcement."
   ],
   "mutations": [
     {
@@ -89,6 +94,13 @@
       "find": "  if (observed.space !== space) {",
       "replace": "  if (false && observed.space !== space) {",
       "expectRed": "target guard refuses a canonical record whose space field is not the requested space"
+    },
+    {
+      "name": "M11 strict down parser forgets the explicit destructive policy flag",
+      "file": "packages/smoke-kit/src/sandbox-guard.ts",
+      "find": "  \"with-agents\": { type: \"boolean\" },\n",
+      "replace": "",
+      "expectRed": "explicit destructive down retains the same exact sandbox identity guard"
     }
   ]
 }

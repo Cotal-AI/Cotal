@@ -1,5 +1,195 @@
 # @cotal-ai/connector-core
 
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- 491e923: The public user-auth exchange now mints `channel-writer` and `channel-purger` for a signed-in
+  human whose ledger row carries `admin`, so a remote owner can run `cotal channels set/default`
+  and a dashboard channel delete without a loopback capability. `admin`, `purger`, `deployer`, and
+  `manager-service` stay loopback-only. A managed-agent secret exchange still never mints a view.
+  This is not full remote channel management: `cotal web` still asks for the read-only admin view
+  at startup.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- fc6f0b1: Scope an unanswered endpoint verdict to the rail the request rode
+
+  A CLI whose caller carries an issued generation rides the versioned `ep.v1` rail. SPEC 13.15 makes
+  that rail a separate subject space from the legacy `ep` rail and requires an endpoint to serve
+  both, so a manager built before the versioned rail serves `ep` alone and never receives the
+  request. The describe waited out its whole budget and every hosted `cotal run` verb reported that
+  no manager answered on the endpoint rails, asked whether one was running, and offered `--local`,
+  against a manager that was up, on the roster and answering `cotal ps` throughout. `--local` drives
+  the run from the calling process and names the caller as the run's answerer, so an operator who
+  took the suggestion would submit an answer under the wrong identity.
+
+  The unanswered marker now carries the `ep` plane the request was published on, and `describe`
+  names it in its own refusal. `cotal ps` and the other manager verbs state the reachability verdict
+  against that rail instead of against the mesh, and say what silence on a versioned rail does not
+  establish. `cotal run`'s hosted verbs do the same and drop both the question and the `--local`
+  suggestion there, since neither follows from what was observed. On the legacy rail every message is
+  unchanged: there is no second rail its silence could be hiding a manager on.
+
+  No fallback describe is issued on the other rail. A caller holds broker rows for its own rail only,
+  so the request would be refused at publish rather than answered.
+
+- b7e5942: A peer can no longer forge the framing of an auto-injected message
+
+  The block that carries waiting peer messages into a turn interpolated the message body and the
+  sender name raw, and the Hermes sidecar built the same shape by string concatenation. Both were
+  forgeable the two ways the inbox reply used to be: a body carrying a newline produced a second item
+  in the block, reading to the agent as a separate delivered message from a peer that never sent one,
+  and a sender naming itself with a closing bracket ended the real attribution and opened a forged
+  one. These frames are auto-injected rather than returned when the agent asks, so the agent never
+  had a chance to distrust them.
+
+  The rule both surfaces now hold is the one the inbox reply already held, and they hold it through
+  the same code rather than a second convention: a line that begins at column zero is written by the
+  connector, never by a peer. One message is one line plus indented continuations, with the
+  attribution inside a single bracket pair. The neutralization moved into a shared module that the
+  injected block and the inbox reply both render through, so the body, the sender name and role, and
+  the service and channel labels all pass through one implementation. The Python sidecar carries a
+  matching module, kept to the same character class on purpose, since a peer that can forge the frame
+  on either side of the socket has the whole class back.
+
+  Two widenings came out of stating the rule positionally rather than by example. The attribution
+  class now neutralizes the opening bracket as well as the closing one, because stripping only the
+  closing one still let a name render a bracket pair a reader takes as the innermost attribution. The
+  injected block's per-item separator is the bracketed attribution the inbox reply uses, replacing the
+  bullet, so the text of an injected block changed and the wake-path suites that assert on it were
+  updated with it.
+
+  A third injected surface holds the same rule now. A wake hint carries no message body and reads as
+  one short sentence, so it does not look like a frame, but it is written into the agent's context
+  without being asked for and it names a peer-controlled channel label, which three connectors
+  interpolated raw. A label carrying a newline put a second line at column zero reading as another
+  delivered message. That label renders through the shared module too, and the absent-channel fallback
+  moved there with it, since three connectors each spelled it themselves and an absent field is what a
+  per-call-site spelling is most likely to get wrong.
+
+- baed5d1: Report a session as stalled when its queue head is not moving, not merely when nothing moves
+
+  A session could report `state: ready` with a live transport while its oldest automatic deliveries
+  were never handed over: one reported seat held 96 of them, the oldest more than two hours old, with
+  nothing drained for 75 minutes, and every health field green throughout. The stall measure keyed on
+  any automatic commit, so a seat that kept committing the traffic arriving on top of a head it could
+  not deliver reset its own clock on every turn and reported healthy indefinitely, while the messages
+  actually owed to it aged without bound.
+
+  Progress is now measured at the head of the automatic queue: the clock resets when the commit takes
+  the oldest queued delivery, not when it takes any of them. A seat that is genuinely draining still
+  reports `ready` however busy it is, and a queue that is merely deep was never a stall. The status
+  route reports `lastAutomaticHeadDrainedAt` beside the existing `lastAutomaticDrainedAt`, because the
+  gap between the two marks is what names this fault: the first keeps moving while the second stands
+  still.
+
+### Patch Changes
+
+- 0a52594: Census the in-process half of the ambient-environment rule. `smoke:suite-ambient-env` grades the environment a suite hands a child; the new `smoke:suite-ambient-env-self` grades a suite that reads its own `process.env` through `configFromEnv` and friends, and requires a module-scope `COTAL_` prefix scrub before that first read. The connector suites in the class now scrub the whole prefix instead of dropping one variable, so running them from inside a connected session no longer dies in its own import on the one-identity-plane refusal.
+- 1112755: Give fresh setup defaults the run capability alongside spawn. Document workflow tool setup, credential refresh for existing personas, and supported authentication modes.
+- cd9c8dd: Grade the frozen-body egress guard against the predicate it actually replaced, instead of a pinned historical floor. The differential resolved its base as a fixed sha, so a guard could become stricter than that floor, be weakened back toward it, and still report zero weaker rows. The base is now resolved from history: the newest ancestor whose `agui.ts` differs from the source under test and still carries a classifier role, with the working tree as the head so an uncommitted weakening is graded, and an on-demand deepen so the pair exists in a depth-1 CI checkout. `COTAL_EGRESS_DIFF_BASE` adds a pair against an explicit PR base and never replaces one. Two holes the resolved run exposed are closed with it: the loader folded an unrecognised verdict into a throw, which would have read a new publishing verdict as withheld, and the closed-schema branch had no row naming it.
+- 7875182: A Jcode seat whose soft interrupts time out now keeps consuming its queue, and stops reporting itself healthy while it is not.
+
+  Peer messages that arrive while a Jcode session is busy are handed to it mid-turn. When that handoff got no reply, nothing else ever looked at the queue: it was served only by a new message arriving or the session going idle, and on a busy seat neither has to happen. Messages piled up behind a seat that was working normally and answering direct questions, and the seat was indistinguishable from a wedged one. Measured on a live seat: 27 messages held for 13.8 hours.
+
+  A seat now serves its own queue on a schedule rather than waiting for an event. If the mid-turn handoff stops answering, the queued messages are delivered as an ordinary turn instead, which needs no reply from it, so they arrive late rather than never. Nothing is dropped and nothing is delivered twice.
+
+  `cotal_connection_status` also stops calling such a seat `ready`. A bound session with a live transport whose queued messages have made no progress for ten minutes now reports `stalled`, alongside how long the queue has gone without committing anything, and `cotal_reconnect` says plainly when rebuilding the connection did not deliver them, instead of answering with a bare success over an untouched queue.
+
+- da119c6: A control socket path longer than the kernel's `sun_path` limit is refused at construction with a message naming the path, its byte length, the limit and the temp root budget, instead of surfacing as a bare `EINVAL` from the bind.
+- 0fdca5b: Describe Cotal Lang as programmable multi-step agent coordination. Explain each workflow tool call, required arguments, execution prerequisites and completion checks, with start and yield examples. Distinguish workflow answers from assigned-turn outcomes and point to validation and simulation before execution.
+
+## 0.49.0
+
+### Minor Changes
+
+- 6a03ccf: Stop republishing tool-call arguments and results onto `events.<owner>.<actor>`. The durable emitter drops `TOOL_CALL_ARGS` and `TOOL_CALL_RESULT` before the write-ahead log, and refuses to republish a frozen pre-fix frame that still carries them. A frozen frame whose event list cannot be read is withheld too, and the emitter halts by name rather than publishing bytes it could not inspect onto a channel with a different read ACL. An empty event list counts as unreadable rather than as nothing to object to, since no shipped writer can produce one, and so does a frame whose envelope does not parse: a wrong protocol version, or a missing or malformed `threadId`, `runId`, `epoch` or `seq`, is withheld rather than published. A body the policy cannot iterate at all is withheld on the same grounds, so the classifier answers for every input its signature accepts instead of throwing on some of them. Observers lose that tool output; that is the boundary. Tool start and end, text, and reasoning still go out.
+- 36d1779: Issued authority and run admission (SPEC 13.15, 14.8). A static credential is now an issuance: the issuer records its permission ceiling as evidence under a fresh generation before the material exists, its endpoint rows ride the versioned `ep.v1` rail with that generation pinned beside the caller triple, and a connected client reads its generation from an issuer-written accepted row. A hosted workflow run is admitted under the starting caller's resolved ceiling, recorded once per run in a dedicated admission store the driver cannot write, checked before every channel effect (wait open, fetch, recorded re-read, conclave writes), and revoked by an independent create-only marker that ends open waits at their next poll and refuses resume, takeover and reconcile. `run-start` on the legacy rail is refused with `permission-denied` and the `ai.cotal.ep.unbound-caller-authority` detail. `cotal run start --local` takes `--admit-read` and `--admit-publish` (required) and `cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker. Three new per-space stores (`cotal_issued_`, `cotal_accepted_`, `cotal_admission_`), immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup headers, message deletes and purges, so a holder of its own key row can neither widen nor erase what was recorded. Two new one-shot profiles (`issuer`, `run-admitter`), an admission read on the run mediator and operator profiles, and `COTAL_ACCEPTED_TOKEN` on every connector's spawn environment. Breaking pre-1.0 authority change.
+- 6fd855f: Add a target-pinned hosted manager retirement phase that preserves host release ordering, uses the existing crash-resumable auth barrier, bounds activation to the canonical contract artifacts, and keeps remote manager maintenance on fresh host-owned admin authorization without copying host ledger state to participants.
+
+### Patch Changes
+
+- 0e58bac: Grade a replacement frozen-body egress guard against the predicate it replaced, on one corpus, both directions. The export name and shape both change; the loader binds the classifier by role. A boolean arm is never coerced from a three-way verdict. Also correct the agui-tool-result mutation why-block: the rebuilds stay because command poisons dist, not because this suite reads dist.
+- cd74517: Prove Jcode pre-join readiness on the orientation `tool_done` event as it arrives. A seat that
+  already called `cotal_orientation` now joins even when that proof turn stays open. The timeout
+  outcome names whether the call was observed, and teardown no longer kills a functional session
+  just because `turn_done` is still outstanding.
+- 61d08ab: Verify the active Jcode model and provider route before applying `--variant`. A route that accepts
+  reasoning effort still receives the requested tier before its first turn. A route without that
+  capability now fails with an explicit unsupported-capability diagnostic instead of a tier refusal.
+- 062881a: Wire `--max-sessions` from the CLI into the manager's live-session ceiling.
+
+  `ManagerOptions.maxSessions` was documented as deployment-configurable, but nothing in the CLI
+  could set it, so every live manager sat at 64. `cotal supervise --max-sessions` and
+  `cotal up --max-sessions` now parse a positive integer, pass it into the manager, and record it on
+  the mesh so a same-root repair, resume, or `spawn -f` that restarts the manager does not silently
+  drop a raised ceiling. A refresh of an already-running manager refuses a different `--max-sessions`
+  rather than recording an unapplied setting. A capacity refusal names `--max-sessions`. Default
+  remains 64. Size for agents × panes: the browser console opens one session per pane.
+
+- 159c5f0: Merge a complete agent file passed as a cotal_persona prompt into one frontmatter block. Authored channel grants, role, and agent survive load, explicit tool arguments win, and a malformed leading fence is refused rather than wrapped.
+- 5395c7c: Report a refused presence-KV write by naming the bucket and how long writes have been refused, instead of asserting the mesh is unreachable while the transport is connected. A latched presence bucket still opens and watches cleanly, so only the write reveals it; bind now fails with that detail rather than a bare timeout, and `cotal_connection_status` carries a distinct `presenceWriteFailure` field. The record is connection-scoped: it is cleared whenever a connection is torn down, rebuilt or stopped, so a later failure on a different connection cannot inherit it and be described as a bucket refusal.
+
+  Clearing on teardown is not sufficient on its own, because a presence put can still be in flight when the teardown runs. A rebind reaches `publishPresence` through the empty-bucket path and nothing awaits that flight, so a put started on one connection could settle after the record was cleared and write its refusal onto a stopped endpoint or onto the connection that replaced it. The put now carries the same epoch fence the presence watch bind takes: a put that outlives its epoch still throws to its caller, and it no longer writes presence-refusal state that belongs to a later connection. A late success is fenced the same way, so it cannot erase a refusal the current connection established from its own evidence.
+
+- 5b2281c: Compile the seat JavaScript and type entrypoints during pack and publish after validating both native helpers. A new installed-distribution smoke packs the full CLI closure from an assembled seat tree and proves a fresh npm install imports seat, imports the manager, and prints the packaged CLI help banner.
+- 6836dd3: Allow `cotal send dm`, `msg`, and `ask` from an operator shell outside a managed seat. The transient
+  sender now uses a fixed advisory display name while its wire principal continues to come from the
+  resolved credential or user bearer.
+- 4b3881f: A workflow `sleep` that a busy host was simply too loaded to schedule no longer fails the run. A pause waits by reading the durable checkpoint plane, and each of those reads carries a client-side deadline that is itself a timer; when the machine is loaded hard enough that the run's process does not get back onto the CPU, that timer cannot run either, so it expires the moment the process resumes and reports a bare `timeout` even though the broker answered long ago. That was recorded as `L4000 EffectError: timeout`, which names the effect as the thing that broke and sends the author looking at their own program, and it killed runs whose only fault was being polite about load.
+
+  The runtime now measures whether its own process was actually running across the wait, namely event-loop lag over the window together with a shortfall in the ticks that window should have contained, and treats a deadline that elapsed while the process was demonstrably off the CPU as a fact about the host rather than about the effect. The pause and its timer are durable, so the wait is simply re-entered and a `sleep` whose deadline passed during the starvation completes late, which is what a lower-bound wait promises. Nothing is widened and nothing is swallowed: a deadline on a loop that was running, and every failure that is not a client deadline, still fails immediately as `L4000` with its message intact. A host that still cannot serve the run after a bounded number of consecutive starved attempts fails under the new `L4025`, "Host did not schedule the run", quoting the lag and tick measurement it made, so a caller that genuinely cannot be served fails rather than hanging and the operator reads the real cause.
+
 ## 0.48.2
 
 ## 0.48.1

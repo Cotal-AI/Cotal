@@ -17,6 +17,8 @@
  * again.
  */
 import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { realpathSync } from "node:fs";
 import {
   mintCheckpoint,
   heartbeatCheckpoint,
@@ -50,6 +52,7 @@ import {
   writeRunNotice,
   actionContext,
   invokeCommand,
+  replyRefusedBeforeEffect,
   readGoalResult,
   readGoalStatus,
   resolveService,
@@ -66,10 +69,15 @@ import {
   type CotalMessage,
   type EpAttributedReply,
   type EpCaller,
+  type EpVerbTarget,
   type GoalRef,
   type GoalResultFact,
   type Presence,
   type ResolvedService,
+  type RunAdmissionView,
+  assertAdmittedPublish,
+  assertAdmittedSubscribe,
+  assertNotRevoked,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
 import { migrationSeats } from "./migrate.js";
@@ -97,6 +105,7 @@ import {
   type JournalEntry,
   type MonitorRequest,
   type NotifyRequest,
+  type ObserveRequest,
   type SleepRequest,
   type SpawnRequest,
   type TurnRequest,
@@ -107,12 +116,20 @@ import {
 
 import type { RunPauseHost } from "./run-pause-host.js";
 import type { RunWaitHost } from "./run-wait-host.js";
+import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
 
 export interface RunMeshServices {
   readonly pauses: RunPauseHost;
   readonly waits: RunWaitHost;
   readonly authority: RunScopeAuthority;
+  /**
+   * The run's ADMISSION (SPEC 14.8), re-read leader-served at every channel effect this handler
+   * performs on its own connection: a conclave's registration and membership writes, checked
+   * AFTER a generated channel name is derived. The wait host holds the same reader for the
+   * channel reads it mediates. A mediated run with no reader admits no channel effect.
+   */
+  readonly admission: () => Promise<RunAdmissionView>;
 }
 
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
@@ -206,6 +223,19 @@ export class MeshHandler {
     private readonly watcher: SettleWatcher,
     private readonly clock: () => number = () => Date.now(),
     private readonly services?: RunMeshServices,
+    /**
+     * How this handler learns whether its own process was scheduled (#1508). Injected so a suite
+     * can drive a starved loop deterministically; the default is the process-wide observer, which
+     * is the only honest source outside a test.
+     */
+    private readonly lag: LoopLagObserver = loopLag(),
+    /**
+     * Where the operator notice for an absorbed starvation goes (#1508). A daemon routes it to its
+     * own log rather than stderr, and a suite counts it: an absorbed starvation is otherwise
+     * INVISIBLE, and a cell asserting "the sleep completed" cannot tell a completion that survived
+     * starvation from one that was never starved at all.
+     */
+    private readonly onStarved: (note: string) => void = (note) => console.error(note),
   ) {}
 
   /**
@@ -214,13 +244,121 @@ export class MeshHandler {
    * the next effect instead of poisoning every spawn for the handler's lifetime.
    */
   private managerService: Promise<ResolvedService> | undefined;
-  private manager(): Promise<ResolvedService> {
+  private manager(instanceId?: string): Promise<ResolvedService> {
+    // #1616 ITEM 3 — PINNED DISPATCH. An explicit placement target resolves through the EXISTING
+    // instance-dispatch API: `resolveService`'s `instanceId` opt (endpoint-invoke.ts:274-280)
+    // becomes `EpRoute { mode: "inst", instanceId }` at :113, and the handle it returns carries
+    // `pinnedInstanceId` (:315) so `invokeCommand` addresses that instance and never the class
+    // queue. It is deliberately NOT served from `managerService`: that memo holds the class-anycast
+    // resolution, and handing a pinned caller the anycast handle would reinstate the exact fallback
+    // this item removes. A wrong, unavailable or replaced instance therefore fails to resolve —
+    // before a child exists — instead of quietly succeeding somewhere else.
+    if (instanceId !== undefined)
+      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId });
     this.managerService ??= resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller)
       .catch((e) => {
         this.managerService = undefined;
         throw e;
       });
     return this.managerService;
+  }
+
+  /**
+   * One manager call, with a SPEC 13.2 bind refusal REPAIRED rather than raised.
+   *
+   * A run resolves the manager on the class rail and binds the incarnation that answered its
+   * describe. The invoke is a second, independent trip through the same anycast queue, so in a
+   * space with more than one manager it routinely reaches another member, and that member refuses
+   * before dispatching. The refusal is honest for one command and destructive for a run: it says
+   * the command did not run and its remedy is to re-issue, but raised as the effect's own failure
+   * it ends the run and consumes the run id and its journal (#1638).
+   *
+   * So a refusal the responder MARKS as pre-effect is re-issued instead of returned. It is a first
+   * attempt and not a second: the marker together with `not-executed` is the responder's own
+   * statement that no effect of the command exists, which is what {@link replyRefusedBeforeEffect}
+   * checks, and it is the same licence core's `Endpoint.invokeService` re-issues on. The stale
+   * class handle is dropped first, so the re-issue re-describes rather than rebinding the
+   * incarnation that was just refused.
+   *
+   * BOUNDED, because a re-issue draws the same queue again. The describe and the invoke stay two
+   * independent trips, so a space of m managers still splits (m-1)/m of the time and the repair
+   * converges geometrically rather than deterministically; after {@link BIND_SPLIT_REISSUES} of
+   * them the refusal surfaces unchanged, still stating that the command did not run. What removes
+   * the residual is addressing one instance, and the run's caller holds no instance-rail grant for
+   * a command its program did not place (SPEC 13.9, `run-driver-grants.ts`), so that is a wider
+   * change than this one.
+   *
+   * A PINNED handle is never repaired. It addresses one instance by name, so a refusal from it is
+   * that incarnation answering about itself, and re-resolving onto the class rail would reinstate
+   * the anycast fallback #1616 removed.
+   */
+  private async invokeManager(
+    service: ResolvedService,
+    command: string,
+    args: Record<string, unknown> | undefined,
+    opts: { target?: EpVerbTarget; deadlineMs?: number; id?: string },
+  ): Promise<EpAttributedReply> {
+    let handle = service;
+    for (let reissues = 0; ; reissues += 1) {
+      const reply = await invokeCommand(this.nc, this.binding.space, handle, command, args, opts);
+      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) return reply;
+      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;
+      this.managerService = undefined;
+      try {
+        handle = await this.manager();
+      } catch {
+        // The repair could not be attempted. The REFUSAL is what surfaces, not the resolve failure:
+        // every caller of this method already reads a refused reply as "the manager declined", and
+        // this one states that nothing ran, which is the fact a describe timeout raised in its
+        // place would lose.
+        return reply;
+      }
+    }
+  }
+
+  /**
+   * #1616 item 5 — PHASE A, RESOLVE ON THE HOST THAT WILL LAUNCH. A directory is a fact about one
+   * filesystem, so the only process that can canonicalize it is the manager instance that will
+   * `chdir` into it. This asks the PINNED instance for the canonical form and returns it together
+   * with the identity that answered, so phase B dispatches the resolved path and the journal records
+   * which host resolved it. There is deliberately NO envelope `id`: a resolve binds no goal, takes
+   * no reservation and allocates nothing, so a retry or a crash between the phases costs nothing.
+   *
+   * EVERY failure direction is a REFUSAL. A path the target cannot resolve is not passed through as
+   * the raw string: the raw string would launch somewhere plausible on the manager's own root, which
+   * is the fail-open outcome this repair exists to remove.
+   */
+  private async resolveCwd(req: SpawnRequest, service: ResolvedService, cwd: string, instanceId: string): Promise<CwdResolution> {
+    let reply: EpAttributedReply;
+    try {
+      reply = await invokeCommand(this.nc, this.binding.space, service, "resolve-cwd", { cwd }, {
+        deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+      });
+    } catch (err) {
+      // An older manager does not list `resolve-cwd`, and `invokeCommand` refuses an unlisted
+      // command with `not-found` before it publishes anything (endpoint-invoke.ts:349-350). That is
+      // the fail-CLOSED direction and it stays closed: a host that cannot answer the question does
+      // not get handed the caller's guess.
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd,
+        err instanceof EpEnvelopeError && err.code === "not-found"
+          ? `this manager serves no resolve-cwd command, so it can state no canonical form (${err.message})`
+          : String((err as Error)?.message ?? err));
+    }
+    if (reply.reply.ok === false)
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error?.message ?? "refused with no message");
+    const data = reply.reply.data as { cwd?: unknown; host?: unknown } | undefined;
+    if (typeof data?.cwd !== "string" || data.cwd.length === 0 || !isAbsolute(data.cwd))
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd,
+        `the reply names no absolute directory (${JSON.stringify(data?.cwd)})`);
+    // The AUTHORITATIVE identity is the one that answered, off the attributed reply's subject, not
+    // the one the caller asked for: the pinned resolve already rejects a reply from another
+    // instance, so recording the responder is recording what was checked.
+    return {
+      cwd: data.cwd,
+      endpoint: reply.responder.endpoint,
+      instanceId: reply.responder.instanceId,
+      ...(typeof data.host === "string" ? { host: data.host } : {}),
+    };
   }
 
   /** The branded goal-fact context over this handler's own connection, memoized the same way. */
@@ -504,6 +642,21 @@ export class MeshHandler {
         if (typeof x?.name === "string" && typeof x?.uid === "string" && typeof x?.goalId === "string")
           this.turnGoals.get(`${x.name}#${x.uid}`)?.delete(x.goalId);
       }
+      if (e.kind === "waitUntil") {
+        // A `waitUntil` arms ONE cadence pause per observation, each under a derived token, so the
+        // sweep releases the one that is actually open: the observation the entry is on. The
+        // earlier ones already settled (that is how the wait got here) and `cancelTimer` tolerates
+        // a claim that loses its own race, so releasing the current index is both necessary and
+        // sufficient. Attempt 0 never arms anything, which is why the index is the observation
+        // COUNT rather than the count minus one.
+        const attempt = (e.observations ?? []).length;
+        if (attempt > 0)
+          await this.cancelTimer({
+            endpoint: this.binding.endpoint,
+            token: derivedToken(e.requestId, `observe-${attempt}`),
+          });
+        continue;
+      }
       if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") continue;
       // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
       // crash before the first bind leaves attempt 1, which is the request id itself.
@@ -607,8 +760,7 @@ export class MeshHandler {
       console.error(`! discharge: the cancelled spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
       return;
     }
-    const service = await this.manager();
-    const reply = await invokeCommand(this.nc, this.binding.space, service, "despawn", { graceful: true }, {
+    const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
       target: { mode: "owner", ...target },
       deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
     });
@@ -663,6 +815,48 @@ export class MeshHandler {
 
     await this.settle(ref, ctx.signal);
     return null;
+  }
+
+  /**
+   * `waitUntil`'s cadence, as a durable pause nobody answers.
+   *
+   * THE SAME PLANE AS `sleep`, for the reason `sleep` gives for reusing the checkpoint plane: a
+   * durable pause with a deadline, a token that survives a crash and a one-use settle is what this
+   * needs, and a second timer mechanism would be a second thing to get wrong. What differs is that
+   * a `waitUntil` parks MANY times under one step, so each observation's pause takes its own
+   * DERIVED token (`observe-<n>`), exactly as an ask's re-attempts and a wait's second deadline do.
+   * Deriving rather than remembering is what makes it recoverable: a resumed run re-derives the
+   * same token from the request id and the attempt index, and re-attaches to the pause the crashed
+   * attempt armed instead of arming a second one.
+   *
+   * THIS HANDLER NEVER OBSERVES ANYTHING. The probe is the program's and the interpreter calls it;
+   * all that happens here is the waiting. So there is nothing to bind and nothing to read back:
+   * the observations are the journal's, written by the interpreter, and this returns only whether
+   * there was time left.
+   */
+  async observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean> {
+    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+    // OUT OF TIME IS ANSWERED BEFORE ANYTHING IS ARMED. A pause armed at an instant that has
+    // already passed is a timer that fires immediately and a record nobody needs, and the caller's
+    // next act on `false` is to fail the step.
+    if (this.now() >= req.deadlineAt) return false;
+    // ATTEMPT 0 LOOKS IMMEDIATELY: a wait that sleeps before it has ever looked cannot notice a
+    // predicate that already holds, and "are the checks finished" is often already true.
+    if (req.attempt === 0) return true;
+
+    // The cadence, CLAMPED to the deadline. Parking past it would hold the run beyond the instant
+    // the program said to give up at, and then report a lateness the wait never agreed to.
+    const wake = Math.min(this.now() + parseDuration(req.every), req.deadlineAt);
+    const ref: CheckpointRef = {
+      endpoint: this.binding.endpoint,
+      token: derivedToken(ctx.requestId, `observe-${req.attempt}`),
+    };
+    await this.arm(ref, wake);
+    await this.settle(ref, ctx.signal);
+    // Re-read the clock rather than trusting the arithmetic: the pause may have been settled by a
+    // heartbeat-advanced deadline or by this host being away, and what decides whether there is
+    // still time is where the clock actually is now.
+    return this.now() < req.deadlineAt;
   }
 
   /**
@@ -1091,6 +1285,34 @@ export class MeshHandler {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const goalId = ctx.requestId;
 
+    // Placement is explicit and host-local. Refuse malformed values before manager discovery or
+    // submission, so an invalid request can never turn into an omitted `cwd` and inherit the
+    // manager's workspace root. Existence and launch authority stay with the serving manager.
+    if (req.cwd !== undefined && (typeof req.cwd !== "string" || req.cwd.length === 0 || !isAbsolute(req.cwd)))
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) cwd must be a non-empty absolute directory on the serving manager's host; refusing ${JSON.stringify(req.cwd)} rather than falling back`);
+
+    // #1616 ITEM 2 — THE AFFINITY GATE. A directory is HOST-LOCAL, so a request that names one but
+    // names no manager instance rides the class `one` queue and lands wherever the anycast fell.
+    // The design record calls that combination not acceptable, so it REFUSES. There is deliberately
+    // NO anycast fallback: falling back IS the defect. And the refusal is raised HERE, ahead of
+    // `readPermits`, ahead of `this.manager()`'s describe round-trip, ahead of any submission,
+    // acceptance or launch — so nothing is reserved, claimed or started before it. Legacy
+    // cwd-omitted spawns never reach this line and keep their prior behaviour byte for byte.
+    if (req.cwd !== undefined && req.placement === undefined)
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) names a cwd but no placement target: a host-local directory needs an explicit { endpoint, instanceId } manager instance, and this spawn refuses rather than falling back to class anycast`);
+    if (req.placement !== undefined
+        && (typeof req.placement.endpoint !== "string" || req.placement.endpoint.length === 0
+          || typeof req.placement.instanceId !== "string" || req.placement.instanceId.length === 0))
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) placement must name both an endpoint and an instanceId; refusing ${JSON.stringify(req.placement)} rather than dispatching unpinned`);
+    // Naming a target the run is not bound to is a mismatched target, not a request to go find it:
+    // automatic manager discovery is outside this bounded repair, so it refuses here too.
+    if (req.placement !== undefined && req.placement.endpoint !== this.binding.endpoint)
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) placement targets endpoint ${JSON.stringify(req.placement.endpoint)} but this run is bound to ${JSON.stringify(this.binding.endpoint)}; refusing rather than dispatching off-binding`);
+
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
     // identity was bound before the crash. Go straight back to the terminal. An entry that says
     // `adoptedFrom` names the goal the ORPHANED spawn submitted, not this step's own request id:
@@ -1138,13 +1360,30 @@ export class MeshHandler {
     try {
       if (ext === undefined) {
         let reply: EpAttributedReply | undefined;
+        // #1616 item 5 — PHASE A, then phase B. A previous attempt's journalled resolution is
+        // reused rather than re-asked, so the path a resumed spawn launches in is the one the
+        // resolve recorded and cannot drift under a re-resolve. A spawn naming no cwd has nothing
+        // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
+        let resolution = readCwdResolution(recorded?.resolution);
         try {
-          const service = await this.manager();
-          reply = await invokeCommand(this.nc, this.binding.space, service, "spawn", spawnArgs(req), {
-            id: goalId,
-            deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-          });
+          const service = await this.manager(req.placement?.instanceId);
+          if (req.cwd !== undefined && resolution === undefined) {
+            // `req.placement` is guaranteed here: a cwd without one refused above, at :1203.
+            resolution = await this.resolveCwd(req, service, req.cwd, req.placement?.instanceId ?? "");
+            // PERSIST BEFORE SUBMITTING. The resolution is what phase B dispatches and what a
+            // resume re-reads; binding it after the submission would leave a crash in between with
+            // a launched seat whose directory no record names.
+            await ctx.bind({ resolution });
+          }
+          reply = await this.invokeManager(service, "spawn",
+            spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
+              id: goalId,
+              deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+            });
         } catch (err) {
+          // A refusal this handler RAISED is never a lost reply: it was decided here, before
+          // anything was submitted, so it is re-thrown rather than weighed against a goal record.
+          if (err instanceof EffectError) throw err;
           // The invoke did not come back — which does not prove nothing happened: the request may
           // have been accepted while the reply was lost. The goal record is the arbiter: a durable
           // trace under this goalId means the submission landed, so proceed to its terminal; none
@@ -1172,6 +1411,9 @@ export class MeshHandler {
         ext = {
           goalId,
           ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+          // `bind` REPLACES the external record, so the phase-A resolution is re-stated here or the
+          // acceptance bind would erase it and a resume would re-resolve against a moved target.
+          ...(resolution !== undefined ? { resolution } : {}),
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
           ...(req.permits !== undefined ? { permits: req.permits } : {}),
@@ -1300,7 +1542,7 @@ export class MeshHandler {
       }
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
       const submit = async (): Promise<EpAttributedReply> =>
-        invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
+        this.invokeManager(await this.manager(), "turn",
           { payload, deadlineMs, ...(handoffFrom !== undefined ? { handoffFrom } : {}) }, {
             id: goalId,
             deadlineMs: TURN_ACCEPT_DEADLINE_MS,
@@ -1678,7 +1920,7 @@ export class MeshHandler {
     if ((await readGoalStatus(actx, ref)) !== undefined) return;
     let reply: EpAttributedReply;
     try {
-      reply = await invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
+      reply = await this.invokeManager(await this.manager(), "turn",
         { payload, deadlineMs: Math.max(1_000, deadlineAt - this.now()) }, {
           id: goalId,
           deadlineMs: TURN_ACCEPT_DEADLINE_MS,
@@ -1824,6 +2066,19 @@ export class MeshHandler {
    *  cursor forward (the members were mid-conversation when the host died), and a row the world
    *  moved past (an independent leave or rejoin) is theirs, not this conclave's. */
   private async executeConclavePlan(plan: ConclavePlan): Promise<void> {
+    if (this.services) {
+      // SPEC 14.8: registering a room and writing third-party memberships are management writes
+      // the run performs as its own principal, so the admitted ceiling must cover the channel in
+      // BOTH directions. A program-named room the run merely borrows is held to the same rule: a
+      // conclave is a channel effect whichever way the name was chosen.
+      // The publish row an agent's credential carries names the AGENT's triple, so the ceiling
+      // is checked under the caller the run was admitted for, never under the run-driver principal
+      // this handler runs as: that principal holds no chat row and would deny every conclave the
+      // starting caller may in fact hold.
+      const view = await this.services.admission();
+      assertAdmittedPublish(view, plan.channel, view.admission.caller);
+      assertAdmittedSubscribe(view, plan.channel);
+    }
     if (plan.registered) {
       await writeChannelConfig(await this.channelRegistry(), plan.channel, {
         description: `a workflow conclave of run ${this.binding.runId}`,
@@ -1864,6 +2119,11 @@ export class MeshHandler {
    *  tolerant of exactly one foreign move — a NEWER generation on a row (the member left and
    *  rejoined on its own), which the stale-write guard reports and this leave must not evict. */
   private async releaseConclave(plan: ConclavePlan): Promise<void> {
+    // A release is owed cleanup of resources this run created (recorded in the plan), which a
+    // revocation does not cancel: the tombstones and the registry delete undo the run's own
+    // writes and grant nothing new. The admission must still be READABLE, so an unreachable store
+    // refuses here too rather than proceeding on nothing.
+    if (this.services) await this.services.admission();
     const joined = plan.members.filter((m) => m.joined);
     if (joined.length > 0) {
       const membersKv = await this.membersRegistry();
@@ -1921,6 +2181,12 @@ export class MeshHandler {
    * raised rather than waited on.
    */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
+    // #1508: every read and write below rides a client-side deadline, and a deadline that elapsed
+    // because THIS PROCESS was off the CPU is not evidence about the plane. See `host-starvation`.
+    return await servedDespiteStarvation(() => this.armOnce(ref, deadline), this.lag, `arming the pause ${ref.token}`, this.onStarved);
+  }
+
+  private async armOnce(ref: CheckpointRef, deadline: number): Promise<void> {
     if (this.services) return this.services.pauses.arm(ref.token, deadline);
     // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
     // caller reads the fact next.
@@ -2107,6 +2373,14 @@ export class MeshHandler {
    * already in the past.
    */
   private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
+    // #1508, and the load-bearing half: this is where a `sleep` spends its whole duration, so this
+    // is where a starved host was reporting its own scheduling as the effect's failure. The pause
+    // and its timer are durable facts on the plane; re-reading them observes the same world, and a
+    // sleep whose deadline passed while this process was blocked settles `ok`, late.
+    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+  }
+
+  private async settleOnce(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
     const already = this.services ? await this.services.pauses.readSettle(ref.token) : await readCheckpointSettle(this.jsm, this.binding.space, ref);
     if (already !== undefined) return already;
     // The watcher waits for the FACT. For a pause with an answer the fact arrives because somebody
@@ -2130,6 +2404,18 @@ export class MeshHandler {
       ]);
     } finally {
       wait.over = true;
+      // THE PUMP IS DRAINED BEFORE THE SETTLE RETURNS (#1460). The race above has already decided
+      // — the fact, the failure, or the cancellation is this call's answer — but the pump's
+      // in-flight `takeFire` is a journal replay under the run's takeover id, created, read and
+      // deleted inside one `replayRunJournal` call with nothing serialising it across two
+      // authorities for the same run and lease. A settle that returned past it let a completed
+      // `driveRun` hold the replay open after it resolved, and the next reader under the same
+      // takeover hit `RunJournalReplayRaced` about a driver that did not exist. So only the RETURN
+      // is delayed, until the pump has ended: `wait.over` stops it after its current `takeFire`
+      // without starting another, and awaiting it here means no pump fire is left in flight on any
+      // exit. A pump that FAILED raises through this await on its way out, exactly as it did
+      // through the race; the settle's own answer is decided either way and is what this returns.
+      await pump;
     }
   }
 
@@ -2157,6 +2443,12 @@ export class MeshHandler {
   private async pumpFires(ref: CheckpointRef, wait: { over: boolean }): Promise<void> {
     while (!wait.over) {
       await this.takeFire(ref);
+      // THE FLAG IS RE-READ AFTER THE FIRE, before the poll sleeps (#1460): `takeFire` is a journal
+      // replay under the run's takeover id, so the wait can have ENDED while this one was in
+      // flight — and a pump that slept another poll on a wait that is over keeps exactly one more
+      // fire in flight past the drain `settleOnce` awaits. Checked here, the pump ends right after
+      // its current fire without starting another.
+      if (wait.over) break;
       // Unrefed: the loop is ended by the flag, not by this timer, and a wait that is already over
       // must not hold the process open for one more poll on its way out.
       await new Promise((r) => setTimeout(r, FIRE_POLL_MS).unref());
@@ -2267,6 +2559,14 @@ const GOAL_POLL_MS = 2_000;
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
+/** How many times {@link MeshHandler.invokeManager} re-issues one manager call after a
+ *  `not-executed` bind refusal. Every re-issue is a first attempt, so the bound is a loop guard and
+ *  not a duplication guard: it stops a class whose describe and invoke never agree from re-issuing
+ *  forever. Nine attempts leave a two-manager space a 1-in-512 residual where the unrepaired refusal
+ *  was 1-in-2 (#1638). The loop turns only on a refusal that has already been ANSWERED, so an
+ *  attempt costs a describe and an invoke round trip and never an elapsed deadline: a call nobody
+ *  answers raises its own `deadline-exceeded`, which is not a bind refusal and is not re-issued. */
+const BIND_SPLIT_REISSUES = 8;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */
 function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {
@@ -2281,11 +2581,59 @@ const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
 /** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
  *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
  *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
+/**
+ * #1616 proof item 5 — ALIAS NORMALIZATION POLICY. One clone reached through a symlink and through
+ * its realpath is ONE writable directory, and the single-writer rule keys on identity, so the two
+ * forms must collapse before any claim is taken. THE CANONICAL FORM IS THE REALPATH: it is the form
+ * the kernel and the child's own `process.cwd()` report, so a claim keyed on it matches what any
+ * concurrent run or imperative spawn path observes, whichever alias that caller typed. The symlink
+ * path is NOT canonical — normalizing toward it would require resolving every other alias to it,
+ * which has no unique answer. Resolution is done ONCE, on the serving host, before the claim and
+ * before launch; an unresolvable path is a refusal, never a pass-through of the raw string.
+ */
+export function canonicalCwd(cwd: string): string {
+  return realpathSync(cwd);
+}
+
+/** What phase A establishes and the step journal keeps: the canonical directory as the SERVING host
+ *  stated it, plus the authoritative identity that stated it. Phase B dispatches `cwd` from here. */
+export interface CwdResolution {
+  cwd: string;
+  endpoint: string;
+  instanceId: string;
+  host?: string;
+}
+
+/** The single named refusal every phase-A failure direction produces: the target does not serve
+ *  `resolve-cwd`, refuses the path, or answers with something that is not an absolute directory.
+ *  `L4000` is the host declining the request, and it is raised before any submission, so nothing is
+ *  bound, allocated or launched. There is no raw-path arm: a fall-back to the caller's string is
+ *  fail-OPEN, and launching somewhere plausible is the outcome being removed. */
+export function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
+  return new EffectError("L4000", "spawn",
+    `spawn(${persona}) cwd ${JSON.stringify(cwd)} was not resolved by manager instance ${instanceId}: ${cause}; refusing rather than dispatching a path this host never canonicalized`);
+}
+
+/** A journalled phase-A resolution, read back on resume. A garbled entry is treated as absent and
+ *  phase A runs again: re-resolving is free (no goal, no reservation), trusting a broken record is
+ *  not. */
+function readCwdResolution(value: unknown): CwdResolution | undefined {
+  const r = value as { cwd?: unknown; endpoint?: unknown; instanceId?: unknown; host?: unknown } | undefined;
+  if (typeof r?.cwd !== "string" || r.cwd.length === 0 || typeof r.endpoint !== "string" || typeof r.instanceId !== "string")
+    return undefined;
+  return { cwd: r.cwd, endpoint: r.endpoint, instanceId: r.instanceId, ...(typeof r.host === "string" ? { host: r.host } : {}) };
+}
+
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
+    // #1616 item 5: the cwd dispatched here is ALREADY the canonical form, resolved by the serving
+    // manager in phase A (see MeshEffectHandler.resolveCwd) and read back off the journalled
+    // resolution. This projection no longer canonicalizes anything: `realpathSync` in the driver
+    // answers about the DRIVER's filesystem, which is a different host's answer to the question.
+    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
     ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),

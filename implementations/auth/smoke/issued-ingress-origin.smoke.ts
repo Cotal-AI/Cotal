@@ -1,0 +1,343 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { connect, credsAuthenticator, type NatsConnection, type Msg } from "@nats-io/transport-node";
+import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
+import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { createSpaceAuth, serverConfig, permissionsFor, isReachable, chatStream, chatSubject, channelBucket, epcStreamName } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { acceptedBucket, acceptedKey, acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
+
+/**
+ * Origin binding for the candidate issued rail (SPEC 678-695, 3084-3094): a JetStream read
+ * delivers stored bytes to a caller-chosen destination the broker does NOT confine to the
+ * requester's `pub.allow`. This measures which of those paths actually reach an endpoint's
+ * QUEUED `one`-class serve subscription shape, one of the three an endpoint opens per command
+ * (endpoint-serve.ts:551-553 also opens non-queued `all` and `inst`), and whether the frame is
+ * distinguishable from a conforming request. Test-only; no production code is attached.
+ */
+let passed = 0;
+async function check(name: string, fn: () => Promise<void>) {
+  try { await fn(); } catch (error) { console.error(`  FAIL: ${name}`); throw error; }
+  console.log(`  ok ${name}`); passed++;
+}
+const enc = (s: string) => new TextEncoder().encode(s);
+const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+interface Frame { subject: string; body: string; reply?: string; headerKeys: string[] }
+const frameOf = (msg: Msg): Frame => ({
+  subject: msg.subject, body: dec(msg.data), reply: msg.reply,
+  headerKeys: msg.headers ? [...msg.headers].map(([key]) => key) : [],
+});
+const space = "issuedingress";
+const auth = await createSpaceAuth(space);
+const port = await pickFreePort(), server = `nats://127.0.0.1:${port}`;
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { host: "127.0.0.1", port, storeDir: join(dir, "js"), transport: { kind: "plaintext" } }), { mode: 0o600 });
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const exited = new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
+const releaseBroker = teardownOnSignal(broker, dir);
+const connections: NatsConnection[] = [];
+const observations: Array<Record<string, unknown>> = [];
+try {
+  let up = false;
+  for (let i = 0; i < 50 && !up; i++) { up = await isReachable(server); if (!up) await wait(50); }
+  assert.ok(up, "isolated broker must start");
+  async function open(permissions: Record<string, unknown>, inboxPrefix?: string) {
+    const key = createUser();
+    const jwt = await encodeUser("ingress-probe", fromPublic(key.getPublicKey()), fromPublic(auth.account.pub), permissions as Partial<User>, { signer: fromSeed(enc(auth.account.signingSeed)), exp: Math.floor(Date.now() / 1000) + 600 });
+    const nc = await connect({ servers: server, authenticator: credsAuthenticator(fmtCreds(jwt, key)), maxReconnectAttempts: 0, ...(inboxPrefix ? { inboxPrefix } : {}) });
+    connections.push(nc); return nc;
+  }
+  const operator = await open({ pub: { allow: [">"] }, sub: { allow: [">"] } });
+  const stream = chatStream(space);
+  const jsm = await jetstreamManager(operator);
+  await jsm.streams.add({ name: stream, subjects: [`cotal.${space}.chat.>`] });
+  const epc = epcStreamName(space);
+  await jsm.streams.add({ name: epc, subjects: [`cotal.${space}.epc.>`], allow_direct: true });
+  const channels = await new Kvm(operator).create(channelBucket(space));
+  await channels.put("public", enc(JSON.stringify({ description: "channel registry row" })));
+
+  const uid = "u".repeat(26), generation = "a".repeat(32), nonce = "n".repeat(22);
+  const rail = `cotal.${space}.ep.v1.one.manager.run-start.local.victim.${uid}.${generation}.${nonce}`;
+  // The queued `one`-class shape, which is ONE of the three subscriptions endpoint-serve.ts
+  // opens per command; `all` and `inst` carry no queue group. Coverage of the other two is the
+  // three-shape cell below, added after review flagged this as a family conclusion from one member.
+  const serveFilter = `cotal.${space}.ep.v1.one.>`, queue = "manager";
+  const frames: Frame[] = [];
+  const serve = operator.subscribe(serveFilter, { queue });
+  void (async () => { for await (const msg of serve) frames.push(frameOf(msg)); })();
+  // An exact-subject listener alongside it, to tell "not delivered at all" from "not delivered
+  // to the serve shape". Distinct queue group so it never competes with the serve subscription.
+  const exactFrames: Frame[] = [];
+  const exact = operator.subscribe(rail, { queue: "exact-witness" });
+  void (async () => { for await (const msg of exact) exactFrames.push(frameOf(msg)); })();
+  await operator.flush();
+  const seen = async (list: Frame[], body: string, ms = 1200): Promise<Frame | undefined> => {
+    for (let i = 0; i < ms / 20; i++) { const hit = list.find((f) => f.body.includes(body)); if (hit) return hit; await wait(20); }
+    return undefined;
+  };
+
+  const principal = { owner: "local", actor: "deputy", connId: "deputy0123456789abcdef", lifecycleUid: uid };
+  const perms = permissionsFor("agent", space, principal, { allowPublish: ["public"], allowSubscribe: ["public"] }) as { pub: { allow: string[] } };
+  const agent = await open(perms, `_INBOX_${principal.connId}`);
+  let denials = 0;
+  void (async () => { for await (const event of agent.status()) if (event.type === "error" && /permission/i.test(String(event.error))) denials++; })();
+
+  await check("the serve subscription receives a conforming request and the agent cannot publish one", async () => {
+    const legitimate = `conforming-${randomBytes(6).toString("hex")}`;
+    operator.publish(rail, enc(legitimate), { reply: `_INBOX_${principal.connId}.1` });
+    const frame = await seen(frames, legitimate);
+    assert.ok(frame, "the wildcard queue serve subscription must receive a direct request");
+    assert.equal(frame.headerKeys.length, 0);
+    assert.equal(frame.reply?.startsWith("$JS.ACK.") ?? false, false);
+    const before = denials;
+    agent.publish(rail, enc("direct-attempt"));
+    await agent.flush();
+    for (let i = 0; i < 60 && denials === before; i++) await wait(20);
+    assert.ok(denials > before, "the stock agent profile must be denied a direct publish onto the rail");
+    assert.equal(await seen(frames, "direct-attempt", 200), undefined);
+  });
+
+  await check("the discovery grant the contract adds is itself a delivery path onto the rail", async () => {
+    // Section 5 of the contract requires `$SYS.REQ.USER.INFO` in every issued ceiling. That request
+    // is answered to a caller-chosen reply subject, so it belongs in the delivery-class table with
+    // the JetStream reads, not outside it. Measure where its response lands.
+    const discoverer = await open({ ...perms, pub: { allow: [...perms.pub.allow, "$SYS.REQ.USER.INFO"] } }, `_INBOX_${principal.connId}`);
+    discoverer.publish("$SYS.REQ.USER.INFO", new Uint8Array(0), { reply: rail });
+    await discoverer.flush();
+    const onServe = await seen(frames, "account_name");
+    const onExact = await seen(exactFrames, "account_name", 200);
+    observations.push({
+      vector: "sys-user-info-reply", reachedServeShape: onServe !== undefined,
+      reachedExactSubject: onExact !== undefined, subject: onServe?.subject,
+      headerKeys: onServe?.headerKeys ?? [], reply: onServe?.reply,
+      leaksOwnPermissions: (onServe?.body ?? "").includes("permissions"),
+    });
+    // Measured on NATS 2.14.5: it reaches the serve shape, under the rail subject, with no
+    // headers. So the grant the contract adds is a fifth delivery path, and an unmarked one.
+    assert.ok(onServe, "the $SYS.REQ.USER.INFO response must be observed to classify it");
+    assert.equal(onServe.subject, rail);
+    assert.deepEqual(onServe.headerKeys, []);
+    assert.ok(onServe.body.includes("permissions"), "the response carries the connection's own ceiling");
+  });
+
+  await check("the condition the census forbids does put attacker-chosen bytes on the rail", async () => {
+    // Claim 67 named this as the breaking condition from reasoning. Build a credential that holds
+    // both a write and a raw read on ONE stream and see whether it actually breaks, so the census
+    // invariant is guarding a demonstrated failure rather than a suspected one.
+    const bucket = channelBucket(space), kvStream = `KV_${bucket}`;
+    const forger = await open({
+      pub: { allow: [`$KV.${bucket}.>`, "$JS.API.INFO", `$JS.API.STREAM.INFO.${kvStream}`, `$JS.API.DIRECT.GET.${kvStream}.>`] },
+      sub: { allow: ["_INBOX_forger.>"] },
+    }, "_INBOX_forger");
+    const forged = JSON.stringify({ v: 1, kind: "run-start", body: { source: `forged-${randomBytes(6).toString("hex")}` } });
+    forger.publish(`$KV.${bucket}.forgery`, enc(forged));
+    await forger.flush();
+    for (let i = 0; i < 60 && (await new Kvm(operator).open(bucket).then((kv) => kv.get("forgery"))) === null; i++) await wait(20);
+    forger.publish(`$JS.API.DIRECT.GET.${kvStream}.$KV.${bucket}.forgery`, new Uint8Array(0), { reply: rail });
+    await forger.flush();
+    const frame = await seen(frames, "forged-");
+    observations.push({
+      vector: "write-plus-direct-get-forgery", reachedServeShape: frame !== undefined,
+      subject: frame?.subject, headerKeys: frame?.headerKeys ?? [], bytesChosenByCaller: frame?.body === forged,
+    });
+    assert.ok(frame, "a credential holding write plus DIRECT.GET on one stream reaches the serve shape");
+    assert.equal(frame.subject, rail);
+    assert.equal(frame.body, forged, "and the bytes are the ones it wrote");
+    // The only thing between this and a forged request is the marker set.
+    assert.ok(frame.headerKeys.includes("Nats-Stream"), `expected Nats- markers, got ${JSON.stringify(frame.headerKeys)}`);
+  });
+
+  const stored = `stored-${randomBytes(6).toString("hex")}`;
+  agent.publish(chatSubject(space, principal.owner, principal.actor, "public"), enc(stored));
+  await agent.flush();
+  for (let i = 0; i < 60 && (await jsm.streams.info(stream)).state.messages === 0; i++) await wait(20);
+  assert.equal((await jsm.streams.info(stream)).state.messages, 1, "the agent's own chat write must be stored");
+  const createGrant = perms.pub.allow.find((row) => row.startsWith(`$JS.API.CONSUMER.CREATE.${stream}.`));
+  assert.ok(createGrant, "the stock agent profile must carry its pinned history create");
+  const durable = createGrant.split(".")[5];
+  const filter = chatSubject(space, principal.owner, principal.actor, "public");
+
+  await check("a push consumer aimed at the rail does not reach the wildcard queue serve shape", async () => {
+    const response = await agent.request(`$JS.API.CONSUMER.CREATE.${stream}.${durable}.${filter}`,
+      enc(JSON.stringify({ stream_name: stream, config: { name: durable, durable_name: durable, filter_subject: filter, deliver_subject: rail, deliver_group: queue, ack_policy: "none", deliver_policy: "last", replay_policy: "instant" } })), { timeout: 3000 });
+    const created = JSON.parse(dec(response.data)) as { error?: unknown };
+    assert.equal(created.error, undefined, JSON.stringify(created.error));
+    const onServe = await seen(frames, stored);
+    const onExact = await seen(exactFrames, stored, 200);
+    observations.push({ vector: "push consumer deliver_subject", created: true, reachedServeShape: !!onServe, reachedExactSubject: !!onExact, frame: onServe ?? onExact ?? null });
+    assert.equal(onServe, undefined, "measured: push delivery is interest-gated and did not reach the wildcard serve subscription");
+    await jsm.consumers.delete(stream, durable).catch(() => undefined);
+  });
+
+  await check("a pull MSG.NEXT reply aimed at the rail reaches the real serve shape", async () => {
+    const response = await agent.request(`$JS.API.CONSUMER.CREATE.${stream}.${durable}.${filter}`,
+      enc(JSON.stringify({ stream_name: stream, config: { name: durable, durable_name: durable, filter_subject: filter, ack_policy: "none", deliver_policy: "last", replay_policy: "instant" } })), { timeout: 3000 });
+    assert.equal((JSON.parse(dec(response.data)) as { error?: unknown }).error, undefined);
+    // The reply subject is chosen in the request, not confined to the requester's pub.allow.
+    agent.publish(`$JS.API.CONSUMER.MSG.NEXT.${stream}.${durable}`, enc(JSON.stringify({ batch: 1, no_wait: true })), { reply: rail });
+    await agent.flush();
+    const frame = await seen(frames, stored);
+    observations.push({ vector: "pull MSG.NEXT reply subject", reachedServeShape: !!frame, frame: frame ?? null });
+    assert.ok(frame, "the deputy's stored bytes reached the endpoint's real serve subscription");
+    // SPEC 690-693 defers this to test: a redelivered message RETAINS its original captured
+    // subject, so what the serve handler parses is the chat subject, never the victim rail.
+    assert.equal(frame.subject, filter, "measured: the redelivered frame retains its captured subject");
+    assert.notEqual(frame.subject, rail);
+  });
+
+  await check("a KV STREAM.MSG.GET reply aimed at the rail reaches the real serve shape", async () => {
+    const bucket = `KV_${channelBucket(space)}`;
+    const before = frames.length;
+    agent.publish(`$JS.API.STREAM.MSG.GET.${bucket}`, enc(JSON.stringify({ last_by_subj: `$KV.${channelBucket(space)}.public` })), { reply: rail });
+    await agent.flush();
+    // The MSG.GET response is a JSON envelope whose payload is base64, so detect it structurally.
+    let frame: Frame | undefined;
+    for (let i = 0; i < 60 && !frame; i++) { frame = frames.slice(before).find((f) => f.body.includes("\"message\"") || f.body.includes("channel registry row")); if (!frame) await wait(20); }
+    observations.push({ vector: "STREAM.MSG.GET reply subject", reachedServeShape: !!frame, frame: frame ?? null });
+    assert.ok(frame, "a KV read response reached the endpoint's real serve subscription");
+    // Unlike the pull path, a MSG.GET response is an ordinary request/reply publish by the
+    // server's internal client, so it arrives UNDER the attacker-chosen rail subject.
+    assert.equal(frame.subject, rail, "measured: the KV read response arrives under the victim rail subject");
+    // Claims 64 and 68 rest on this frame being UNMARKED, and this cell used to leave that to the
+    // aggregate cell downstream, which skips any frame that has headers. Assert it here.
+    assert.deepEqual(frame.headerKeys, [], "measured: the KV read response carries no header at all");
+  });
+
+  await check("a DIRECT.GET reply delivers raw stored bytes under the rail subject", async () => {
+    // DIRECT.GET returns the stored body itself, not an API envelope. Its content is bounded by
+    // what the grant can read: the agent cannot publish into EPC, so it cannot choose these bytes.
+    const artifact = `epc-artifact-${randomBytes(6).toString("hex")}`;
+    const artifactSubject = `cotal.${space}.epc.contract.v1`;
+    operator.publish(artifactSubject, enc(artifact));
+    await operator.flush();
+    for (let i = 0; i < 60 && (await jsm.streams.info(epc)).state.messages === 0; i++) await wait(20);
+    const canWriteEpc = (perms.pub.allow as string[]).some((row) => row.startsWith(`cotal.${space}.epc.`));
+    const before = frames.length;
+    agent.publish(`$JS.API.DIRECT.GET.${epc}.${artifactSubject}`, new Uint8Array(0), { reply: rail });
+    await agent.flush();
+    let frame: Frame | undefined;
+    for (let i = 0; i < 60 && !frame; i++) { frame = frames.slice(before).find((f) => f.body.includes(artifact)); if (!frame) await wait(20); }
+    observations.push({ vector: "DIRECT.GET reply subject", reachedServeShape: !!frame, attackerControlsBytes: canWriteEpc, frame: frame ?? null });
+    assert.ok(frame, "a DIRECT.GET response reached the endpoint's real serve subscription");
+    assert.equal(frame.subject, rail, "measured: raw stored bytes arrive under the victim rail subject");
+    assert.equal(canWriteEpc, false, "the stock agent cannot write the bytes this path replays");
+    assert.ok(frame.headerKeys.some((key) => key.toLowerCase().startsWith("nats-")), "measured: the DIRECT.GET response carries Nats- headers");
+  });
+
+  await check("a deputy frame on the rail subject carries no JetStream marker at ingress", async () => {
+    const onRail = observations
+      .filter((o) => o.reachedServeShape && (o.frame as Frame | null)?.subject === rail)
+      .map((o) => o.frame as Frame);
+    assert.ok(onRail.length >= 1, "the claim needs a frame that arrived under the rail subject");
+    for (const frame of onRail) {
+      if (frame.headerKeys.length > 0) continue; // the DIRECT.GET path is marked; measured above
+      const marked = frame.headerKeys.some((key) => key.toLowerCase().startsWith("nats-")) || frame.reply?.startsWith("$JS.ACK.") === true;
+      observations.push({ railFrameMarker: { reply: frame.reply ?? null, headerKeys: frame.headerKeys, marked } });
+      // MEASURED, and the reason a subject- or header-derived ingress rule is not sufficient here.
+      assert.equal(marked, false, `a rail-subject deputy frame carried a JetStream marker: ${JSON.stringify(frame)}`);
+    }
+  });
+
+  if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify({
+    brokerVersion: operator.info?.version, serveFilter, queue, rail, observations,
+    scope: "Isolated localhost broker, stock agent profile, candidate ep.v1 subject. Measures namespace delivery into an endpoint's real serve subscription shape; no endpoint handler runs and no production ingress is attached.",
+  }, null, 2) + "\n");
+
+  await check("push delivery reaches none of the three production serve shapes", async () => {
+    // Review finding: the cells above measure the QUEUED `one` shape, and the push-consumer cell
+    // sets deliver_group to match that queue. endpoint-serve.ts:551-553 also opens `all` and
+    // `inst` with NO queue group, and a push consumer with no deliver_group is an ordinary core
+    // publish that a plain subscriber would receive. That is the case most likely to break the
+    // interest-gating conclusion, and it was the one member never measured.
+    const instId = "i".repeat(26);
+    const allRail = `cotal.${space}.ep.v1.all.manager.run-start.local.victim.${uid}.${generation}.${nonce}`;
+    const instRail = `cotal.${space}.ep.v1.inst.manager.${instId}.run-start.local.victim.${uid}.${generation}.${nonce}`;
+    const allFrames: Frame[] = [], instFrames: Frame[] = [];
+    const drain = (sub: { [Symbol.asyncIterator](): AsyncIterator<Msg> }, into: Frame[]) =>
+      void (async () => { for await (const m of sub) into.push(frameOf(m)); })();
+    drain(operator.subscribe(`cotal.${space}.ep.v1.all.manager.run-start.>`), allFrames);
+    drain(operator.subscribe(`cotal.${space}.ep.v1.inst.manager.${instId}.run-start.>`), instFrames);
+    await operator.flush();
+
+    const arrived = async (into: Frame[], from: number) => {
+      for (let i = 0; i < 40; i++) { if (into.length > from) return into[from]; await wait(25); }
+      return undefined;
+    };
+    // Positive control on every collector FIRST. A collector that receives nothing makes each
+    // negative below vacuous, and on the first run of this probe one of them did exactly that:
+    // it had joined the existing `manager` queue group, so delivery split away from it.
+    for (const [label, subject, into] of [["all", allRail, allFrames], ["inst", instRail, instFrames]] as [string, string, Frame[]][]) {
+      const before = into.length;
+      operator.publish(subject, enc("direct-control"));
+      await operator.flush();
+      assert.ok(await arrived(into, before), `${label} collector never received a direct publish; its negatives would be vacuous`);
+    }
+
+    const filterSubject = chatSubject(space, principal.owner, principal.actor, "public");
+    const createRow = (perms.pub.allow as string[]).find((r) => r.includes("CONSUMER.CREATE") && r.includes(stream))!;
+    const name = createRow.split(".")[5];
+    for (const [label, target, into, deliverGroup] of [
+      ["one, no deliver_group", rail, frames, undefined],
+      ["all, no deliver_group", allRail, allFrames, undefined],
+      ["inst, no deliver_group", instRail, instFrames, undefined],
+    ] as [string, string, Frame[], string | undefined][]) {
+      const before = into.length;
+      // The agent's CONSUMER.CREATE grant pins one durable name, and an earlier cell left a PULL
+      // consumer under it. A push config over a pull consumer is refused, so clear it first.
+      await jsm.consumers.delete(stream, name).catch(() => undefined);
+      const config: Record<string, unknown> = { name, durable_name: name, filter_subject: filterSubject, deliver_subject: target, ack_policy: "none", deliver_policy: "last", replay_policy: "instant" };
+      if (deliverGroup) config.deliver_group = deliverGroup;
+      const created = JSON.parse(dec((await agent.request(`$JS.API.CONSUMER.CREATE.${stream}.${name}.${filterSubject}`, enc(JSON.stringify({ stream_name: stream, config })), { timeout: 3000 })).data)) as { error?: unknown };
+      assert.equal(created.error, undefined, `${label}: ${JSON.stringify(created.error)}`);
+      const frame = await arrived(into, before);
+      observations.push({ vector: `push consumer, ${label}`, reachedServeShape: !!frame, frame: frame ?? null });
+      assert.equal(frame, undefined, `measured: push delivery did not reach the ${label} serve shape`);
+      await jsm.consumers.delete(stream, name).catch(() => undefined);
+    }
+  });
+
+
+  await check("the accepted-row read grant itself puts marked bytes on the rail", async () => {
+    // Review hole 2: section 5 recommends option 2, and its argument is about the path option 2
+    // ADDS. Until now that path was classified from the generic DIRECT.GET verb and from the
+    // channels-KV forgery cell rather than from the exact grant an issued ceiling would carry.
+    const token = "c".repeat(32);
+    const bucket = acceptedBucket(space);
+    const accepted = await new Kvm(operator).create(bucket, { allow_direct: true });
+    await accepted.put(acceptedKey(token), enc(JSON.stringify({ version: 1, ref: { space, owner: "local", actor: "victim", uid, generation } })));
+
+    const grant = acceptedReadGrant(space, token);
+    const holder = await open({ pub: { allow: [...(perms.pub.allow as string[]), grant] }, sub: { allow: [`_INBOX_holder0123456789abcdef.>`] } }, "_INBOX_holder0123456789abcdef");
+    // The holder cannot write the bucket, which is the second of section 5's three reasons and
+    // the thing that stops it choosing the bytes this path replays.
+    const canWrite = [...(perms.pub.allow as string[]), grant].some((row) => row.startsWith(`$KV.${bucket}.`));
+    assert.equal(canWrite, false, "an issued ceiling must not be able to write the accepted bucket");
+
+    const before = frames.length;
+    holder.publish(grant, new Uint8Array(0), { reply: rail });
+    await holder.flush();
+    let frame: Frame | undefined;
+    for (let i = 0; i < 60 && !frame; i++) { frame = frames.slice(before).find((f) => f.body.includes(generation)); if (!frame) await wait(20); }
+    observations.push({ vector: "accepted-row DIRECT.GET reply subject", reachedServeShape: !!frame, attackerControlsBytes: canWrite, frame: frame ?? null });
+    assert.ok(frame, "measured: option 2's own grant reaches the serve subscription");
+    assert.equal(frame.subject, rail, "measured: it arrives under the caller-chosen rail subject");
+    // The whole reason to prefer option 2: what it adds is MARKED, so ingress can refuse it.
+    assert.ok(frame.headerKeys.some((key) => key.toLowerCase().startsWith("nats-")), "measured: the accepted-row read arrives carrying Nats- markers");
+  });
+
+  console.log(`issued ingress origin: ${passed} passed`);
+} finally {
+  for (const nc of connections) await nc.close();
+  if (broker.exitCode === null && broker.signalCode === null) broker.kill("SIGTERM");
+  const stopped = await Promise.race([exited.then(() => true), wait(2000).then(() => false)]);
+  if (!stopped) { broker.kill("SIGKILL"); await exited; }
+  rmSync(dir, { recursive: true, force: true }); releaseBroker();
+}

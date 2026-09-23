@@ -14,7 +14,8 @@ import { epcStreamName } from "./endpoint-binding.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
   type EpCaller, type EpTarget,
-  epCallerReplyFilter, epResponderReplyPattern, epClassQueueGroup,
+  epCallerReplyFilter, epResponderReplyPattern, epResponderIssuedReplyPattern, epClassQueueGroup,
+  epPlaneTokens, callerRailTokens, callerTokens, EP_RAIL_V1,
 } from "./endpoint-subjects.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
@@ -53,8 +54,28 @@ function targetGrantTokens(target: EpTarget, caller: EpCaller): string[] {
   return [target.mode, assertBoundedOwner(target.tOwner, "target owner")];
 }
 
+/** The caller's grant-row block: the triple, plus the generation on the versioned rail (SPEC
+ *  13.15). Built by the SAME validator chain the subject builders use, so a minted row and the
+ *  subject a client emits under it can never disagree on where the generation sits. */
 function callerBlock(caller: EpCaller): string {
-  return `${assertBoundedOwner(caller.owner, "caller owner")}.${assertBoundedOwner(caller.actor, "caller actor")}.${assertLifecycleToken(caller.uid, "caller lifecycleUid")}`;
+  return callerRailTokens(caller).join(".");
+}
+
+/** The caller's block on the planes that are NOT versioned: `epj` submissions and `epe` goal
+ *  progress carry the triple alone (§13.2 subject table), whatever rail the caller requests on.
+ *  A row minted with the generation here would name a subject nothing publishes: the endpoint
+ *  emits progress under the goal's caller triple, and the client submits journal work the same
+ *  way, so an issued caller would hold a journal row it cannot use and never hear its own
+ *  goal's terminal. */
+function callerTriple(caller: EpCaller): string {
+  return callerTokens(caller).join(".");
+}
+
+/** The `ep` plane prefix of a caller's request rows: `ep.v1` for an issued caller, `ep` for a
+ *  legacy one. A legacy credential therefore holds NO row on the versioned rail, and an issued
+ *  credential holds NO row on the legacy one: the two rails are disjoint at the broker. */
+function plane(caller: EpCaller): string {
+  return epPlaneTokens(caller).join(".");
 }
 
 /** Request-publish rows for one capability (§13.9 "Request publish"): per route,
@@ -65,9 +86,9 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
   const cmd = assertCommandToken(cap.command);
   const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
   const tail = `${mid}.${callerBlock(caller)}.*`;
-  const rows = (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.ep.${r}.${e}.${cmd}${tail}`);
+  const rows = (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
   if (cap.instanceId)
-    rows.push(`${spacePrefix(space)}.ep.inst.${e}.${assertLifecycleToken(cap.instanceId, "instanceId")}.${cmd}${tail}`);
+    rows.push(`${spacePrefix(space)}.${plane(caller)}.inst.${e}.${assertLifecycleToken(cap.instanceId, "instanceId")}.${cmd}${tail}`);
   return rows;
 }
 
@@ -75,7 +96,7 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
  *  block as the request forms, caller-pinned, no nonce. Explicitly untrusted input (§13.4). */
 export function epJournalGrantRow(space: string, cap: EpCapability, caller: EpCaller): string {
   const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
-  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerBlock(caller)}`;
+  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerTriple(caller)}`;
 }
 
 /** The caller's reply-rail read row (§13.9 "Reply subscribe"): its own rail only, exact arity. */
@@ -87,7 +108,7 @@ export function epCallerReplyGrantRow(space: string, caller: EpCaller): string {
  *  `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>` — the caller identity in the subject gives
  *  mint-time read containment; delivered on the caller's own core subscription only. */
 export function epGoalProgressGrantRow(space: string, endpoint: string, caller: EpCaller): string {
-  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerBlock(caller)}.>`;
+  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTriple(caller)}.>`;
 }
 
 /** All caller-side rows for a capability set: request-publish (+ optional journal) into
@@ -294,7 +315,7 @@ const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
  *  is normative. Untargeted only — describe is constructed untargeted on every serve
  *  (§13.7), so no authz/target block ever appears in the row. */
 export function epDescribeAllGrantRow(space: string, caller: EpCaller): string {
-  return `${spacePrefix(space)}.ep.one.*.describe.${callerBlock(caller)}.*`;
+  return `${spacePrefix(space)}.${plane(caller)}.one.*.describe.${callerBlock(caller)}.*`;
 }
 
 /** The baseline {@link EpCapability} set every agent holds (Appendix B) beyond the wildcard
@@ -470,11 +491,14 @@ export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: str
 export function epServeSubscribeRows(space: string, endpoint: string, instanceId: string, command: string): string[] {
   const e = endpointToken(endpoint);
   const cmd = assertCommandToken(command);
-  return [
-    `${spacePrefix(space)}.ep.one.${e}.${cmd}.> ${epClassQueueGroup(endpoint)}`,
-    `${spacePrefix(space)}.ep.all.${e}.${cmd}.>`,
-    `${spacePrefix(space)}.ep.inst.${e}.${assertLifecycleToken(instanceId, "instanceId")}.${cmd}.>`,
-  ];
+  const iId = assertLifecycleToken(instanceId, "instanceId");
+  // Both rails, the same three shapes each (SPEC 13.15): an endpoint serves the versioned rail
+  // beside the legacy one, and the queue qualification on the class rail holds on both.
+  return ["ep", `ep.${EP_RAIL_V1}`].flatMap((p) => [
+    `${spacePrefix(space)}.${p}.one.${e}.${cmd}.> ${epClassQueueGroup(endpoint)}`,
+    `${spacePrefix(space)}.${p}.all.${e}.${cmd}.>`,
+    `${spacePrefix(space)}.${p}.inst.${e}.${iId}.${cmd}.>`,
+  ]);
 }
 
 /** A serving instance's egress rows (§13.9 matrix): reply publish (attribution-pinned instance
@@ -486,6 +510,7 @@ export function epServePublishRows(space: string, endpoint: string, instanceId: 
   if (!Number.isSafeInteger(epoch) || epoch < 0) throw new Error(`epoch ${epoch} is not an unsigned integer`);
   return [
     epResponderReplyPattern(space, endpoint, instanceId, epoch),
+    epResponderIssuedReplyPattern(space, endpoint, instanceId, epoch),
     `${spacePrefix(space)}.epe.${e}.${iId}.${epoch}.>`,
     `${spacePrefix(space)}.ept.${e}.${iId}.${epoch}.*.schedule`,
     `${spacePrefix(space)}.epr.${e}.${iId}.${epoch}.>`,

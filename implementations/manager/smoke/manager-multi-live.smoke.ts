@@ -100,8 +100,8 @@ try {
   check("two managers in one space registered distinct logical instance ids", IID1 !== IID2, { IID1, IID2 });
 
   console.log("1. instance-targeted spawn on each manager (a real agent joins each)");
-  const s1 = await m1.startAgent({ name: "a1", agent: "e2e-stub", cwd: repoRoot });
-  const s2 = await m2.startAgent({ name: "a2", agent: "e2e-stub", cwd: repoRoot });
+  const s1 = await m1.startAgent({ name: "a1", agent: "e2e-stub", cwd: repoRoot, events: false });
+  const s2 = await m2.startAgent({ name: "a2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("manager 1 spawned its agent a1 (joined presence, started)", s1.ok === true, s1);
   check("manager 2 spawned its agent a2 (joined presence, started)", s2.ok === true, s2);
 
@@ -139,8 +139,8 @@ try {
     scatter2.missing.includes(IID2) && scatter2.complete === false, { missing: scatter2.missing, complete: scatter2.complete });
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
   // The scratch tree goes too. Its absence here is the defect: this suite passed, said so, and
   // left one directory behind on every green run — reproduced by count, not inferred. The pause

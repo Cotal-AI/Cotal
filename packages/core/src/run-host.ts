@@ -15,6 +15,7 @@ import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import type { Extension } from "./registry.js";
 import type { RunSpecValue, RunStatusValue } from "./run-record.js";
+import type { RunAdmissionView } from "./run-admission.js";
 
 /** The kind every run host registers under. */
 export const RUN_HOST_KIND = "run-host";
@@ -68,6 +69,10 @@ export interface RunHostDriveRequest {
   readonly defaultCheckpointTimeout: string;
   /** The most bytes a settled result may take, from the connection's own `max_payload`. */
   readonly resultBytes?: number;
+  /** The run's ADMISSION (SPEC 14.8), read by the hosting runtime before the drive and re-read at
+   *  every channel effect. A drive without one performs no channel effect: the host refuses at
+   *  the boundary rather than running the effect under the mediator's own authority. */
+  readonly admission: RunAdmissionView;
 }
 
 /** How a drive attempt ended. `released` is the driver saying the run is not its to continue (a
@@ -137,7 +142,8 @@ export type RunJournalRow =
       readonly kind: "step";
       readonly step: string;
       readonly state: "pending" | "settled";
-      /** `pending`, or the settled status with its error code when there is one. */
+      /** `pending`, or the checkpoint disposition the settled result names (`resolved` / `expired`);
+       *  otherwise the settled status with its error code when there is one. */
       readonly outcome: string;
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;

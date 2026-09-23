@@ -61,7 +61,7 @@ async function startManager(tag: string, returnAtManager = false): Promise<{ chi
 try {
   if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL === "1") throw new Error("CONTROL_THROW_MUST_FAIL");
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50); await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }) });
+  const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }), reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }) });
   const first = await startManager("first");
   if (!first.ready)
     throw new Error(`first manager refused: ${first.spawn?.reply.error}\nstdout:\n${first.stdout()}\nstderr:\n${first.stderr()}`);
@@ -75,9 +75,11 @@ try {
     45_000,
   );
   check("successor verifies the orphan principal's broker rails gone before lifecycle retirement", verifiedBrokerGone, { stderr: second.stderr() });
-  // Deliberate scope boundary: delivery-admin evicts NATS connections; it does not own OS process
-  // lifecycle. Safe successor process reaping depends on durable PID start-identity pinning (#1069).
-  check("broker succession leaves the orphan OS process alive (OS reap is out of scope)", alive(first.ready.seatPid), first.ready);
+  // The host runtime here is a detached spawn with no durable custody reference, so the successor
+  // has nothing to reap by reference and must leave the process alone: reaping a pid it cannot
+  // verify would be the wrong-process kill #1100 forbids. The custodied pty runtime's reap is proved
+  // by smoke:orphan-seat-reap with real custodians.
+  check("broker succession leaves a process the runtime cannot address by reference alive", alive(first.ready.seatPid), first.ready);
   const EXPECTED = 5;
   if (pass + fail !== EXPECTED)
     throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);

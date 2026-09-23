@@ -39,6 +39,15 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/; // <id>, <goalId>, <timerId>, <token>, <sess
 const GRANT_ID = /^[a-z0-9]{1,32}$/; // <gid>: separator-free, so multi-soft-component durable names stay injective (§13.9)
 const DIGEST_HEX = /^[a-f0-9]{64}$/;
 const EPOCH = /^(0|[1-9][0-9]*)$/;
+const GENERATION = /^[a-f0-9]{32}$/; // <generation>: the issued authority generation (SPEC 13.15)
+
+/** An issued generation: 32 lowercase hex characters of issuer-chosen entropy (at least 128
+ *  bits). An identifier the broker pins in a subject, never a bearer secret. */
+export function assertGeneration(generation: string, what = "generation"): string {
+  if (typeof generation !== "string" || !GENERATION.test(generation))
+    throw new Error(`${what} is not an issued generation (32 lowercase hex characters)`);
+  return generation;
+}
 
 /** Maximum total subject size (bytes) on the endpoint rails; builders throw above it. */
 export const MAX_EP_SUBJECT_BYTES = 1024;
@@ -164,6 +173,36 @@ export function callerTokens(caller: EpCaller): string[] {
   ];
 }
 
+/** A caller that rides the versioned rail (SPEC 13.15): the triple plus its accepted generation.
+ *  Every subject and grant builder emits the `ep.v1` form exactly when the caller carries this
+ *  field, so one caller value decides both the subject a client publishes and the rows a mint
+ *  grants; the two cannot disagree. */
+export interface IssuedCaller extends EpCaller {
+  readonly generation: string;
+}
+
+export function isIssuedCaller(caller: EpCaller): caller is IssuedCaller {
+  return typeof (caller as { generation?: unknown }).generation === "string";
+}
+
+/** The caller block as it rides the wire: the triple, plus the issued generation on the
+ *  versioned rail (SPEC 13.15). The generation is ALWAYS the token before the nonce, for every
+ *  mode, so a reader takes it at a fixed offset from the tail without knowing the mode's arity. */
+export function callerRailTokens(caller: EpCaller): string[] {
+  return isIssuedCaller(caller) ? [...callerTokens(caller), assertGeneration(caller.generation, "caller generation")] : callerTokens(caller);
+}
+
+/** The `ep` plane tokens for a caller: `["ep", "v1"]` on the issued rail, `["ep"]` on the legacy
+ *  one. The version token sits right after the plane so `ep.one`/`ep.all`/`ep.inst`/`ep.reply`
+ *  stay unambiguous by discriminator, never by counting extra tokens. */
+export function epPlaneTokens(caller: EpCaller): string[] {
+  return isIssuedCaller(caller) ? ["ep", EP_RAIL_V1] : ["ep"];
+}
+
+/** The versioned-rail discriminator (SPEC 13.15): `cotal.<space>.ep.v1.<mode>.…`. It versions the
+ *  issued-bound rail encoding, not the protocol or the workflow language. */
+export const EP_RAIL_V1 = "v1";
+
 // ---- request / reply builders (§13.2 subject table) ----------------------------------------
 
 /** Where a request routes (never which verb it is — the verb rides the envelope, §13.3/§13.5):
@@ -177,11 +216,11 @@ export function epRequestSubject(
   space: string,
   req: { route: EpRoute; endpoint: string; command: string; target?: EpTarget; caller: EpCaller; nonce: string },
 ): string {
-  const parts = [spacePrefix(space), "ep", req.route.mode, endpointToken(req.endpoint)];
+  const parts = [spacePrefix(space), ...epPlaneTokens(req.caller), req.route.mode, endpointToken(req.endpoint)];
   if (req.route.mode === "inst") parts.push(assertLifecycleToken(req.route.instanceId, "instanceId"));
   parts.push(assertCommandToken(req.command));
   if (req.target) parts.push(...targetTokens(req.target));
-  parts.push(...callerTokens(req.caller), assertNonce(req.nonce));
+  parts.push(...callerRailTokens(req.caller), assertNonce(req.nonce));
   return assertSized(parts.join("."));
 }
 
@@ -193,8 +232,8 @@ export function epReplySubject(
   r: { endpoint: string; instanceId: string; epoch: number; caller: EpCaller; nonce: string },
 ): string {
   return assertSized([
-    spacePrefix(space), "ep", "reply", endpointToken(r.endpoint), assertLifecycleToken(r.instanceId, "instanceId"),
-    assertEpoch(r.epoch), ...callerTokens(r.caller), assertNonce(r.nonce),
+    spacePrefix(space), ...epPlaneTokens(r.caller), "reply", endpointToken(r.endpoint), assertLifecycleToken(r.instanceId, "instanceId"),
+    assertEpoch(r.epoch), ...callerRailTokens(r.caller), assertNonce(r.nonce),
   ].join("."));
 }
 
@@ -249,13 +288,29 @@ export function epInstanceServeFilter(space: string, endpoint: string, instanceI
 /** A caller's reply-read filter — its OWN rail only, exact arity (no `>` tail admits subjects
  *  outside the grammar): `ep.reply.*.*.*.<owner>.<actor>.<uid>.*`. */
 export function epCallerReplyFilter(space: string, caller: EpCaller): string {
-  return `${spacePrefix(space)}.ep.reply.*.*.*.${callerTokens(caller).join(".")}.*`;
+  return `${spacePrefix(space)}.${epPlaneTokens(caller).join(".")}.reply.*.*.*.${callerRailTokens(caller).join(".")}.*`;
 }
 
 /** A responder's reply-publish pattern — its own instance triple and epoch pinned, all caller
  *  suffixes spanned (addressing is confined by nonce possession, §13.2): exact arity. */
 export function epResponderReplyPattern(space: string, endpoint: string, instanceId: string, epoch: number): string {
   return `${spacePrefix(space)}.ep.reply.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.${assertEpoch(epoch)}.*.*.*.*`;
+}
+
+/** The responder's reply-publish pattern on the VERSIONED rail (SPEC 13.15): one more spanned
+ *  token, the generation, between the caller triple and the nonce. Exact arity, like the legacy
+ *  row; a serve credential carries both so it answers whichever rail a request arrived on. */
+export function epResponderIssuedReplyPattern(space: string, endpoint: string, instanceId: string, epoch: number): string {
+  return `${spacePrefix(space)}.ep.${EP_RAIL_V1}.reply.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.${assertEpoch(epoch)}.*.*.*.*.*`;
+}
+
+/** Serve filters on the VERSIONED rail (SPEC 13.15): the same three shapes as the legacy rail
+ *  with the version token after the plane. Served beside the legacy ones by every endpoint. */
+export function epIssuedServeFilter(space: string, mode: "one" | "all", endpoint: string): string {
+  return `${spacePrefix(space)}.ep.${EP_RAIL_V1}.${mode}.${endpointToken(endpoint)}.>`;
+}
+export function epIssuedInstanceServeFilter(space: string, endpoint: string, instanceId: string): string {
+  return `${spacePrefix(space)}.ep.${EP_RAIL_V1}.inst.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.>`;
 }
 
 // ---- endpoint-published planes (§13.2 "Event and journal subjects") -------------------------
@@ -336,6 +391,9 @@ export function epsSubject(space: string, endpoint: string, sessionId: string, e
 
 export interface ParsedEpRequest {
   plane: "request";
+  /** Present exactly when the subject rode the versioned `ep.v1` rail (SPEC 13.15); its value is
+   *  the rail version token. `caller` then carries the generation the broker pinned. */
+  rail?: typeof EP_RAIL_V1;
   route: "one" | "all" | "inst";
   endpoint: string;
   /** Present iff `route === "inst"`. */
@@ -349,7 +407,7 @@ export interface ParsedEpRequest {
 
 export type ParsedEp =
   | ParsedEpRequest
-  | { plane: "reply"; endpoint: string; instanceId: string; epoch: number; caller: EpCaller; nonce: string }
+  | { plane: "reply"; rail?: typeof EP_RAIL_V1; endpoint: string; instanceId: string; epoch: number; caller: EpCaller; nonce: string }
   | { plane: "event"; endpoint: string; instanceId: string; epoch: number; topic: string[] }
   | { plane: "fact"; endpoint: string; topic: string[] }
   | { plane: "journal"; endpoint: string; command: string; target: EpTarget | null; caller: EpCaller }
@@ -364,7 +422,7 @@ export type ParsedEp =
  *  target block of that mode's pinned arity; anything else is the caller's owner token (the
  *  two sets are disjoint by construction — never arity counting). Exact arity: returns null
  *  unless the tokens run out exactly at the end. */
-function parseTail(parts: string[], i: number, withNonce: boolean): { target: EpTarget | null; caller: EpCaller; nonce?: string } | null {
+function parseTail(parts: string[], i: number, withNonce: boolean, issued = false): { target: EpTarget | null; caller: EpCaller; nonce?: string } | null {
   let target: EpTarget | null = null;
   const disc = parts[i];
   if (disc !== undefined && AUTHZ_SET.has(disc)) {
@@ -378,9 +436,17 @@ function parseTail(parts: string[], i: number, withNonce: boolean): { target: Ep
       : { mode, tOwner: t[0] };
     i += 1 + arity;
   }
-  const want = i + 3 + (withNonce ? 1 : 0);
+  const want = i + 3 + (issued ? 1 : 0) + (withNonce ? 1 : 0);
   if (parts.length !== want) return null;
-  const caller: EpCaller = { owner: parts[i], actor: parts[i + 1], uid: parts[i + 2] };
+  let caller: EpCaller = { owner: parts[i], actor: parts[i + 1], uid: parts[i + 2] };
+  if (issued) {
+    // A malformed generation on the versioned rail is `null` (never handled), not a demotion to a
+    // legacy arrival: a broken binding must not become a silent compatibility path (SPEC 13.15).
+    const generation = parts[i + 3];
+    try { assertGeneration(generation); } catch { return null; }
+    caller = { ...caller, generation } as IssuedCaller;
+    i += 1;
+  }
   return withNonce ? { target, caller, nonce: parts[i + 3] } : { target, caller };
 }
 
@@ -404,24 +470,34 @@ export function parseEpSubject(subject: string): ParsedEp | null {
   const plane = parts[2];
 
   if (plane === "ep") {
-    const route = parts[3];
+    // The versioned rail (SPEC 13.15) is discriminated by the token AFTER the plane, never by
+    // counting: `ep.v1.<mode>.…` shifts every offset by one and adds the generation before the
+    // nonce. An unknown version token is `null` (no sender), like any unknown shape.
+    const issued = parts[3] === EP_RAIL_V1;
+    const o = issued ? 1 : 0;
+    const route = parts[3 + o];
+    const rail: { rail?: typeof EP_RAIL_V1 } = issued ? { rail: EP_RAIL_V1 } : {};
     if (route === "one" || route === "all") {
-      if (parts.length < 10) return null;
-      const tail = parseTail(parts, 6, true);
+      if (parts.length < 10 + o) return null;
+      const tail = parseTail(parts, 6 + o, true, issued);
       if (!tail) return null;
-      return { plane: "request", route, endpoint: endpointNameOf(parts[4]), command: parts[5], target: tail.target, caller: tail.caller, nonce: tail.nonce! };
+      return { plane: "request", ...rail, route, endpoint: endpointNameOf(parts[4 + o]), command: parts[5 + o], target: tail.target, caller: tail.caller, nonce: tail.nonce! };
     }
     if (route === "inst") {
-      if (parts.length < 11) return null;
-      const tail = parseTail(parts, 7, true);
+      if (parts.length < 11 + o) return null;
+      const tail = parseTail(parts, 7 + o, true, issued);
       if (!tail) return null;
-      return { plane: "request", route, endpoint: endpointNameOf(parts[4]), instanceId: parts[5], command: parts[6], target: tail.target, caller: tail.caller, nonce: tail.nonce! };
+      return { plane: "request", ...rail, route, endpoint: endpointNameOf(parts[4 + o]), instanceId: parts[5 + o], command: parts[6 + o], target: tail.target, caller: tail.caller, nonce: tail.nonce! };
     }
     if (route === "reply") {
-      if (parts.length !== 11) return null;
-      const epoch = parseEpoch(parts[6]);
+      if (parts.length !== 11 + 2 * o) return null;
+      const epoch = parseEpoch(parts[6 + o]);
       if (epoch === null) return null;
-      return { plane: "reply", endpoint: endpointNameOf(parts[4]), instanceId: parts[5], epoch, caller: { owner: parts[7], actor: parts[8], uid: parts[9] }, nonce: parts[10] };
+      const triple = { owner: parts[7 + o], actor: parts[8 + o], uid: parts[9 + o] };
+      if (!issued) return { plane: "reply", endpoint: endpointNameOf(parts[4]), instanceId: parts[5], epoch, caller: triple, nonce: parts[10] };
+      const generation = parts[11];
+      try { assertGeneration(generation); } catch { return null; }
+      return { plane: "reply", rail: EP_RAIL_V1, endpoint: endpointNameOf(parts[5]), instanceId: parts[6], epoch, caller: { ...triple, generation } as IssuedCaller, nonce: parts[12] };
     }
     return null;
   }

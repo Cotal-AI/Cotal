@@ -1,0 +1,533 @@
+{
+  "suite": [
+    "scripts/preflight-npm-publish.mjs",
+    "scripts/preflight-npm-publish.d.mts",
+    "bin/smoke/gen-npm-publish-preflight-dts.mts",
+    "bin/smoke/npm-publish-preflight.smoke.ts"
+  ],
+  "guard": "The fixed-group npm census refuses partial, incomplete, or stage-only releases before any registry write",
+  "command": "pnpm smoke:npm-publish-preflight",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/npm-publish-preflight.json",
+  "why": [
+    "A sequential recursive publish cannot recover after one package version lands and a later package refuses.",
+    "npm OIDC HTTP 201 proves identity, not the direct-publish Allowed action. These mutations remove one fail-before-write property at a time and every one must be killed by the fake registry smoke."
+  ],
+  "mutations": [
+    {
+      "name": "an already-published exact version is treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 200) return \"present\";\n",
+      "replace": "    if (response.status === 200) return \"absent\";\n",
+      "expectRed": "one already-published package refuses the whole preflight",
+      "cell": "one already-published package refuses the whole preflight"
+    },
+    {
+      "name": "a mixed present and absent census is allowed to continue",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"mixed\") {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n  }\n",
+      "replace": "",
+      "expectRed": "mixed repository entrypoint preserves the partial-publication refusal",
+      "cell": "mixed repository entrypoint preserves the partial-publication refusal"
+    },
+    {
+      "name": "an all-present census is refused instead of treated as a no-op",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"all-present\") {\n    printPublishCensus(rows, log);\n    log(\"nothing to publish: every exact version is already on the registry\");\n    return { state: \"nothing-to-publish\", rows };\n  }\n",
+      "replace": "  if (registryVerdict === \"all-present\") {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: ${present.length}/${rows.length} exact versions already exist`);\n  }\n",
+      "expectRed": "all-present repository entrypoint returns the named no-op verdict",
+      "cell": "all-present repository entrypoint returns the named no-op verdict"
+    },
+    {
+      "name": "the all-present no-op returns a publish-ready state",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return { state: \"nothing-to-publish\", rows };\n",
+      "replace": "    return { state: \"ready\", rows };\n",
+      "expectRed": "all-present preflight returns the named no-op state",
+      "cell": "all-present preflight returns the named no-op state"
+    },
+    {
+      "name": "an all-absent census is treated as the all-present no-op",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    : absent.length === rows.length\n      ? \"all-absent\"\n",
+      "replace": "    : absent.length === rows.length\n      ? \"all-present\"\n",
+      "expectRed": "zero-present repository entrypoint reaches the publish authorization stage",
+      "cell": "zero-present repository entrypoint reaches the publish authorization stage"
+    },
+    {
+      "name": "the recursive publish set may omit one fixed-group package",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (invalid.length || missingManifests.length || outsideFixedGroup.length || manifests.size !== fixed.length) {\n",
+      "replace": "  if (invalid.length || outsideFixedGroup.length) {\n",
+      "expectRed": "one fixed-group package missing from the recursive publish set refuses",
+      "cell": "one fixed-group package missing from the recursive publish set refuses"
+    },
+    {
+      "name": "clean release skips per-package OIDC exchanges",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      try {\n        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n        row.oidc = exchanged.oidc;\n        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n        row.direct = \"not-run\";\n      }\n    }\n",
+      "replace": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      row.oidc = \"exchanged\";\n      row.direct = \"createPackage\";\n    }\n",
+      "expectRed": "clean preflight exchanges OIDC for every package before publishing",
+      "cell": "clean preflight exchanges OIDC for every package before publishing"
+    },
+    {
+      "name": "a refused OIDC exchange is treated as ready",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (response.status !== 201) return { oidc: `refused:${response.status}`, token: null };\n",
+      "replace": "  if (response.status !== 201) return { oidc: \"exchanged\", token: \"opaque-exchange-token\" };\n",
+      "expectRed": "one refused OIDC exchange refuses the full release",
+      "cell": "one refused OIDC exchange refuses the full release"
+    },
+    {
+      "name": "partial release begins OIDC exchanges before the complete registry census",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n  }\n",
+      "replace": "  for (const pkg of packages) {\n    const exchanged = env.ACTIONS_ID_TOKEN_REQUEST_URL ? await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) : { oidc: \"not-run\", token: null };\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: exchanged.oidc, direct: \"not-run\" });\n  }\n",
+      "expectRed": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call",
+      "cell": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call"
+    },
+    {
+      "name": "an opaque HTTP 201 exchange is treated as direct-publish proof",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n",
+      "replace": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = \"createPackage\";\n        } else {\n          row.direct = \"not-run\";\n        }\n",
+      "expectRed": "an opaque HTTP 201 exchange is not treated as direct-publish proof",
+      "cell": "an opaque HTTP 201 exchange is not treated as direct-publish proof"
+    },
+    {
+      "name": "a stage-only Allowed-actions sibling is allowed to continue",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  return n === \"publish\" || n === \"npmpublish\" || n === \"createpackage\" || n === \"direct\" || n === \"directpublish\";\n",
+      "replace": "  return n === \"publish\" || n === \"npmpublish\" || n === \"createpackage\" || n === \"direct\" || n === \"directpublish\" || n === \"stage\" || n === \"npmstagepublish\";\n",
+      "expectRed": "one stage-only Allowed-actions sibling refuses the whole preflight",
+      "cell": "one stage-only Allowed-actions sibling refuses the whole preflight"
+    },
+    {
+      "name": "a non-401 trust read failure is treated as direct-publish proof",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status !== 200) return `refused:${response.status}`;\n",
+      "replace": "    if (response.status !== 200) return \"createPackage\";\n",
+      "expectRed": "a non-401 trust read failure still refuses before any publish call",
+      "cell": "a non-401 trust read failure still refuses before any publish call"
+    },
+    {
+      "name": "empty Allowed-actions lists are treated as direct publish",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (withDirect.length > 0) return \"createPackage\";\n  return \"stage-only\";\n",
+      "replace": "  if (withDirect.length > 0) return \"createPackage\";\n  return \"createPackage\";\n",
+      "expectRed": "classifier treats an empty Allowed-actions list as stage-only",
+      "cell": "classifier treats an empty Allowed-actions list as stage-only"
+    },
+    {
+      "name": "any GitHub publisher with createPackage proves this job can publish",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const mine = entries.filter((entry) => isThisReleasePublisher(entry, identity));\n  if (mine.length === 0) return \"refused:no-github-publisher\";\n  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));\n",
+      "replace": "  const mine = entries.filter(isGithubPublisher);\n  if (mine.length === 0) return \"refused:no-github-publisher\";\n  const withDirect = mine.filter((entry) => actionList(entry).some(isDirectPublishAction));\n",
+      "expectRed": "classifier ignores an unrelated GitHub publisher that lists createPackage",
+      "cell": "classifier ignores an unrelated GitHub publisher that lists createPackage"
+    },
+    {
+      "name": "GET trust claims identity is ignored",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const claims = entry.claims && typeof entry.claims === \"object\" ? entry.claims : {};\n  const workflowRef = claims.workflow_ref;\n  const claimsWorkflow = typeof workflowRef === \"string\"\n    ? workflowRef\n    : workflowRef && typeof workflowRef === \"object\"\n      ? String(workflowRef.file ?? workflowRef.filename ?? \"\")\n      : \"\";\n  return {\n    type: String(entry.type ?? nested.type ?? \"\"),\n    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? claims.repository ?? \"\"),\n    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? claimsWorkflow ?? claims.workflow ?? \"\"),\n  };\n",
+      "replace": "  return {\n    type: String(entry.type ?? nested.type ?? \"\"),\n    repository: String(entry.repository ?? nested.repository ?? nested.repository_name ?? \"\"),\n    workflow: String(entry.workflow_filename ?? entry.workflowFilename ?? entry.workflow ?? nested.workflow_filename ?? nested.workflow ?? \"\"),\n  };\n",
+      "expectRed": "classifier accepts official GitHub GET trust claims with createPackage",
+      "cell": "classifier accepts official GitHub GET trust claims with createPackage"
+    },
+    {
+      "name": "an exported signature changes without regenerating its declaration",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export function trustUrl(registryBase, name) {\n",
+      "replace": "export function trustUrl(registryBase, name, extra = \"\") {\n  void extra;\n",
+      "expectRed": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)",
+      "cell": "the committed .d.mts is byte-identical to a fresh emit from the module (run pnpm gen:npm-publish-preflight-dts)"
+    },
+    {
+      "name": "the census state widens back to bare string in the published type",
+      "note": "The defect this file is being extended for: with the @returns removed, tsc widens the object-literal property and the declaration stops carrying the state contract. The byte-identity cell above cannot catch it on its own, because the declaration and the module still agree with each other.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ ([\"nothing-to-publish\", \"ready\"]);",
+      "replace": "export const NPM_PUBLISH_PREFLIGHT_STATES = /** @type {const} */ ([\"nothing-to-publish\", \"ready\", \"inconclusive\"]);",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a census state literal is renamed in the published union",
+      "note": "Graded separately from preflightNpmPublish because the two properties are emitted independently: before this fix each was its own bare `string`, so one entry point's coverage says nothing about the other's. This mutation widens the declared return rather than deleting it, and the difference was measured: DELETING the annotation here does not widen anything, because this function returns preflightNpmPublish(...) directly and inherits the union by inference, so a deletion reds the byte-identity cell instead and grades WRONG-RED. The annotation is kept in the source anyway, because inference only holds while the body stays a direct return.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "([\"nothing-to-publish\", \"ready\"]);",
+      "replace": "([\"nothing-to-publish\", \"shipped\"]);",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a census state the module can return is dropped from the published union",
+      "note": "The union has to match the module, not merely be a union: `inconclusive` is a registryVerdict that throws, so admitting it into the published type would invite a caller to branch on a state no call site can produce.",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "[\"nothing-to-publish\", \"ready\"]",
+      "replace": "[\"nothing-to-publish\"]",
+      "expectRed": "a fresh emit from the module pins the census state union on both entry points",
+      "cell": "a fresh emit from the module pins the census state union on both entry points"
+    },
+    {
+      "name": "a publisher with blank environment bypasses the environment check",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (expectedEnvironment && envValue !== expectedEnvironment) return false;\n",
+      "replace": "  if (expectedEnvironment && envValue && envValue !== expectedEnvironment) return false;\n",
+      "expectRed": "a publisher with blank environment refuses even with createPackage permission",
+      "cell": "a publisher with blank environment refuses even with createPackage permission"
+    },
+    {
+      "name": "the OIDC identity assertion ignores the environment claim",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (claims.environment !== REQUIRED_ENVIRONMENT) failures.push(\"environment\");\n",
+      "replace": "",
+      "expectRed": "an OIDC token without the environment claim refuses the whole preflight",
+      "cell": "an OIDC token without the environment claim refuses the whole preflight"
+    },
+    {
+      "name": "a 401 trust read under OIDC refuses the release again",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 401) return \"unverifiable:trust-endpoint-needs-npm-token\";\n",
+      "replace": "",
+      "expectRed": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
+      "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
+    },
+    {
+      "name": "the inconclusive guard block is deleted whole",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n    throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);\n  }\n",
+      "replace": "",
+      "expectRed": "a 503 on one exact-version read refuses the release as inconclusive",
+      "cell": "a 503 on one exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "the incomplete guard block is deleted whole",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"incomplete\") {\n    printPublishCensus(rows, log);\n    throw new Error(\"the packages that would publish are not the complete fixed group\");\n  }\n",
+      "replace": "",
+      "expectRed": "every verdict the shipped ladder produces has an arm beneath it that throws or returns",
+      "cell": "every verdict the shipped ladder produces has an arm beneath it that throws or returns, apart from the named all-absent fall-through, so an arm cannot be deleted while its verdict is still produced",
+      "note": "The verdict this arm guards has no reachable census input, so no fixture can drive it and this mutation is killed by a structural join rather than by a scenario. The deletion is reachable even though the state is not, and a verdict with no arm falls through into the credential stage and returns a publish-ready state."
+    },
+    {
+      "name": "the incomplete guard stops refusing and only prints the census",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    throw new Error(\"the packages that would publish are not the complete fixed group\");\n",
+      "replace": "",
+      "expectRed": "every verdict the shipped ladder produces has an arm beneath it that throws or returns",
+      "cell": "every verdict the shipped ladder produces has an arm beneath it that throws or returns, apart from the named all-absent fall-through, so an arm cannot be deleted while its verdict is still produced",
+      "note": "The quieter half of the same defect: the arm is still written and still matches by text, but it falls out of its own block, so the verdict continues into the credential stage exactly as a deleted arm would."
+    },
+    {
+      "name": "an unreadable exact-version response is treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${response.status}`;\n",
+      "replace": "    return \"absent\";\n",
+      "expectRed": "a 302 on every exact-version read refuses the release rather than reading as absent",
+      "cell": "a 302 on every exact-version read refuses the release rather than reading as absent"
+    },
+    {
+      "name": "a thrown exact-version read is swallowed and treated as absent",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n",
+      "replace": "    return \"absent\";\n",
+      "expectRed": "a thrown fetch on the exact-version read refuses the release as inconclusive",
+      "cell": "a thrown fetch on the exact-version read refuses the release as inconclusive"
+    },
+    {
+      "name": "the inconclusive refusal skips the census print, hiding which package was unreadable",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (registryVerdict === \"inconclusive\") {\n    printPublishCensus(rows, log);\n",
+      "replace": "  if (registryVerdict === \"inconclusive\") {\n",
+      "expectRed": "the inconclusive census names the unreadable package and carries its registry status",
+      "cell": "the inconclusive census names the unreadable package and carries its registry status"
+    },
+    {
+      "name": "an unverifiable trust read is admitted as createPackage proof",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 401) return \"unverifiable:trust-endpoint-needs-npm-token\";\n",
+      "replace": "    if (response.status === 401) return \"createPackage\";\n",
+      "expectRed": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release",
+      "cell": "a 401 trust read under OIDC is recorded as unverifiable and does not refuse the release"
+    },
+    {
+      "name": "the census state grader stops refusing: the declaration never declares this entry point",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (declared === 0) { refusals.push(`${fn}: the declaration never declares this entry point`); continue; }\n",
+      "replace": "    if (declared === 0) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: so which result a caller resolves is ambiguous",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (declared > 1) { refusals.push(`${fn}: declared ${declared} times, so which result a caller resolves is ambiguous`); continue; }\n",
+      "replace": "    if (declared > 1) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: no resolved result object in the declaration",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (block === null) { refusals.push(`${fn}: no resolved result object in the declaration`); continue; }\n",
+      "replace": "    if (block === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: no top-level state property",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written.length === 0) { refusals.push(`${fn}: the result carries no top-level state property`); continue; }\n",
+      "replace": "    if (written.length === 0) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: top-level state properties",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written.length > 1) { refusals.push(`${fn}: carries ${written.length} top-level state properties: ${written.join(\", \")}`); continue; }\n",
+      "replace": "    if (written.length > 1) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: which this declaration never defines",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (resolved === null) { refusals.push(`${fn}: state is ${type}, which this declaration never defines`); continue; }\n",
+      "replace": "    if (resolved === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: state is optional, so the census verdict may be absent",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (written[0].startsWith(\"?\")) { refusals.push(`${fn}: state is optional, so the census verdict may be absent from the published result`); continue; }\n",
+      "replace": "    if (written[0].startsWith(\"?\")) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: not a union of the census literals",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (members === null) { refusals.push(`${fn}: state is ${resolved}, not a union of the census literals`); continue; }\n",
+      "replace": "    if (members === null) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: state union is missing",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (missing.length) { refusals.push(`${fn}: state union is missing ${missing.join(\", \")}`); continue; }\n",
+      "replace": "    if (missing.length) { continue; }\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "the census state grader stops refusing: which the census never returns",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (extra.length) refusals.push(`${fn}: state union carries ${extra.join(\", \")}, which the census never returns`);\n",
+      "replace": "    if (extra.length) void extra;\n",
+      "expectRed": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot",
+      "cell": "the enumerated branch set has one entry per refusal in the grader, so the list cannot rot"
+    },
+    {
+      "name": "a fourth status-specific census outcome is added, escaping the three-value domain the verdict ladder buckets on",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 404) return \"absent\";\n",
+      "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\";\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "note": "expectRed was stale and inherited: the cell was reworded when the enumerator was rewritten to use the compiler, and this tag was left on the retired wording, so mutation-proof graded a genuine, correctly-aimed red as WRONG-RED. It now pins the INVARIANT substring of the cell name, which is a template literal whose leading count changes with the enumeration, so a count change cannot rot it again."
+    },
+    {
+      "name": "a bare return is added to readExactVersion, yielding undefined, which no census bucket claims",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 200) return \"present\";\n    if (response.status === 404) return \"absent\";\n",
+      "replace": "    if (response.status === 200) return \"present\";\n    if (response.status === 418) return;\n    if (response.status === 404) return \"absent\";\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "note": "The escape that killed the retired regex extractor: /\\breturn\\s+([^;]+);/ requires a non-empty expression, so a bare return was invisible to it and the universal cell stayed green while the function gained an undefined return."
+    },
+    {
+      "name": "a semicolon-free out-of-domain return is added, closed by ASI",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    if (response.status === 404) return \"absent\";\n    return `unknown:${response.status}`;\n",
+      "replace": "    if (response.status === 404) return \"absent\";\n    if (response.status === 418) return \"outside-domain\"\n    return `unknown:${response.status}`;\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "note": "The retired regex captured to the next semicolon, so a semicolon-free return was swallowed into the following return's text and laundered into the domain."
+    },
+    {
+      "name": "the shipped absent bucket is widened to also claim unknown rows, so a row lands in two buckets",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "export const isAbsentRegistry = (registry) => registry === \"absent\";\n",
+      "replace": "export const isAbsentRegistry = (registry) => registry === \"absent\" || registry.startsWith(\"unknown:\");\n",
+      "expectRed": "under the shipped bucket predicates every production census row lands in exactly one bucket",
+      "cell": "under the shipped bucket predicates every production census row lands in exactly one bucket",
+      "note": "The overlap the previous disjointness cell documented but could not detect: it retyped the predicates, so widening the SHIPPED one left the copy green. This cell imports the shipped predicate, so the widening changes what it computes."
+    },
+    {
+      "name": "the return enumerator stops treating a bare return as out of domain",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (!expression) return { text, inDomain: false, why: \"bare return: yields undefined, which no census bucket claims\" };\n",
+      "replace": "    if (!expression) return { text, inDomain: true, why: \"bare return: yields undefined, which no census bucket claims\" };\n",
+      "expectRed": "the return enumerator refuses a bare return, which yields undefined",
+      "cell": "the return enumerator refuses a bare return, which yields undefined",
+      "note": "Grades the instrument rather than the subject: if the enumerator stops refusing a bare return, the escape cell that pins that refusal must red. Without this the enumerator could be silently relaxed back to the defect it replaced."
+    },
+    {
+      "name": "the return enumerator descends into nested functions, attributing their returns to readExactVersion",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "    if (isReturnScopeBoundary(node)) return;\n    if (ts.isReturnStatement(node)) found.push(node);\n",
+      "replace": "    if (false && isReturnScopeBoundary(node)) return;\n    if (ts.isReturnStatement(node)) found.push(node);\n",
+      "expectRed": "a return inside a nested function is not attributed to readExactVersion",
+      "cell": "a return inside a nested function is not attributed to readExactVersion",
+      "note": "The false-positive half of the enumerator: a helper closure's return is not readExactVersion's. Without the boundary the enumerator would red the shipped source for a value the function never returns. Re-anchored when the boundary predicate was renamed to isReturnScopeBoundary and the ladder walk gained the same guard: the single line now occurs TWICE in this file, so the anchor is the two-line code-only window that pins the CENSUS walk specifically. The bare line would have been ambiguous, and the nearest comment would have been unique for free and load-bearing for a docs commit."
+    },
+    {
+      "name": "a CENSUS_BUCKETS entry drifts off the exported predicate onto an equivalent inline copy",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  { name: \"absent\", matches: isAbsentRegistry },\n",
+      "replace": "  { name: \"absent\", matches: (registry) => registry === \"absent\" },\n",
+      "expectRed": "each CENSUS_BUCKETS entry is the exported predicate object itself",
+      "cell": "each CENSUS_BUCKETS entry is the exported predicate object itself",
+      "note": "Found by attacking the bucket cells: the table this suite grades through agreed with the ladder today but was free to diverge, which would restore the transcription defect one layer up. Identity, not equality, is what makes grading through CENSUS_BUCKETS mean anything."
+    },
+    {
+      "name": "the verdict ladder stops calling the exported bucket predicate and inlines the comparison",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const absent = rows.filter((row) => row.registry === \"absent\");\n",
+      "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "cell": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "note": "The other half of the same drift: exports that the ladder no longer calls are decoration, and a test grading them would grade nothing the release path runs."
+    },
+    {
+      "name": "the census enumerator goes back to last-match-wins, so a nested same-name declaration replaces the target",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "  const declared = parsed.statements.filter(\n    (statement): statement is ts.FunctionDeclaration =>\n      ts.isFunctionDeclaration(statement) && statement.name?.text === name,\n  );\n",
+      "replace": "  const declared: ts.FunctionDeclaration[] = [];\n  parsed.forEachChild(function find(node: ts.Node): void {\n    if (ts.isFunctionDeclaration(node) && node.name?.text === name) { declared.length = 0; declared.push(node); }\n    node.forEachChild(find);\n  });\n",
+      "expectRed": "a nested same-name readExactVersion decoy cannot replace the shipped declaration",
+      "cell": "a nested same-name readExactVersion decoy cannot replace the shipped declaration, so a poisoned real function is still enumerated and refused",
+      "note": "Rule 1, the census half. Restores the exact retired lookup: a recursive walk that keeps only the LAST declaration of the name. The decoy cell then reads a clean nested copy while the real function returns an out-of-domain value, which is the defeat a panel drove. Grades the instrument, not the subject: without this the pin could be quietly relaxed back to the shape it replaced."
+    },
+    {
+      "name": "the return-walk boundary drops back to the hand-rolled union that omits constructors and static blocks",
+      "file": "bin/smoke/npm-publish-preflight.smoke.ts",
+      "find": "const isReturnScopeBoundary = (node: ts.Node): boolean =>\n  ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);\n",
+      "replace": "const isReturnScopeBoundary = (node: ts.Node): boolean => ts.isFunctionDeclaration(node)\n  || ts.isFunctionExpression(node)\n  || ts.isArrowFunction(node)\n  || ts.isMethodDeclaration(node)\n  || ts.isGetAccessor(node)\n  || ts.isSetAccessor(node);\n",
+      "expectRed": "a return inside a constructor is not attributed to readExactVersion",
+      "cell": "a return inside a constructor is not attributed to readExactVersion, so a local class does not red the enumerator with a value the function never returns",
+      "note": "Rule 2. The retired six-way union omitted ConstructorDeclaration and ClassStaticBlockDeclaration, so a local class constructor's return was attributed to the enclosing function and reddened a clean source with five enumerated returns. ts.isFunctionLike is the compiler's own answer; the static block is named separately because the compiler does not consider it function-like."
+    },
+    {
+      "name": "a shadowing nested readExactVersion is appended to the shipped source beside a poisoned real one",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n  }\n}\n",
+      "replace": "    return `unknown:${error instanceof Error ? error.message : String(error)}`;\n  }\n  if (pkg.name === \"never\") return response;\n}\n\nfunction readExactVersionShadowHolder() {\n  async function readExactVersion(pkg, registryBase, fetchImpl) {\n    if (pkg) return \"present\";\n    if (registryBase) return \"absent\";\n    if (fetchImpl) return `unknown:shadow`;\n    return `unknown:shadow-tail`;\n  }\n  return readExactVersion;\n}\n",
+      "expectRed": "return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value",
+      "cell": "the 5 return statements the compiler finds in readExactVersion each yield present, absent or an unknown: value, so no fourth census outcome reaches the verdict ladder unbucketed",
+      "note": "The shadowing-declaration mutation for the census enumerator, applied to the SHIPPED source rather than a synthetic one. It poisons the real function with an unpinnable return AND appends a nested clean decoy of the same name. Under the retired last-match-wins lookup the decoy won and this cell stayed green at four returns; under the top-level pin the real function is read and its out-of-domain return refused."
+    },
+    {
+      "name": "a shadowing nested preflightNpmPublish is appended inside the ladder beside a drifted comparison",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  function preflightNpmPublishShadowHolder() {\n    async function preflightNpmPublish(shadowRows) {\n      return shadowRows.filter((row) => isUnknownRegistry(row.registry));\n    }\n    return preflightNpmPublish;\n  }\n  void preflightNpmPublishShadowHolder;\n  const unknown = rows.filter((row) => row.registry.startsWith(\"unknown:\"));\n",
+      "expectRed": "the verdict ladder buckets rows by calling the exported predicates by name",
+      "cell": "the verdict ladder buckets rows by calling the exported predicates by name, so CENSUS_BUCKETS cannot drift into a parallel copy that agrees today and diverges later",
+      "note": "The shadowing-declaration mutation for the ladder enumerator. It drifts the real ladder off the exported unknown predicate AND declares a nested decoy of the same name that calls it, which is the laundering shape measured to keep this cell green both under the retired last-wins lookup and, later, under the top-level pin before the walk was given a function boundary. Both halves of that repair are required for this to red."
+    },
+    {
+      "name": "the unknown bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  const unknown = rows.filter((row) => row.registry.startsWith(\"unknown:\"));\n  if (false) { rows.filter((row) => isUnknownRegistry(row.registry)); }\n",
+      "expectRed": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "cell": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the present bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "replace": "  const present = rows.filter((row) => row.registry === \"present\");\n  if (false) { rows.filter((row) => isPresentRegistry(row.registry)); }\n",
+      "expectRed": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "cell": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the absent bucket binding drifts off its exported predicate while a dead call to it remains",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const absent = rows.filter((row) => row.registry === \"absent\");\n  if (false) { rows.filter((row) => isAbsentRegistry(row.registry)); }\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The dead-call laundering shape. Measured before the data-flow reading existed: this exact source leaves the text-presence enumerator green, because a call inside `if (false)` is still a call in the text. It is a silent pass on a working build -- the module loads, CENSUS_BUCKETS still resolves with 3 buckets, and `node --check` returns 0. Killing it requires reading which value registryVerdict actually consumes, not which names appear in the ladder."
+    },
+    {
+      "name": "the absent rung is redirected to an inline copy while a live call to the exported predicate remains beside it",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absent.length === rows.length\n",
+      "replace": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n  const absentRows = rows.filter((row) => row.registry === \"absent\");\n  const registryVerdict = unknown.length > 0\n    ? \"inconclusive\"\n    : absentRows.length === rows.length\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The dead call made LIVE, which is why it is a separate entry rather than a variant of the three above. `absent` is still declared, still calls isAbsentRegistry, and is now genuinely reachable, so every reading that asks whether the predicate is called says yes and a pin that resolved buckets by NAME would also say yes. The verdict reads `absentRows`. AIM, corrected after a WRONG-RED: this is tagged on the SHIPPED absent rung cell, not on the skeleton cell that describes this same shape. The skeleton cell is synthetic and by design does not move when the shipped module is mutated, so tagging it graded a genuine detection as a miss. The shipped rung cell is where a mutation of the shipped file must red. It also rots nothing: the shipped absent line is left byte-identical, so the three older controls that anchor on that line stay green."
+    },
+    {
+      "name": "the unknown bucket call is captured by a same-name local predicate",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  const isUnknownRegistry = (registry) => registry.startsWith(\"unknown:\");\n  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "expectRed": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "cell": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. The mutation changes which declaration the consumed call resolves to while preserving current behaviour, and must be killed by resolving the callee to a symbol rather than by an enumerated registry input."
+    },
+    {
+      "name": "the present bucket call is captured by a same-name local predicate",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "replace": "  const isPresentRegistry = (registry) => registry === \"present\";\n  const present = rows.filter((row) => isPresentRegistry(row.registry));\n",
+      "expectRed": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "cell": "the present rung's consumed callee resolves by symbol identity to the module's exported isPresentRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. The mutation changes which declaration the consumed call resolves to while preserving current behaviour, and must be killed by resolving the callee to a symbol rather than by an enumerated registry input."
+    },
+    {
+      "name": "the absent bucket call is captured by a widened same-name local predicate",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  const isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\";\n  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. This is deliberately non-equivalent: it widens the local predicate beyond the shipped export on an unenumerated value. The kill must therefore come from the absent binding's structural symbol-identity cell, not from adding a behavioural cell for that one value."
+    },
+    {
+      "name": "the unknown bucket call is captured by a sibling-block var that hoists to the ladder's scope",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "replace": "  { var isUnknownRegistry = (registry) => registry.startsWith(\"unknown:\") && registry !== \"unknown:410\"; }\n  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));\n",
+      "expectRed": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "cell": "the unknown rung's consumed callee resolves by symbol identity to the module's exported isUnknownRegistry, whose sole declaration is the top-level one",
+      "note": "The original bucket line remains byte-identical, so no control anchor is disturbed. `var` hoists out of the block to the ladder's own function scope and really captures the rung's call, and this widening is non-equivalent: the shipped export says isUnknownRegistry(\"unknown:410\") is true and the shadow says false, which moves a real 404/404/410 census from inconclusive to incomplete. The kill must come from the unknown binding's structural symbol-identity cell, not from an enumerated registry input."
+    },
+    {
+      "name": "the absent bucket call is captured by a sibling-block var that hoists to the ladder's scope",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "replace": "  { var isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\"; }\n  const absent = rows.filter((row) => isAbsentRegistry(row.registry));\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The same hoisting mechanism on a second bucket, so a reading that special-cased one rung does not pass. The original bucket line remains byte-identical. Deliberately non-equivalent: the shadow claims a value the shipped export does not. The kill must come from the absent binding's structural symbol-identity cell."
+    },
+    {
+      "name": "the absent bucket call is captured by a same-name predicate in the ladder's destructured parameter list",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  log = console.log,\n}) {\n",
+      "replace": "  log = console.log,\n  isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\",\n}) {\n",
+      "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
+      "note": "The ladder's only parameter is an ObjectBindingPattern, so a same-name predicate given a default inside it binds over the whole body and captures the absent rung's call. It leaves every bucket line byte-identical, so no control anchor is disturbed. This mutation also changes the emitted declaration, so the committed .d.mts must be regenerated for the run to isolate this cell; without that the dts-freshness cell reds instead, which is staleness and not detection. The kill must come from the absent binding's structural symbol-identity cell."
+    }
+  ]
+}

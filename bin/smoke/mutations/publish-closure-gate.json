@@ -1,0 +1,208 @@
+{
+  "suite": [
+    "bin/smoke/publish-closure-gate.smoke.ts",
+    "scripts/verify-publish-closure.mjs",
+    ".github/workflows/changesets.yml"
+  ],
+  "guard": "The post-publish closure gate checks every package in the lockstep group against the registry, validates response bodies, and gates the GitHub Release on the result",
+  "command": "pnpm smoke:publish-closure-gate",
+  "completionMarker": "SUITE COMPLETE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/publish-closure-gate.json",
+  "why": [
+    "The release workflow used to check one package of twenty-two and cut a Release on that alone. A sibling that failed to publish was invisible. The closure gate now checks every package and the Release step depends on it.",
+    "A 200 without a body identifying the package at the requested version is no longer treated as presence. Each mutation below breaks one property the smoke is supposed to hold.",
+    "The rc-2 and rc-3 cells used to substring-match the branch comparison, which sees that the branch exists and nothing about what it does: an exit 1 added to either quiet-skip path left the suite green while every no-publish push to main would have failed (#1518). The cells now parse each branch body, and these mutations are what shows they can see into it.",
+    "Three rounds closed evasions by position, quoting and verb, and a fourth produced eleven quiet arms that carry no failure word at all yet exit 1 (`test 1 -eq 2`, `command false`, `((0))`, `trap \"exit 1\" EXIT`). The property is the arm's last status, which is a fact about execution, so the cells now run the body under the workflow's own `bash -e` with `rc` bound instead of matching its text.",
+    "Grading arms in isolation is still not the whole property: an arm that declines to fail only produces a quiet skip if the SCRIPT stops failing too. While the quiet arms fell out of the `fi`, that verdict was decided by every line after them, so a `trap \"exit 1\" EXIT` in the prologue or a tidy-up `exit $rc` below the chain turned every no-publish push red with all four arms still reading as correct, and the per-body cells stayed green. The quiet arms now `exit 0` themselves, and the step's own run script is executed once per documented exit code with `node` stubbed to return it.",
+    "Fixture D from the triage of #1518, the one that settles its severity: both quiet arms deleted and replaced by a catch-all that fails the job on every no-publish push, with `\"$rc\" -eq 2` and `\"$rc\" -eq 3` surviving only inside a `#` comment. The workflow then has no quiet-skip branch at all and the graded suite still passed, because a comment carries the text an includes() reads. It is registered here so the cells are pinned against a workflow that satisfies every text-level assertion about this branching while doing the opposite."
+  ],
+  "mutations": [
+    {
+      "name": "the closure-gate step is removed from the workflow",
+      "file": ".github/workflows/changesets.yml",
+      "find": "        id: closure-gate\n",
+      "replace": "        id: old-check\n",
+      "expectRed": "the version job has a step with id 'closure-gate'",
+      "cell": "the version job has a step with id 'closure-gate'"
+    },
+    {
+      "name": "the release step stops referencing the closure-gate output",
+      "file": ".github/workflows/changesets.yml",
+      "find": "steps.closure-gate.outputs.closure_ok == 'true'",
+      "replace": "true",
+      "expectRed": "the release step's 'if' references the closure-gate step output",
+      "cell": "the release step's 'if' references the closure-gate step output"
+    },
+    {
+      "name": "the closure-gate step stops invoking verify-publish-closure.mjs",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          node scripts/verify-publish-closure.mjs \"$version\"\n",
+      "replace": "          echo \"skipping closure check\"\n",
+      "expectRed": "the closure-gate step invokes verify-publish-closure.mjs",
+      "cell": "the closure-gate step invokes verify-publish-closure.mjs"
+    },
+    {
+      "name": "the body validation is removed so any 200 counts as presence again",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        const body = await res.json();\n        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        continue;",
+      "expectRed": "fake registry: one 200 with wrong version in body -> does NOT pass as published",
+      "cell": "fake registry: one 200 with wrong version in body -> does NOT pass as published"
+    },
+    {
+      "name": "a wrong-version body is accepted as presence",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        if (body && body.name === pkg) continue;",
+      "expectRed": "fake registry: one 200 with wrong version in body -> does NOT pass as published",
+      "cell": "fake registry: one 200 with wrong version in body -> does NOT pass as published"
+    },
+    {
+      "name": "a wrong-name body is accepted as presence",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "        if (body && body.name === pkg && body.version === version) continue;",
+      "replace": "        if (body && body.version === version) continue;",
+      "expectRed": "fake registry: one 200 naming a different package -> does NOT pass as published",
+      "cell": "fake registry: one 200 naming a different package -> does NOT pass as published"
+    },
+    {
+      "name": "the UNSETTLED quiet skip starts failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 1\n",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing"
+    },
+    {
+      "name": "the NONE quiet skip starts failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n",
+      "replace": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 1\n",
+      "expectRed": "the closure-gate step handles exit code 3 (NONE) without failing",
+      "cell": "the closure-gate step handles exit code 3 (NONE) without failing"
+    },
+    {
+      "name": "the PARTIAL branch stops failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"PARTIAL PUBLISH — failing the job.\"\n",
+      "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job"
+    },
+    {
+      "name": "an unexpected exit code stops failing the job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs — failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"Unexpected exit code $rc from verify-publish-closure.mjs — failing the job.\"\n",
+      "expectRed": "the closure-gate step fails the job on an unexpected exit code",
+      "cell": "the closure-gate step fails the job on an unexpected exit code"
+    },
+    {
+      "name": "a separator-based failing exit is added to the UNSETTLED branch",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"; exit 1",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "note": "The direction that matters for this cell: it asserts the NEGATIVE, so a matcher that cannot read the failure certifies a job-failing branch as safe and the green is indistinguishable from a correct one. The line-anchored matcher this PR replaces stayed green here."
+    },
+    {
+      "name": "the PARTIAL branch exits 0 instead of failing",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1",
+      "replace": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 0",
+      "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "note": "The accept direction, held as strict as before: a correct `exit 0` is never read as a failure, in any position. A widening that lost the non-zero lookahead would keep this cell green and would red a valid workflow elsewhere."
+    },
+    {
+      "name": "a reachable keyword-position failure is added to the UNSETTLED branch",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            if true; then exit 1; fi",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "note": "bash gives this body rc=1, so the quiet skip becomes a job failure. A matcher that treats only punctuation as a command position reads it as safe: `; exit 1` matches and `; then exit 1` does not. Five more shapes hide behind the same gap (else, while, for, until, elif)."
+    },
+    {
+      "name": "the PARTIAL branch's exit is moved inside a string",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1",
+      "replace": "            echo \"PARTIAL PUBLISH; exit 1\"",
+      "expectRed": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "cell": "the closure-gate step branches on exit code 1 (PARTIAL) to fail the job",
+      "note": "bash gives this body rc=0, so a partial publish stops failing the job and a Release is cut. It is the worse direction: the vacuity guard is what licenses the two negative cells, so a guard satisfied by a body that does not fail licenses nothing."
+    },
+    {
+      "name": "a quiet failure with no failure word is added to the UNSETTLED branch",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            test 1 -eq 2",
+      "expectRed": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "cell": "the closure-gate step handles exit code 2 (UNSETTLED) without failing",
+      "note": "bash gives this body rc=1 under `-e`, so the quiet skip becomes a job failure. The arm carries no failure verb at all — no exit, false, return, eval or kill — so every verb-list matcher reads it as safe. Ten more shapes hide behind the same gap (command/builtin/env prefixes, [ ], grep -q, ((0)), exec, redirected exits, trap). This is the cell that requires measuring the status instead of reading the text."
+    },
+    {
+      "name": "the branch body is read as text again instead of being measured",
+      "file": "bin/smoke/publish-closure-gate.smoke.ts",
+      "find": "  return shellStatus(body) !== 0;",
+      "replace": "  return /\\bexit\\s+[1-9]|\\bfalse\\b/.test(body);",
+      "expectRed": "every battery body still leaves the shell where it was recorded",
+      "cell": "every battery body still leaves the shell where it was recorded",
+      "note": "The regression this round closed, held open: any text-reading predicate put back in place of the measurement reds the battery on the quiet rows. Pinned against the smoke itself because the battery is the only place those rows exist."
+    },
+    {
+      "name": "the UNSETTLED arm stops ending the step and falls out of the chain again",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 0\n",
+      "replace": "            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n",
+      "expectRed": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+      "cell": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+      "note": "The shape no per-body assertion can see, which is why it needs its own cell: the arm still does not fail, so every rc-body cell stays green, and the job's verdict on a no-publish push goes back to being decided by whatever follows the `fi`."
+    },
+    {
+      "name": "the NONE arm stops ending the step and falls out of the chain again",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 0\n",
+      "replace": "            echo \"NONE — this push published nothing. Skipping the Release.\"\n",
+      "expectRed": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain",
+      "cell": "the quiet-skip arms (UNSETTLED, NONE) end the step themselves rather than falling out of the chain"
+    },
+    {
+      "name": "a trap above the branch chain turns every quiet skip into a job failure",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          rc=$?\n          set -e\n",
+      "replace": "          rc=$?\n          set -e\n          trap \"exit 1\" EXIT\n",
+      "expectRed": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "cell": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "note": "Inside no arm at all, so reading the rc-2 and rc-3 bodies reports them clean while the step reds on both. Caught only by running the script."
+    },
+    {
+      "name": "the rc-0 arm stops publishing closure_ok, so no Release is ever cut",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"closure_ok=true\" >> \"$GITHUB_OUTPUT\"\n",
+      "replace": "            echo \"closure_verified=true\" >> \"$GITHUB_OUTPUT\"\n",
+      "expectRed": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "cell": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "note": "The opposite direction from the rest of this file. The others guard against cutting a Release that should not be cut; this guards the key the Release step reads, whose loss silently stops all of them. The step still exits 0, so no status cell moves."
+    },
+    {
+      "name": "the PARTIAL arm publishes closure_ok before failing",
+      "file": ".github/workflows/changesets.yml",
+      "find": "            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
+      "replace": "            echo \"closure_ok=true\" >> \"$GITHUB_OUTPUT\"\n            echo \"PARTIAL PUBLISH — failing the job.\"\n            exit 1\n",
+      "expectRed": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "cell": "only a PUBLISHED verdict publishes closure_ok=true, so only it can cut a Release",
+      "note": "The arm still fails the job, so every status-based cell stays green, but the output it leaves behind is the one the Release step gates on. Only the output column can see this."
+    },
+    {
+      "name": "both quiet arms are replaced by a failing catch-all, the comparisons left in a comment",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          elif [ \"$rc\" -eq 2 ]; then\n            # The quiet skips end the step here rather than falling out of the `fi`. A version-PR\n            # push that publishes nothing must not red the job, and leaving that outcome to be\n            # decided by whatever follows made it a property of the whole script instead of the\n            # arm: a later line, or a trap installed above, silently turned the skip into a\n            # failure with the branch itself still reading as correct (#1518).\n            echo \"UNSETTLED — the registry has not converged. Skipping the Release.\"\n            exit 0\n          elif [ \"$rc\" -eq 3 ]; then\n            echo \"NONE — this push published nothing. Skipping the Release.\"\n            exit 0\n",
+      "replace": "          # quiet skips handled below: [ \"$rc\" -eq 2 ] and [ \"$rc\" -eq 3 ]\n          elif [ \"$rc\" -ge 2 ]; then\n            echo \"no publish - failing the job.\"\n            exit 1\n",
+      "expectRed": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "cell": "running the whole gate step leaves the job red only on PARTIAL and an unexpected code",
+      "note": "Triage fixture D, graded SURVIVED against the substring cells. No rc-2 or rc-3 branch remains, so a body-parsing cell finds nothing to grade and a text-matching cell reads the comment and reports success. Only running the script sees it: rc 2 and rc 3 both red the step."
+    }
+  ]
+}

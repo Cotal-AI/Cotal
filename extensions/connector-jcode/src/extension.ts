@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 
@@ -110,11 +110,12 @@ export const jcodeConnector: Connector = {
   // verdict for this connector; keep the manager's wait bounded but long enough for that required
   // bootstrap sequence (#827).
   readinessTimeoutMs: JCODE_READINESS_TIMEOUT_MS,
-  // variant = Jcode's per-session reasoning effort (`set_reasoning_effort`). The accepted tiers are
-  // per provider AND per model, and the Harness API publishes no ladder to check against — so the
-  // tier is carried verbatim and validated at launch by Jcode itself, which owns that catalog.
+  // variant = Jcode's per-session reasoning effort (`set_reasoning_effort`). The accepted surface is
+  // per provider/profile/model. RuntimeInfo verifies the active route before the tier is carried
+  // verbatim to Jcode, which owns the capability and ladder decisions.
   supportsModelVariant: true,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
+  eventChannel,
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
@@ -132,7 +133,7 @@ export const jcodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       COTAL_CONTROL_SOCKET: control.path,
@@ -142,11 +143,28 @@ export const jcodeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // Like Codex, the TUI decision belongs to the process that builds this launch. A foreground
     // spawn reads the operator shell; a detached spawn is built in the manager and reads its env.
     // Copied by name because launchEnv does not inherit ambient COTAL_* (this name is per-launch).
     const tui = process.env.COTAL_JCODE_TUI?.trim();
     if (tui) env.COTAL_JCODE_TUI = tui;
+
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` arms the emitter, while the eventChannel declaration
+    // above is what lets the CLI or manager grant the matching subject. A grant alone is not a
+    // request to publish. The workspace root rides with the arm because the durable cursor and WAL
+    // must live somewhere a restarted host can find again.
+    if (opts.events !== false) {
+      if (!opts.workspaceRoot)
+        throw new Error("jcode connector: events require a workspace root for durable AG-UI state");
+      // Open mode has no credential to supply a stable actor. The event plane refuses an endpoint
+      // that self-mints a new actor on every process, so use the managed seat name there. Auth modes
+      // already pass the allocated identity in `opts.id` and keep their principal-based channel.
+      if (!opts.id && !opts.creds && !opts.userAuth) env.COTAL_ID = opts.name;
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
 
     if (opts.prompt !== undefined) {
       const prompt = opts.prompt.trim();

@@ -15,8 +15,8 @@
     {
       "name": "the break path no-ops never-ran emission",
       "file": "bin/smoke/shard.mjs",
-      "find": "    if (never) console.error(never);",
-      "replace": "    void never;",
+      "find": "  if (never) console.error(never);",
+      "replace": "  void never;",
       "expectRed": "a mid-partition break through shard.mjs reports NEVER RAN — 2 of 4",
       "cell": "a mid-partition break through shard.mjs reports NEVER RAN — 2 of 4"
     }

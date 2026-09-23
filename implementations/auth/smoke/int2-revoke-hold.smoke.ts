@@ -32,6 +32,7 @@
  * lives; D clear the fault and recover through the DOCUMENTED public same-name spawn nudge (latched on
  * row-deleted + hold-cleared), then the alias is reusable. Reuses the freeslot user-mode scaffolding.
  */
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]`, which in this in-process
@@ -95,11 +96,11 @@ type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
-const { join } = await import("node:path");
+const { join, resolve } = await import("node:path");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fsb-home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-fsb-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}fsb-root-`));
 
 const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
@@ -301,6 +302,7 @@ try {
   jsDir = mkdtempSync(join(tmpdir(), "cotal-fsb-js-"));
   writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: jsDir, extraAccounts: prepared.extraAccounts }));
   broker = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(broker);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVER); if (!up) await wait(200); }
   check("user-auth broker is reachable", up);
@@ -342,6 +344,7 @@ try {
     evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
       servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
     }),
+    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
   });
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -400,7 +403,7 @@ try {
   console.log("B) user-mode spawn of the predecessor");
   manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("predecessor spawn ok", r1.ok === true, r1);
   const fp1 = await footprint();
   check("predecessor footprint exists (row + dm + dlv + acl)",
@@ -478,7 +481,7 @@ try {
   // alias — a refusal that quietly kept a replacement, or an ABA hold swap, would both read as ok here
   // without these checks.
   const heldUidBeforeRespawn = mAny.retiring.get(AGENT)?.lifecycleUid;
-  const respawn = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const respawn = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("GREEN: a same-name spawn is REFUSED while the mint authority stands (alias not reassigned)",
     respawn.ok === false, respawn);
   check("GREEN: no successor managed record took the alias (the manager lists no live agent under the held name)",
@@ -520,7 +523,7 @@ try {
   const cleared = await (async (ms = 25000) => {
     const end = Date.now() + ms;
     while (Date.now() < end) {
-      await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER }); // public nudge (refused while held)
+      await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false }); // public nudge (refused while held)
       nudges++;
       if (mAny.retiring.get(AGENT) === undefined) return true;
       await wait(500);
@@ -549,7 +552,7 @@ try {
   const aliasDeadline = Date.now() + 30_000;
   while (!psList(manager!).some((a) => a.name === AGENT) && Date.now() < aliasDeadline) {
     const before = listNames();
-    await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+    await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
     if (psList(manager!).some((a) => a.name === AGENT)) break;
     // Stop anything the attempt DID create under another name, the way the freeslot suite does.
     // On this tree the numbered attempt is refused outright and leaves nothing behind, so this
@@ -574,7 +577,7 @@ try {
   // the fault arms above, and the `rmSync` below could not clear it. Imported at the top now, with
   // the same best-effort intent.
   try { chmodSync(managedActorLedgerDir(dir), 0o700); } catch { /* best-effort restore before rm */ }
-  try { await manager?.stop(); } catch { /* already stopped */ }
+  try { await manager?.stop({ withAgents: true }); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }
   if (authChild?.pid) { try { process.kill(authChild.pid, "SIGKILL"); } catch { /* gone */ } }
   if (broker?.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }

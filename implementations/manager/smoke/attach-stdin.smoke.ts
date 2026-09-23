@@ -535,7 +535,7 @@ try {
 
   manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot });
+  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot, events: false });
   if (!s.ok) throw new Error(`seat did not start: ${JSON.stringify(s)}`);
   for (let i = 0; i < 60 && !seatAlive(); i++) await wait(200);
   const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
@@ -1099,7 +1099,7 @@ try {
   onKnock = undefined;
   sawClientPing = undefined;
   await closeLink();
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   // Kill and remove FIRST, release LAST: `releaseBroker` hands the kill duty back rather than doing
   // it, so releasing before the kill leaves a window where nobody owns this broker.
   srv.kill("SIGKILL");

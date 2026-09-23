@@ -82,11 +82,13 @@ export interface MembershipFeedHandle {
   /** Explicitly adopt a re-signed rw cred on conn B (D5 class-2 renewal): fetch from the source
    *  (deadline-bounded), validate the identity pin, optional fingerprint match against the renewal
    *  owner's `expected` generation, a DISPOSABLE PREFLIGHT proving the broker accepts the bytes, then
-   *  commit the proven cache and best-effort reconnect — returning the BROKER-ACCEPTED generation's
-   *  window (the resident conn-B swap is best-effort, not witnessed). Runs under the same single-flight
-   *  as the 75% timer, so the two can never interleave. THROWS when the source fetch fails
-   *  (missing/swapped cred), the fingerprint does not match `expected`, the broker refuses the
-   *  preflight, or the deadline elapses. Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
+   *  commit the proven cache and present it on conn B — reconnect when the client is still open, or
+   *  open a fresh data connection and rebind the KV handles when the client has already closed
+   *  (the expiry refusal). Returns the BROKER-ACCEPTED generation's window. Runs under the same
+   *  single-flight as the 75% timer, so the two can never interleave. THROWS when the source fetch
+   *  fails (missing/swapped cred), the fingerprint does not match `expected`, the broker refuses the
+   *  preflight, the deadline elapses, or a closed conn B cannot be revived on the proven cache.
+   *  Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
   reloadRwCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }>;
   stop(): Promise<void>;
 }
@@ -121,8 +123,42 @@ async function brokerAcceptsCreds(servers: string, creds: string, timeoutMs: num
 }
 const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server before a loud under-report)
 
-/** Connect, wire the triggers + safety poll, and run an immediate first reconcile. */
+/** Connect, wire the triggers + safety poll, and run an immediate first reconcile.
+ *
+ *  Startup is TRANSACTIONAL. Conn A opens first, and every step after it can throw: an rw source that
+ *  rejects, credential bytes `idFromCreds` refuses, conn B's own dial (its pre-dial checkpoint refuses a
+ *  cred that is already expired, and the broker refuses one it will not authenticate), either KV open.
+ *  The first reconcile is NOT one of them: `poll()` wraps the whole loop in a catch that logs and has
+ *  zero rethrows, so a failing first reconcile resolves startup instead of rejecting it, and the
+ *  `await poll()` below cannot be the step that strands a connection. Before this change the only
+ *  `drain()` in this file was inside the handle's `stop()`, and a caller
+ *  that never receives the handle can never call it — so a reject left the observer connection open for
+ *  the life of the process. The rollback above now drains every connection it recorded before the
+ *  rejection propagates.
+ *
+ *  Scope of the word TRANSACTIONAL, stated rather than assumed: the rollback drains CONNECTIONS, and
+ *  nothing else. It does not clear the rw renewal timer, the safety interval, or the two trigger
+ *  subscriptions, all of which are acquired below. What holds today is narrower than "unreachable":
+ *  four operations run after the timer arm, counting the ones that can reject or acquire rather than
+ *  every call expression. They are `connA.subscribe` twice, the `setInterval`, and `await poll()`. The
+ *  two subject helpers passed as subscribe arguments also execute; they format a string and return.
+ *  The only one of the four that awaits is `await poll()`, which swallows
+ *  its own failures, so the ordinary startup path never rejects down here. `connA.subscribe` on an
+ *  already-closed conn A is the one shape that still could, and it would leak the timer rather than a
+ *  connection. Left as a known gap rather than papered over: a step added below the arm that can
+ *  reject makes this incomplete, and the rollback then has to clear the timer too. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
+  const opened: NatsConnection[] = [];
+  try {
+    return await startFeed(opts, opened);
+  } catch (err) {
+    // `allSettled`: a drain that itself fails must not replace the startup error the caller needs.
+    await Promise.allSettled(opened.map((c) => c.drain()));
+    throw err;
+  }
+}
+
+async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Promise<MembershipFeedHandle> {
   const log = opts.log ?? ((m: string) => console.error(`! membership: ${m}`));
   const intervalMs = opts.intervalMs ?? 15_000;
   const debounceMs = opts.debounceMs ?? 400;
@@ -138,6 +174,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX, // scoped reply inboxes — the cred only allows `<prefix>.>`
     maxReconnectAttempts: -1,
   });
+  opened.push(connA); // the transactional record — `startMembershipFeed` drains this if anything below throws
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
   // The rw source: async-capable (a hosted `store.get`) or sync (a local FS read / literal). Read ONCE
@@ -162,23 +199,40 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
   // incidental reconnect (broker expiry-close, a network blip) can never present an unproven or
   // broker-refused generation and strand conn B — closing the membership half of the D5 blocker.
   let currentRwCreds = initialRw;
-  const connB = await connect({
+  // Proven when adopted is not unexpired now. The cache only ever advances through a preflight-proven
+  // adoption, so it cannot hold an UNPROVEN generation, but the clock alone expires a legitimately
+  // proven one. If re-signing has stopped (the manager is down, the store unreachable) and conn B drops
+  // after `exp`, the client's own redial presents the expired credential to the broker: a denial that
+  // still costs the auth round trip, and one that reports the broker's words instead of the local cause.
+  // Refuse here instead, the same pre-dial checkpoint the endpoint raises before its own dial.
+  const refuseExpiredRwCreds = (): void => {
+    const exp = credsClaims(currentRwCreds).exp;
+    if (typeof exp !== "number" || exp * 1000 > Date.now()) return;
+    const why = rwIsSource
+      ? "the membership feed's rw creds have expired and renewal is failing - not presenting the expired credential to the broker; conn B closed permanently"
+      : "the membership feed's rw creds have expired and the feed holds no rw creds source to renew them - replace the credential and restart the feed (pass an rw creds FUNCTION for standing renewal)";
+    log(why);
+    throw new Error(why);
+  };
+  // Shared by the initial dial and by a later revive: the authenticator always presents the last
+  // BROKER-PROVEN cache, never a fresh un-preflighted source read. The 75% timer / explicit reload
+  // advance `currentRwCreds` only AFTER a disposable preflight proves the broker accepts the candidate.
+  const connectRw = () => connect({
     servers: opts.servers,
-    // Synchronous per (re)connect attempt: presents the last BROKER-PROVEN cred, never a fresh
-    // un-preflighted source read. The 75% timer / explicit reload advance `currentRwCreds` only AFTER a
-    // disposable preflight proves the broker accepts the candidate.
-    authenticator: (nonce?: string) => credsAuthenticator(enc(currentRwCreds))(nonce),
+    authenticator: (nonce?: string) => { refuseExpiredRwCreds(); return credsAuthenticator(enc(currentRwCreds))(nonce); },
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
     // every KV reply / ordered-consumer delivery (kv.get/keys/watch) lands on a subject it can't subscribe.
     inboxPrefix: `_INBOX_${rwSelfId}`,
     maxReconnectAttempts: -1,
   });
+  let connB = await connectRw();
+  opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
 
   const kvm = new Kvm(connB);
-  const feedKv: KV = await kvm.open(membershipBucket(space));
-  const membersKv: KV = await openMembersRegistry(connB, space);
+  let feedKv: KV = await kvm.open(membershipBucket(space));
+  let membersKv: KV = await openMembersRegistry(connB, space);
 
   // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
   // Mirrors the endpoint's delivery.creds renewal (adoptFreshCreds / renewCredsOnTimer / runCredsTxn).
@@ -238,7 +292,13 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     // timer to 1s (delay <= 0), and reconnect EVERY second for the JWT's remaining 25% of life. Fail it
     // like a renewal error so `renewRwOnTimer` retries at 60s with NO resident reconnect. The explicit
     // reload's `expected` already rejects a stale read; this covers the timer path (no expectation sent).
-    if (candidate === currentRwCreds && delay <= 0)
+    //
+    // Compared by GENERATION, not by envelope. The envelope carries the nkey seed and is sensitive to
+    // formatting (`credsFingerprint`'s own contract says so), and `jwtFromCreds` discards the difference:
+    // a store, editor, transport or filesystem round trip that normalises a newline re-serves the SAME
+    // generation in bytes `===` calls different, and the refusal below would not fire. Two envelopes
+    // differing only in their seed block are the same generation too.
+    if (credsFingerprint(candidate) === credsFingerprint(currentRwCreds) && delay <= 0)
       throw new Error("reloadRwCreds: the rw source still holds the previous generation past its renewal point (the renewal owner has not re-signed it - run `cotal doctor auth --fix` or restart the manager); nothing adopted");
     if (!(await brokerAcceptsCreds(opts.servers, candidate, Math.max(500, Math.min(MEMBERSHIP_PREFLIGHT_MS, a.deadline - Date.now())))))
       throw new Error("reloadRwCreds: the broker did not accept the re-signed rw credential; nothing adopted");
@@ -248,14 +308,53 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     armRwRefresh(delay);
     return credsClaims(candidate);
   };
-  // The 75%-of-lifetime renewal tick: prove + adopt + swap conn B onto the fresh cred. conn B is NOT the
-  // delivery-admin rail (that reply rides the delivery endpoint's connection), so the reconnect is inline
-  // and a failure just logs + retries while the last-proven cred stays live to its expiry.
+  // Present the proven cache on conn B. An OPEN client reconnects in place (the incidental reconnect
+  // of a live feed: nats.js re-evaluates the authenticator, scenario 2). A CLOSED client cannot
+  // reconnect — nats-core rejects with ClosedConnectionError — so open a fresh data connection and
+  // rebind the KV handles. A revive that cannot land must THROW: the explicit reload surfaces the
+  // cause, and the timer path logs it and retries. Half-bound dials are drained before the throw.
+  const presentRwCreds = async (): Promise<void> => {
+    if (rwStopped) return;
+    if (!connB.isClosed()) {
+      await connB.reconnect().catch(() => {});
+      return;
+    }
+    let next: NatsConnection;
+    try {
+      next = await connectRw();
+    } catch (e) {
+      throw new Error(`reloadRwCreds: could not open a fresh rw connection on the proven credential: ${(e as Error).message}`);
+    }
+    try {
+      const nextKvm = new Kvm(next);
+      const nextFeed = await nextKvm.open(membershipBucket(space));
+      const nextMembers = await openMembersRegistry(next, space);
+      connB = next;
+      feedKv = nextFeed;
+      membersKv = nextMembers;
+      connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
+      // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
+      // predecessor. If stop already ran, drain the fresh dial here.
+      if (rwStopped) {
+        await connB.drain().catch(() => {});
+        return;
+      }
+    } catch (e) {
+      await next.drain().catch(() => {});
+      throw new Error(`reloadRwCreds: could not rebind the feed on the fresh rw connection: ${(e as Error).message}`);
+    }
+  };
+  // The 75%-of-lifetime renewal tick: prove + adopt + present on conn B. conn B is NOT the
+  // delivery-admin rail (that reply rides the delivery endpoint's connection), so the present is inline
+  // and a failure just logs + retries while the last-proven cred stays live to its expiry (or, if
+  // conn B is already closed, the next successful present revives it).
   async function renewRwOnTimer(): Promise<void> {
     const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS; // captured before the enqueue, like the reload
     try {
-      await runRwTxn(() => adoptRwCreds({ deadline }));
-      await connB.reconnect().catch(() => {});
+      await runRwTxn(async () => {
+        await adoptRwCreds({ deadline });
+        await presentRwCreds();
+      });
     } catch (e) {
       log(`rw creds refresh failed (graph feed writer; delivery unaffected): ${(e as Error).message} - retrying; conn B dies at the current JWT's expiry if renewal keeps failing`);
       armRwRefresh(MEMBERSHIP_CREDS_RETRY_MS);
@@ -456,11 +555,11 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
       // request bound has already elapsed. The prove-then-adopt transaction runs under runRwTxn so it
       // cannot interleave with the timer; the observer conn (A) is rotation-renewed and not reloadable.
       const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS;
-      const { iat, exp } = await runRwTxn(() => adoptRwCreds({ expected, deadline }));
-      // Best-effort resident swap: the preflight was the proof, and conn B is not the reply rail, so the
-      // reconnect is inline (no strand risk) and a transient failure self-heals — the 75% timer and the
-      // broker's expiry-close both present the now-proven `currentRwCreds`.
-      await connB.reconnect().catch(() => {});
+      const { iat, exp } = await runRwTxn(async () => {
+        const claims = await adoptRwCreds({ expected, deadline });
+        await presentRwCreds();
+        return claims;
+      });
       return { identity: rwSelfId, iat, exp };
     },
     async stop() {

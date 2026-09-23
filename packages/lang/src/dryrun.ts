@@ -32,6 +32,7 @@ import type {
   EffectHandler,
   MonitorRequest,
   NotifyRequest,
+  ObserveRequest,
   SleepRequest,
   SpawnRequest,
   TurnRequest,
@@ -67,10 +68,27 @@ export interface PlannedCheckpoint {
   readonly to?: string;
 }
 
+/**
+ * A point where the run blocks on something OUTSIDE the mesh.
+ *
+ * Reported beside the checkpoints rather than folded into the effect list, and for the same reason
+ * checkpoints are: both are places a run STOPS, which is what someone reading a plan before
+ * starting it actually wants to know. A checkpoint stops for a person; this stops for the world.
+ */
+export interface PlannedWait {
+  readonly step: string;
+  readonly name: string;
+  readonly every: string;
+  /** How long the wait has, as a duration, read off the plan rather than as an absolute instant. */
+  readonly deadline: string;
+}
+
 export interface DryRunReport {
   readonly effects: readonly PlannedEffect[];
   readonly agents: readonly PlannedAgent[];
   readonly checkpoints: readonly PlannedCheckpoint[];
+  /** Where the run would block on a non-mesh resource. See {@link PlannedWait}. */
+  readonly waits: readonly PlannedWait[];
   /** Total virtual time the simulated run consumed, in ms. */
   readonly elapsedMs: number;
   readonly steps: number;
@@ -92,6 +110,7 @@ export interface DryRunReport {
 export class RecordingHandler implements EffectHandler {
   readonly spawns: SpawnRequest[] = [];
   readonly checkpointsAsked: { req: CheckpointRequest; step: string }[] = [];
+  readonly waits: { req: ObserveRequest; step: string }[] = [];
 
   constructor(private readonly inner: EffectHandler) {}
 
@@ -120,6 +139,18 @@ export class RecordingHandler implements EffectHandler {
   }
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     return await this.inner.wait(req, ctx);
+  }
+  /**
+   * A `waitUntil`'s cadence, recorded so the PLAN says what this run would block on.
+   *
+   * Only the FIRST observation of a step is reported. A dry run's audience is someone asking "what
+   * will this program do", and a wait that polls hourly for a day is one decision, not 24; listing
+   * every cadence tick would bury the plan in the least informative rows it has. The count is the
+   * interesting part and it belongs to the run, not the plan.
+   */
+  async observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean> {
+    if (req.attempt === 0) this.waits.push({ req, step: stepKeyString(ctx.key) });
+    return await this.inner.observe(req, ctx);
   }
   async notify(req: NotifyRequest, ctx: EffectContext): Promise<null> {
     return await this.inner.notify(req, ctx);
@@ -196,10 +227,18 @@ export async function dryRun(
     };
   });
 
+  const waits: PlannedWait[] = recorder.waits.map(({ req, step }) => ({
+    step,
+    name: req.name,
+    every: req.every,
+    deadline: req.deadline,
+  }));
+
   return {
     effects,
     agents,
     checkpoints,
+    waits,
     elapsedMs: sim.now() - startedAt,
     steps: result.steps,
     unusedScript: sim.unusedScript(),
@@ -230,6 +269,15 @@ export function renderReport(report: DryRunReport): string {
     }
   } else {
     out.push("", "No checkpoints: this run never stops for a person.");
+  }
+
+  if (report.waits.length > 0) {
+    // Beside the checkpoints and for the same reason: this is where the run STOPS, and someone
+    // reading a plan before starting it is deciding whether these waits are the ones they meant.
+    out.push("", `The run blocks on something outside the mesh ${report.waits.length} time(s):`);
+    for (const w of report.waits) {
+      out.push(`  ${w.name}   observes every ${w.every}, gives up after ${w.deadline}`);
+    }
   }
 
   if (report.agents.length > 0) {

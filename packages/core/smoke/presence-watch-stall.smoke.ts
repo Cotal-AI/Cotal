@@ -40,8 +40,8 @@ import {
   isReachable,
   setupSpaceStreams,
 } from "../src/index.js";
-import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { pickFreePort, startOnFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -91,24 +91,127 @@ const HEARTBEAT_MS = 200;
 const TTL_MS = 600;
 const PEERS = 3;
 
-const PORT = await pickFreePort();
-const PROXY = await pickFreePort();
-const SERVERS = `nats://127.0.0.1:${PORT}`;
-const SLOW = `nats://127.0.0.1:${PROXY}`;
 const space = `presstall-${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const broker = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, dir);
-const gate = await link(PROXY, PORT);
+// Signal ownership starts HERE, not once a broker is up. A signal TERMINATES
+// the process, it does not unwind: the try/finally below closes the THROW
+// window and leaves the signal window exactly where it was -- open across the
+// whole readiness loop, which is up to 100 x 100ms per attempt times the
+// attempts. Review measured it (3/3): SIGTERM inside that window left the
+// child alive and `dir` on disk, while an accept control that registered per
+// attempt left neither. `teardownPathOnSignal` needs no child handle, so it
+// can precede the first byte written into `dir`; each attempt's child takes
+// its own ownership as it is spawned, below.
+const releaseDir = teardownPathOnSignal(dir);
+
+// A port picked here is unheld until `nats-server` binds it, and this suite is
+// where that window was lost on a parallel shard (#1583): the broker was
+// promised 45019, something else took it, and the readiness loop below waited
+// its full 10s for a server that was never coming. Another port is the answer,
+// so readiness moved INTO the start.
+//
+// Everything from the temp directory on is inside the try/finally, because
+// exhausting the attempts THROWS: with the start above it, the give-up path
+// left `dir` on disk and a spawned broker with no signal teardown for the
+// whole readiness loop, which is minutes.
+let PORT = 0;
+let broker: ReturnType<typeof spawn> | undefined;
+let releaseBroker: (() => void) | undefined;
+let gate: Awaited<ReturnType<typeof link>> | undefined;
+let SERVERS = "";
+let SLOW = "";
+
+const cleanup = () => {
+  gate?.close();
+  releaseBroker?.();
+  broker?.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
+  // Released LAST: the backstop must still own `dir` while the lines above
+  // run, or a signal landing mid-cleanup leaves the directory behind.
+  releaseDir();
+};
+
+try {
+  // stderr is piped and kept so the give-up message can tell a port COLLISION
+  // (the broker exited, saying `address already in use`) from a broker that
+  // bound the port and never spoke. Both leave the port occupied, so nothing
+  // the helper can see distinguishes them — only this process knows whether
+  // its own child is still running and what it said.
+  const stderrOf = new WeakMap<ReturnType<typeof spawn>, string[]>();
+  // One release per attempt child, so a child the retry reaped stops being
+  // owned while one still running stays owned.
+  const releaseOf = new WeakMap<ReturnType<typeof spawn>, () => void>();
+  const brokerRun = await startOnFreePort(
+    (port) => {
+      const child = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(port), "-a", "127.0.0.1"],
+        { stdio: ["ignore", "ignore", "pipe"] });
+      // Owned before anything else touches the child: the lines below can
+      // throw, and a signal needs no line at all.
+      releaseOf.set(child, teardownOnSignal(child));
+      const lines: string[] = [];
+      stderrOf.set(child, lines);
+      child.stderr?.on("data", (chunk) => { lines.push(String(chunk)); });
+      // `spawn` reports a missing binary through an ASYNC `error` event, not a
+      // throw, so without this listener an absent `nats-server` escapes the
+      // helper entirely, kills the process on an unhandled error, and takes
+      // the cleanup with it. Recorded instead: the attempt then fails
+      // readiness like any other and says why.
+      child.once("error", (error) => { lines.push(`spawn failed: ${error.message}`); });
+      return child;
+    },
+    async (port) => {
+      for (let i = 0; i < 100; i++) {
+        if (await isReachable(`nats://127.0.0.1:${port}`)) return true;
+        await wait(100);
+      }
+      return false;
+    },
+    // Resolves when the child is GONE, not when the kill was sent: three
+    // retries otherwise leave three live brokers racing for the next port.
+    (child) => new Promise<void>((done) => {
+      const finish = (): void => {
+        releaseOf.get(child)?.();
+        done();
+      };
+      if (child.exitCode !== null || child.signalCode !== null) return finish();
+      child.once("exit", finish);
+      child.kill("SIGKILL");
+    }),
+    {
+      describe: (child) => {
+        const said = (stderrOf.get(child) ?? []).join("").trim().split("\n").at(-1) ?? "";
+        const state = child.exitCode !== null ? `exited ${child.exitCode}`
+          : child.signalCode !== null ? `killed by ${child.signalCode}`
+          : "still running, so it bound the port and never answered";
+        return said ? `${state}: ${said}` : state;
+      },
+    },
+  );
+  PORT = brokerRun.port;
+  broker = brokerRun.started;
+  SERVERS = `nats://127.0.0.1:${PORT}`;
+  // The winning child is already owned from its spawn and `dir` is owned by
+  // `releaseDir`; this only hands the suite's own `cleanup` the release.
+  releaseBroker = releaseOf.get(broker);
+
+  const PROXY = await pickFreePort();
+  SLOW = `nats://127.0.0.1:${PROXY}`;
+  gate = await link(PROXY, PORT);
+} catch (error) {
+  cleanup();
+  throw error;
+}
 
 const live = (ep: CotalEndpoint) => ep.getRoster().filter((p) => p.status !== "offline");
 const statusOf = (ep: CotalEndpoint) =>
   Object.fromEntries(ep.getRoster().map((p) => [p.card.name, p.status]));
 
 try {
-  let up = false;
-  for (let i = 0; i < 100; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(100); }
-  if (!up) throw new Error(`fixture broker never came up on ${SERVERS} - refusing to report on a server that never started`);
+  // `startOnFreePort` already refused to return an unreachable broker; this
+  // re-reads it so the suite still states its own precondition rather than
+  // inheriting it silently from a helper.
+  if (!(await isReachable(SERVERS)))
+    throw new Error(`fixture broker never came up on ${SERVERS} - refusing to report on a server that never started`);
   await setupSpaceStreams({ servers: SERVERS, space });
 
   const peers: CotalEndpoint[] = [];
@@ -217,10 +320,7 @@ try {
   await observer.stop().catch(() => { /* stall may have raced shutdown */ });
   for (const p of peers) await p.stop().catch(() => { /* already gone */ });
 } finally {
-  gate.close();
-  releaseBroker();
-  broker.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  cleanup();
 }
 
 console.log(`\npresence watch stall smoke: ${cells - failed} passed, ${failed} failed`);

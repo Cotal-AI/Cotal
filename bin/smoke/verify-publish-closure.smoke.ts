@@ -108,7 +108,8 @@ function scriptedFetch(sequence: string[][]): typeof fetch {
     const missing = sequence[Math.min(read, sequence.length - 1)];
     const pkg = pkgs.find((p) => String(url).endsWith(`/${p}/9.9.9`))!;
     if (++seen % pkgs.length === 0) read++;
-    return { status: missing.includes(pkg) ? 404 : 200 } as Response;
+    if (missing.includes(pkg)) return { status: 404 } as Response;
+    return { status: 200, json: async () => ({ name: pkg, version: "9.9.9" }) } as unknown as Response;
   }) as unknown as typeof fetch;
 }
 const fastClock = () => { let t = 0; return { now: () => (t += 1000), sleep: async () => {} }; };
@@ -181,7 +182,7 @@ const flapping = (async (url: string | URL | Request) => {
   if (++oscSeen % 4 === 0) oscScan++;
   if (pkg === "d") return { status: 404 } as Response;
   if (pkg === "a" && oscScan % 2 === 1) throw new Error("ECONNRESET");
-  return { status: 200 } as Response;
+  return { status: 200, json: async () => ({ name: pkg, version: "9.9.9" }) } as unknown as Response;
 }) as unknown as typeof fetch;
 const flapped = await verifyClosure("9.9.9", {
   packages: ["a", "b", "c", "d"],
@@ -216,7 +217,9 @@ const statusFetch = (fn: (pkg: string, scan: number) => number) => {
   return (async (url: string | URL | Request) => {
     const pkg = ["a", "b", "c", "d"].find((x) => String(url).endsWith(`/${x}/9.9.9`))!;
     if (++seen % 4 === 0) scan++;
-    return { status: fn(pkg, scan) } as Response;
+    const status = fn(pkg, scan);
+    if (status === 200) return { status, json: async () => ({ name: pkg, version: "9.9.9" }) } as unknown as Response;
+    return { status } as Response;
   }) as unknown as typeof fetch;
 };
 const held = { ...DEFAULTS, pollIntervalMs: 0, stableWindowMs: 5_000, deadlineMs: 40_000 };
@@ -266,9 +269,13 @@ check(
 // caller that FOLLOWS redirects sees the generic 200 the redirect lands on, and only a caller that
 // declines to follow sees the 3xx. So the cell fails if `redirect: "manual"` is not actually passed,
 // which asserting on a hand-fed 302 would not catch.
-const redirectingRegistry = (async (_url: string | URL | Request, init?: RequestInit) => {
+const redirectingRegistry = (async (url: string | URL | Request, init?: RequestInit) => {
   if (init?.redirect === "manual") return { status: 302 } as Response;
-  return { status: 200, redirected: true } as Response; // followed to some other resource
+  // A caller that FOLLOWS the redirect lands on a generic 200 page. To isolate the redirect
+  // check from body validation (#1257), the followed response carries a body that would pass
+  // the body validator. Only `redirect: "manual"` prevents this from reading as presence.
+  const pkg = ["a", "b", "c", "d"].find((p) => String(url).endsWith(`/${p}/9.9.9`))!;
+  return { status: 200, redirected: true, json: async () => ({ name: pkg, version: "9.9.9" }) } as unknown as Response;
 }) as unknown as typeof fetch;
 const redirected = await verifyClosure("9.9.9", {
   packages: ["a", "b", "c", "d"],
@@ -469,6 +476,49 @@ check(
   `${hungCli.stdout}${hungCli.stderr}`,
 );
 
+// ------------------------------------------------ #1257: a 200 must carry evidence, not just a status
+// The gate used to treat any 200 as presence. These cells pin the body validation: a 200 carrying
+// the wrong version, the wrong name, an error body, or an empty body is no evidence. Only a body
+// that positively identifies this package at this version counts as presence.
+const bodyFetch = (bodyFn: (pkg: string) => object | string) => {
+  return (async (url: string | URL | Request) => {
+    const pkg = ["a", "b", "c", "d"].find((x) => String(url).endsWith(`/${x}/9.9.9`))!;
+    const body = bodyFn(pkg);
+    return {
+      status: 200,
+      json: async () => (typeof body === "string" ? JSON.parse(body) : body),
+    } as unknown as Response;
+  }) as unknown as typeof fetch;
+};
+
+const wrongVersion = await run(bodyFetch((pkg) => ({ name: pkg, version: "8.0.0" })));
+check(
+  "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)",
+  wrongVersion.state !== "published",
+  wrongVersion,
+);
+
+const wrongName = await run(bodyFetch(() => ({ name: "some-other-pkg", version: "9.9.9" })));
+check(
+  "a 200 naming a different package in the body is NOT presence (#1257)",
+  wrongName.state !== "published",
+  wrongName,
+);
+
+const errorBody = await run(bodyFetch(() => ({ error: "not found" })));
+check(
+  "a 200 carrying an error object (no name/version) is NOT presence (#1257)",
+  errorBody.state !== "published",
+  errorBody,
+);
+
+const correctBody = await run(bodyFetch((pkg) => ({ name: pkg, version: "9.9.9" })));
+check(
+  "a 200 with correct name and version in the body IS presence",
+  correctBody.state === "published",
+  correctBody,
+);
+
 // ---------------------------------------------------------------- the declaration cannot drift
 // A hand-written declaration would be a second source of truth about the gate that decides whether a
 // release is complete. This asserts the committed file is byte for byte what the compiler emits from
@@ -479,7 +529,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 52;
+const EXPECTED = 56;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

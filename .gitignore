@@ -14,6 +14,17 @@ bin/seeded-connectors/
 /.mcp.json
 .runs/
 scratch/
+# Historical copies the egress-guard differential writes next to src so relative imports resolve.
+extensions/connector-core/src/.egress-guard-arm-*.ts
 examples/02-self-improving-console/harness/.*.log
 examples/04-frontier-faces/assets/
 product
+# Without the bare form, `node_modules/` matches only a directory. A worktree that borrows a
+# linked install has a node_modules SYMLINK, which git will happily add, and a repository that
+# carries that link fails every CI install with ENOTDIR before any test runs.
+node_modules
+
+# Lane work product; it records absolute worktree paths.
+fix-report.json
+# Per-run scratch TMPDIR for smokes that spawn a daemon needing a stable path.
+.repro-tmp/

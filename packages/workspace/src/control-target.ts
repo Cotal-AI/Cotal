@@ -35,6 +35,11 @@ export interface ControlTarget {
   spaceAuth?: SpaceAuth;
   /** The root the mesh resolved to. Absent for a raw off-registry connection. */
   root?: string;
+  /** The registered mesh contract, carried forward from {@link Connection.mode}. Absent on a
+   *  raw off-registry connect. Open-vs-static decisions read this field, never the absence of
+   *  {@link spaceAuth}. */
+  mode?: MeshTarget["mode"];
+  policy?: MeshTarget["policy"];
 }
 
 /** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
@@ -78,11 +83,16 @@ export async function resolveControlTarget(
   // misconfigured AUTH mesh with no credentials. Those codes rethrow and the command dies loud.
   if (!withSpace.creds) {
     // Sweep first when no space is named, as the connect helper does before ITS resolve, so the
-    // peek and the connect see one world.
-    if (!withSpace.space) await pruneStaleMeshes();
+    // peek and the connect see one world. The sweep's `offline` set is the liveness verdict:
+    // pass it through so a kept dead record is not a live candidate.
+    const offline = withSpace.space ? [] : (await pruneStaleMeshes()).offline;
     let mode: MeshTarget["mode"] | undefined;
     try {
-      mode = resolveMeshTarget(process.cwd(), { server: withSpace.server, space: withSpace.space }).mode;
+      mode = resolveMeshTarget(process.cwd(), {
+        server: withSpace.server,
+        space: withSpace.space,
+        offline,
+      }).mode;
     } catch (e) {
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
@@ -93,6 +103,8 @@ export async function resolveControlTarget(
         server: conn.server,
         auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
         ...(conn.root !== undefined ? { root: conn.root } : {}),
+        ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
+        ...(conn.policy ? { policy: conn.policy } : {}),
       };
     }
   }
@@ -103,6 +115,8 @@ export async function resolveControlTarget(
     auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
     ...(conn.auth ? { spaceAuth: conn.auth } : {}),
     ...(conn.root !== undefined ? { root: conn.root } : {}),
+    ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
+    ...(conn.policy ? { policy: conn.policy } : {}),
   };
 }
 

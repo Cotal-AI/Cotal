@@ -71,6 +71,7 @@ jobs:
     needs: [seat-native-linux-x64, seat-native-linux-arm64]
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: write
       pull-requests: write
@@ -123,38 +124,58 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
-      # Cut the GitHub Release ONLY when this push actually published a new version to npm.
-      # ci:publish is `pnpm publish` (for OIDC provenance), whose output the changesets action
-      # can't parse — so `outputs.published` is unreliable and we can't gate on it. The naive
-      # `node -p "require('./bin/package.json').version"` is ALSO wrong: the `version` step above
-      # runs `changeset version`, which bumps the WORKSPACE package.json to the *staged next*
-      # version even on a version-PR push that publishes nothing — that read once cut a phantom
-      # `v0.6.0` Release with no npm artifact. So gate on two facts: (1) the version COMMITTED on
-      # the merge commit (immune to the workspace bump), and (2) that exact `cotal-ai` version being
-      # live on npm (a short retry covers post-publish registry propagation). The step stays
-      # idempotent — it no-ops once the Release exists. Uses GH_PAT (not the default GITHUB_TOKEN)
-      # so the published Release still triggers the Discord webhook.
-      - name: Tag and cut the GitHub Release on publish
+      # Gate: verify that EVERY package in the lockstep group reached the registry before cutting
+      # a Release. The old check asked only about `cotal-ai`; if that single package published and
+      # a sibling did not, the Release was cut and the announcement went out for a version a consumer
+      # could not resolve. The closure gate polls the whole fixed group and distinguishes registry
+      # propagation lag from a genuine partial publish (#1286).
+      - name: Verify publish closure
+        id: closure-gate
         if: success() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Read the COMMITTED version, not the workspace (which `changeset version` may have bumped).
           version=$(git show "$GITHUB_SHA:bin/package.json" | jq -r .version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          set +e
+          node scripts/verify-publish-closure.mjs "$version"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "closure_ok=true" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 1 ]; then
+            echo "PARTIAL PUBLISH — failing the job."
+            exit 1
+          elif [ "$rc" -eq 2 ]; then
+            # The quiet skips end the step here rather than falling out of the `fi`. A version-PR
+            # push that publishes nothing must not red the job, and leaving that outcome to be
+            # decided by whatever follows made it a property of the whole script instead of the
+            # arm: a later line, or a trap installed above, silently turned the skip into a
+            # failure with the branch itself still reading as correct (#1518).
+            echo "UNSETTLED — the registry has not converged. Skipping the Release."
+            exit 0
+          elif [ "$rc" -eq 3 ]; then
+            echo "NONE — this push published nothing. Skipping the Release."
+            exit 0
+          else
+            echo "Unexpected exit code $rc from verify-publish-closure.mjs — failing the job."
+            exit 1
+          fi
+
+      # Cut the GitHub Release ONLY when this push actually published a new version to npm AND the
+      # full closure gate passed. The gate exits non-zero on a partial publish, an unsettled registry,
+      # or a version nothing serves, so the Release step runs only after every package in the fixed
+      # group is verified present at the requested version on the registry.
+      - name: Tag and cut the GitHub Release on publish
+        id: release-step
+        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          version="${{ steps.closure-gate.outputs.version }}"
           tag="v$version"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists — nothing to do."
-            exit 0
-          fi
-          # Only cut a Release for a version that actually published to npm — guards a staged-but-
-          # unpublished bump; retry briefly for registry propagation right after publish.
-          published=
-          for i in 1 2 3 4 5; do
-            if npm view "cotal-ai@$version" version >/dev/null 2>&1; then published=1; break; fi
-            echo "cotal-ai@$version not yet on npm (attempt $i/5) — waiting…"; sleep 5
-          done
-          if [ -z "$published" ]; then
-            echo "cotal-ai@$version is not on npm — this push published nothing; skipping the Release."
             exit 0
           fi
           notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
@@ -176,13 +197,51 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md"
           echo "Created GitHub Release $tag."
 
-  # Snapshot release from any ref — publishes <version>-<tag>-<datetime> under the given npm
-  # dist-tag so a branch can be tried out without merging. No commits, no git tags.
+  # Post-publish installability probe (#1412). Pack the workspace cotal-ai package, extract the
+  # tarball, verify the bin entry exists, and run the binary (`--version`, `--help`). A broken
+  # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
+  # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
+  # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
+  # #1502). It validates the SHAPE of cotal-ai's OWN packed artifact (structure, binary presence,
+  # startup). It does not pack the sibling workspace packages, so their packaging is not exercised,
+  # and it does not cover registry-side propagation or native-asset loading.
+  install-probe:
+    if: github.event_name == 'push' || inputs.snapshot == ''
+    needs: [version]
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run install probe
+        run: node scripts/post-publish-install-probe.mjs
+
+  # Snapshot release — publishes <version>-<tag>-<datetime> under the given npm dist-tag.
+  # Bound to the npm-publish Environment; the operator's deployment branch policy controls
+  # which refs can request an OIDC token. If the policy allows only main, snapshots from
+  # other branches are refused by the Environment gate before the OIDC exchange.
   snapshot:
     if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''
     needs: [seat-native-linux-x64, seat-native-linux-arm64]
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write
@@ -213,11 +272,12 @@ jobs:
       - name: Version snapshot
         run: pnpm changeset version --snapshot ${{ inputs.snapshot }}
 
-      - name: Build, assemble natives, and publish
+      - name: Preflight, build, assemble natives, and publish
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
         run: |
+          node scripts/preflight-npm-publish.mjs
           pnpm build
           node scripts/seat-assemble-natives.mjs
           pnpm publish -r --provenance --access=public --no-git-checks --tag ${{ inputs.snapshot }}

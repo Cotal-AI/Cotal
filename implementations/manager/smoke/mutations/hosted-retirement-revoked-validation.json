@@ -1,0 +1,30 @@
+{
+  "suite": [
+    "implementations/manager/smoke/hosted-retirement-native.acceptance.ts"
+  ],
+  "guard": "revoking a retained managed actor removes its host ledger row and the registry-pinned HTTPS validation refuses the old retained secret",
+  "command": "COTAL_OWNER_NATIVE_ACCEPTANCE=1 pnpm exec tsx implementations/manager/smoke/hosted-retirement-native.acceptance.ts",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/hosted-retirement-revoked-validation.json",
+  "why": [
+    "This mutation ledger is owner-native only because the acceptance starts a disposable authenticated broker and HTTPS auth fixture.",
+    "The named cell binds all three observed edges: revoke returned true, the managed row is absent, and remote validation threw the exact public refusal category."
+  ],
+  "mutations": [
+    {
+      "name": "skip the host managed-actor revocation",
+      "file": "implementations/manager/smoke/hosted-retirement-native.acceptance.ts",
+      "find": "  const revokeResult = await cotalAuthProvider.revokeAgent({ dir: hostDir, owner, actor: \"validation_negative\" });",
+      "replace": "  const revokeResult = false;",
+      "expectRed": "revoked retained authority is refused through registry-pinned HTTPS",
+      "cell": "revoked retained authority is refused through registry-pinned HTTPS"
+    },
+    {
+      "name": "accept remote validation after the host row was revoked",
+      "file": "implementations/manager/smoke/hosted-retirement-native.acceptance.ts",
+      "find": "    revokedOutcome = \"threw\";",
+      "replace": "    revokedOutcome = \"accepted\";",
+      "expectRed": "revoked retained authority is refused through registry-pinned HTTPS",
+      "cell": "revoked retained authority is refused through registry-pinned HTTPS"
+    }
+  ]
+}

@@ -137,8 +137,21 @@ check(
 
 check(
   "Changesets publish builds dependencies before assembly and publication on every retry",
-  ciPublish.startsWith("pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r "),
+  ciPublish.startsWith("node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r "),
   ciPublish,
+);
+check(
+  "Changesets version job reaches the release preflight before its recursive publish",
+  /publish:\s*pnpm ci:publish/.test(version)
+    && ciPublish.indexOf("preflight-npm-publish.mjs") >= 0
+    && ciPublish.indexOf("preflight-npm-publish.mjs") < ciPublish.indexOf("pnpm publish -r"),
+  { versionHasCiPublish: /publish:\s*pnpm ci:publish/.test(version), ciPublish },
+);
+
+check(
+  "changesets.yml version job is bound to the npm-publish Environment",
+  /^\s+environment:\s*npm-publish\s*$/m.test(version),
+  version.match(/environment.*/)?.[0] ?? "no environment line",
 );
 
 console.log("\nC. Changesets snapshot path");
@@ -148,6 +161,18 @@ hasBoth(downloaded(snapshot), "changesets.yml snapshot downloads both native lin
 check(
   "changesets.yml snapshot runs the shared assembler",
   /scripts\/seat-assemble-natives\.mjs/.test(snapshot),
+);
+check(
+  "Changesets snapshot job reaches the release preflight before its recursive publish",
+  snapshot.indexOf("preflight-npm-publish.mjs") >= 0
+    && snapshot.indexOf("preflight-npm-publish.mjs") < snapshot.indexOf("pnpm publish -r"),
+  snapshot,
+);
+
+check(
+  "changesets.yml snapshot job is bound to the npm-publish Environment",
+  /^\s+environment:\s*npm-publish\s*$/m.test(snapshot),
+  snapshot.match(/environment.*/)?.[0] ?? "no environment line",
 );
 
 console.log(`\n${fail === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

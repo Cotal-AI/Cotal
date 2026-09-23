@@ -1,9 +1,10 @@
 {
   "suite": [
-    "implementations/manager/smoke/manager-service-invoke.smoke.ts"
+    "implementations/manager/smoke/manager-service-invoke.smoke.ts",
+    "implementations/manager/smoke/contract-vocabulary.smoke.ts"
   ],
-  "guard": "resolved manager command count is derived from the shipped cluster document, not restated",
-  "command": "pnpm smoke:manager-service-invoke",
+  "guard": "resolved manager command count is derived from the shipped cluster document, not restated; and the contract module compiles on first use, not at import",
+  "command": "pnpm smoke:manager-service-invoke && pnpm smoke:contract-vocabulary",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/shipped-surface-pin.json",
   "why": [
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
@@ -12,10 +13,16 @@
     "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
     "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment.",
     "",
-    "M2 restores revision 13 after the fold made static reconciliation a SECOND output change on top",
-    "of main's custody widening. Both surface changes ship, so 13 would name only one of them. The",
+    "M2 restores revision 14 after classSpawn is a SECOND output change on top of",
+    "static reconciliation. Both surface changes ship, so 14 would name only one of them. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
-    "actual shipped document."
+    "actual shipped document.",
+    "",
+    "M3 re-introduces the module-scope compile (#1323): every CLI invocation paid ~1.8 CPU-seconds",
+    "of Ajv work before its verb was read. The lazy Proxy is replaced by an eager map built at",
+    "import, the exact shape the fix removed. The contract-vocabulary import-cost cell measures the",
+    "module's CPU cost over its dependency floor in fresh children, so the eager compile trips it",
+    "by ~7x the bound while the lazy module sits 3-6x under it."
   ],
   "mutations": [
     {
@@ -27,12 +34,20 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 13 after the fold adds static reconciliation on top of custody",
+      "name": "M2 keep revision 14 after classSpawn is added on top of static reconciliation",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 14,",
-      "replace": "    revision: 13,",
-      "expectRed": "static reconciliation status advances the manager cluster revision",
-      "cell": "static reconciliation status advances the manager cluster revision"
+      "find": "    revision: 15,",
+      "replace": "    revision: 14,",
+      "expectRed": "classSpawn status advances the manager cluster revision",
+      "cell": "classSpawn status advances the manager cluster revision"
+    },
+    {
+      "name": "M3 compile every contract pair at module scope again",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "const COMPILED = new Map<string, ContractPair>();",
+      "replace": "const COMPILED = new Map<string, ContractPair>(ROWS.map((r) => [r.name, { input: compileContract({ root: r.input as Record<string, unknown> }), output: compileContract({ root: r.output as Record<string, unknown> }) }]));",
+      "expectRed": "importing the contract module compiles nothing (describe-only readers pay no Ajv)",
+      "cell": "importing the contract module compiles nothing (describe-only readers pay no Ajv)"
     }
   ]
 }

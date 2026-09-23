@@ -1,13 +1,14 @@
 import { readFileSync, rmSync } from "node:fs";
 import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic, type SecretStore } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
 
 /** THE local composition of the secret keyspace: a filesystem store rooted at the workspace's
  *  `.cotal/` dir, so every canonical key (`delivery.creds`, `auth/<space>/callout.json`, …)
  *  lands byte-for-byte on today's paths. Every local caller composes through here — a hand-rolled
  *  root that drifted from `.cotal` would silently split the keyspace in two. */
 export function workspaceSecretStore(root: string): FsSecretStore {
-  return new FsSecretStore(join(root, ".cotal"));
+  const workspaceRoot = normalize(resolve(root));
+  return new FsSecretStore(join(workspaceRoot, ".cotal"), { kind: "fs", root: workspaceRoot });
 }
 
 /**
@@ -31,10 +32,12 @@ export function workspaceSecretStore(root: string): FsSecretStore {
  */
 export class FsSecretStore implements SecretStore {
   private readonly root: string;
+  readonly identity: SecretStoreIdentity;
 
-  constructor(root: string) {
+  constructor(root: string, identity?: SecretStoreIdentity) {
     if (!root) throw new Error("FsSecretStore: root is required");
     this.root = normalize(resolve(root)); // absolutize so keys are cwd-independent
+    this.identity = identity ?? { kind: "fs", root: this.root };
   }
 
   /** Resolve a logical key to an absolute path strictly UNDER `root`, fail-closed: reject empty,

@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-hermes",
   "description": "Cotal connector for the Hermes (Nous Research) agent.",
-  "version": "0.48.2",
+  "version": "0.51.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -22,7 +22,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx smoke/tool-parity.smoke.ts && tsx smoke/bridge-quiet.smoke.ts && tsx smoke/launch-env.smoke.ts && tsx smoke/bundle-import.smoke.ts",
+    "test": "tsx smoke/tool-parity.smoke.ts && tsx smoke/bridge-quiet.smoke.ts && tsx smoke/launch-env.smoke.ts && tsx smoke/adapter-contract.smoke.ts && tsx smoke/reconnect-effect.smoke.ts && tsx smoke/bundle-import.smoke.ts",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/launch.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/launch.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/standalone.ts --bundle --platform=node --format=cjs --target=node20 --outfile=plugin/cotal/_sidecar/standalone.cjs",
     "prepublishOnly": "pnpm run build"
@@ -33,6 +33,7 @@
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",
     "zod": "^4.4.3"

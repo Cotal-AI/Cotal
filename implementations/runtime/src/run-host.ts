@@ -9,6 +9,7 @@
  */
 import {
   readRunRecord,
+  readRunAdmission,
   replayRunJournal,
   runDriverCaller,
   walkKvEntries,
@@ -52,6 +53,20 @@ function failureOf(e: unknown): RunHostOutcome {
   };
 }
 
+/** The disposition a journal row prints for one step: `pending` while the step is open, then the
+ *  checkpoint outcome the settle named (`resolved` / `expired`) when the settled result is a
+ *  checkpoint disposition, and otherwise the settled status with its error code when there is one.
+ *  A settled checkpoint whose result a handler does not name reads exactly as it did before the
+ *  distinction existed (#1439). */
+export function journalOutcomeOf(e: JournalEntry): string {
+  if (e.state === "pending") return "pending";
+  if (e.result !== null && typeof e.result === "object") {
+    const outcome = (e.result as { readonly outcome?: unknown }).outcome;
+    if (outcome === "resolved" || outcome === "expired") return outcome;
+  }
+  return `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
+}
+
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
  *  the journal itself keys with, so it is the key `answer` takes back. */
 function journalRows(records: Awaited<ReturnType<typeof replayRunJournal>>["records"]): RunJournalRow[] {
@@ -62,7 +77,7 @@ function journalRows(records: Awaited<ReturnType<typeof replayRunJournal>>["reco
       continue;
     }
     const e = record.entry as JournalEntry;
-    const outcome = e.state === "pending" ? "pending" : `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
+    const outcome = journalOutcomeOf(e);
     const external = e.state === "pending" ? (e.external as { asks?: unknown; addressee?: unknown } | undefined) : undefined;
     rows.push({
       n: record.n,
@@ -96,11 +111,18 @@ export const cotalLangRunHost: RunHost = {
     if (mediator === undefined || mediator.nc === planes.nc || mediator.space !== planes.space)
       throw new Error("a hosted run requires a separate trusted mediator connection in the same space");
     const authority = createRunScopeAuthority(mediator, req.runId, req.lease);
+    // The admission the HOST loaded is pinned to this drive's coordinates; every channel effect
+    // then re-reads it leader-served over the mediator (SPEC 14.8), so a revocation marker lands
+    // within one effect and a store that cannot be read refuses rather than proceeding.
+    const admitted = req.admission.admission;
+    if (admitted.space !== planes.space || admitted.endpoint !== req.endpoint || admitted.runId !== req.runId)
+      throw new Error(`run ${req.runId}: the admission handed to the drive names ${admitted.space}/${admitted.endpoint}/${admitted.runId}; refused (SPEC 14.8)`);
+    const admission = () => readRunAdmission(mediator.jsm, planes.space, req.endpoint, req.runId);
     const handler = createRunEffectHost(mediator, {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
       caller: runDriverCaller(req.runId), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
-    }, authority);
+    }, authority, admission);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);
     const driveReq = {
       space: planes.space,

@@ -1,0 +1,18 @@
+{
+  "suite": [
+    "packages/core/smoke/failed-bind-cleanup.smoke.ts"
+  ],
+  "guard": "a post-connect bind failure announces transport and connection down before the partial connection closes",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:failed-bind-cleanup",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/failed-bind-cleanup.json",
+  "mutations": [
+    {
+      "name": "failed-bind teardown omits down edges",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.emit(\"transport\", { connected: false } satisfies TransportState);\n    this.emit(\"connection\", { connected: false });\n    // Layered teardown",
+      "replace": "    // Layered teardown",
+      "expectRed": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down",
+      "cell": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down"
+    }
+  ]
+}

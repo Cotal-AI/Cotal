@@ -8,7 +8,9 @@
  * reconciliation before the first terminal transition lands. We await that first transition, then
  * invoke `status` over the real ep.one rail. A green status reply while later slots remain ACTIVE
  * proves overlap and availability before sweep completion. In the old serial start() order, that
- * invocation has no service registration yet, so the assertion fails.
+ * invocation has no service registration yet, so the assertion fails. Two-window heal-then-
+ * register is slower than empty-ledger stub terminals, so the fixture holds after the first
+ * retirement long enough for the control plane to come up while later rows stay ACTIVE.
  *
  * The sweep still owns a per-alias gate: a new spawn for an alias whose row is being reconciled is
  * refused until that exact terminal attempt returns; it cannot race the terminal and reuse its name.
@@ -18,7 +20,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstream } from "@nats-io/jetstream";
@@ -148,6 +150,8 @@ try {
   delivery.on("error", () => {});
   await delivery.start();
   delivery.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+    if (req.op === "reloadStoreIdentity")
+      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     return {
@@ -184,6 +188,17 @@ try {
   });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+  const retirement = manager as unknown as {
+    driveStaticRetirement(agent: { id: string; name: string; lifecycleUid: string }, orphan: boolean): Promise<void>;
+  };
+  const driveStaticRetirement = retirement.driveStaticRetirement.bind(manager);
+  let heldAfterFirst = false;
+  retirement.driveStaticRetirement = async (agent, orphan) => {
+    await driveStaticRetirement(agent, orphan);
+    if (heldAfterFirst) return;
+    heldAfterFirst = true;
+    await wait(5_000);
+  };
   const starting = manager.start();
 
   const firstTerminalStarted = await until(async () => (await phase("orphan-0")) !== "active", 20_000);
@@ -578,14 +593,14 @@ try {
         (await readGoalResult(actx, ref))?.state === "failed", await readGoalResult(actx, ref));
     }
 
-    await adopting.stop().catch(() => {});
+    await adopting.stop({ withAgents: true }).catch(() => {});
   }
 
 
 } finally {
   await callerNc?.drain().catch(() => callerNc?.close());
   await observerNc?.drain().catch(() => observerNc?.close());
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
 }

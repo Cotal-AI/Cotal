@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.github.com";
@@ -18,6 +19,22 @@ function stringList(value, file, key) {
   return value;
 }
 
+// GitHub's pull_request activity types (docs/webhooks-and-events/events/github-event-types). A name
+// outside this set is a typo the runner would also reject, so it fails closed here too.
+const PULL_REQUEST_ACTIVITY_TYPES = new Set([
+  "assigned", "unassigned", "labeled", "unlabeled", "opened", "edited", "closed", "reopened",
+  "synchronize", "converted_to_draft", "ready_for_review", "locked", "unlocked", "review_requested",
+  "review_request_removed", "auto_merge_enabled", "auto_merge_disabled", "enqueued", "dequeued",
+  "milestoned", "demilestoned",
+]);
+
+function hasMergeKey(value) {
+  if (Array.isArray(value)) return value.some(hasMergeKey);
+  if (!plainObject(value)) return false;
+  if (Object.hasOwn(value, "<<")) return true;
+  return Object.values(value).some(hasMergeKey);
+}
+
 function pullRequestConfig(file, on) {
   if (typeof on === "string") {
     if (on.length === 0) throw new Error(`${file}: top-level on event must not be empty`);
@@ -29,6 +46,9 @@ function pullRequestConfig(file, on) {
     return on.includes("pull_request") ? null : undefined;
   }
   if (!plainObject(on)) throw new Error(`${file}: top-level on declaration must name one or more events`);
+  // GitHub never expands <<, so the rest of on is unevaluable. Refuse the merge key
+  // first and skip later checks such as types, rather than reporting both.
+  if (hasMergeKey(on)) throw new Error(`${file}: unsupported YAML merge key in the on mapping`);
   const events = Object.keys(on);
   if (events.length === 0) throw new Error(`${file}: top-level on mapping must not be empty`);
   return Object.hasOwn(on, "pull_request") ? on.pull_request : undefined;
@@ -53,8 +73,20 @@ function pullRequestDeclaration(file, text) {
   }
   if (pullRequest === null) return { file, name: workflow.name, paths: undefined, pathsIgnore: undefined };
   if (!plainObject(pullRequest)) throw new Error(`${file}: pull_request declaration must be a mapping or null`);
-  const unsupported = Object.keys(pullRequest).filter((key) => key !== "paths" && key !== "paths-ignore");
+  const unsupported = Object.keys(pullRequest).filter((key) => key !== "paths" && key !== "paths-ignore" && key !== "types");
   if (unsupported.length) throw new Error(`${file}: unsupported pull_request filter: ${unsupported.join(", ")}`);
+  if (pullRequest.types !== undefined) {
+    const types = stringList(pullRequest.types, file, "types");
+    const unknown = types.filter((type) => !PULL_REQUEST_ACTIVITY_TYPES.has(type));
+    if (unknown.length) throw new Error(`${file}: unknown pull_request activity type: ${unknown.join(", ")}`);
+    // A head exists because the PR was opened at it or synchronized to it, so a workflow is present
+    // at every head only when its types keep both. One that drops either has no run at some heads
+    // by design, and the gate cannot tell from a missing run whether this head is one of them, so
+    // it refuses the declaration rather than expecting a run that was never minted.
+    if (!types.includes("opened") || !types.includes("synchronize")) {
+      throw new Error(`${file}: pull_request types must keep opened and synchronize for a run to exist at every head (declared: ${types.join(", ")})`);
+    }
+  }
   const paths = pullRequest.paths === undefined ? undefined : stringList(pullRequest.paths, file, "paths");
   const pathsIgnore = pullRequest["paths-ignore"] === undefined
     ? undefined
@@ -218,7 +250,7 @@ function printResult(result) {
   console.log(`verdict: ${result.green ? "GREEN" : "NOT GREEN"}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainEntry(import.meta.url)) {
   const raw = process.argv[2];
   if (!/^\d+$/.test(raw ?? "")) {
     console.error("usage: pnpm pr-head-gate <pull-request-number>");

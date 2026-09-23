@@ -5,11 +5,12 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -30,11 +31,9 @@ async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | 
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-host-"));
-// Control sockets are AF_UNIX. os.tmpdir() on macOS and a long TMPDIR on Linux
-// put `mismatchedmodel-control.sock` over sun_path (104/107) while the shorter
-// prefix/refuse sockets still bind — the cell then exits 1 with a connector
-// control-listen error instead of the model_mismatch diagnostic.
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-host-`));
+// Control sockets are AF_UNIX. Keep them under a short root so long case names cannot put the path
+// over sun_path (104/107) and replace the startup outcome under test with a control-listen error.
 const sockRoot = mkdtempSync(join("/tmp", "cjh-"));
 const controlSock = (name: string): string => join(sockRoot, name);
 const port = await freePort();
@@ -46,6 +45,7 @@ const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 const hosts: ChildProcess[] = [];
 
 function spawnHost(opts: SpawnOptions): ChildProcess {
@@ -314,6 +314,11 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
       FAKE_JCODE_JOURNAL: journal,
+      FAKE_JCODE_RUNTIME_PROVIDER: "selected-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "default-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "fake-model", provider: "selected-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "jcodepeer",
@@ -428,9 +433,42 @@ try {
     );
   }
 
+  // #1625: the relay socket used to sit at the top level of the shared temp directory, so anything
+  // that swept that directory — a periodic cleaner, or a self-test whose recursive cleanup escaped
+  // its own root — unlinked the control path of every live seat at once, and the host kept serving
+  // a listener nothing could reach. It now lives in a private per-launch directory, and a deletion
+  // of the path costs one poll interval rather than a respawn.
+  const relayDir = dirname(relaySocket);
+  check(
+    "the tool relay socket is not at the top level of the shared temp directory",
+    relayDir !== tmpdir() && relayDir !== "/tmp" && (statSync(relayDir).mode & 0o777) === 0o700,
+    { relaySocket, relayDir, tmp: tmpdir() },
+  );
+  rmSync(relaySocket, { force: true });
+  await operator.multicast("relay survives socket deletion", { channel: "team" });
+  await sleep(100);
+  await waitFor("relay socket re-bind", () => (existsSync(relaySocket) ? true : undefined), 15_000).catch(() => undefined);
+  const afterUnlink = await callJcodeMcp(peerHome, relaySocket, relayToken, {});
+  check(
+    "a deleted relay socket is re-bound and the next cotal_* call still reaches the host",
+    !afterUnlink.isError && afterUnlink.text.includes("relay survives socket deletion"),
+    afterUnlink,
+  );
+
   await operator.unicast(peerId!, "mesh-wake");
-  const turn = await waitFor("Harness API turn", () => entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("mesh-wake")));
-  check("mesh DM becomes a Harness API turn", JSON.stringify(turn).includes("mesh-wake"), turn);
+  const turn = await waitFor(
+    "Harness API turn",
+    () =>
+      entries().find(
+        (entry) =>
+          entry.ev === "request" &&
+          (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
+          !(entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes("mesh-wake"),
+      ),
+    8_000,
+  ).catch(() => undefined);
+  check("mesh DM becomes a Harness API turn", Boolean(turn) && JSON.stringify(turn).includes("mesh-wake"), turn);
   const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
   const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
@@ -442,9 +480,262 @@ try {
   check("reasoning effort is applied to the host's own session", effortFrame?.session_id === "fake-session", effortFrame);
   const firstTurnAt = requests.findIndex((entry) => (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply);
   check("reasoning effort is set before the session's first turn", effortAt >= 0 && firstTurnAt > effortAt, { effortAt, firstTurnAt });
+  const runtimeAt = requests.findIndex((entry) => (entry.frame as { req?: string }).req === "get_runtime_info");
+  check("the selected model and provider route are verified before applying reasoning effort", runtimeAt >= 0 && effortAt > runtimeAt, { runtimeAt, effortAt });
+  check(
+    "accepted effort is attributed to the active provider route, not the first/default route",
+    peerLog.includes("model fake-model is served by provider selected-provider via responses") &&
+      !peerLog.includes("model fake-model is served by provider default-provider"),
+    peerLog,
+  );
 
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
+  // The per-launch directory is the containment, so it has to be removed with the launch or the
+  // shared temp directory fills with one abandoned directory per seat instead (#1625).
+  check(
+    "a retired launch leaves no relay socket or private relay directory behind",
+    !existsSync(relaySocket) && !existsSync(relayDir),
+    { relaySocket, relayDir },
+  );
+
+  // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
+  // verify the provider route that will receive the effort instead of treating the provider default
+  // as an unidentified fallback or applying the setting without route identity.
+  const variantOnlyLog = join(root, "variant-only.jsonl");
+  const variantOnly = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: variantOnlyLog,
+      FAKE_JCODE_RUNTIME_MODEL: "runtime-default-model",
+      FAKE_JCODE_RUNTIME_PROVIDER: "runtime-default-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "runtime-default-model", provider: "runtime-default-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "variantonlypeer",
+      COTAL_ID: "variantonlypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_VARIANT: "high",
+      COTAL_CONTROL_SOCKET: controlSock("variant-only-control.sock"),
+      COTAL_CONTROL_TOKEN: "variant-only-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let variantOnlyErr = "";
+  variantOnly.stderr?.on("data", (chunk: Buffer) => (variantOnlyErr += chunk.toString()));
+  await Promise.race([
+    once(variantOnly, "exit"),
+    waitFor("variant-only mesh presence", () => announced.has("variantonlypeer") ? true : undefined),
+  ]);
+  const variantOnlyRequests = readJsonLines<{ ev: string; frame?: { req?: string; effort?: string; no_reply?: boolean } }>(variantOnlyLog)
+    .filter((entry) => entry.ev === "request");
+  const variantOnlyRuntimeAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "get_runtime_info");
+  const variantOnlyEffortAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "set_reasoning_effort");
+  const variantOnlyTurnAt = variantOnlyRequests.findIndex((entry) => entry.frame?.req === "send_message" && !entry.frame?.no_reply);
+  check(
+    "variant without an explicit model verifies its runtime route before applying effort",
+    announced.has("variantonlypeer") && variantOnlyRuntimeAt >= 0 && variantOnlyEffortAt > variantOnlyRuntimeAt &&
+      variantOnlyRequests[variantOnlyEffortAt]?.frame?.effort === "high" && variantOnlyTurnAt > variantOnlyEffortAt,
+    { variantOnlyRuntimeAt, variantOnlyEffortAt, variantOnlyTurnAt, variantOnlyErr },
+  );
+  await stopHostTree(variantOnly, "SIGTERM");
+  check("the variant-only launch exits cleanly", variantOnly.exitCode === 0, { code: variantOnly.exitCode, stderr: variantOnlyErr });
+
+  // Measured after a successful setModel: RuntimeInfo.model can still name the old session default,
+  // while its active provider and routes identify the requested route. The requested pin plus that
+  // route identity must carry model+variant startup, with effort still applied before the first turn.
+  const laggedVariantLog = join(root, "model-variant-lag.jsonl");
+  const laggedVariantJournal = join(root, "model-variant-lag.journal.jsonl");
+  const laggedVariant = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: laggedVariantLog,
+      FAKE_JCODE_JOURNAL: laggedVariantJournal,
+      FAKE_JCODE_RUNTIME_MODEL_LAG: "1",
+      FAKE_JCODE_RUNTIME_PROVIDER: "lagged-active-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "lagged-model-pin", provider: "other-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "lagged-model-pin", provider: "lagged-active-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "laggedvariantpeer",
+      COTAL_ID: "laggedvariantpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "lagged-model-pin",
+      COTAL_VARIANT: "high",
+      COTAL_CONTROL_SOCKET: controlSock("lagged-variant-control.sock"),
+      COTAL_CONTROL_TOKEN: "lagged-variant-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let laggedVariantErr = "";
+  laggedVariant.stderr?.on("data", (chunk: Buffer) => (laggedVariantErr += chunk.toString()));
+  await Promise.race([
+    once(laggedVariant, "exit"),
+    waitFor("lagged model and variant mesh presence", () => announced.has("laggedvariantpeer") ? true : undefined),
+  ]);
+  const laggedVariantEntries = readJsonLines<{
+    ev: string;
+    model?: string;
+    provider?: string;
+    session_model?: string;
+    frame?: { req?: string; effort?: string; no_reply?: boolean };
+  }>(laggedVariantLog);
+  const laggedVariantRuntime = laggedVariantEntries.find((entry) => entry.ev === "runtime_info");
+  const laggedVariantRequests = laggedVariantEntries.filter((entry) => entry.ev === "request");
+  const laggedVariantRuntimeAt = laggedVariantRequests.findIndex((entry) => entry.frame?.req === "get_runtime_info");
+  const laggedVariantEffortAt = laggedVariantRequests.findIndex((entry) => entry.frame?.req === "set_reasoning_effort");
+  const laggedVariantTurnAt = laggedVariantRequests.findIndex((entry) => entry.frame?.req === "send_message" && !entry.frame?.no_reply);
+  const laggedVariantPersisted = existsSync(laggedVariantJournal)
+    ? (JSON.parse(readFileSync(laggedVariantJournal, "utf8").split("\n").filter(Boolean).at(-1) ?? "{}") as { meta?: { model?: string } }).meta?.model
+    : undefined;
+  check(
+    "model and variant launch succeeds when RuntimeInfo.model lags but the requested active route is verified",
+    announced.has("laggedvariantpeer") && laggedVariantPersisted === "lagged-model-pin" &&
+      laggedVariantRuntime?.model === "deepseek-v4-pro" && laggedVariantRuntime.session_model === "lagged-model-pin" &&
+      laggedVariantRuntime.provider === "lagged-active-provider" && laggedVariantRuntimeAt >= 0 &&
+      laggedVariantEffortAt > laggedVariantRuntimeAt && laggedVariantRequests[laggedVariantEffortAt]?.frame?.effort === "high" &&
+      laggedVariantTurnAt > laggedVariantEffortAt,
+    { announced: [...announced], laggedVariantPersisted, laggedVariantRuntime, laggedVariantRuntimeAt, laggedVariantEffortAt, laggedVariantTurnAt, laggedVariantErr },
+  );
+  await stopHostTree(laggedVariant, "SIGTERM");
+  check("the lagged model and variant launch exits cleanly", laggedVariant.exitCode === 0, { code: laggedVariant.exitCode, stderr: laggedVariantErr });
+
+  // setModel success and the active route are authoritative for a requested model. RuntimeInfo.model
+  // can lag behind the persisted session pin even when no variant was requested, so model-only seats
+  // must not be rejected solely because that advisory field still names the old default.
+  const modelOnlyLog = join(root, "model-only-lag.jsonl");
+  const modelOnlyJournal = join(root, "model-only-lag.journal.jsonl");
+  const modelOnly = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: modelOnlyLog,
+      FAKE_JCODE_JOURNAL: modelOnlyJournal,
+      FAKE_JCODE_RUNTIME_MODEL_LAG: "1",
+      FAKE_JCODE_RUNTIME_PROVIDER: "model-only-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "model-only-pin", provider: "model-only-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "modelonlypeer",
+      COTAL_ID: "modelonlypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "model-only-pin",
+      COTAL_CONTROL_SOCKET: controlSock("model-only-control.sock"),
+      COTAL_CONTROL_TOKEN: "model-only-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let modelOnlyErr = "";
+  modelOnly.stderr?.on("data", (chunk: Buffer) => (modelOnlyErr += chunk.toString()));
+  await Promise.race([
+    once(modelOnly, "exit"),
+    waitFor("model-only lag mesh presence", () => announced.has("modelonlypeer") ? true : undefined),
+  ]);
+  const modelOnlyEntries = readJsonLines<{
+    ev: string;
+    model?: string;
+    provider?: string;
+    session_model?: string;
+    frame?: { req?: string; no_reply?: boolean };
+  }>(modelOnlyLog);
+  const modelOnlyRuntime = modelOnlyEntries.find((entry) => entry.ev === "runtime_info");
+  const modelOnlyRequests = modelOnlyEntries.filter((entry) => entry.ev === "request");
+  const modelOnlyRuntimeAt = modelOnlyRequests.findIndex((entry) => entry.frame?.req === "get_runtime_info");
+  const modelOnlyTurnAt = modelOnlyRequests.findIndex((entry) => entry.frame?.req === "send_message" && !entry.frame?.no_reply);
+  const modelOnlyPersisted = existsSync(modelOnlyJournal)
+    ? (JSON.parse(readFileSync(modelOnlyJournal, "utf8").split("\n").filter(Boolean).at(-1) ?? "{}") as { meta?: { model?: string } }).meta?.model
+    : undefined;
+  check(
+    "model-only launch succeeds when RuntimeInfo.model lags but the requested active route is verified",
+    announced.has("modelonlypeer") && modelOnlyPersisted === "model-only-pin" &&
+      modelOnlyRuntime?.model === "deepseek-v4-pro" && modelOnlyRuntime.session_model === "model-only-pin" &&
+      modelOnlyRuntime.provider === "model-only-provider" && modelOnlyRuntimeAt >= 0 && modelOnlyTurnAt > modelOnlyRuntimeAt &&
+      !modelOnlyRequests.some((entry) => entry.frame?.req === "set_reasoning_effort"),
+    { announced: [...announced], modelOnlyPersisted, modelOnlyRuntime, modelOnlyRuntimeAt, modelOnlyTurnAt, modelOnlyErr },
+  );
+  const modelOnlyConnectorLog = connectorLog(managedHome("jcodehost", "modelonlypeer"));
+  check(
+    "model-only lag diagnostics name the requested active route rather than the stale runtime model",
+    modelOnlyConnectorLog.includes("model model-only-pin is served by provider model-only-provider via responses") &&
+      !modelOnlyConnectorLog.includes("model deepseek-v4-pro is served by provider"),
+    modelOnlyConnectorLog,
+  );
+  await stopHostTree(modelOnly, "SIGTERM");
+  check("the model-only lag launch exits cleanly", modelOnly.exitCode === 0, { code: modelOnly.exitCode, stderr: modelOnlyErr });
+
+  // A stale RuntimeInfo.model is not permission to guess. Variant startup still requires a route for
+  // the requested pin that is uniquely tied to RuntimeInfo.provider before effort can be applied.
+  const missingRouteLog = join(root, "requested-route-missing.jsonl");
+  const missingRoute = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: missingRouteLog,
+      FAKE_JCODE_RUNTIME_MODEL_LAG: "1",
+      FAKE_JCODE_RUNTIME_PROVIDER: "active-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "some-other-model", provider: "active-provider", api_method: "responses", available: true, detail: "wrong model" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "missingroutepeer",
+      COTAL_ID: "missingroutepeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "requested-route-model",
+      COTAL_VARIANT: "high",
+      COTAL_CONTROL_SOCKET: controlSock("missing-route-control.sock"),
+      COTAL_CONTROL_TOKEN: "missing-route-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let missingRouteErr = "";
+  missingRoute.stderr?.on("data", (chunk: Buffer) => (missingRouteErr += chunk.toString()));
+  await Promise.race([once(missingRoute, "exit"), sleep(20_000)]);
+  const missingRouteCode = missingRoute.exitCode;
+  await stopHostTree(missingRoute, "SIGKILL");
+  const missingRouteRequests = readJsonLines<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>(missingRouteLog)
+    .filter((entry) => entry.ev === "request");
+  check(
+    "variant launch refuses a requested model whose active provider route is not verified",
+    missingRouteCode === 1 && missingRouteErr.includes("Jcode host startup failed (model_mismatch)") &&
+      missingRouteRequests.some((entry) => entry.frame?.req === "get_runtime_info") &&
+      !missingRouteRequests.some((entry) => entry.frame?.req === "set_reasoning_effort") &&
+      !missingRouteRequests.some((entry) => entry.frame?.req === "send_message" && !entry.frame?.no_reply) &&
+      !announced.has("missingroutepeer"),
+    { missingRouteCode, missingRouteErr, requests: missingRouteRequests.map((entry) => entry.frame?.req), announced: [...announced] },
+  );
 
   // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
   // old host makes one proof turn and rejects this otherwise healthy launch before it can join.
@@ -688,6 +979,11 @@ try {
       FAKE_JCODE_LOG: refusedLog,
       FAKE_JCODE_REFUSE_EFFORT: "xhigh",
       FAKE_JCODE_EFFORT_ERROR: `provider rejected xhigh; accepted tiers: ${acceptedLadder}, ${effortCanary}`,
+      FAKE_JCODE_RUNTIME_PROVIDER: "selected-refusal-provider",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "wrong-default-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "fake-model", provider: "selected-refusal-provider", api_method: "responses", available: true, detail: "active route" },
+      ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "refusedpeer",
@@ -714,6 +1010,8 @@ try {
     "effort refusal keeps only its requested tier, effective model, fixed provider code, and accepted ladder",
     /requested tier "xhigh"/.test(refusedErr) &&
       /effective model "fake-model"/.test(refusedErr) &&
+      /provider "selected-refusal-provider" via "responses"/.test(refusedErr) &&
+      !refusedErr.includes("wrong-default-provider") &&
       /provider code invalid_request/.test(refusedErr) &&
       refusedErr.includes(`accepted tiers: ${acceptedLadder}`),
     refusedErr,
@@ -733,6 +1031,64 @@ try {
     refusedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
   );
 
+  // The Harness operation has two distinct invalid_request outcomes. A model/profile can reject the
+  // reasoning-effort CAPABILITY itself, with no accepted-tier ladder. That is not a bad tier and must
+  // not send the operator searching for a neighbouring value that the active route will also refuse.
+  const unsupportedLog = join(root, "unsupported-effort.jsonl");
+  const unsupported = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: unsupportedLog,
+      FAKE_JCODE_REFUSE_EFFORT: "high",
+      FAKE_JCODE_EFFORT_ERROR: "Reasoning effort is not supported by the current model/profile. It works for OpenRouter, DeepSeek-family and GPT-family reasoning models, and profiles with supports_reasoning_effort = true.",
+      FAKE_JCODE_RUNTIME_MODEL: "capability-model",
+      FAKE_JCODE_RUNTIME_PROVIDER: "profile-without-effort",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "capability-model", provider: "wrong-default", api_method: "chat_completions", available: true, detail: "wrong route" },
+        { model: "capability-model", provider: "profile-without-effort", api_method: "openai-compatible:plain", available: true, detail: "active route" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "unsupportedpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "capability-model",
+      COTAL_VARIANT: "high",
+      COTAL_CONTROL_SOCKET: controlSock("unsupported-control.sock"),
+      COTAL_CONTROL_TOKEN: "unsupported-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let unsupportedErr = "";
+  unsupported.stderr?.on("data", (chunk: Buffer) => (unsupportedErr += chunk.toString()));
+  await Promise.race([once(unsupported, "exit"), sleep(20_000)]);
+  const unsupportedCode = unsupported.exitCode;
+  await stopHostTree(unsupported, "SIGKILL");
+  check("a verified route without reasoning-effort capability ends the launch", unsupportedCode === 1, { unsupportedCode, unsupportedErr });
+  check(
+    "capability refusal is not relabelled as a tier-ladder refusal",
+    unsupportedErr.includes("does not support reasoning effort") &&
+      unsupportedErr.includes('model "capability-model"') &&
+      unsupportedErr.includes('provider "profile-without-effort"') &&
+      unsupportedErr.includes('via "openai-compatible:plain"') &&
+      !unsupportedErr.includes("accepted tiers:") &&
+      !unsupportedErr.includes("Jcode reasoning effort refused"),
+    unsupportedErr,
+  );
+  check("a route without effort capability never reaches the roster", !announced.has("unsupportedpeer"), [...announced]);
+  const unsupportedEntries = readJsonLines<{ ev: string; frame?: { req?: string; no_reply?: boolean } }>(unsupportedLog);
+  check(
+    "a route without effort capability never takes a turn",
+    !unsupportedEntries.some((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply),
+    unsupportedEntries.filter((entry) => entry.ev === "request").map((entry) => entry.frame?.req),
+  );
+
   const modelCanary = "MODEL-REFUSAL-CANARY-985-DO-NOT-PRINT";
   const modelCases = [
     {
@@ -748,13 +1104,6 @@ try {
       code: "model_refused",
       env: { FAKE_JCODE_REFUSE_MODEL: "refused-model", FAKE_JCODE_MODEL_ERROR: `invalid_request: ${modelCanary}` },
       request: "set_model",
-    },
-    {
-      name: "mismatchedmodel",
-      model: "requested-model",
-      code: "model_mismatch",
-      env: { FAKE_JCODE_RUNTIME_MODEL: "different-model" },
-      request: "get_runtime_info",
     },
   ] as const;
   for (const modelCase of modelCases) {
@@ -839,6 +1188,7 @@ try {
     );
   check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });
   outageNats = spawn("nats-server", ["-js", "-p", String(outagePort), "-sd", join(root, "outage-js")], { stdio: "ignore" });
+  teardownOnSignal(outageNats);
   for (let i = 0; i < 100 && !(await isReachable(outageServers)); i++) await sleep(50);
   await seedChannelRegistry({ servers: outageServers, space: "jcodeoutage", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   outageOperator = new CotalEndpoint({ space: "jcodeoutage", servers: outageServers, card: { name: "outageoperator", kind: "agent", id: "outageoperator" }, channels: ["team"] });
@@ -1100,12 +1450,80 @@ try {
   check(
     "a timed-out readiness turn names its outcome as timeout, not a hang or a missing prompt",
     /pre-join readiness outcome: timeout/.test(afterLog) &&
+      /no cotal_orientation call observed/.test(afterLog) &&
       /discarding that in-flight turn/.test(afterLog) &&
+      !/cotal_orientation was observed/.test(afterLog) &&
       !/pre-join readiness outcome: provider refusal/.test(afterLog) &&
       !/joining with no spawn --prompt/.test(afterLog) &&
       !/submitting the spawn --prompt/.test(afterLog),
     afterLog,
   );
+
+  // #1440: orientation tool_done can arrive while the proof turn stays open. The host must join
+  // on that call rather than kill the seat because turn_done never came.
+  const earlyLog = join(root, "readiness-early-call.jsonl");
+  const earlyDeadlineMs = 800;
+  const early = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: earlyLog,
+      FAKE_JCODE_TURN_DELAY_MS: "50",
+      FAKE_JCODE_WITHHOLD_TURN_DONE: "1",
+      COTAL_JCODE_READINESS_TIMEOUT_MS: String(earlyDeadlineMs),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "earlypeer",
+      COTAL_ID: "earlypeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: controlSock("early-control.sock"),
+      COTAL_CONTROL_TOKEN: "early-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let earlyErr = "";
+  early.stderr?.on("data", (chunk: Buffer) => (earlyErr += chunk.toString()));
+  const earlyEntries = (): Array<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }> =>
+    readJsonLines(earlyLog);
+  await waitFor("earlypeer orientation tool_done", () =>
+    earlyEntries().find((entry) => entry.ev === "orientation_done") ? true : undefined,
+  );
+  await waitFor("earlypeer withheld turn_done", () =>
+    earlyEntries().find((entry) => entry.ev === "turn_done_withheld") ? true : undefined,
+  );
+  await waitFor(
+    "earlypeer mesh presence after withheld turn_done",
+    () => {
+      if (early.exitCode !== null && early.exitCode !== 0) return null;
+      return announced.has("earlypeer") ? true : undefined;
+    },
+    15_000,
+  );
+  const earlyHomeLog = connectorLog(managedHome("jcodehost", "earlypeer"));
+  const earlyTurnDone = earlyEntries().find((entry) => entry.ev === "turn_done_emitted");
+  const earlyRoster = operator.getRoster().filter((p) => p.card.name === "earlypeer" && p.status !== "offline");
+  check(
+    "an early orientation tool_done joins even when turn_done is withheld",
+    announced.has("earlypeer") && early.exitCode === null && earlyRoster.length > 0,
+    { announced: [...announced], exitCode: early.exitCode, stderr: earlyErr, log: earlyHomeLog, earlyRoster },
+  );
+  check(
+    "an early orientation tool_done does not take the destructive timeout path",
+    /orientation proved/.test(earlyHomeLog) &&
+      !/joining without waiting for that turn to end/.test(earlyHomeLog) &&
+      !/killing the private Jcode tree/.test(earlyHomeLog) &&
+      !/readiness_timeout/.test(earlyErr) &&
+      !/never joined/.test(earlyHomeLog) &&
+      !earlyTurnDone,
+    { log: earlyHomeLog, stderr: earlyErr, earlyTurnDone },
+  );
+  await stopHostTree(early, "SIGTERM");
 } finally {
   for (const proc of hosts) await stopHostTree(proc, "SIGKILL");
   check("teardown: every Jcode host process group is gone", hosts.every((proc) => !groupAlive(proc)), {
@@ -1124,4 +1542,4 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
+console.log(`\nJCODE HOST SMOKE: ${pass} passed, 0 failed`);

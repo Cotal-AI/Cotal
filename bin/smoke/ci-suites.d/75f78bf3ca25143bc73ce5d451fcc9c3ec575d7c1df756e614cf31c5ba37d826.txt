@@ -1,0 +1,5 @@
+# A placed spawn reaches exactly one manager instance through target-bound grants: a credential
+# holding describe, resolve-cwd and spawn for that instance completes end to end on an enforcing
+# broker, removing any one row is refused by the broker at the stage that needs it, and a
+# credential minted with no placement cannot reach the instance rail at all (#1616).
+smoke:runtime-placement-grants

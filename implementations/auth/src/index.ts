@@ -15,6 +15,7 @@ export {
   USER_TOKEN_VER,
   MAX_TOKEN_TTL_SEC,
   USER_TOKEN_VIEWS,
+  PUBLIC_EXCHANGE_VIEWS,
   VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
   type UserTokenView,
@@ -44,13 +45,18 @@ export {
   type IdpBridge,
 } from "./idp.js";
 export {
+  CATALOG_FRESH_MS,
   deviceLogin,
   establishIdpSession,
   fetchIdpJwt,
   revokeIdpSession,
   loadIdpSession,
+  hasIdpSessions,
   saveIdpSession,
   deleteIdpSession,
+  deleteIdpSpaceCatalog,
+  hasIdpSpaceCatalog,
+  prepareIdpSpaceCatalogs,
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
@@ -110,7 +116,7 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, openAuthAuthorityPlane, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
+export { runAuthService, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
 // shape-proved reader, and the pure connect-credential check the production composition runs.
@@ -121,6 +127,14 @@ export {
   type ConnectReader,
 } from "./connect-reader.js";
 export { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
+export {
+  parseRemoteRetainedAgentValidationRequest,
+  authorizeRemoteRetainedAgentValidation,
+  completeRemoteRetainedAgentValidation,
+  remoteManagerCurrentRegistrationProof,
+  type AuthorizeRemoteRetainedAgentValidationArgs,
+} from "./retained-manager-validation.js";
+export { parseRemoteManagerAdminAuthorizationRequest, authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT

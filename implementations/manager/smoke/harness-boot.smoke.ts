@@ -123,7 +123,7 @@ try {
       return { name, kind: "fake", status: () => "exited", stop: () => {}, interrupt: () => {}, attach: () => fakeSession };
     },
   };
-  await manager.startAgent({ name: "pin-probe", agent: "boot-present" });
+  await manager.startAgent({ name: "pin-probe", agent: "boot-present", events: false });
   check("managed spawn uses the exact path resolved at boot", launchOpts?.resolvedBinaries?.["present-harness"] === present, launchOpts);
   check(
     "managed spawn executes that exact harness when its launch cwd differs from manager boot cwd",
@@ -134,7 +134,7 @@ try {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
   else process.env.PATH = oldPath;
-  await manager.stop().catch(() => {});
+  await manager.stop({ withAgents: true }).catch(() => {});
   broker.kill("SIGKILL");
   for (let i = 0; i < 100 && broker.exitCode === null && broker.signalCode === null; i++) await wait(20);
   releaseBroker();

@@ -822,6 +822,25 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       const spec = PRIMITIVES[name];
       if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
       if (spec.opensScope) return await openScope(name, spec, args, site);
+      // A PROBE ARRIVES AS THE PROGRAM'S OWN CLOSURE and the shared seam calls it `(frame, args)`,
+      // exactly as it calls a scope's arms, so it is adapted here for the same reason `asArm`
+      // exists: the engine's closures speak the program's convention and the scope machinery speaks
+      // the walker's. Without this the probe would be invoked with the frame as its first real
+      // argument. Driven off the table (`probeAt`, `functionOptions`) rather than off the name, so
+      // the engine cannot fall behind a second primitive that takes one.
+      if (spec.probeAt !== undefined) {
+        const adapted = [...args];
+        adapted[spec.probeAt] = asArm(adapted[spec.probeAt]);
+        const bag = adapted[spec.optionsAt];
+        if (spec.functionOptions !== undefined && bag !== null && typeof bag === "object") {
+          const out: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(bag as Record<string, unknown>)) {
+            setOwn(out, k, spec.functionOptions.includes(k) ? asArm(v) : v);
+          }
+          adapted[spec.optionsAt] = out;
+        }
+        return await dispatchPrimitive(host, name, adapted, currentFrame());
+      }
       return await dispatchPrimitive(host, name, args, currentFrame());
     },
 

@@ -12,12 +12,16 @@
  *      under that window kills real spawns while the launch proceeds.
  * Run: pnpm smoke:launch-parity
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { launchFlags } from "@cotal-ai/workspace";
 import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
 import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
 import type { CotalEndpoint } from "@cotal-ai/core";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 // cotalToolSpecs is capability-gated: cotal_spawn only renders for a spawn-capable agent.
 process.env.COTAL_SPACE ||= "parity";
@@ -84,17 +88,11 @@ for (const p of toolParams) {
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
 assert.ok(toolParams.includes("prompt"), "cotal_spawn must expose a kickoff prompt so a new session can take its first turn");
-// `events` is likewise OFF the peer-facing tool, and deliberately so: arming another session's event
-// plane publishes that session's full tool inputs and outputs to a channel.
-//
-// BUT READ WHAT THIS CELL ACTUALLY PROVES, because an earlier version of this comment claimed more.
-// The MCP tool and the manager's `spawn` service op are two doors onto one handler, and the service
-// op's schema accepts `events`, `subscribe`, `allowSubscribe` and `allowPublish` in full. So this
-// assertion fences the TOOL SHAPE and nothing else: it is not a control-plane refusal, and a
-// spawn-capable caller that can reach the service door directly is not stopped by it. Stating that
-// here is the point. A cell whose comment claims a guarantee it does not deliver is worse than no
-// cell, because the next reader stops looking.
-assert.ok(!toolParams.includes("events"), "cotal_spawn must not expose events until the admin precheck exists");
+// Event-capable connectors now publish by default, so the peer-facing tool must expose the same
+// explicit opt-out as the operator door. `events: false` disables the plane; omitting it keeps the
+// default. The manager still owns grant attenuation and refuses a connector with no event plane
+// unless this opt-out is present.
+assert.ok(toolParams.includes("events"), "cotal_spawn must expose the explicit event-plane opt-out");
 
 // 4 — every launch client outlives the manager's readiness wait (#159 B1). The tier rule forbids
 // the clients importing READINESS_TIMEOUT_MS, so the relation is enforced here, by test.
@@ -123,3 +121,4 @@ assert.equal(launchCommand, "launch", "launchAgent must invoke the manager's lau
 assert.equal(launchTimeout, START_TIMEOUT_MS, "launchAgent must send the launch op with START_TIMEOUT_MS");
 
 console.log(`✓ launch-parity smoke passed (${launchFlags.length} grammar flags · ${toolParams.length} MCP params · readiness window ${READINESS_TIMEOUT_MS}ms < clients ${START_TIMEOUT_MS}/${SPAWN_TIMEOUT_MS}ms)`);
+emitSentinel({ passed: cells(), failed: 0 });

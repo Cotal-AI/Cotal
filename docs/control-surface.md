@@ -141,6 +141,14 @@ foreground spawn has no manager to pin and refuses the flag). There are no ordin
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because `--on` takes nothing else.
 
+"Only one manager per space" is not the current invariant. A split topology that keeps the
+broker host manager-free is still a topology choice: `cotal up` on that host starts a
+manager you then stop with `cotal down manager` after `✓ manager up` in
+`.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
+teardown boundary), and `cotal supervise
+--server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)). Extra live managers
+are addressable, not an error.
+
 The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
 read-only, it is re-published under the same request binding, and every attempt stays inside the
 original deadline. This covers the startup window where Core NATS discards the first request before
@@ -160,7 +168,22 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run. `ps` and
+not run.
+
+A manager whose boot inventory marked every declared connector unavailable does not subscribe
+`spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
+instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a
+caller that pins this instance with `--on` still gets a named harness refusal. `describe`
+still lists the commands: the instance rail serves them, and `describe` itself stays on the
+class rail (SPEC 13.7). An unpinned `spawn` can therefore bind-fence: `describe` may land on
+the skip member while `spawn` lands on a sibling, the command was not run, and the caller
+re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
+A manager that can launch some connectors keeps the class rail. If the queue hands it a
+harness its inventory marked unavailable, the refusal names `--on` because the standing serve
+credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
+prints it).
+
+`ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled as registered
@@ -179,12 +202,14 @@ unreachable, still surfaced, and the scatter is still not complete.
 
 The probe is supplied by the **caller**, not invented by the scatter. Asking about an instance is
 a publish on that instance's rail, and a credential that holds no row for it is refused by the
-broker asynchronously, while the publish itself returns normally. A refused probe is therefore
-silent, and silence is what a live but slow instance looks like. Only the layer that
+broker asynchronously, while the publish itself returns normally. The probe verb watches for that
+refusal and raises it as `permission-denied` naming the rail, so it is never mistaken for a quiet
+instance, and it never burns the probe budget waiting out a refusal. Only the layer that
 minted the credential knows which ids it may ask about, so that layer asks about those and no
-others, and prints any refusal the broker raises anyway rather than letting it expire into a
-timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
-to the frozen ids, and scatters on a second.
+others. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
+to the frozen ids, and scatters on a second; a refusal the broker raises anyway is printed and
+the instance's row says the probe was refused, which is a fact about the credential, not about
+the instance.
 
 This does not help against an instance that is **connected but not answering**. A hung manager
 holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full
@@ -248,8 +273,10 @@ next start, which is what makes the operator's decision a recoverable one.
 session offer: the manager mints a token bound to the caller, the target lifecycle, its own
 instance id and epoch, and an expiry, and replies with a session id and expiry only, no URL
 and no secret in the reply. The CLI redeems the offer over the mesh (a second redeem is
-refused), and terminal bytes then stream on core-NATS session subjects scoped to the two
-parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
+refused). On a registered open mesh that redeem is a bare connection, the same path other
+control commands already use; on a static-auth mesh it is still a session-caller credential
+minted from the resolved root's seed. Terminal bytes then stream on core-NATS session subjects
+scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
 states: a restarted manager's successor refuses the old epoch's sessions and the client

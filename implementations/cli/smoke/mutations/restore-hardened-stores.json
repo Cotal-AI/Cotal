@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts"
+  ],
+  "guard": "Every credential that runs the endpoint-stream creation seam holds a STREAM.UPDATE row for each store that seam hardens right after creation, and for no other stream. Core names those stores once; the provisioner and the restore-side infrastructure login both read that list.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:isolated-infrastructure-scope",
+  "completionMarker": "isolated infrastructure scope:",
+  "progressPattern": "  ✓ ",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/restore-hardened-stores.json",
+  "why": [
+    "The admission and issued stores joined the hardening step with their provisioner grant, and the restore",
+    "login kept its hand-written records-only update row. A live `up --restore` then stopped at the",
+    "listener-bind boundary: Permissions Violation for Publish to $JS.API.STREAM.UPDATE.KV_cotal_issued_<s>.",
+    "Neither side's own unit could see it. The list is now one core export and this suite pins the login to",
+    "it; the mutation drops one hardened store from the list so the login is minted without its row."
+  ],
+  "mutations": [
+    {
+      "name": "the admission store leaves the hardened list (the restore login is minted without its update row)",
+      "file": "packages/core/src/endpoint-binding.ts",
+      "find": "  return [`KV_${recordsBucket(space)}`, ...issuedStoreStreamNames(space), `KV_${admissionBucket(space)}`];",
+      "replace": "  return [`KV_${recordsBucket(space)}`, ...issuedStoreStreamNames(space)];",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:isolated-infrastructure-scope",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "the hardened list names the records, issued, accepted and admission stores",
+      "cell": "the hardened list names the records, issued, accepted and admission stores"
+    }
+  ]
+}

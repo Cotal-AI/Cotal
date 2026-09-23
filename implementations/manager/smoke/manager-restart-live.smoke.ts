@@ -28,7 +28,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
@@ -100,6 +100,8 @@ try {
   await daemon.start();
   let evictCalls = 0;
   daemon.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+    if (req.op === "reloadStoreIdentity")
+      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     evictCalls++;
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");

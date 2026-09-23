@@ -64,7 +64,11 @@ try {
 
 if (process.platform !== "win32") {
   const stubDir = mkdtempSync(join(tmpdir(), "cotal-cmux-wait-"));
-  const stub = join(stubDir, "cmux-stub");
+  // The extension is load-bearing. This stub is written under TMPDIR and its body is CommonJS,
+  // and node picks the module system for an extensionless file from the nearest package.json
+  // above it. With TMPDIR pointing inside a "type": "module" package the stub is read as ESM
+  // and its require() call throws, which failed the suite by where TMPDIR happened to point.
+  const stub = join(stubDir, "cmux-stub.cjs");
   const state = join(stubDir, "workspace-open");
   const previousBin = process.env.CMUX_BUNDLED_CLI_PATH;
   const previousTmp = process.env.TMPDIR;

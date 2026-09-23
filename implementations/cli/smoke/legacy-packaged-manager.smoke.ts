@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -6,6 +7,9 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const originalHome = process.env.HOME ?? homedir();
 const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");
@@ -37,16 +41,29 @@ const locate = (name: string): string => {
   return found;
 };
 const npm = locate("npm");
-const pnpm = locate("pnpm");
+const systemPnpm = locate("pnpm");
 const natsServer = locate("nats-server");
+// pnpm/action-setup installs a launcher that resolves its payload relative to $0. Reproduce that
+// shape on every host so this fixture does not depend on the local pnpm installation method.
+const pnpmRoot = join(base, "pnpm-launcher");
+const pnpmBin = join(pnpmRoot, "bin");
+const pnpmGlobal = join(pnpmRoot, "global");
+mkdirSync(pnpmBin, { recursive: true });
+mkdirSync(pnpmGlobal, { recursive: true });
+const pnpmPayload = join(pnpmGlobal, "pnpm-real");
+writeFileSync(pnpmPayload, `#!/bin/sh\nexec ${JSON.stringify(systemPnpm)} "$@"\n`);
+chmodSync(pnpmPayload, 0o755);
+const pnpm = join(pnpmBin, "pnpm");
+writeFileSync(pnpm, '#!/bin/sh\nbasedir=$(dirname "$0")\nexec "$basedir/../global/pnpm-real" "$@"\n');
+chmodSync(pnpm, 0o755);
 const fixtureBin = join(base, "bin");
 mkdirSync(fixtureBin);
-for (const name of ["node", "npm", "pnpm", "nats-server", "sh", "tar", "gzip", "which"])
+for (const name of ["node", "npm", "nats-server", "sh", "tar", "gzip", "which"])
   symlinkSync(locate(name), join(fixtureBin, name));
 const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
-const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:/usr/bin:/bin`, NO_COLOR: "1" };
+const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:${dirname(pnpm)}:/usr/bin:/bin`, NO_COLOR: "1" };
 const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
@@ -57,6 +74,11 @@ let legacy: ChildProcess | undefined;
 try {
   assert.equal(Object.keys(cleanEnv).filter((key) => key.startsWith("COTAL_")).length, 0, "child env carries no COTAL_*");
   assert.equal(spawnSync("sh", ["-c", "command -v cotal"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), fixtureCotal, "the fixture PATH masks the operator cotal binary");
+  assert.equal(spawnSync("sh", ["-c", "command -v pnpm"], { env: cleanEnv, encoding: "utf8" }).stdout.trim(), pnpm, "the fixture PATH preserves the original pnpm launcher path");
+  const brokenPnpm = join(fixtureBin, "pnpm-canary");
+  symlinkSync(pnpm, brokenPnpm);
+  assert.notEqual(spawnSync(brokenPnpm, ["--version"], { env: cleanEnv, encoding: "utf8" }).status, 0, "CONTROL: the $0-relative pnpm launcher fails through a symlink");
+  assert.equal(spawnSync(pnpm, ["--version"], { env: cleanEnv, encoding: "utf8" }).status, 0, "the $0-relative pnpm launcher works at its original path");
   assert.equal(run(npm, ["root"], current).stdout.trim(), join(realpathSync(current), "node_modules"), "current package install resolves into the isolated prefix before installation");
   assert.equal(run(npm, ["root"], old).stdout.trim(), join(realpathSync(old), "node_modules"), "old package install resolves into the isolated prefix before installation");
   // The packed set is DERIVED, never hand-listed. A hand-listed set silently omits the next
@@ -119,11 +141,46 @@ try {
   const seatPackRoot = (dir: string): string => {
     // prepack refuses a host-only tree. Pack a clone so packages/seat/build/Release
     // is never written. A leftover synthetic helper there would ship on a later genuine pack.
-    const clone = join(base, "seat-pack");
+    const cloneRoot = join(base, "seat-pack");
+    const clone = join(cloneRoot, "packages", "seat");
     cpSync(join(repo, dir), clone, {
       recursive: true,
       filter: (src) => !src.split(sep).includes("node_modules"),
     });
+    cpSync(join(repo, "tsconfig.base.json"), join(cloneRoot, "tsconfig.base.json"));
+    // The clone is packed against a `node_modules` of hand-made symlinks rather than an install, so
+    // any `workspace:` entry left in its manifest is unresolvable and `pnpm pack` refuses the whole
+    // tree with ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL. Neither step the clone runs reads
+    // devDependencies: prepack is `tsc -p tsconfig.json`, whose `include` is `src` alone, and the
+    // published manifest drops them anyway. Removing them is what makes this survive whichever
+    // devDependency is added next, which the symlink list above does not: #1666 added
+    // `@cotal-ai/smoke-kit` for the seat smokes and took shard 3/4 down on a tree where nothing
+    // that ships had changed.
+    const cloneManifestPath = join(clone, "package.json");
+    const cloneManifest = JSON.parse(readFileSync(cloneManifestPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    delete cloneManifest.devDependencies;
+    writeFileSync(cloneManifestPath, `${JSON.stringify(cloneManifest, null, 2)}\n`);
+    const unresolvable = Object.entries(cloneManifest.dependencies ?? {})
+      .filter(([, spec]) => spec.startsWith("workspace:"));
+    assert.equal(
+      unresolvable.length,
+      0,
+      `clone manifest keeps ${unresolvable.length} workspace: dependency the hand-built node_modules cannot resolve: ${unresolvable.map(([name]) => name).join(", ")}`,
+    );
+    const cloneModules = join(clone, "node_modules");
+    mkdirSync(join(cloneModules, "@lydell"), { recursive: true });
+    mkdirSync(join(cloneModules, "@types"), { recursive: true });
+    mkdirSync(join(cloneModules, "@xterm"), { recursive: true });
+    mkdirSync(join(cloneModules, ".bin"), { recursive: true });
+    symlinkSync(join(repo, dir, "node_modules", "@lydell", "node-pty"), join(cloneModules, "@lydell", "node-pty"), "dir");
+    for (const name of ["addon-serialize", "headless"])
+      symlinkSync(join(repo, dir, "node_modules", "@xterm", name), join(cloneModules, "@xterm", name), "dir");
+    symlinkSync(join(repo, "node_modules", "@types", "node"), join(cloneModules, "@types", "node"), "dir");
+    symlinkSync(join(repo, "node_modules", "typescript"), join(cloneModules, "typescript"), "dir");
+    symlinkSync(join(repo, "node_modules", ".bin", "tsc"), join(cloneModules, ".bin", "tsc"));
     const cloneHost = join(clone, "build", "Release", `linux-${hostArch}`, "peercred.node");
     mkdirSync(dirname(cloneHost), { recursive: true });
     cpSync(hostHelper, cloneHost);
@@ -196,6 +253,12 @@ try {
   // Without this the guard goes vacuous the day npm moves the hidden lockfile or reshapes its keys:
   // nothing would match, zero packages would be checked, and the loop above would pass in silence.
   assert.equal(checked, needed.size, `provenance checked ${checked} workspace package(s) but the closure has ${needed.size} -- the lockfile is not being read as expected`);
+  // `update` deliberately skips boot-time connector reconciliation. Give the isolated packaged
+  // install the same seeded connector manifest an existing installation has before asking it to
+  // classify running seats; otherwise every connector is unknown and defaults to drain-only.
+  const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
+  const seed = run(process.execPath, [currentBin, "ext", "seed"], root);
+  assert.equal(seed.status, 0, `seeded packaged connectors: ${seed.stdout}\n${seed.stderr}`);
   writeFileSync(join(old, "package.json"), JSON.stringify({ name: "old-fixture", private: true }));
   assert.equal(run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "cotal-ai@0.42.0"], old).status, 0, "installed published old package");
   const oldRuntime = readFileSync(join(old, "node_modules", "@cotal-ai", "core", "dist", "runtime.js"), "utf8");
@@ -212,21 +275,29 @@ const manager = new Manager({ space: "legacy783", servers: ${JSON.stringify(`nat
 await manager.start();
 const handle = manager.runtime.spawn("counter", { command: process.execPath, args: ["-e", "let n=0;setInterval(()=>process.stdout.write(String(++n)+'\\\\n'),50)"], env: { PATH: process.env.PATH } }, ${JSON.stringify(root)});
 for (const [name, agent] of [["pi_seat", "pi"], ["claude_seat", "claude"], ["open_seat", "opencode"], ["jcode_seat", "jcode"]]) manager.agents.set(name, { name, agent, id: name, lifecycleUid: "aaaaaaaaaaaaaaaaaaaaaaaaaa", spawner: "fixture", startedAt: Date.now(), handle, launch: { cwd: ${JSON.stringify(root)} } });
-await import("node:fs").then(({ writeFileSync }) => writeFileSync(process.env.READY, JSON.stringify({ managerPid: process.pid, childPid: handle.pid })));
+await import("node:fs").then(({ writeFileSync, renameSync }) => { const p = process.env.READY; writeFileSync(p + ".part", JSON.stringify({ managerPid: process.pid, childPid: handle.pid })); renameSync(p + ".part", p); });
 setInterval(() => {}, 1000);
 `);
   legacy = spawn(process.execPath, [host], { env: { ...cleanEnv, READY: ready }, stdio: ["ignore", "ignore", "pipe"] });
-  assert.ok(await until(() => existsSync(ready)), "published old manager started its counter seats");
-  const ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number };
+  // WAIT FOR CONTENT, NOT FOR A NAME. `existsSync` goes true the instant the file is CREATED, which
+  // is before its bytes are written: this read observed a zero-length file on CI and died on
+  // `JSON.parse("")` with a bare SyntaxError, no cell, no diagnosis. The writer above now stages to
+  // `.part` and renames, which is atomic within a directory, and the wait reads rather than stats,
+  // so the handshake cannot be satisfied by a file that has no answer in it yet.
+  let ids: { managerPid: number; childPid: number } | undefined;
+  const idsRead = await until(() => {
+    try { ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number }; return true; }
+    catch { return false; }
+  });
+  assert.ok(idsRead && ids !== undefined, "published old manager started its counter seats");
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "old manager and counter child are live before update");
-  const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
   const update = spawnSync(process.execPath, [currentBin, "update", "--space", "legacy783", "--server", `nats://127.0.0.1:${port}`], { cwd: root, env: cleanEnv, encoding: "utf8", timeout: 180_000 });
   const output = `${update.stdout ?? ""}${update.stderr ?? ""}`;
   assert.notEqual(update.status, 0, output);
   assert.match(output, /legacy manager custody: PTY continuity is impossible; this update is not a hot update/, output);
   for (const [name, continuity] of [["pi_seat", "exact"], ["claude_seat", "fork"], ["open_seat", "fresh"], ["jcode_seat", "drain-only"]]) assert.match(output, new RegExp(`${name}: ${continuity}`), output);
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "legacy report killed neither the old manager nor its counter child");
-  console.log("legacy packaged manager smoke OK");
+  console.log("LEGACY PACKAGED MANAGER: 1 checks passed");
   assert.deepEqual(
     helperSnapshot(),
     helpersBefore,
@@ -239,3 +310,4 @@ setInterval(() => {}, 1000);
   assert.deepEqual(existsSync(operatorStamp) ? readFileSync(operatorStamp) : undefined, stampBefore, "fixture did not change the operator seed stamp");
   rmSync(base, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

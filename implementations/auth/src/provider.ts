@@ -13,12 +13,12 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
 import { resolve, sep } from "node:path";
-import { fetchIdpJwt, loadIdpSession, probeIdpJwks, requireIdpSession } from "./login.js";
+import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -52,6 +52,20 @@ function pidAlive(pid: number): boolean {
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  async preloadAccounts({ store, space }) {
+    const callout = await loadCalloutAuth(store, space);
+    if (!callout) throw new Error(`space "${space}" has user auth enabled but its callout account is missing - restore it from backup before starting the broker`);
+    return [{ pub: callout.account.pub, jwt: callout.account.jwt }];
+  },
+  prepareSpaceCatalogs: prepareIdpSpaceCatalogs,
+  syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate, apply }) => {
+    const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate, apply });
+    const failed = results.find((r) => r.state === "failed");
+    if (failed) throw new Error(`space catalog for ${idpUrl} failed after login: ${failed.error}`);
+    return results;
+  },
+  hasSpaceCatalog: ({ dir, idpUrl, sub }) => hasIdpSpaceCatalog(dir, idpUrl, sub),
+  removeSpaceCatalog: ({ dir, idpUrl, sub }) => deleteIdpSpaceCatalog(dir, idpUrl, sub),
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
     const { space, store, dir, idpUrl } = input;
     // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
@@ -194,8 +208,7 @@ export const cotalAuthProvider: AuthProvider = {
       if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
         throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
       idpUrl = ua.idp.url;
-      const base = pinnedExchangeUrl(ua.endpoints.url, request.space).replace(/\/exchange$/, "");
-      endpoint = ua.endpoints.managerAuthorityUrl ?? `${base}/manager-service-authority`;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
     }
     const session = requireIdpSession(homeCotalDir(), idpUrl);
     const idpJwt = await fetchIdpJwt(idpUrl, session.token);
@@ -214,6 +227,123 @@ export const cotalAuthProvider: AuthProvider = {
     if (!res.ok)
       throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
     return body as RemoteManagerAuthorityMaterial;
+  },
+
+  async scanRemoteManagerGoalIndex({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerGoalIndexScanRequest }): Promise<RemoteManagerGoalIndexScanResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before scanning manager goal indexes`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+      body: JSON.stringify({ idpToken: idpJwt, request }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch((error) => { throw new Error(`the manager goal-index endpoint for space "${request.space}" did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+    if (response.status >= 300 && response.status < 400)
+      throw new Error(`the manager goal-index endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`signed in, but manager goal-index scan was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    return body as RemoteManagerGoalIndexScanResult;
+  },
+
+  async authorizeRemoteManagerAdmin({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAdminAuthorizationRequest }): Promise<RemoteManagerAdminAuthorizationResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before authorizing manager admin reach`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+      body: JSON.stringify({ idpToken: idpJwt, request }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch((error) => { throw new Error(`the manager admin authorization endpoint for space "${request.space}" did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+    if (response.status >= 300 && response.status < 400)
+      throw new Error(`the manager admin authorization endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`signed in, but manager admin authorization was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    return body as RemoteManagerAdminAuthorizationResult;
+  },
+
+  async validateRemoteRetainedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRetainedAgentValidationRequest }): Promise<RemoteRetainedAgentValidationResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before validating retained manager authority`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+        body: JSON.stringify({ idpToken: idpJwt, request }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      throw new Error(`the manager retained-agent validation endpoint for space "${request.space}" did not answer at ${endpoint} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (res.status >= 300 && res.status < 400)
+      throw new Error(`the manager retained-agent validation endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so retained secrets cannot be walked onto another host`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(`signed in, but manager retained-agent validation was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
+    return body as RemoteRetainedAgentValidationResult;
   },
 
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the
@@ -266,24 +396,93 @@ export const cotalAuthProvider: AuthProvider = {
     return body;
   },
 
+  /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this
+   *  method names it nowhere, sends no Authorization header, and performs exactly one manual-redirect
+   *  GET. A provider-level login conflict check runs before the GET so refusing the ambiguous input
+   *  cannot consume the token. */
+  async postAgentEnrollment({ url, idpUrl }: { url: string; idpUrl?: string }): Promise<unknown> {
+    if (!idpUrl && hasIdpSessions(homeCotalDir()))
+      throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
+    if (idpUrl && loadIdpSession(homeCotalDir(), idpUrl))
+      throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
+    // WHATWG parsing rewrites many inputs into a different URL than the owner minted: it folds
+    // backslashes into slashes, erases empty userinfo, lowercases the scheme and host, drops a
+    // default port, resolves dot segments, and canonicalizes short host forms. Accepting any of
+    // those means redeeming a URL the owner never issued, so the raw string is held to a positive
+    // grammar first and then required to be its own canonical serialization.
+    if (!url.startsWith("https://") && !url.startsWith("http://"))
+      throw new Error("the enrollment URL must begin with https:// or http:// in lowercase");
+    for (const [char, label] of [["\\", "a backslash"], ["@", "userinfo"], ["?", "a query"], ["#", "a fragment"]] as const)
+      if (url.includes(char)) throw new Error(`the enrollment URL must not contain ${label}`);
+    if (/[\s\u0000-\u001f\u007f]/.test(url) || /%(0[0-9a-f]|1[0-9a-f]|20|7f)/i.test(url))
+      throw new Error("the enrollment URL must not contain whitespace or control characters, encoded or literal");
+    let enrollment: URL;
+    try {
+      enrollment = new URL(url);
+    } catch {
+      throw new Error("the enrollment URL is not a valid URL");
+    }
+    if (enrollment.href !== url)
+      throw new Error("the enrollment URL is not in canonical form - redeem the URL exactly as the mesh owner minted it");
+    if (enrollment.username || enrollment.password || enrollment.search || enrollment.hash)
+      throw new Error("the enrollment URL must carry no userinfo, query, or fragment");
+    if (!enrollment.pathname.split("/").filter(Boolean).at(-1))
+      throw new Error("the enrollment URL must end with the one-time secret path segment");
+    if (enrollment.protocol !== "https:" && !(enrollment.protocol === "http:" && isLoopbackLiteral(enrollment.hostname)))
+      throw new Error("the enrollment URL must be https://, except for a loopback HTTP literal on this machine");
+    let res: Response;
+    try {
+      res = await fetch(enrollment, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error("the enrollment endpoint did not answer");
+    }
+    if (res.status >= 300 && res.status < 400)
+      throw new Error(`the enrollment endpoint answered ${res.status} with a redirect - redirects are refused because the enrollment URL is the credential`);
+    if (res.status !== 200) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error("enrollment refused: unknown, expired, or already-used; ask the owner for a fresh one");
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error("the enrollment endpoint returned a 200 response that is not JSON");
+    }
+    return body;
+  },
+
   /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
    *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
-   *  status` must be able to say "not signed in" without becoming a connect. */
+   *  status` must be able to say "not signed in" without becoming a connect.
+   *
+   *  A space with no LOCAL pin may still be a REMOTE registration (a `meshes add --from` entry, or
+   *  catalog discovery): its IdP pins live in the registry entry itself, exactly where
+   *  {@link remoteUserCredentials} reads them. The remote arm answers the same offline questions
+   *  from the entry — with `grant` absent, because the ledger that holds the row runs where the
+   *  space was provisioned, and the renderer already says "grant not checkable on this machine
+   *  (no local ledger)" for that shape. No entry either is the one state that stays a refusal. */
   async userStatus({ store, dir, space, actor }) {
     const idp = loadPinnedIdp(dir);
-    if (!idp)
+    const ua = idp ? undefined : remoteUserAuthEntry(dir, space);
+    if (!idp && !ua)
       throw new Error(
-        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space`,
+        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space, or where the discovered/registered entry for it lives`,
       );
-    const session = loadIdpSession(homeCotalDir(), idp.url);
-    if (!session?.sub) return { idpUrl: idp.url };
+    const idpUrl = idp ? idp.url : ua!.idp.url;
+    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    if (!session?.sub) return { idpUrl };
     const login = { sub: session.sub, expiresAt: session.expiresAt };
+    if (!idp) return { idpUrl, login };
     const secret = await loadOwnerSecret(store, space);
-    if (!secret) return { idpUrl: idp.url, login };
+    if (!secret) return { idpUrl, login };
     const owner = deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
     const row = findInteractiveActor(dir, owner, actor);
     return {
-      idpUrl: idp.url,
+      idpUrl,
       login,
       owner,
       grant: row
@@ -374,6 +573,8 @@ registry.register(cotalAuthProvider);
 function isLoopbackLiteral(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (isIPv4(h)) return h.startsWith("127.");
+  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
   if (isIPv6(h)) {
     if (h === "::1") return true;
     const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
@@ -405,6 +606,33 @@ function pinnedExchangeUrl(base: string, space: string): string {
   return u.toString();
 }
 
+/** The manager-authority route shares the verified exchange origin. A registry convenience field
+ * cannot redirect secret-bearing manager requests to another origin or to plaintext. */
+function managerAuthorityUrl(base: string, space: string): string {
+  const u = new URL(pinnedExchangeUrl(base, space));
+  u.pathname = `${u.pathname.slice(0, -"/exchange".length)}/manager-service-authority`;
+  return u.toString();
+}
+
+/** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
+ *  way {@link remoteUserCredentials} binds it: `dir` derives from the resolved target's root, so an
+ *  entry for the same space under a different root must not answer for it. `undefined` when the
+ *  registry holds no such remote entry. This is the ONE read of the entry's pins — connect and the
+ *  offline status read consume the same trust position, so they cannot drift. */
+function remoteUserAuthEntry(
+  dir: string,
+  space: string,
+): (UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) | undefined {
+  const entry = findMesh(space);
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  const bound =
+    ua?.remote === true &&
+    typeof ua.endpoints?.url === "string" &&
+    typeof ua.sentinelCredsPath === "string" &&
+    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
+  return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
+}
+
 /** Client side of a REMOTE user mesh: the registry entry `cotal meshes add --from` recorded is
  *  the whole trust position (IdP pins, public exchange URL, sentinel path) - registration pinned
  *  it, connect consumes it, nothing is discovered here. The flow mirrors the local arm exactly
@@ -418,20 +646,11 @@ async function remoteUserCredentials(
   actor: string,
   view?: string,
 ): Promise<{ bearer: string; sentinelCreds: string }> {
-  const entry = findMesh(space);
-  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
-  // Bind the registry entry to the CALLER'S state dir: `dir` was derived from the target's root,
-  // so an entry for the same space under a different root must not answer for it.
-  const bound =
-    ua?.remote === true &&
-    typeof ua.endpoints?.url === "string" &&
-    typeof ua.sentinelCredsPath === "string" &&
-    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
-  if (!bound)
+  const remote = remoteUserAuthEntry(dir, space);
+  if (!remote)
     throw new Error(
       `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\` and sign in with \`cotal login --idp <idp-url>\``,
     );
-  const remote = ua as UserAuthInfo & { endpoints: { url: string }; sentinelCredsPath: string };
   let sentinelCreds: string;
   try {
     sentinelCreds = readFileSync(remote.sentinelCredsPath, "utf8");
@@ -465,8 +684,8 @@ async function remoteUserCredentials(
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     // A refused exchange is an authenticated denial with the reason; surface it verbatim - the
-    // service's copy is already operator-exact (elevated views, for one, are refused on the
-    // public face by policy, and its refusal names that).
+    // service's copy is already operator-exact (god-view, history-purge, deployer, and
+    // manager-service stay loopback-only, and that refusal names the face).
     throw new Error(
       `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
     );

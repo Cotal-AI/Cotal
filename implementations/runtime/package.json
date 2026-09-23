@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/runtime",
   "description": "Cotal workflow runtime: hosts cotal-lang runs on the mesh — the durable step-journal store, the effect handler, and the run driver.",
-  "version": "0.48.2",
+  "version": "0.51.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -34,6 +34,9 @@
   "files": [
     "dist"
   ],
+  "devDependencies": {
+    "@cotal-ai/smoke-kit": "workspace:*"
+  },
   "publishConfig": {
     "access": "public"
   }

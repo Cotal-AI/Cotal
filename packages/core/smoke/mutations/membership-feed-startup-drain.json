@@ -1,0 +1,46 @@
+{
+  "suite": [
+    "packages/core/smoke/membership-rw-renewal.smoke.ts"
+  ],
+  "guard": "a startMembershipFeed startup that rejects drains every connection it had already opened",
+  "command": "pnpm smoke:membership-rw-renewal",
+  "completionMarker": "MEMBERSHIP-RW RENEWAL",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-startup-drain.json",
+  "why": [
+    "The leak is invisible to the feed itself: the function rejects with the caller's own error either",
+    "way, and a suite that tears down with `finally { feed?.stop() }` sees `feed` as undefined on a",
+    "reject, so the connection it should have closed is never named. The named cell therefore grades the",
+    "BROKER's connection table through CONNZ rather than anything the feed reports about itself.",
+    "The sibling cell asserting the rejection text cannot grade this alone: it passes both before and",
+    "after the fix, which is exactly why the leak survived.",
+    "",
+    "THE RECORD HAS TWO PUSH SITES AND THE MUTATION ABOVE GRADES ONE OF THEM. It reddens a cell that",
+    "counts the observer connection, pushed first, so it establishes the guarantee for conn A alone",
+    "while the guard claims EVERY connection. The conn B mutation below closes that. It was unkillable",
+    "until this suite gained a scenario that rejects with both connections already recorded: every",
+    "earlier scenario rejected at the credential source, which is awaited BEFORE conn B is pushed, so",
+    "at the moment of rejection the record held conn A alone and removing the conn B push changed",
+    "nothing any assertion could observe. A mutation whose target nothing observes does not go red, it",
+    "goes silent, and silence reads exactly like a guarantee that holds."
+  ],
+  "mutations": [
+    {
+      "name": "the transactional drain closes nothing",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "    await Promise.allSettled(opened.map((c) => c.drain()));",
+      "replace": "    await Promise.allSettled(opened.slice(0, 0).map((c) => c.drain()));",
+      "expectRed": "conn A is drained when startup rejects - no orphaned observer connection on the broker",
+      "cell": "conn A is drained when startup rejects - no orphaned observer connection on the broker",
+      "note": "Keeps the handler, the record and the rethrow, and drains an empty slice: the reported behavior with the tree still compiling and every other cell green. The connection count on the broker stays one above the baseline for the rest of the run."
+    },
+    {
+      "name": "the conn B record is never made",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "  opened.push(connB);",
+      "replace": "  void connB;",
+      "expectRed": "conn B is drained too when startup rejects after it was recorded - no orphaned rw connection on the broker",
+      "cell": "conn B is drained too when startup rejects after it was recorded - no orphaned rw connection on the broker",
+      "note": "The second push site. Conn B still dials and still works, it is simply absent from the rollback record, so a rejection below it leaves it open on the broker. Graded on the broker's connection table keyed by conn B's own connection name, because the conn A count passes whether or not conn B was drained."
+    }
+  ]
+}

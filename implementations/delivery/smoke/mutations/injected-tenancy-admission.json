@@ -1,9 +1,10 @@
 {
   "suite": [
-    "implementations/delivery/smoke/injected-tenancy-admission.smoke.ts"
+    "implementations/delivery/smoke/injected-tenancy-admission.smoke.ts",
+    "implementations/delivery/smoke/reload-store-identity.smoke.ts"
   ],
-  "guard": "an injected two-account delivery composition validates its observer tenancy before endpoint construction and lease.0 acquisition",
-  "command": "pnpm --filter @cotal-ai/delivery... build && pnpm smoke:delivery-injected-tenancy-admission",
+  "guard": "an injected delivery composition validates observer tenancy and names its real credential authority without a silent local-root fallback",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/delivery build && pnpm smoke:delivery-injected-tenancy-admission && pnpm smoke:reload-store-identity",
   "progressPattern": "✓",
   "minTicks": 8,
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/injected-tenancy-admission.json",
@@ -15,6 +16,24 @@
       "replace": "  void scanTarget;",
       "expectRed": "INJECTED ADMISSION: foreign observer refuses before endpoint construction and lease.0 acquisition",
       "cell": "INJECTED ADMISSION: foreign observer refuses before endpoint construction and lease.0 acquisition"
+    },
+    {
+      "name": "an unidentified injected adapter silently falls back instead of refusing",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "    if (!coordinate)\n      throw new Error(\n        \"delivery: an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)\",\n      );",
+      "replace": "    if (!coordinate) return src.identity;",
+      "expectRed": "injected identity refuses a silent local-root fallback",
+      "cell": "injected identity refuses a silent local-root fallback",
+      "afterRestore": "pnpm --filter @cotal-ai/delivery build"
+    },
+    {
+      "name": "workspaceSecretStore drops the operator workspace identity",
+      "file": "packages/workspace/src/secret-store-fs.ts",
+      "find": "  return new FsSecretStore(join(workspaceRoot, \".cotal\"), { kind: \"fs\", root: workspaceRoot });",
+      "replace": "  return new FsSecretStore(join(workspaceRoot, \".cotal\"));",
+      "expectRed": "an explicitly passed workspace store names its real filesystem authority without an ambient coordinate",
+      "cell": "an explicitly passed workspace store names its real filesystem authority without an ambient coordinate",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/delivery build"
     }
   ]
 }

@@ -73,6 +73,21 @@ export const CATALOG = {
   L3042: "Function passed as effect data",
   L3043: "`notify` fact is not a bounded decision record",
   L3044: "`to` without `onExpiry: \"escalate\"`",
+  // `waitUntil` is the one primitive whose first argument is a FUNCTION the runtime calls, and the
+  // one whose cadence and deadline are the runtime's to own rather than the program's. Each of the
+  // three is refused where the source shows it, because all three are statically visible and a
+  // program that gets one wrong would otherwise find out an hour into a wait.
+  L3045: "`waitUntil` probe is not a function",
+  L3046: "`waitUntil` needs a cadence and a deadline",
+  L3047: "`waitUntil` cadence is zero, or does not divide its deadline usefully",
+  // `spawn`'s `placement` names WHICH MANAGER INSTANCE hosts the seat, and it is the one option
+  // whose value the identity projection reads INTO rather than hashing whole. A value that is not
+  // an `{ endpoint, instanceId }` pair therefore has nowhere to be refused later: the projection
+  // dereferences it, and `null` raised a raw `TypeError` — a host crash where the runtime had
+  // written a named refusal — before any journal entry, code or effect kind existed to carry the
+  // diagnosis. It is refused HERE, at the call, for the same reason L3046 is: the computed bag is
+  // the case the validator cannot see, and the author needs the shape named rather than a stack.
+  L3048: "`spawn` placement is not an endpoint and instanceId pair",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",
@@ -97,6 +112,27 @@ export const CATALOG = {
   L4020: "A method is not a value",
   L4021: "A callable `then` is not a record member",
   L4022: "Unreadable ask schema",
+  // `waitUntil`'s deadline, and it is CATCHABLE with a code of its own exactly as `turn`'s L4003
+  // is. A wait that gave up is a fact about the world the program asked about (the predicate did
+  // not hold in the time allowed), so the program is the right place to decide what happens next:
+  // chase someone, escalate, proceed degraded. Folding it into L4003 would have one code mean two
+  // different waits, and a program branching on it could not tell which had elapsed.
+  L4023: "`waitUntil` deadline elapsed",
+  // The probe answered with something that has no canonical form, or `terminal` answered with a
+  // non-boolean. Its own code because the blame is specific and the repair differs from L3041's:
+  // nothing crossed a boundary wrongly at a CALL, a program function the runtime invoked returned
+  // the wrong shape, and the author needs to be told which of the two it was.
+  L4024: "`waitUntil` probe or predicate answered the wrong shape",
+  // The HOST could not schedule the run's own process. Not the effect, not the resource, not the
+  // program: a deadline that elapsed while this process was off the CPU is evidence about the box
+  // it runs on. It has its own code because `L4000` sends a reader looking at their own source.
+  L4025: "Host did not schedule the run",
+  // The PLANE did not answer this host's reads before their own client deadline, while the host's
+  // loop was demonstrably running. Its own code because it is the other half of L4025's question
+  // and the opposite answer: there the process was off the CPU, here it was on it and the reply was
+  // late, and the remedy differs (capacity for this host versus a broker that is behind). `L4000`
+  // would send a reader to their own program for a condition in neither the program nor the effect.
+  L4026: "Pause plane did not answer before the client deadline",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",
@@ -364,6 +400,20 @@ export function messageOf(v: unknown): string {
   if (v instanceof Error) return v.message;
   const m = (v as { message?: unknown } | null | undefined)?.message;
   return typeof m === "string" ? m : String(v);
+}
+
+/**
+ * The stack off anything a foreign body throws, or `undefined` when there is none to keep.
+ *
+ * Read with the same defensiveness as {@link messageOf} and for the same reason: a handler is other
+ * people's code, it may throw a primitive or an object whose `stack` is a getter returning a
+ * number, and a recorder that trusted the field would replace the handler's failure with its own.
+ * Absent, empty, or not a string is NOT recorded: the field says "here is where this came from",
+ * and `"undefined"` stringified into it would be a place that does not exist.
+ */
+export function stackOf(v: unknown): string | undefined {
+  const s = (v as { stack?: unknown } | null | undefined)?.stack;
+  return typeof s === "string" && s !== "" ? s : undefined;
 }
 
 /** A recorded step's inputs changed, so its recorded result may no longer be the truth. */

@@ -296,12 +296,17 @@ try {
   // stops that from becoming a free "nothing ran" is the caller cross-checking it against the
   // reply SUBJECT, which the broker pins.
   // The liar states `not-executed` as well as the marker, which makes it the maximally credible
-  // forgery: it is the shape that would license a re-issue if the caller believed it. The cell
-  // below it grades the opposite end, a refusal with the outcome left off, and both are checked.
+  // forgery: it is the shape that would license a re-issue if the caller believed it. Its detail
+  // is internally consistent too (`boundTo` is this request's bind, `servedBy` is the incarnation
+  // the reply subject attributes), so the ONLY thing that exposes it is the caller cross-checking
+  // the refusal against that attribution: a `servedBy` naming some other instance would be caught
+  // by the detail check instead, and the subject check would never be what stood between the
+  // forgery and a re-issue. The cell below it grades the opposite end, a refusal with the outcome
+  // left off, and both are checked.
   const liar = await bring(IID_LIAR, () => {
     runs[IID_LIAR]++;
     throw new EpEnvelopeError("failed-precondition", "I did not run this (I did)", [
-      { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR, epoch: EPOCH }, servedBy: { instanceId: GHOST, epoch: EPOCH } },
+      { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR, epoch: EPOCH }, servedBy: { instanceId: IID_LIAR, epoch: EPOCH } },
     ], "not-executed");
   });
   // Address the liar directly so the class queue cannot hand this to A.
@@ -320,7 +325,7 @@ try {
   const liar2 = await bring(IID_LIAR2, () => {
     runs[IID_LIAR2]++;
     throw new EpEnvelopeError("failed-precondition", "I did not run this (I did), and I will not say so", [
-      { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR2, epoch: EPOCH }, servedBy: { instanceId: GHOST, epoch: EPOCH } },
+      { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR2, epoch: EPOCH }, servedBy: { instanceId: IID_LIAR2, epoch: EPOCH } },
     ]);
   });
   await rejects("a bind refusal that OMITS the outcome is still checked against its attribution, not waved through",

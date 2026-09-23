@@ -1,0 +1,30 @@
+{
+  "suite": ["packages/core/smoke/endpoint-grants.smoke.ts"],
+  "guard": "an issued caller's journal and per-goal progress rows carry the plain triple, the subject the endpoint publishes progress on and the client submits journal work on",
+  "command": "pnpm smoke:ep-grants",
+  "completionMarker": "ENDPOINT GRANTS SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/endpoint-grants-issued-rows.json",
+  "why": [
+    "The generation rides the request and reply rails and nothing else. A grant row that carries it",
+    "on the epe goal-progress plane names a subject the endpoint never publishes, so an issued",
+    "caller's spawn is accepted, the seat joins, and the caller still reports no terminal within its",
+    "deadline; measured live as a 40s wait on every spawn through an instrument. The journal row has",
+    "the same shape and the same failure. Each mutation puts the generation back into one row."
+  ],
+  "mutations": [
+    {
+      "name": "the per-goal progress row is minted with the generation",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerTriple(caller)}.>`;",
+      "replace": "  return `${spacePrefix(space)}.epe.${endpointToken(endpoint)}.*.*.goal.${callerBlock(caller)}.>`;",
+      "expectRed": "issued per-goal progress row is the plain triple"
+    },
+    {
+      "name": "the journal row is minted with the generation",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerTriple(caller)}`;",
+      "replace": "  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerBlock(caller)}`;",
+      "expectRed": "issued journal row is the plain triple"
+    }
+  ]
+}

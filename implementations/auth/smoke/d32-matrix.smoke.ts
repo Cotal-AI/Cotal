@@ -243,8 +243,11 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     // (epGoalProgressGrantRow) so it can follow its spawn to the terminal — caller-triple-pinned.
     "cotal.d32m.epe.manager.*.*.goal.u_abc.cli.uuuuuuuuuuuuuuuuuuuuuuuuuu.>",
   ] },
+  // Both rails (SPEC 13.15): the versioned reply row spans one more token (the generation), and
+  // every served command takes the same three subscribe shapes on `ep.v1` beside `ep`.
   "serve-rows": { publish: [
     "cotal.d32m.ep.reply.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.*.*.*",
+    "cotal.d32m.ep.v1.reply.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.*.*.*.*",
     "cotal.d32m.epe.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.>",
     "cotal.d32m.ept.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.schedule",
     "cotal.d32m.epr.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.>",
@@ -252,9 +255,15 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.ep.one.manager.status.> manager",
     "cotal.d32m.ep.all.manager.status.>",
     "cotal.d32m.ep.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.status.>",
+    "cotal.d32m.ep.v1.one.manager.status.> manager",
+    "cotal.d32m.ep.v1.all.manager.status.>",
+    "cotal.d32m.ep.v1.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.status.>",
     "cotal.d32m.ep.one.manager.describe.> manager",
     "cotal.d32m.ep.all.manager.describe.>",
     "cotal.d32m.ep.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.describe.>",
+    "cotal.d32m.ep.v1.one.manager.describe.> manager",
+    "cotal.d32m.ep.v1.all.manager.describe.>",
+    "cotal.d32m.ep.v1.inst.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.describe.>",
     "cotal.d32m.ept.manager.iiiiiiiiiiiiiiiiiiiiiiiiii.3.*.fire",
   ] },
   "auth-writer": { publish: [
@@ -305,9 +314,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     // (§13.7 create-only, once, before the gate/head terminals) — exact arity, never frontier.>.
     "$KV.cotal_records_d32m.frontier.*",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
-  // The two SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
-  // profiles on the authority streams, each pinned to its ONE literal consumer name; the records
-  // scanner's CREATE filter is additionally confined to the `oblig.` subtree.
+  // The SEALED enumeration scanners (SPEC 13.9, sites 1-3): the ONLY CONSUMER.CREATE-capable
+  // profiles on the authority streams. Every consumer is pinned to one literal name; the records
+  // profile owns separate consumers confined to the `oblig.` and manager `goalidx` subtrees.
   "auth-scanner": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
@@ -323,6 +332,10 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
+    "$JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-manager-goalidx-scan.$KV.cotal_records_d32m.goalidx.manager.>",
+    "$JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "$JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "auth-connect-reader": { publish: [
     "$JS.API.INFO",
@@ -466,8 +479,8 @@ const allRows: { principal: string; row: string }[] = [];
 for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publish, ...v.subscribe]) allRows.push({ principal, row });
 
 // (2a) consumer-name literalness — NO exceptions. The former auth-store name-wildcard
-// enumeration family is GONE (sites 1-3, #8274): dynamic enumeration lives only in the two
-// sealed scanner profiles, whose names are the pinned literals checked in (2a') below.
+// enumeration family is GONE (sites 1-3, #8274): dynamic enumeration lives only in the sealed
+// scanner profiles, whose complete literal consumer set is pinned in (2a') below.
 {
   const bad: string[] = [];
   for (const { principal, row } of allRows) {
@@ -485,8 +498,9 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
 
 // (2a') the 13.9 authority-stream consumer surface, mechanically COMPLETE (fact/distsys/security/
 // engineer's a559d9c re-verify). Every CONSUMER verb AND `$JS.ACK` on either authority stream is
-// pinned to its exact (principal, row): the two sealed scanners' own-name lifecycle (the sole
-// DYNAMIC-ENUMERATION CREATE holders), the provisioner's pre-created records-READER durable
+// pinned to its exact (principal, row): the three sealed consumers' own-name lifecycle across the
+// auth and records scanner profiles (the sole DYNAMIC-ENUMERATION CREATE holders), the
+// provisioner's pre-created records-READER durable
 // (CREATE+DELETE only), and the read mediator's BIND on it (INFO/MSG.NEXT/ACK). The `oblig`-partition
 // is ENFORCED at the seam, not sampled: recordReaderConfig REFUSES an authority-control kind (2a''
 // below proves it), so no reader durable can exist over `oblig.` and the records scanner is the
@@ -506,19 +520,24 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "records-scanner: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-records-scan",
     "records-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-records-scan",
     "records-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-records-scan",
+    "records-scanner: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.cotal-manager-goalidx-scan.$KV.cotal_records_d32m.goalidx.manager.>",
+    "records-scanner: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "records-scanner: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
+    "records-scanner: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.cotal-manager-goalidx-scan",
     `provisioner-consumers: $JS.API.CONSUMER.CREATE.KV_cotal_records_d32m.${READER_D}.$KV.cotal_records_d32m.svc.jobsrv.>`,
     `provisioner-consumers: $JS.API.CONSUMER.DELETE.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.API.CONSUMER.INFO.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_d32m.${READER_D}`,
     `records-reader-bind: $JS.ACK.KV_cotal_records_d32m.${READER_D}.>`,
   ].sort();
-  c("the authority-stream consumer surface is EXACTLY the two sealed scanners + the provisioner's reader CREATE/DELETE + the read mediator's reader bind (INFO/NEXT/ACK); ACK included, nothing else",
+  c("the authority-stream consumer surface is EXACTLY three sealed consumers across two scanner profiles: records CREATE filters are only oblig.> + goalidx.manager.>, plus the provisioner's reader CREATE/DELETE and the read mediator's reader bind (INFO/NEXT/ACK); ACK included, nothing else",
     JSON.stringify(actual) === JSON.stringify(expected), actual);
 }
 
 // (2a'') the partition is ENFORCED at the reader-config SEAM, driven by the CANONICAL collection
-// (panel + freelance a559d9c re-verify): the records scanner's CREATE filter is confined to
-// `oblig.>`, and recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
+// (panel + freelance a559d9c re-verify): the records scanner profile's two CREATE filters are
+// confined to `oblig.>` and `goalidx.manager.>` by the complete equality above, and
+// recordReaderConfig is an ALLOWLIST — it refuses every kind that is not a
 // caller-readable record kind. Iterating AUTHORITY_KIND_DEFS (the same collection the registry is
 // built from) proves the exclusion is by construction, not a hand-kept parallel list: a new
 // authority def is covered automatically. Dual-token `lifecycle` admits deeper audit but head-guards.
@@ -796,7 +815,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
   const cO = DEV_OWNER, cA = `wf_${h.slice(0, 12)}`, cU = h.slice(12, 38);
   c("the run-driver caller triple is the run id's own digest (owner local, actor wf_<12 hex>, uid <26 hex>)",
     JSON.stringify(runDriverCaller(RUN)) === JSON.stringify({ owner: cO, actor: cA, uid: cU }), runDriverCaller(RUN));
-  c("the run-mediator mint is EXACTLY its journal replay + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + its own manager rails + the store fetch, and nothing else",
+  c("the run-mediator mint is EXACTLY its journal replay + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + the admission read + its own manager rails + the store fetch, and nothing else",
     JSON.stringify(g) === JSON.stringify({
       publish: [
         `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
@@ -835,6 +854,9 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `cotal.${S}.ep.one.${EP}.turn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.despawn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`,
+        // SPEC 14.8: the run's admission and revocation state, leader-served, read before every
+        // channel effect. A read only; the writer is the per-run `run-admitter`.
+        `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`,
         "$JS.API.INFO",
       ],
       subscribe: [`cotal.${S}.ep.reply.*.*.*.${cO}.${cA}.${cU}.*`, `_INBOX_${CONN}.>`],
@@ -888,16 +910,17 @@ console.log("7. the run-operator profile (SPEC 14.3): a read form and an answeri
   ];
   c("a READ of one run is EXACTLY the records point read + that run's replay durable + INFO, and nothing it can write",
     JSON.stringify(read) === JSON.stringify({
-      publish: [`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, ...replay, "$JS.API.INFO"],
+      publish: [`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`, ...replay, "$JS.API.INFO"],
       subscribe: [`_INBOX_${CONN}.>`],
     }), read);
   const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
   c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
-    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, "$JS.API.INFO"]), list.publish);
+    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`, "$JS.API.INFO"]), list.publish);
   const ans = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } }, CONN);
   c("an ANSWER of one pause is EXACTLY the records point read + THAT token's answer record, checkpoint status and settle fact + the EPF fact read + INFO: no replay row, and no row that spans a second token",
     JSON.stringify(ans.publish) === JSON.stringify([
       `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+      `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`,
       `$KV.cotal_records_${S}.answer.${EP}.${TOKEN}.>`, `$KV.cotal_records_${S}.cp.${EP}.${TOKEN}.>`, `cotal.${S}.epf.${EP}.cp.${TOKEN}`, `$JS.API.STREAM.MSG.GET.EPF_${S}`,
       "$JS.API.INFO",
     ]), ans.publish);

@@ -1,0 +1,2 @@
+# cotal ps prints mesh unknown, never a liveness verdict, while the manager's presence view is stale or unpopulated.
+smoke:ps-mesh-column

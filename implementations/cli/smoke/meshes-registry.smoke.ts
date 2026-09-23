@@ -6,8 +6,10 @@
  * this machine could write back — a sleeping laptop silently unregistered a healthy remote mesh.
  * So the load-bearing assertions here are the ones about ORIGIN:
  *
- *  • an `up` record whose broker is dead is pruned; a `manual` one is KEPT and reported `offline`,
- *    on that sweep and on every later one;
+ *  • an `up` record whose broker is dead is KEPT and reported `offline`, same as a `manual` one,
+ *    on that sweep and on every later one; a pre-origin record is `up` and is kept the same way.
+ *    (REVERSAL of the previous origin split: redness of "sweep prunes a dead mesh this machine
+ *    started" / "absent origin = `up`" is expected and intended.)
  *  • `add` verifies against the real broker before recording, and records nothing when that fails;
  *  • `--force` is the explicit record-without-verifying / replace escape;
  *  • `rm` drops records, releases the `current` pointer, and refuses a mesh running here.
@@ -25,7 +27,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -37,7 +40,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable } = await import("@cotal-ai/core");
-const { authDir, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneStaleMeshes, recordMesh, removeMesh, saveSpaceAuth, setCurrent } = await import("@cotal-ai/workspace");
+const { authDir, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, removeMesh, saveSpaceAuth, setCurrent } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -186,13 +189,15 @@ function projectRoot(label: string): string {
 const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort)], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
 // A second broker that actually ENFORCES something, so the guided flow's auth branches (the
 // "this folder holds no credentials" recovery) are reachable at all. Password auth is enough:
 // probeEnforcement only asks whether a bare connect is refused.
 const authPort = await freePort();
 const AUTH_LIVE = `nats://127.0.0.1:${authPort}`;
-const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p"], { stdio: "ignore" });
+const authBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(authPort), "--user", "u", "--pass", "p", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(authBroker);
 broker.on("error", () => {
   console.error("needs nats-server on PATH");
   process.exit(1);
@@ -341,10 +346,17 @@ try {
   const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
   const EXCHANGE_ISSUER = userExchangeIssuer("hosted");
   // A stand-in exchange: answers /health with its own issuer and /jwks with a key set.
+  let policyRefreshHits = 0;
+  let policyRefreshFails = false;
   const exchange = createHttpServer((req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.url === "/health") return void res.end(JSON.stringify({ ok: true, issuer: EXCHANGE_ISSUER }));
     if (req.url === "/jwks") return void res.end(JSON.stringify({ keys: [{ kty: "OKP" }] }));
+    if (req.url === "/.well-known/cotal-mesh") {
+      policyRefreshHits++;
+      if (policyRefreshFails) { res.statusCode = 503; return void res.end("unavailable"); }
+      return void res.end(JSON.stringify(bundleFor()));
+    }
     res.statusCode = 404;
     res.end("{}");
   });
@@ -369,6 +381,7 @@ try {
     server: AUTH_LIVE, // the broker that actually refuses a bare connect — the user-arm PASS
     tlsRequired: false, // loopback in this smoke; a real remote bundle says true
     userAuth: { provider: "cotal", idp: { url: ISSUER, issuer: ISSUER, audience: "cotal-mesh" }, endpoints: { url: exchangeUrl } },
+    policy: { events: "required" },
     sentinelCreds: SENTINEL_BLOB,
     ...over,
   });
@@ -410,6 +423,8 @@ try {
   const hostedEntry = findMesh("hosted");
   check("…marked remote, with the pinned exchange as a stated trust position",
     hostedEntry?.userAuth?.remote === true && hostedEntry?.userAuth?.endpoints?.url === exchangeUrl, hostedEntry);
+  check("…and preserves the required-events registration policy",
+    hostedEntry?.policy?.events === "required", hostedEntry);
   check("…and the record carries the sentinel PATH, never the blob",
     typeof hostedEntry?.userAuth?.sentinelCredsPath === "string" &&
       !JSON.stringify(hostedEntry).includes("sentinel-secret-material"), hostedEntry);
@@ -426,9 +441,45 @@ try {
   const hostedTarget = targetFromEntry(hostedEntry!, hostedEntry!.server, "registry");
   check("the remote entry round-trips through targetFromEntry",
     hostedTarget.mode === "user" && hostedTarget.userAuth?.remote === true && hostedTarget.server.startsWith("nats://127.0.0.1"), hostedTarget);
+  recordMesh({ ...hostedEntry!, policy: undefined, ts: new Date(0).toISOString() });
+  // The refresh runs where a launch, a join, or a manager start consumes the policy, never as a
+  // dispatcher pre-step: `status` and `meshes` stay read-only, and a launch site calls it after its
+  // own local refusals. The shipped function takes the resolved target.
+  const { refreshRegistrationPolicy } = await import("@cotal-ai/workspace");
+  const refreshHosted = () => refreshRegistrationPolicy({ space: "hosted" });
+  await refreshHosted();
+  const refreshedManual = findMesh("hosted");
+  check("trusted refresh adds policy to a pre-existing manual registration without replacing it",
+    policyRefreshHits === 1 && refreshedManual?.origin === "manual" && refreshedManual.root === hostedEntry?.root && refreshedManual.policy?.events === "required", { policyRefreshHits, refreshedManual });
+  await refreshHosted();
+  check("the trusted manual policy refresh warm path makes zero requests", policyRefreshHits === 1, policyRefreshHits);
   const hostedList = await run([]);
-  check("`cotal meshes` output never contains the sentinel blob",
-    !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 200));
+  check("`cotal meshes` stays registry-local for a manual required-policy entry",
+    policyRefreshHits === 1, policyRefreshHits);
+  check("`cotal meshes` output shows the required-events policy without exposing the sentinel",
+    hostedList.out.includes("events: required") && !hostedList.out.includes("sentinel-secret-material"), hostedList.out.slice(0, 300));
+  policyRefreshFails = true;
+  recordMesh({ ...refreshedManual!, policy: undefined, policyCheckedAt: new Date(0).toISOString() });
+  let expiredRefreshError = "";
+  try {
+    await refreshHosted();
+  } catch (error) {
+    expiredRefreshError = (error as Error).message;
+  } finally {
+    policyRefreshFails = false;
+  }
+  check("an expired manual policy refresh failure names the pinned exchange and refuses",
+    expiredRefreshError.includes(exchangeUrl) && expiredRefreshError.includes("HTTP 503") && findMesh("hosted")?.policy === undefined,
+    { expiredRefreshError, entry: findMesh("hosted") });
+  // A read-only command never pays for the refresh: `meshes` lists the expired entry with the
+  // exchange still refusing, and makes no request doing so.
+  policyRefreshFails = true;
+  const hitsBeforeList = policyRefreshHits;
+  const expiredList = await run([]);
+  policyRefreshFails = false;
+  check("`cotal meshes` lists a pre-policy manual entry without refreshing it, even when its exchange refuses",
+    expiredList.code === 0 && expiredList.out.includes("hosted") && policyRefreshHits === hitsBeforeList,
+    { code: expiredList.code, hits: policyRefreshHits - hitsBeforeList });
   removeMesh("hosted");
   // A bundle missing ANY pin refuses — each of the trust fields, not just one.
   for (const strip of ["idp-url", "issuer", "audience", "endpoints", "sentinel"] as const) {
@@ -581,13 +632,21 @@ try {
   // genuine project, and demand `--root` only when there isn't one.
   const bare = mkdtempSync(join(tmpdir(), "cotal-noproject-"));
   roots.push(bare);
-  let ancestorProject: string | undefined;
-  for (let dir = dirname(bare); ; dir = dirname(dir)) {
-    if (existsSync(join(dir, ".cotal"))) { ancestorProject = dir; break; }
-    if (dirname(dir) === dir) break;
-  }
   const prevCwd2 = process.cwd();
   process.chdir(bare);
+  // Walk the path `add` actually walks. `process.cwd()` after chdir is the realpath,
+  // and TMPDIR on this harness is a symlink into $HOME, so a lexical walk of `bare`
+  // finds `/tmp/.cotal` while `findCotalRoot` finds `$HOME`. Skip the machine-home
+  // `.cotal` the same way `checkRoot` does.
+  let ancestorProject: string | undefined;
+  for (let dir = process.cwd(); ; dir = dirname(dir)) {
+    const marker = join(dir, ".cotal");
+    if (existsSync(marker) && resolve(marker) !== resolve(home)) {
+      ancestorProject = dir;
+      break;
+    }
+    if (dirname(dir) === dir) break;
+  }
   const rootless = await run(["add", "rootless"], { server: LIVE });
   process.chdir(prevCwd2);
   // ONE cell either way, so the TOTAL COUNT IS THE SAME ON EVERY BOX. The two arms used to run a
@@ -621,19 +680,25 @@ try {
   const pathy = await run(["add", "pathy"], { server: `${LIVE}/subject`, root });
   check("add refuses a --server with a path", pathy.code === 1 && findMesh("pathy") === undefined, pathy.out);
 
-  // ── THE INVARIANT: a sweep prunes an `up` record and keeps an operator-registered one ──────────
+  // ── THE INVARIANT: a sweep keeps a dead `up` record the same way it keeps a manual one ─────────
+  // REVERSAL of the previous origin split (meshes-registry.smoke.ts:631-632): a dead `up` record
+  // and a dead pre-origin record used to be deleted. Their redness is expected and intended.
   rmSync(join(home, "meshes"), { recursive: true, force: true });
   const localRoot = projectRoot("local");
   recordMesh({ space: "local-dead", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   recordMesh({ space: "legacy-dead", server: DEAD, root: localRoot, mode: "open", ts: new Date(0).toISOString() });
   recordMesh({ space: "remote-dead", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const sweep = await pruneStaleMeshes();
-  check("sweep prunes a dead mesh this machine started", findMesh("local-dead") === undefined, loadMeshes());
-  check("sweep prunes a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead") === undefined, loadMeshes());
+  check("sweep KEEPS a dead mesh this machine started", findMesh("local-dead")?.space === "local-dead", loadMeshes());
+  check("sweep KEEPS a dead pre-origin record (absent origin = `up`)", findMesh("legacy-dead")?.space === "legacy-dead", loadMeshes());
   check("sweep KEEPS a dead operator-registered mesh", findMesh("remote-dead")?.space === "remote-dead", loadMeshes());
-  check("sweep reports the kept one as offline", sweep.offline.includes("remote-dead") && sweep.pruned.includes("local-dead"), sweep);
+  check("sweep reports every dead record as offline", sweep.offline.includes("remote-dead") && sweep.offline.includes("local-dead") && sweep.offline.includes("legacy-dead") && sweep.pruned.length === 0, sweep);
   const sweep2 = await pruneStaleMeshes();
-  check("a second sweep still keeps it (not a one-time reprieve)", findMesh("remote-dead") !== undefined && sweep2.offline.includes("remote-dead"), sweep2);
+  check("a second sweep still keeps them (not a one-time reprieve)", findMesh("remote-dead") !== undefined && findMesh("local-dead") !== undefined && sweep2.offline.includes("remote-dead") && sweep2.offline.includes("local-dead"), sweep2);
+  // The keep invariant is proven. Drop the local `up` fixtures so later `rm` emptiness
+  // checks (written when a liveness miss deleted them) still see only the records they plant.
+  removeMesh("local-dead");
+  removeMesh("legacy-dead");
 
   // …and the same rule for the paths that delete by ROOT rather than by liveness. `add` defaults
   // --root to the project you run it in, so a hand-registered remote mesh routinely shares a root
@@ -651,6 +716,34 @@ try {
   check("the local-liveness guard ignores a co-rooted registered mesh",
     localMeshesForRoot(shared).every((m) => m.space !== "elsewhere"), localMeshesForRoot(shared));
   removeMesh("elsewhere");
+
+  // Catalog-owned records are the same non-local ownership class, but account-scoped. Local
+  // teardown, liveness pruning and a different account must never remove or overwrite them.
+  recordMesh({ space: "catalog_one", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-a", catalogSlug: "catalog_one", catalogName: "Catalog one", ts: new Date(0).toISOString() });
+  recordMesh({ space: "catalog_two", server: LIVE, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-b", catalogSlug: "catalog_two", catalogName: "Catalog two", ts: new Date(0).toISOString() });
+  check("a liveness or mismatch prune never removes a discovered entry",
+    pruneMesh("catalog_one", "mismatch") === false && findMesh("catalog_one") !== undefined, findMesh("catalog_one"));
+  check("a root teardown keeps discovered entries", removeMeshesByRoot(shared).length === 0 && findMesh("catalog_one") !== undefined, loadMeshes());
+  const { removeCatalogMeshes } = await import("@cotal-ai/workspace");
+  check("account cleanup removes only that account's discovered entries",
+    removeCatalogMeshes("acct-a").join(",") === "catalog_one" && findMesh("catalog_one") === undefined && findMesh("catalog_two") !== undefined && findMesh("Catalog two") === undefined,
+    loadMeshes());
+  removeMesh("catalog_two");
+
+  let catalogBrokerAttempts = 0;
+  const catalogSink = createServer((socket) => { catalogBrokerAttempts++; socket.destroy(); });
+  await new Promise<void>((r) => catalogSink.listen(0, "127.0.0.1", r));
+  const catalogServer = `nats://127.0.0.1:${(catalogSink.address() as { port: number }).port}`;
+  for (let i = 0; i < 8; i++)
+    recordMesh({ space: `catalog_${i}`, server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-fanout", catalogSlug: `catalog_${i}`, catalogName: `Catalog ${i}`, ts: new Date(0).toISOString() });
+  const discoveredList = await run([]);
+  check("meshes lists discovered entries without probing any catalog broker", discoveredList.code === 0 && catalogBrokerAttempts === 0, { catalogBrokerAttempts, out: discoveredList.out });
+  const { use } = await import("../src/commands/use.js");
+  await use({ positionals: ["catalog_3"], values: {}, raw: [] });
+  check("use selects a discovered slug without probing any catalog broker", getCurrent() === "catalog_3" && catalogBrokerAttempts === 0, catalogBrokerAttempts);
+  for (let i = 0; i < 8; i++) removeMesh(`catalog_${i}`);
+  if (getCurrent() === "catalog_3") setCurrent("remote-dead");
+  catalogSink.close();
 
   // `cotal up --space <name>` reclaims a dead holder's name. It must not reclaim a REGISTERED one:
   // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,
@@ -671,11 +764,18 @@ try {
     liveClaimError?.message.includes("cotal meshes rm claimed-live") === true && !liveClaimError.message.includes("cotal down"),
     liveClaimError?.message);
   check("…and it survives", findMesh("claimed-live") !== undefined, loadMeshes());
+  recordMesh({ space: "claimed-catalog", server: DEAD, root, mode: "user", origin: "catalog", catalogOwner: "acct-a", ts: new Date(0).toISOString() });
+  let catalogClaimError: Error | undefined;
+  await claimSpace("claimed-catalog", LIVE, localRoot).catch((e: Error) => void (catalogClaimError = e));
+  check("`up` refuses a discovered name collision and leaves the catalog record untouched",
+    catalogClaimError?.message.includes("owned by a signed-in space catalog") === true && findMesh("claimed-catalog")?.origin === "catalog",
+    catalogClaimError?.message);
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
+  removeMesh("claimed-catalog");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability
@@ -1010,6 +1110,67 @@ try {
   const empty = await run([]);
   check("an empty registry points at both ways to fill it", empty.out.includes("cotal up") && empty.out.includes("cotal meshes add"), empty.out);
 
+  recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  // ── a record the shipped code cannot use is refused BY NAME, never rendered ───────────────────
+  // The renderer pads m.server/mode to compute column widths, so a parseable record missing them
+  // reached the listing and crashed it with "Cannot read properties of undefined (reading 'length')"
+  // while `status` printed `undefined` columns. A SKIPPED record is no better: it is invisible to
+  // `meshes` AND to `meshes rm`, so the operator can neither see it nor remove it by name.
+  // loadMeshes refuses it instead, and the refusal names the file. Both cells assert the REASON,
+  // not just the throw: an error naming any file would satisfy a bare "it threw".
+  const brokenFile = join(home, "meshes", "space.broken.json");
+  writeFileSync(brokenFile, JSON.stringify({ space: "broken", catalogSlug: "broken-tenant", root }));
+  let loadError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    loadError = (e as Error).message;
+  }
+  check("a record missing required fields refuses naming the file and the fields",
+    loadError.includes(brokenFile) && loadError.includes("server") && loadError.includes("mode") && loadError.includes("ts"), loadError);
+  // `run` only converts process.exit; loadMeshes throws before the command prints, and runCli is
+  // what renders it as the operator's one ✗ line (verified against the shipped binary). Capture
+  // the raw throw and assert it carries the named-file sentence, not a TypeError.
+  let listingError = "";
+  try {
+    await run([]);
+  } catch (e) {
+    listingError = (e as Error).message;
+  }
+  check("the listing refuses naming the file instead of crashing on a TypeError",
+    listingError.includes(brokenFile) && listingError.includes("not a usable mesh record")
+      && !listingError.includes("Cannot read properties"), listingError);
+  let rmError = "";
+  try {
+    await run(["rm", "tabbed"]);
+  } catch (e) {
+    rmError = (e as Error).message;
+  }
+  check("the registry refuses WHOLE while a malformed record is planted - even `rm` of a good record",
+    rmError.includes(brokenFile) && existsSync(join(home, "meshes", `space.${Buffer.from("tabbed", "utf8").toString("hex")}.json`)), rmError);
+  recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  writeFileSync(brokenFile, "{ not json");
+  let parseError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    parseError = (e as Error).message;
+  }
+  check("a registry file that does not parse refuses naming the file (no silent skip)",
+    parseError.includes(brokenFile) && parseError.includes("does not parse"), parseError);
+  writeFileSync(brokenFile, JSON.stringify({ space: "sideways", server: LIVE, root, mode: "sometimes", ts: new Date(0).toISOString() }));
+  let modeError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    modeError = (e as Error).message;
+  }
+  check("a record with a mode this build does not know refuses naming the file",
+    modeError.includes(brokenFile) && modeError.includes("sometimes") && modeError.includes("auth, open, user"), modeError);
+  rmSync(brokenFile);
+  check("the registry is usable again once the damaged record is removed by hand",
+    (await run([])).code === 0 && loadMeshes().some((m) => m.space === "tabbed"));
+  removeMesh("tabbed");
   recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   // The kernel hands a completer the words AFTER the command name (`emitCommandCompletion`).
   check("completion offers the subcommands first", meshesComplete([""]).items.some((i) => i.value === "add"));

@@ -77,10 +77,10 @@ examples ──→ implementations ──→ workspace ──→ core ←(peer)�
   third party can embed core without inheriting workstation plumbing.
 - **`@cotal-ai/lang`**, the workflow language: validator, interpreter, journal. Depends on
   nothing else in the repo.
-- **`@cotal-ai/seat`**, local PTY seat custody: one detached custodian process per seat and the
-  authenticated local protocol a manager worker uses to adopt that handle. Depends on PTY
-  libraries, not on core or NATS. Linux is the production transport; other platforms throw
-  from this package.
+- **`@cotal-ai/seat`**, local PTY seat custody: one detached custodian process per seat, the
+  authenticated local protocol a manager worker uses to adopt that handle, and the identity-pinned
+  reap a successor manager uses on a seat nobody adopted. Depends on PTY libraries, not on core or
+  NATS. Linux is the production transport; other platforms throw from this package.
 - **`extensions/*`**: pluggable adapters (connectors, runtimes). Each **peer-depends** on
   core (binding to the host's single core instance) and self-registers on import; an
   unknown agent type **throws**, no silent fallback.

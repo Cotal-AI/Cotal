@@ -108,6 +108,9 @@ export const opencodeConnector: Connector = {
   supportsFreshStart: true,
   requires: ["opencode"],
   supportsModelVariant: true,
+  // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before
+  // loading the plugin; readiness also checks that server's provider list before mesh presence.
+  readinessTimeoutMs: 120_000,
   listModels: listOpenCodeModels,
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a
@@ -157,14 +160,15 @@ export const opencodeConnector: Connector = {
       // executes the session's tool calls, so a shell this seat runs inherits neither the material
       // nor a reference to it. The shim itself keeps the reference, because the server it starts is
       // the reader; it runs no tools of its own.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
     // Preserve an operator's machine-wide COTAL_OPENCODE_BIN pin from launchEnv. The manager's
     // boot-resolved executable is a fallback, not permission to overwrite that explicit choice.
     if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_RESOLVED_BIN = opts.resolvedBinaries.opencode;
-    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` arms the emitter, and arming is not authorization: a
     // publish grant on a channel is not a request to publish to it, so an agent file that can write
     // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.
     // `COTAL_WORKSPACE_ROOT` rides with it because the emitter's write-ahead log has to live
@@ -176,7 +180,7 @@ export const opencodeConnector: Connector = {
     // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
     // found by the process that wrote them. It is not safe for the log, which exists to be found by
     // a process that has not started yet.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(
@@ -189,6 +193,7 @@ export const opencodeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // The auto-submitted first turn (`cotal spawn --prompt`). It rides the child ENV, the same
     // carrier codex uses (COTAL_CODEX_PROMPT): the plugin runs inside `opencode serve`, which
     // inherits this env, so the text reaches the one component that can issue a turn without going

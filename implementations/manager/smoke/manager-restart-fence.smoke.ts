@@ -35,6 +35,7 @@ import {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
   type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
+  type Connector, type LaunchSpec, registry,
 } from "@cotal-ai/core";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
 // the split is deliberate. The long-lived-client behaviour graded below lives in
@@ -47,6 +48,7 @@ import { CotalEndpoint } from "../../../packages/core/src/index.js";
 import { recordMesh, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -69,6 +71,19 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
 type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext } };
+// THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
+// AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
+// so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
+// stale-bind fence this block grades (refuse-before-run, re-issue, counted recovery) can never fire.
+// The stub declares `requires: ["node"]` (satisfied by the very runtime running this suite) and a
+// `buildLaunch` that never runs: the cells below spawn a GHOST persona, which the manager refuses at
+// the persona lookup before any connector is consulted, so the answer is the manager's own refusal
+// at its epoch — exactly what these cells were written to grade. An operator-run manager always has
+// a real connector (that is its purpose), so this is the representative shape, not a special one.
+registry.register({
+  kind: "connector", name: "mrf-stub", requires: ["node"],
+  buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", ""], env: {} }),
+} as Connector);
 const bootManager = async (): Promise<InstanceType<typeof Manager>> => {
   const m = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await m.start();
@@ -84,7 +99,8 @@ let mgr: InstanceType<typeof Manager> | undefined;
 let client: CotalEndpoint | undefined;
 let reader: CotalEndpoint | undefined;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-mrf-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mrf-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
@@ -149,7 +165,7 @@ try {
     readerWarm.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
 
   // ── restart: incarnation 2 (same root) ──
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   mgr = await bootManager();
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
@@ -269,7 +285,7 @@ try {
 } finally {
   await reader?.stop().catch(() => {});
   await client?.stop().catch(() => {});
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }
 

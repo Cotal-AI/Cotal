@@ -985,7 +985,7 @@ try {
   const liveStarts = liveEv.filter((e) => e.type === "RUN_STARTED").length;
   const liveFinishes = liveEv.filter((e) => e.type === "RUN_FINISHED").length;
   check(
-    "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, tool result included",
+    "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, WITHOUT the tool bytes",
     liveComplete &&
       liveStarts === 3 &&
       liveFinishes === 3 &&
@@ -993,8 +993,13 @@ try {
       [liveOutageTurn, liveRebindTurn, livePostRebindTurn].every(
         (turn) => liveDeltas.filter((delta) => delta === `ok:${turn}`).length === 1,
       ) &&
-      liveWire.includes(`toolargs:${liveOutageTurn}`) &&
-      liveWire.includes(`tooloutput:${liveOutageTurn}`),
+      // The tool call HAPPENED and its lifecycle survived recovery. Without this the two negations
+      // below also pass on a backlog that carried no tool call at all, which is the state a broken
+      // recovery produces.
+      liveEv.some((e) => e.type === "TOOL_CALL_START") &&
+      liveEv.some((e) => e.type === "TOOL_CALL_END") &&
+      !liveWire.includes(`toolargs:${liveOutageTurn}`) &&
+      !liveWire.includes(`tooloutput:${liveOutageTurn}`),
     {
       ...margin("D:the complete existing-cursor backlog reaches the wire"),
       turns: { liveOutageTurn, liveRebindTurn, livePostRebindTurn },
@@ -1002,6 +1007,8 @@ try {
       finishes: liveFinishes,
       open: openRunsIn(frames2.slice(liveFramesFrom)),
       deltas: liveDeltas,
+      hasToolStart: liveEv.some((e) => e.type === "TOOL_CALL_START"),
+      hasToolEnd: liveEv.some((e) => e.type === "TOOL_CALL_END"),
       hasToolArgs: liveWire.includes(`toolargs:${liveOutageTurn}`),
       hasToolOutput: liveWire.includes(`tooloutput:${liveOutageTurn}`),
     },
@@ -1408,12 +1415,19 @@ try {
       evE.some((e) => e.type === "RUN_STARTED") &&
       evE.some((e) => e.type === "RUN_FINISHED") &&
       deltasE.includes("ok:1") &&
-      wireE.includes("tooloutput:1"),
+      // Same guard as the outage cell: the tool call must be present in lifecycle form, or the
+      // absence of its bytes below is satisfied by a window turn that never reached the wire.
+      evE.some((e) => e.type === "TOOL_CALL_START") &&
+      evE.some((e) => e.type === "TOOL_CALL_END") &&
+      !wireE.includes("tooloutput:1"),
     {
       ...margin("E:the window turn reaches the wire"),
       threadE,
       frames: framesE().length,
       deltas: deltasE,
+      hasToolStart: evE.some((e) => e.type === "TOOL_CALL_START"),
+      hasToolEnd: evE.some((e) => e.type === "TOOL_CALL_END"),
+      hasToolOutput: wireE.includes("tooloutput:1"),
       types: [...new Set(evE.map((e) => String(e.type)))],
       tail: errE.slice(-400),
     },

@@ -1,0 +1,1851 @@
+#!/usr/bin/env node
+/** Self-test for mutation-coverage's reachability, parser, and whole-corpus accounting. */
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
+import { INFRASTRUCTURE_MARKERS } from "./mutation-command-safety.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mjs");
+const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
+let pass = 0;
+let failed = 0;
+// Normally the first failing cell stops the run, which keeps a failure legible. Grading the
+// MUTANTS needs the opposite: a mutant is only proven to bite when the cell it NAMES reds, and an
+// early exit hides every cell after the first. This reports them all, and still exits non-zero.
+const CONTINUE = process.env.MUTATION_SELFTEST_REPORT_ALL === "1";
+const check = (name, condition, extra) => {
+  if (!condition) {
+    failed++;
+    console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
+    if (CONTINUE) return;
+    rmSync(root, { recursive: true, force: true });
+    process.exit(1);
+  }
+  pass++;
+  console.log(`  ✓ ${name}`);
+};
+// Fixtures name the repo root as real suites do: by computing it. The resolver deliberately has no
+// notion of a root-shaped IDENTIFIER (that was the #1434 class), so a fixture that used a free
+// `ROOT` would be testing a spelling rather than a data-flow fact.
+const ROOT_BINDING = 'const ROOT = process.cwd();\n';
+// A fixture also calls its joiners, readers, copiers, and launchers the way a real suite does:
+// through a binding an import put there. Since #1612 a spelling is not provenance, so a fixture
+// that called a bare `join` or `spawnSync` would be testing a name the program never bound and
+// would be refused for that rather than for the fact under test. A fixture that DECLARES the name
+// itself is left alone, because a local definition shadowing a builtin is the very shape #1612 is
+// about and importing over it would erase the case.
+const BUILTIN_MODULE = new Map([
+  ["join", "node:path"], ["dirname", "node:path"], ["resolve", "node:path"],
+  ["fileURLToPath", "node:url"],
+  ["readFileSync", "node:fs"], ["readdirSync", "node:fs"], ["cpSync", "node:fs"],
+  ["copyFileSync", "node:fs"], ["mkdtempSync", "node:fs"],
+  ["spawnSync", "node:child_process"], ["execFileSync", "node:child_process"],
+]);
+const builtinImports = (value) => {
+  const wanted = new Map();
+  for (const [name, module] of BUILTIN_MODULE) {
+    if (!new RegExp(`\\b${name}\\s*\\(`).test(value)) continue;
+    if (new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`).test(value)) continue;
+    if (new RegExp(`\\b${name}\\b[^\\n]*from "`).test(value)) continue;
+    if (!wanted.has(module)) wanted.set(module, []);
+    wanted.get(module).push(name);
+  }
+  return [...wanted].map(([module, names]) => `import { ${names.join(", ")} } from "${module}";\n`).join("");
+};
+const write = (path, value) => {
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  const rooted = /\bROOT\b/.test(value) && !value.startsWith(ROOT_BINDING) ? ROOT_BINDING + value : value;
+  writeFileSync(target, path.endsWith(".json") ? rooted : builtinImports(rooted) + rooted);
+};
+const summaryCommand = (line) =>
+  `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`console.log(${JSON.stringify(line)})`)}`;
+const mutation = (file) => ({
+  name: `mutates ${file}`, file, find: "x", replace: "y",
+  expectRed: "the fixture cell", cell: "the fixture cell",
+});
+const config = (name, value) => write(`${name}.json`, JSON.stringify(value));
+const runArgs = (...argv) => spawnSync(process.execPath, [TOOL, ...argv], {
+  cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, PATH: `${root}:${process.env.PATH}` },
+});
+const run = (...names) => runArgs(...names.map((name) => `${name}.json`));
+const report = (result) => `${result.stdout}\n${result.stderr}`;
+
+try {
+  write("packages/seat/package.json", JSON.stringify({
+    name: "@cotal-ai/seat",
+    // `build:emit` runs a compiler and so produces dist; `build:docs` does not, and is the
+    // discriminator for the manifest check that keeps `build:` from being a magic prefix.
+    scripts: { build: "tsc -p tsconfig.json", "build:emit": "tsc -p tsconfig.json --noCheck", "build:docs": "typedoc --out docs" },
+  }));
+  write("packages/seat/src/index.ts", "export const x = 1;\n");
+  write("packages/seat/src/impl.ts", "export const impl = 1;\n");
+  write("packages/seat/smoke/local.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  write("packages/seat/smoke/src-import.smoke.ts", 'import { x } from "../src/index.js";\n');
+  write("packages/seat/smoke/comment-src.smoke.ts", 'const note = "see ../src/index.ts for details";\n');
+  write("packages/other/package.json", JSON.stringify({ name: "@cotal-ai/other" }));
+  write("packages/other/src/index.ts", "export const x = 1;\n");
+  write("bin/entry.ts", 'import "@cotal-ai/seat";\n');
+  write("bin/other-entry.ts", 'import "@cotal-ai/other";\n');
+  write("bin/direct.mjs", "export const x = 1;\n");
+  write("bin/smoke/assembling.smoke.ts", 'cpSync(join(ROOT, "packages", "seat"), clone);\n');
+  write("bin/smoke/by-name.smoke.ts", 'import { x } from "@cotal-ai/seat";\n');
+  // A worker thread's entry: the dist URL is handed over as `entry`, and the thread runs it.
+  write("bin/smoke/worker-entry.smoke.ts",
+    'import { runInWorker } from "../../packages/seat/src/index.js";\n' +
+    'const WORKER_ENTRY = new URL("../../packages/seat/dist/index.js", import.meta.url);\n' +
+    'await runInWorker({ run: 1 }, { entry: WORKER_ENTRY });\n');
+  // The discriminator: the same dist URL is BOUND but never handed to anything that runs it.
+  write("bin/smoke/worker-entry-unused.smoke.ts",
+    'const WORKER_ENTRY = new URL("../../packages/seat/dist/index.js", import.meta.url);\n' +
+    'console.log(WORKER_ENTRY);\n');
+  // B5 accept: the reader is imported from fs under an alias.
+  write("bin/smoke/aliased-reader.smoke.ts",
+    'import { readFileSync as readData } from "node:fs";\n' +
+    'readData(join(ROOT, "packages", "seat", "package.json"), "utf8");\n');
+  // The grep harness: reads a SOURCE module and asserts on its text, never loading it. Identical
+  // read shape to `reads-data`, so the only thing separating them is the kind of file read.
+  write("bin/smoke/greps-source.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'const src = readFileSync(join(ROOT, "scripts", "direct.mjs"), "utf8");\n' +
+    'if (src.split("export function run").length - 1 !== 1) throw new Error("shape changed");\n');
+  write("bin/smoke/reads-other.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'readFileSync(join(ROOT, "packages", "other", "package.json"), "utf8");\n');
+  write("bin/smoke/env-read.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'const FIXTURE = process.env.FIXTURE_PATH;\n' +
+    'readFileSync(FIXTURE, "utf8");\n');
+  write("bin/smoke/env-unread.smoke.ts",
+    'const FIXTURE = process.env.FIXTURE_PATH;\n' +
+    'console.log(FIXTURE);\n');
+  write("bin/smoke/listing-read.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) { readFileSync(join(DIR, String(f)), "utf8"); }\n');
+  write("bin/smoke/listing-names.smoke.ts",
+    'import { readdirSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) { console.log(String(f)); }\n');
+  // The #1575 attack: the sweep still walks the tree, but one `continue` on an equality against a
+  // single known path means only one entry ever reaches the reader. Form of a sweep, substance of
+  // a named read.
+  write("bin/smoke/listing-narrowed.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts") continue;\n' +
+    '  const text = readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  if (text.split("export const impl").length - 1 !== 1) throw new Error("shape");\n' +
+    '}\n');
+  // The same narrowing spelled as a positive guard rather than an early exit.
+  write("bin/smoke/listing-narrowed-eq.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts") { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The narrowing hidden behind a CONSTANT the program computes, so the rule cannot be satisfied
+  // by looking for a string literal next to an equality operator.
+  write("bin/smoke/listing-narrowed-const.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const ONLY = join("src", "impl.ts");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== ONLY) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The direction matters as much as the operator. `!== ONE` admits one file, but `=== ONE`
+  // followed by `continue` EXCLUDES one file and leaves every other entry going through, so the
+  // sweep is still open and still catches a file nobody named.
+  write("bin/smoke/listing-skip-one.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/skipped.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The near neighbour that must stay ACCEPTED: an extension test admits an open set of files, so
+  // a new file still gets caught and nothing is named.
+  write("bin/smoke/listing-filtered-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (!String(f).endsWith(".ts")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The same narrowing wearing parentheses. A `ParenthesizedExpression` is not a
+  // `BinaryExpression`, so two characters are enough to walk past a classifier that does not
+  // normalize, and the narrowed sweep counts as a sweep again.
+  write("bin/smoke/listing-narrowed-paren.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if ((String(f) !== "src/impl.ts")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The De Morgan spelling. `!(f !== ONE)` means the same thing as `f === ONE`, so a classifier
+  // with no notion of negation grades the two spellings differently.
+  write("bin/smoke/listing-narrowed-negated.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (!(String(f) !== "src/impl.ts")) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The narrowing hidden in one operand of a compound guard. Inside the `then` branch BOTH
+  // operands of `&&` hold, so an operand that pins the entry pins it for the whole branch.
+  write("bin/smoke/listing-narrowed-and.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length > 0) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The compound narrowing in the EXIT form. Control reaches the read only when the whole guard
+  // is false, and a false `||` makes BOTH operands false, so `f !== ONE` being false pins the
+  // entry. `||` is the operand that decomposes here; `&&` is not (see listing-compound-open).
+  write("bin/smoke/listing-narrowed-or.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts" || DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The accept control for the decomposition, and the reason `&&` must NOT decompose under an
+  // exit guard. A false `&&` only says at least ONE operand was false, so `f !== ONE` is left
+  // free and every entry other than ONE still reaches the reader. Decomposing here would refuse
+  // an open sweep, which is the failure that reds nothing and just stops counting.
+  write("bin/smoke/listing-compound-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== "src/impl.ts" && DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // An ordinary extension filter that happens to be WRITTEN as an equality. It mentions the loop
+  // entry, and the other side is a known string, but `slice(-3)` maps many entries onto one
+  // value, so the guard pins an extension and not an entry. Refusing it would silently drop
+  // coverage with nothing going red.
+  write("bin/smoke/listing-suffix-equality.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f).slice(-3) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // #1605 v3. Each of these is a spelling that defeated v1 or v2, and each is a ROW of the table
+  // in the design record rather than a grammar case in the classifier. A future spelling is added
+  // here, as another row, and the classifier does not grow a case to match it.
+  //
+  // The ternary. A `ConditionalExpression` is not a `BinaryExpression`, so v2 walked straight past
+  // a guard that admits exactly one entry. `pins` evaluates it instead of matching it: with
+  // boolean-literal arms it reduces to its condition.
+  write("bin/smoke/listing-narrowed-ternary.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" ? true : false) { readFileSync(join(DIR, String(f)), "utf8"); }\n' +
+    '}\n');
+  // The TypeScript `as` wrapper. Erased before the program runs, so it cannot change which entries
+  // reach the read, yet `AsExpression` appears zero times in the v2 classifier.
+  write("bin/smoke/listing-narrowed-as.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f as string) !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The loop-local alias, in the shape where the READER still spells `String(f)`. The guard tests
+  // a second name for the same value, so the entry is pinned just as hard as if it were inlined.
+  write("bin/smoke/listing-narrowed-alias.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  if (entry !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The SAME narrowing in the shape sol probed, where the alias is also what the reader is handed.
+  // The two shapes disagreed across harnesses at v2 and they must land on one verdict: the guard
+  // admits one entry either way, so both are named reads.
+  write("bin/smoke/listing-narrowed-alias-read.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  if (entry !== "src/impl.ts") continue;\n' +
+    '  readFileSync(join(DIR, entry), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE ALIAS RULE, and a false refusal that is live at `cbf0ab8c3`. This
+  // sweep names nothing at all: it just binds the entry before reading it. v2 refused it because
+  // `mentions` did not follow the binding, so the reader's argument looked unrelated to the loop.
+  // Nothing reds when that happens; coverage simply stops counting, which is why an accept control
+  // is the only thing that can catch it.
+  write("bin/smoke/listing-alias-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const entry = String(f);\n' +
+    '  readFileSync(join(DIR, entry), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE RESOLUTION RULE. `helper.String` is a many-to-one projection that
+  // merely spells its terminal name `String`, and the sweep it filters is open. v2 compared the
+  // callee's terminal name, called it the global conversion, and refused this legitimate sweep.
+  write("bin/smoke/listing-helper-string.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const helper = { String: (v) => globalThis.String(v).slice(-3) };\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (helper.String(f) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, globalThis.String(f)), "utf8");\n' +
+    '}\n');
+  // The same, through a LOCAL BINDING that shadows the global `String`. Resolution has to consult
+  // the scope chain, not the spelling, or a shadowed projection is blessed as identity.
+  write("bin/smoke/listing-shadowed-string.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const String = (v) => globalThis.String(v).slice(-3);\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) !== ".ts") continue;\n' +
+    '  readFileSync(join(DIR, globalThis.String(f)), "utf8");\n' +
+    '}\n');
+  // THE ACCEPT CONTROL FOR THE TERNARY RULE: a ternary whose arms BOTH read. Whichever way the
+  // condition goes the loop reads the entry it is on, so no entry is excluded and the sweep is
+  // open. A ternary rule that pinned on the condition alone would refuse this.
+  write("bin/smoke/listing-ternary-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  const where = String(f) === "src/impl.ts" ? String(f) : String(f);\n' +
+    '  readFileSync(join(DIR, where), "utf8");\n' +
+    '}\n');
+  // A guard the classifier has NO rule for, over a sweep that really is open. The guard is a bare
+  // CALL, so it reaches the final `return false` of `pins` rather than any rule above it -- that is
+  // the point of the cell, and a guard shaped like `a && b` would be answered by the `&&` rule and
+  // grade nothing here. The default has to be OPEN: an unrecognised guard makes the sweep COUNT.
+  write("bin/smoke/listing-unknown-guard.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f).startsWith("zz")) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The `&&` exit guard in its POSITIVE form. Control reaches the read when the conjunction was
+  // FALSE, which says only that at least one operand was false, so `String(f) === ONE` is left free
+  // and every other entry still gets through. Decomposing a false `&&` would refuse this open
+  // sweep. The existing compound-open control spells the equality with `!==`, which cannot tell a
+  // direction-blind decomposition apart from a correct one: both answer "does not pin" there.
+  write("bin/smoke/listing-and-exit-open.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (String(f) === "src/impl.ts" && DIR.length > 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // A ternary GUARD whose arms are conditions rather than boolean literals. Control reaches the
+  // read when the ternary is false, and that can happen down EITHER arm, so the entry is pinned
+  // only if both arms pin it. Here the `then` arm does and the `else` arm does not, so the sweep is
+  // open. A rule that accepted one pinning arm would refuse it.
+  write("bin/smoke/listing-ternary-arms.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  if (DIR.length > 0 ? String(f) !== "src/impl.ts" : DIR.length === 0) continue;\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  write("packages/seat/smoke/parked-import.smoke.ts",
+    'async function never() { return await import("../src/impl.js"); }\n' +
+    'console.log("nothing calls never");\n');
+  write("packages/seat/smoke/dead-branch-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'if (false) { await used(); }\n');
+  write("packages/seat/smoke/live-branch-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'if (process.env.X) { await used(); }\n');
+  write("packages/seat/smoke/logged-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'console.log(used);\n');
+  // #1612, one fixture per caller of `namedAliases`. Each declares a LOCAL function spelled like
+  // the real callee and imports nothing of that name, so the call is genuinely reached and
+  // genuinely executed and does nothing at all. The witness is sound about control flow and wrong
+  // about identity, which is the whole defect: the suite earns coverage of a file it never opens,
+  // never launches, and never copies. Each is paired with the imported twin above that must keep
+  // grading, because a rule that refused both would just stop counting honest coverage.
+  //
+  // KEEP EACH REFUSAL WITH ITS ACCEPT TWIN. Measured: every refusal cell below still PASSES when
+  // the provenance predicate is forced to return false, and when the tool is made to refuse every
+  // config, because each asserts only that a config was refused. The twins are what carry the
+  // evidence: the same injection reds 69 cells, among them the aliased reader, the namespace
+  // reader, the recursive listing, the aliased launcher, the assembles copier and the real packer.
+  // Splitting a refusal away from its twin therefore removes the proof while leaving a green cell,
+  // which no run would report.
+  // :661 readers, and :663 listers, from the issue's own reproduction.
+  write("bin/smoke/local-reader.smoke.ts",
+    'import { readdirSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'function readFileSync(_p, _e) { return ""; }\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  write("bin/smoke/local-lister.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'function readdirSync(_d, _o) { return []; }\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // :698 launchers, the second path the issue measured independently.
+  write("bin/smoke/local-launcher.smoke.ts",
+    'function spawnSync(_c, _a) { return { status: 0 }; }\n' +
+    'const ENTRY = join(ROOT, "bin", "entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  // :760 copiers.
+  write("bin/smoke/local-copier.smoke.ts",
+    'function cpSync(_s, _d, _o) {}\n' +
+    'cpSync(join(ROOT, "packages", "seat"), clone, { recursive: true });\n');
+  // :90 joiners. The local `join` returns a path that has nothing to do with the arguments, so
+  // resolving the read target through it asserts a path the program never builds.
+  write("bin/smoke/local-joiner.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'const ROOT = process.cwd();\n' +
+    'function join(..._p) { return "/dev/null"; }\n' +
+    'readFileSync(join(ROOT, "packages", "seat", "package.json"), "utf8");\n');
+  // A binding PATTERN binds exactly as a plain identifier does, so a shadow spelled with
+  // destructuring is the same fact as `function run(readFileSync)` one syntax node over. Once as a
+  // parameter, once as a local, because those are separate code paths in any scope resolver.
+  write("bin/smoke/destructured-param-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'function run({ readFileSync }) {\n' +
+    '  for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '    readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  }\n' +
+    '}\n' +
+    'run({ readFileSync: (_p, _e) => "" });\n');
+  write("bin/smoke/destructured-local-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const fake = { readFileSync: (_p, _e) => "" };\n' +
+    '{\n' +
+    '  const { readFileSync } = fake;\n' +
+    '  for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '    readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  }\n' +
+    '}\n');
+  // The near neighbour a shadow rule must not break, and the direction that fails SILENTLY: the
+  // local lives in a sibling block that has already closed, so it never binds the module-scope call
+  // below it. Refusing this costs an honest suite its witness and nothing reds to say so.
+  write("bin/smoke/sibling-block-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    '{\n' +
+    '  const readFileSync = (_p, _e) => "";\n' +
+    '  void readFileSync;\n' +
+    '}\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The same sibling question for a `catch (e)` binding, which is the shape that survived the
+  // first scope fix: a catch parameter is not a `var` and does not hoist out of its clause, but it
+  // is spelled as a declaration with no let/const flag, so a rule keyed on that flag reads it as
+  // hoisting and lets an unrelated try/catch shadow the sweep below it.
+  write("bin/smoke/sibling-catch-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'try { throw new Error("x"); } catch (readFileSync) { void readFileSync; }\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // `npm pack` publishes a package's built output, and a suite that reads the tarball observes the
+  // artifact the build produced. Both halves are needed: a genuine imported launcher performs the
+  // pack, and a local function spelled like one packs nothing at all.
+  write("bin/smoke/real-packer.smoke.ts",
+    'import { execFileSync } from "node:child_process";\n' +
+    'execFileSync("npm", ["pack", join(ROOT, "packages", "seat")]);\n');
+  write("bin/smoke/local-packer.smoke.ts",
+    'function execFileSync(_c, _a) { return ""; }\n' +
+    'execFileSync("npm", ["pack", join(ROOT, "packages", "seat")]);\n');
+  // #1434, the pack cell: the declared root is the flag VALUE of `--pack-destination`, so the
+  // tarball is WRITTEN into it and the tree packed is the positional that follows. Reading every
+  // non-literal element credits the suite with observing an artifact built from a package it only
+  // wrote a file into. `real-packer` above is the accept control for the same call shape.
+  write("bin/smoke/pack-destination.smoke.ts",
+    'import { execFileSync } from "node:child_process";\n' +
+    'execFileSync("npm", ["pack", "--pack-destination", join(ROOT, "packages", "seat"), join(ROOT, "packages", "other")]);\n');
+  // #1434, the copy cell: `cpSync` copies whatever its SOURCE expression evaluates to. Here that is
+  // the return of a helper, and the declared root sits inside an ARGUMENT of that helper, naming
+  // nothing that is copied. `assembling` above is the accept control.
+  write("bin/smoke/copy-argument-root.smoke.ts",
+    'import { cpSync } from "node:fs";\n' +
+    'const elsewhere = (p) => join(ROOT, "packages", "other");\n' +
+    'cpSync(elsewhere(join(ROOT, "packages", "seat")), join(ROOT, "clone"), { recursive: true });\n');
+  // #1434, the worker-entry cell: the same dist URL under an `entry:` key on an object that is
+  // bound and then only printed. `worker-entry.smoke.ts` is the accept control, and
+  // `worker-entry-unused.smoke.ts` pins the unbound-URL half of the same fact.
+  write("bin/smoke/entry-object-unused.smoke.ts",
+    'const options = { entry: new URL("../../packages/seat/dist/index.js", import.meta.url) };\n' +
+    'console.log(options);\n');
+  // The same object handed to a LOCAL function spelled like the real helper. Nothing is imported,
+  // so no thread starts, and the only thing vouching for the launch would be the spelling.
+  write("bin/smoke/entry-local-helper.smoke.ts",
+    'function runInWorker(_input, _options) { return { done: null }; }\n' +
+    'runInWorker({ run: 1 }, { entry: new URL("../../packages/seat/dist/index.js", import.meta.url) });\n');
+  // The reader analogue of `foreign-launcher`, and the cell that pins the EMPTY seed specifically.
+  // The callee carries the canonical spelling and is genuinely imported, so no shadowing
+  // declaration exists to catch it; the only thing wrong is the module it comes from. Seeding the
+  // name set with the canonical spellings admits it on the strength of the spelling alone.
+  write("helpers/fsish.mjs", 'export const readFileSync = () => "";\n');
+  write("bin/smoke/foreign-reader.smoke.ts",
+    'import { readdirSync } from "node:fs";\n' +
+    'import { readFileSync } from "../../helpers/fsish.mjs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // #1612 again, one scope down. An import is a fact about the MODULE, and matching the name it
+  // introduced everywhere in the file is not the same question as which binding the CALL SITE
+  // resolves to. Here `readFileSync` really is imported, and the call still reaches a PARAMETER
+  // holding a local no-op, which shadows the import for the whole body. `aliased-reader` is the
+  // accept control: same import, same read, no shadowing declaration in between.
+  write("bin/smoke/shadowed-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'function run(readFileSync) {\n' +
+    '  for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '    readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  }\n' +
+    '}\n' +
+    'run((_p, _e) => "");\n');
+  // Three binding forms the language has and a scope walk keyed on `function` declarations and
+  // variables does not: a named function EXPRESSION binds its own name inside its own body, a
+  // CLASS declaration binds its name exactly as a function declaration does, and a named function
+  // expression can shadow an imported NAMESPACE the same way. In each the call is genuinely made
+  // and reaches the local binding, so the target is never read.
+  write("bin/smoke/named-fn-expr-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const run = function readFileSync(_p, _e) {\n' +
+    '  if (typeof _p === "string") return "";\n' +
+    '  for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '    readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  }\n' +
+    '  return "";\n' +
+    '};\n' +
+    'run();\n');
+  write("bin/smoke/class-decl-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'class readFileSync { constructor(_p, _e) { this.v = ""; } }\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  write("bin/smoke/named-fn-expr-namespace.smoke.ts",
+    'import * as fs from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const go = function fs(_x) {\n' +
+    '  for (const f of fs.readdirSync(DIR, { recursive: true })) {\n' +
+    '    fs.readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '  }\n' +
+    '};\n' +
+    'go();\n');
+  // The overshoot controls for the two binding rules above, and the direction that fails SILENTLY.
+  // A function expression's self-name binds only INSIDE its body, and a class declaration in a
+  // closed sibling block binds only there, so a module-scope call below either one still reaches
+  // the import. A rule that refused these would cost honest suites their witness with nothing red.
+  write("bin/smoke/fn-expr-outside-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'const go = function readFileSync(_p) { return ""; };\n' +
+    'void go;\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  write("bin/smoke/class-sibling-block-reader.smoke.ts",
+    'import { readdirSync, readFileSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    '{ class readFileSync { constructor() {} } void readFileSync; }\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // The namespace accept control: `import * as fs` binds `fs.readFileSync`, and that member is
+  // what the sweep calls, so this is honest coverage and must keep grading.
+  write("bin/smoke/namespace-reader.smoke.ts",
+    'import * as fs from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'for (const f of fs.readdirSync(DIR, { recursive: true })) {\n' +
+    '  fs.readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  // Its discriminator: the same namespace import, used only for an unrelated constant, while the
+  // read goes through a BARE local decoy. `import * as fs` never binds a bare `readFileSync`, so
+  // crediting the bare spelling lets any `import * as fs` in the file vouch for a local no-op.
+  write("bin/smoke/namespace-decoy.smoke.ts",
+    'import * as fs from "node:fs";\n' +
+    'import { readdirSync } from "node:fs";\n' +
+    'const DIR = join(ROOT, "packages", "seat");\n' +
+    'function readFileSync(_p, _e) { return ""; }\n' +
+    'console.log(fs.constants.F_OK);\n' +
+    'for (const f of readdirSync(DIR, { recursive: true })) {\n' +
+    '  readFileSync(join(DIR, String(f)), "utf8");\n' +
+    '}\n');
+  write("bin/smoke/dead-copy.smoke.ts",
+    'import { cpSync } from "node:fs";\n' +
+    'function never() { cpSync(join(process.cwd(), "packages", "seat"), clone, { recursive: true }); }\n' +
+    'console.log("never is never called");\n');
+  write("packages/seat/smoke/referenced-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'void used;\n');
+  write("packages/seat/smoke/callback-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'queueMicrotask(used);\n');
+  write("packages/seat/smoke/called-import.smoke.ts",
+    'async function used() { return await import("../src/impl.js"); }\n' +
+    'await used();\n');
+  write("bin/smoke/scoped-argv.smoke.ts",
+    'function real() { const args = [join(ROOT, "scripts", "absent.mjs")]; spawnSync(process.execPath, args); }\n' +
+    'function decoy() { const args = [join(ROOT, "scripts", "direct.mjs")]; return args; }\n' +
+    'real(); decoy();\n');
+  write("bin/smoke/named-root.smoke.ts",
+    'import { mkdtempSync } from "node:fs";\n' +
+    'const pkgRoot = mkdtempSync("/tmp/fixture-");\n' +
+    'spawnSync(process.execPath, [join(pkgRoot, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/spawn-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  // The pty launcher, imported as a namespace exactly as the manager's real seat suites do.
+  write("bin/smoke/pty-entry.smoke.ts",
+    'import * as pty from "@lydell/node-pty";\n' +
+    'const here = dirname(fileURLToPath(import.meta.url));\n' +
+    'const repoRoot = resolve(here, "../..");\n' +
+    'const ENTRY = join(repoRoot, "bin", "entry.ts");\n' +
+    'pty.spawn(process.execPath, [ENTRY], { cwd: process.cwd() });\n');
+  write("bin/smoke/spawn-other.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "other-entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/reference-only.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\nvoid ENTRY;\n');
+  write("bin/smoke/wrong-executable.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync("echo", [ENTRY]);\n');
+  write("bin/smoke/commented-spawn.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '// spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/despawn.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'despawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/args-variable.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  // The `executes` witness, one fixture per branch that admits a launch and one per branch that
+  // must not. Each refusing fixture differs from its accepting twin only in the fact under test,
+  // so a verdict that flips between the pair is about that fact and nothing else.
+  //
+  // B3 accept: a conditional argv, each branch a real argument list for THIS call.
+  write("bin/smoke/conditional-argv.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = process.env.X ? [ENTRY] : [ENTRY, "--flag"];\nspawnSync(process.execPath, ARGS);\n');
+  // B3 refuse: the same conditional, with the entry sitting after `-e` in both branches.
+  write("bin/smoke/conditional-eval-argv.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = process.env.X ? ["-e", "void 0", ENTRY] : ["-e", "void 1", ENTRY];\n' +
+    'spawnSync(process.execPath, ARGS);\n');
+  // B4 accept: the launcher is imported from child_process under another name.
+  write("bin/smoke/aliased-entry.smoke.ts",
+    'import { spawnSync as run } from "node:child_process";\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nrun(process.execPath, ARGS);\n');
+  // B4 refuse: a callee merely SPELLED like a launcher, imported from a local helper that is not
+  // child_process. The argument list is identical to the accepting twin above.
+  write("helpers/proc.mjs", "export const spawnProc = () => {};\n");
+  write("bin/smoke/foreign-launcher.smoke.ts",
+    'import { spawnProc } from "../../helpers/proc.mjs";\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = [ENTRY];\nspawnProc(process.execPath, ARGS);\n');
+  // B2 refuse: the launcher's own argv is its PARAMETER, and the array that really runs is passed
+  // by the caller. An unrelated function binds a same-named `args` to the declared entrypoint.
+  write("bin/smoke/scoped-entry-decoy.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function decoy() { const args = [ENTRY]; return args; }\n' +
+    'function real(args) { spawnSync(process.execPath, args); }\n' +
+    'real([join(ROOT, "scripts", "direct.mjs")]); decoy();\n');
+  // B2 scope, the SCALAR twin. Fixing the name collision for the argv ARRAY while leaving it for
+  // the scalar the array holds only moves the hole, so the scalar gets its own pair. The launch
+  // really runs direct.mjs; an unrelated function binds a same-named ENTRY to the declared
+  // entrypoint. Truth: refuse.
+  write("bin/smoke/scalar-decoy.smoke.ts",
+    'function real() {\n' +
+    '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'real();\n' +
+    'function decoy() { const ENTRY = join(import.meta.dirname, "..", "entry.ts"); return ENTRY; }\n');
+  // The accepting twin, differing in ONE fact: the launch's own scalar names the entrypoint. If a
+  // scope-aware lookup ever stops resolving a use to its OWN declaration, this cell is what reds.
+  write("bin/smoke/scalar-own-scope.smoke.ts",
+    'function real() {\n' +
+    '  const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'real();\n');
+  // B1/B2 refuse: the entry is in the argv, after `-e`. Node runs the eval program and never opens
+  // the file. Once through a bound name, once spelled inline: the slot rule is not about spelling.
+  write("bin/smoke/eval-then-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'const ARGS = ["-e", "void 0", ENTRY];\nspawnSync(process.execPath, ARGS);\n');
+  write("bin/smoke/eval-then-entry-inline.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'spawnSync(process.execPath, ["-e", "void 0", ENTRY]);\n');
+  // B5 accept: the launch is inside a function, and something calls that function.
+  write("bin/smoke/called-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function launch() { spawnSync(process.execPath, [ENTRY]); }\nlaunch();\n');
+  // B5 refuse: the same launch, in a function nobody ever calls.
+  write("bin/smoke/uncalled-entry.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function never() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'console.log("never is never called");\n');
+  write("bin/comment-entry.ts", '// import "@cotal-ai/seat";\n');
+  write("bin/smoke/comment-import.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "comment-entry.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/direct.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n' +
+    'spawnSync(process.execPath, [ENTRY], { stdio: "inherit" });\n');
+  write("bin/smoke/direct-suite.smoke.ts", "console.log('direct');\n");
+  write("scripts/direct.mjs", "console.log('direct');\n");
+  write("bin/smoke/direct-script.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/aliased-launcher.smoke.ts",
+    'import { spawnSync as run } from "node:child_process";\n' +
+    'run(process.execPath, [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/bound-entry.smoke.ts",
+    'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+    'execFileSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/node-by-name.smoke.ts",
+    'spawnSync("node", [join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/bound-entry-unused.smoke.ts",
+    'const ENTRY = join(ROOT, "scripts", "direct.mjs");\n' +
+    'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+    'console.log(ENTRY);\n');
+  write("bin/smoke/mentions-script.smoke.ts",
+    'const note = "scripts/direct.mjs";\n');
+  write("bin/smoke/unused-root.smoke.ts",
+    'import { x } from "@cotal-ai/seat";\n' +
+    'const unused = join(ROOT, "packages", "seat");\n');
+  write("bin/smoke/dead-read.smoke.ts",
+    'import { readFileSync } from "node:fs";\n' +
+    'function never() { readFileSync(join(process.cwd(), "packages", "seat", "package.json"), "utf8"); }\n' +
+    'console.log("never is never called");\n');
+  write("bin/smoke/dead-launch.smoke.ts",
+    'function never() { spawnSync(process.execPath, [join(process.cwd(), "scripts", "direct.mjs")]); }\n' +
+    'console.log("never is never called");\n');
+  write("bin/smoke/copy-into-root.smoke.ts",
+    'import { x } from "@cotal-ai/seat";\n' +
+    'cpSync(scratch, join(ROOT, "packages", "seat"), { recursive: true });\n');
+  write("bin/smoke/unrelated-spawn.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0"]);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\n');
+  write("bin/smoke/eval-extra-arg.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0", join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/eval-env.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0"], { env: { HINT: join(ROOT, "scripts", "direct.mjs") } });\n');
+  write("bin/smoke/eval-then-script.smoke.ts",
+    'spawnSync(process.execPath, ["-e", "void 0", "--", join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/import-then-script.smoke.ts",
+    'spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "direct.mjs")]);\n');
+  // The marker is taken from the POLICY'S OWN exported list rather than spelled out here. That is
+  // not evasion of the scan, it is the single source of truth: this file is itself suite source, so
+  // a literal would declare real infrastructure ABOUT THE SELF-TEST and fence this config out of
+  // the mutation shard plan entirely. Deriving it also means a change to the policy's markers
+  // reaches this fixture automatically instead of rotting it.
+  const liveMarker = INFRASTRUCTURE_MARKERS.find((m) => m.endsWith("broker"));
+  if (liveMarker === undefined) throw new Error("policy no longer exports a broker marker");
+  write("bin/smoke/ops-live.smoke.ts", `/* ${liveMarker} */\nconsole.log('ops');\n`);
+  // A suite that names a sibling with new URL(...) rather than join(...).
+  write("bin/smoke/url-entry.smoke.ts",
+    'const ENTRY = fileURLToPath(new URL("../../scripts/direct.mjs", import.meta.url));\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  write("bin/smoke/url-entry-unused.smoke.ts",
+    'const ENTRY = fileURLToPath(new URL("../../scripts/direct.mjs", import.meta.url));\n' +
+    'spawnSync(process.execPath, ["-e", "void 0"]);\nconsole.log(ENTRY);\n');
+  // A suite that runs the target THROUGH tsx's own CLI, which takes the first positional.
+  write("node_modules/tsx/dist/cli.mjs", "// tsx cli\n");
+  write("bin/smoke/tsx-cli.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "node_modules", "tsx", "dist", "cli.mjs"), join(ROOT, "scripts", "direct.mjs")]);\n');
+  write("bin/smoke/tsx-cli-only.smoke.ts",
+    'spawnSync(process.execPath, [join(ROOT, "node_modules", "tsx", "dist", "cli.mjs")]);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\nconsole.log(unused);\n');
+  // A launched entrypoint whose OWN source imports the mutated file.
+  write("packages/seat/src/reached.ts", "export const y = 2;\n");
+  // The entry also imports a package BY NAME. That resolves to the other package's dist, so a
+  // mutation of the other package's src is not reached, unless the walk follows bare specifiers.
+  write("packages/seat/src/entry-main.ts",
+    'import { y } from "./reached.js";\nimport { x } from "@cotal-ai/other";\nconsole.log(y, x);\n');
+  write("packages/seat/src/unreached.ts", "export const z = 3;\n");
+  write("bin/smoke/launch-entry-main.smoke.ts",
+    'const ENTRY = join(ROOT, "packages", "seat", "src", "entry-main.ts");\n' +
+    'spawnSync(process.execPath, [ENTRY]);\n');
+  // A suite that value-imports a package's BUILT output.
+  write("packages/seat/dist/index.js", "export const x = 1;\n");
+  write("bin/smoke/dist-import.smoke.ts",
+    'const mod = await import("../../packages/seat/dist/index.js");\nconsole.log(mod);\n');
+  write("bin/smoke/dist-type-only.smoke.ts",
+    'import type { X } from "../../packages/seat/dist/index.js";\nexport type Y = X;\n');
+  // #1434's indirection hazard: a genuine launch that binds its argument list first.
+  write("bin/smoke/argv-conditional.smoke.ts",
+    'const args = configMode\n' +
+    '  ? [join(ROOT, "scripts", "direct.mjs"), "--config", "config.json"]\n' +
+    '  : [join(ROOT, "scripts", "direct.mjs")];\n' +
+    'spawnSync(process.execPath, args, { cwd: root });\n');
+  // The same shape where NEITHER branch launches the target: still a refusal.
+  write("bin/smoke/argv-conditional-unrelated.smoke.ts",
+    'const args = configMode ? ["-e", "void 0"] : ["-e", "void 1"];\n' +
+    'spawnSync(process.execPath, args);\n' +
+    'const unused = join(ROOT, "scripts", "direct.mjs");\nconsole.log(unused);\n');
+  write("package.json", JSON.stringify({
+    name: "fixture",
+    scripts: {
+      "smoke:manager-service-ops": "tsx bin/smoke/ops-live.smoke.ts",
+      "smoke:seat-dist": "pnpm --filter @cotal-ai/seat build && tsx bin/smoke/dist-import.smoke.ts",
+    },
+  }));
+  write("pnpm", "#!/bin/sh\nexit 0\n");
+  chmodSync(join(root, "pnpm"), 0o755);
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
+  const fixtureHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+
+  const tally = summaryCommand("FIXTURE: 3 passed, 0 failed");
+  const seatBuild = `pnpm --filter @cotal-ai/seat build && ${tally}`;
+  const equalsSeatBuild = `pnpm --filter=@cotal-ai/seat build && ${tally}`;
+  const otherBuild = `pnpm --filter @cotal-ai/other build && ${tally}`;
+  const fakePrintedBuild = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('pnpm build')")} && ${tally}`;
+
+  config("trap", { suite: ["packages/seat/smoke/local.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  let result = run("trap");
+  check("a by-name same-package import without ../src is refused", result.status !== 0 && /REFUSED trap\.json/.test(result.stderr) && /dist/.test(result.stderr), report(result));
+
+  config("src-import", { suite: ["packages/seat/smoke/src-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("src-import");
+  check("a value import of ../src is gradable for a same-package source file", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("comment-src", { suite: ["packages/seat/smoke/comment-src.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("comment-src");
+  check("a string mentioning ../src is not a source import", result.status !== 0 && /REFUSED comment-src/.test(result.stderr), report(result));
+
+  config("assembled", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("assembled");
+  check("the preserved assembles witness remains gradable", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("hollow-assembled", { suite: ["bin/smoke/by-name.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("hollow-assembled");
+  check("an assembles declaration without a suite reference is refused", result.status !== 0 && /REFUSED hollow-assembled/.test(result.stderr), report(result));
+
+  config("foreign-assembled", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/other/src/index.ts")] });
+  result = run("foreign-assembled");
+  check("an assembled root cannot admit a foreign mutation", result.status !== 0 && /REFUSED foreign-assembled/.test(result.stderr), report(result));
+
+  config("direct-suite", { suite: ["bin/smoke/direct-suite.smoke.ts"], command: tally, mutations: [mutation("bin/smoke/direct-suite.smoke.ts")] });
+  result = run("direct-suite");
+  check("a suite is gradable when it directly executes the file being mutated", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("direct-script", { suite: ["bin/smoke/direct-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("direct-script");
+  check("a suite is gradable when it launches the exact mutated script path", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("aliased-launcher", { suite: ["bin/smoke/aliased-launcher.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("aliased-launcher");
+  check("a launcher imported under an alias still witnesses the script it runs", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("bound-entry", { suite: ["bin/smoke/bound-entry.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("bound-entry");
+  check("a target bound to a const before the launcher call still witnesses it", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("node-by-name", { suite: ["bin/smoke/node-by-name.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("node-by-name");
+  check("spawning \"node\" by name is the same witness as process.execPath", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("mentions-script", { suite: ["bin/smoke/mentions-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("mentions-script");
+  check("a quoted script path without an invocation is refused", result.status !== 0 && /REFUSED mentions-script/.test(result.stderr), report(result));
+
+  config("bound-entry-unused", { suite: ["bin/smoke/bound-entry-unused.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("bound-entry-unused");
+  check("a name bound to the target but never passed to a launcher is still refused", result.status !== 0 && /REFUSED bound-entry-unused/.test(result.stderr), report(result));
+
+  // --- witnesses added for #1434: each real route is PAIRED with the near-miss it must refuse. ---
+
+  config("dead-read", { suite: ["bin/smoke/dead-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("dead-read");
+  check("a read inside a function nobody calls never happens", result.status !== 0 && /REFUSED dead-read/.test(result.stderr), report(result));
+
+  config("dead-launch", { suite: ["bin/smoke/dead-launch.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("dead-launch");
+  check("a launch inside a function nobody calls never runs", result.status !== 0 && /REFUSED dead-launch/.test(result.stderr), report(result));
+
+  config("aliased-reader-file", { suite: ["bin/smoke/aliased-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("aliased-reader-file");
+  check("an reader imported under an alias still witnesses the file it reads", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1612, the readers cell. The aliased twin above is the accept control and it is the SAME read
+  // of the same file; the only difference is that here nothing binds `readFileSync` to `node:fs`,
+  // so the callee is a local function that returns "" and the file is never opened.
+  config("local-reader", { suite: ["bin/smoke/local-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("local-reader");
+  check("a local function spelled like a reader does not witness a read", result.status !== 0 && /REFUSED local-reader/.test(result.stderr), report(result));
+
+  // #1612, the listers cell. The reader here IS imported, so the only unbound name is the lister,
+  // which returns [] and walks nothing. `recursive-listing-read` below is its accept control.
+  config("local-lister", { suite: ["bin/smoke/local-lister.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("local-lister");
+  check("a local function spelled like a directory lister does not witness a sweep", result.status !== 0 && /REFUSED local-lister/.test(result.stderr), report(result));
+
+  // #1612, the joiners cell. The read is real and imported; the PATH it is handed comes from a
+  // local `join` that ignores its arguments, so the file this suite opens is not the mutated one.
+  config("local-joiner", { suite: ["bin/smoke/local-joiner.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("local-joiner");
+  check("a local function spelled like a path joiner does not build the path it is credited with", result.status !== 0 && /REFUSED local-joiner/.test(result.stderr), report(result));
+
+  // #1612, the copiers cell. `assembled` above is the accept control: same call shape, same
+  // declared assembles root, and a `cpSync` that really came from node:fs.
+  config("local-copier", { suite: ["bin/smoke/local-copier.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("local-copier");
+  check("a local function spelled like a copier does not witness a copy", result.status !== 0 && /REFUSED local-copier/.test(result.stderr), report(result));
+
+  // #1434: the copier's SOURCE argument is evaluated, not scanned. A root sitting inside an
+  // argument of the expression that produces the source names nothing the call copies.
+  config("copy-argument-root", { suite: ["bin/smoke/copy-argument-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("copy-argument-root");
+  check("a root mentioned inside the copy source's own argument is not a copy", result.status !== 0 && /REFUSED copy-argument-root/.test(result.stderr), report(result));
+
+  // The empty-seed cell. `local-reader` above is caught by either half of the rule, so it cannot
+  // speak for the seed on its own; this one can, because the callee is imported and unshadowed and
+  // the only fault is its module.
+  config("foreign-reader", { suite: ["bin/smoke/foreign-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("foreign-reader");
+  check("a reader imported from a module that is not fs is not a reader", result.status !== 0 && /REFUSED foreign-reader/.test(result.stderr), report(result));
+
+  // A shadow spelled with destructuring binds exactly as a plain identifier does. Both halves,
+  // because a parameter pattern and a local pattern are separate paths in a scope resolver.
+  config("destructured-param-reader", { suite: ["bin/smoke/destructured-param-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("destructured-param-reader");
+  check("a destructured parameter shadowing an imported reader is not that reader", result.status !== 0 && /REFUSED destructured-param-reader/.test(result.stderr), report(result));
+
+  config("destructured-local-reader", { suite: ["bin/smoke/destructured-local-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("destructured-local-reader");
+  check("a destructured local shadowing an imported reader is not that reader", result.status !== 0 && /REFUSED destructured-local-reader/.test(result.stderr), report(result));
+
+  // The accept control for the shadow rule, and the failure with no alarm on it: a local in a
+  // CLOSED sibling block never binds the call below it, so refusing here would quietly cost an
+  // honest suite its witness. Only a scope the use sits inside can shadow it.
+  config("sibling-block-reader", { suite: ["bin/smoke/sibling-block-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("sibling-block-reader");
+  check("a local in a closed sibling block does not shadow the module-scope call", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sibling-catch-reader", { suite: ["bin/smoke/sibling-catch-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("sibling-catch-reader");
+  check("a catch binding in a sibling clause does not shadow the module-scope call", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The import is real here, so a rule that only records the names an import introduced grades
+  // this as covered. The binding the call site resolves to is the parameter, which holds a no-op,
+  // so the file is never opened. Provenance has to be a question about the CALLEE, not the file.
+  config("shadowed-reader", { suite: ["bin/smoke/shadowed-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("shadowed-reader");
+  check("a parameter shadowing an imported reader is not that reader", result.status !== 0 && /REFUSED shadowed-reader/.test(result.stderr), report(result));
+
+  // The namespace pair. The member call is honest coverage and must keep grading; the bare local
+  // decoy alongside an unrelated `import * as fs` must not borrow that import's provenance.
+  config("namespace-reader", { suite: ["bin/smoke/namespace-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("namespace-reader");
+  check("a reader called through an imported namespace still witnesses the file it reads", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The three binding forms a scope walk keyed on `function` declarations and variables misses.
+  // Each call is reached and executed, and each resolves to the local binding rather than the
+  // import, so the mutated file is never opened.
+  config("named-fn-expr-reader", { suite: ["bin/smoke/named-fn-expr-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("named-fn-expr-reader");
+  check("a named function expression shadows the imported reader inside its own body", result.status !== 0 && /REFUSED named-fn-expr-reader/.test(result.stderr), report(result));
+
+  config("class-decl-reader", { suite: ["bin/smoke/class-decl-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("class-decl-reader");
+  check("a class declaration named like the reader shadows it", result.status !== 0 && /REFUSED class-decl-reader/.test(result.stderr), report(result));
+
+  config("named-fn-expr-namespace", { suite: ["bin/smoke/named-fn-expr-namespace.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("named-fn-expr-namespace");
+  check("a named function expression shadows an imported namespace inside its own body", result.status !== 0 && /REFUSED named-fn-expr-namespace/.test(result.stderr), report(result));
+
+  // The overshoot pair for those two rules: the same names, bound where they cannot reach the call.
+  config("fn-expr-outside-reader", { suite: ["bin/smoke/fn-expr-outside-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("fn-expr-outside-reader");
+  check("a function expression's own name binds only inside its body", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("class-sibling-block-reader", { suite: ["bin/smoke/class-sibling-block-reader.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("class-sibling-block-reader");
+  check("a class in a closed sibling block does not shadow the module-scope call", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("namespace-decoy", { suite: ["bin/smoke/namespace-decoy.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("namespace-decoy");
+  check("a namespace import does not grant provenance to a bare local of the same name", result.status !== 0 && /REFUSED namespace-decoy/.test(result.stderr), report(result));
+
+  // The discriminator for the read witness, and the defect found at a6c0e4608 by the orchestrator:
+  // `mesh-seam.smoke.ts` reads `mesh-handler.ts` as a STRING and counts substrings in it. That
+  // reddens when the text changes, which is not evidence the behaviour changed. The read shape here
+  // is byte-identical to `reads-data` above; only the KIND of file differs, so this cell fails the
+  // moment a read of a source module is allowed to stand in for executing it.
+  config("greps-source", { suite: ["bin/smoke/greps-source.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("greps-source");
+  check("reading a SOURCE module as text is not executing it", result.status !== 0 && /REFUSED greps-source/.test(result.stderr), report(result));
+
+  config("reads-other-file", { suite: ["bin/smoke/reads-other.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("reads-other-file");
+  check("reading some OTHER file is not a witness for the mutated one", result.status !== 0 && /REFUSED reads-other-file/.test(result.stderr), report(result));
+
+  config("env-path-read", { suite: ["bin/smoke/env-read.smoke.ts"], command: `FIXTURE_PATH=packages/seat/package.json ${tally}`, mutations: [mutation("packages/seat/package.json")] });
+  result = run("env-path-read");
+  check("a path the command supplies by env and the suite reads is a witness", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("env-path-other", { suite: ["bin/smoke/env-read.smoke.ts"], command: `FIXTURE_PATH=packages/other/package.json ${tally}`, mutations: [mutation("packages/seat/package.json")] });
+  result = run("env-path-other");
+  check("an env-supplied path pointing elsewhere is refused", result.status !== 0 && /REFUSED env-path-other/.test(result.stderr), report(result));
+
+  config("env-path-unread", { suite: ["bin/smoke/env-unread.smoke.ts"], command: `FIXTURE_PATH=packages/seat/package.json ${tally}`, mutations: [mutation("packages/seat/package.json")] });
+  result = run("env-path-unread");
+  check("an env assignment nothing reads is a mention, not a witness", result.status !== 0 && /REFUSED env-path-unread/.test(result.stderr), report(result));
+
+  // Targets a DATA file in the tree, not a source module. A recursive read genuinely witnesses the
+  // data it sweeps up, but sweeping a `.ts` file into a text read is the grep harness again, just
+  // with a wider net, so the tree rule is exercised on the file kind it can actually speak for.
+  config("recursive-listing-read", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("recursive-listing-read");
+  check("a recursive listing whose entries are read witnesses the tree", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("recursive-listing-names", { suite: ["bin/smoke/listing-names.smoke.ts"], command: tally, mutations: [mutation("packages/seat/package.json")] });
+  result = run("recursive-listing-names");
+  check("a listing that only observes names is refused", result.status !== 0 && /REFUSED recursive-listing-names/.test(result.stderr), report(result));
+
+  // A recursive sweep NEVER NAMES its subjects: a lint that walks `src/**` asserting a property
+  // over every file it finds is real coverage of each one, because the text is what it asserts
+  // ABOUT rather than a stand-in for behaviour. This is `surface.smoke.ts` walking the package for
+  // uncatalogued error codes, and refusing it would trade a false accept for a false refusal.
+  config("recursive-listing-source", { suite: ["bin/smoke/listing-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("recursive-listing-source");
+  check("a recursive sweep that reads every file covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1575. The sweep above earns its accept by never naming its subjects. One `continue` on an
+  // equality against a single known path takes that back: the loop walks the tree, but exactly one
+  // entry can reach the reader, so the suite is reading a file it names and the cell reddens on a
+  // spelling again. What is tested is the CARDINALITY the guard admits, so the same narrowing has
+  // to be caught however it is spelled, and an open filter has to survive.
+  config("sweep-narrowed-literal", { suite: ["bin/smoke/listing-narrowed.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-literal");
+  check("a sweep narrowed to one literal path is a named read", result.status !== 0 && /REFUSED sweep-narrowed-literal/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-positive", { suite: ["bin/smoke/listing-narrowed-eq.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-positive");
+  check("the same narrowing as a positive guard is refused too", result.status !== 0 && /REFUSED sweep-narrowed-positive/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-constant", { suite: ["bin/smoke/listing-narrowed-const.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-constant");
+  check("a narrowing against a computed constant is refused", result.status !== 0 && /REFUSED sweep-narrowed-constant/.test(result.stderr), report(result));
+
+  // ORDERING IS LOAD-BEARING, NOT COSMETIC. This cell is the first ACCEPT control that observes the
+  // `pins` default, so it must run BEFORE the other open-sweep accept controls. The self-test stops
+  // at its first failing cell unless MUTATION_SELFTEST_REPORT_ALL is set, and the real mutation
+  // proof runs WITHOUT that flag. With this cell later, inverting the default red the extension
+  // filter first and the mutant for `a guard with no rule is OPEN` was credited to a cell it does
+  // not name -- coverage that grades the wrong thing while looking green (#1627). Keep it here.
+  // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
+  // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
+  // ever inverted, a named read would masquerade as a sweep and this cell would red.
+  config("sweep-unknown-guard", { suite: ["bin/smoke/listing-unknown-guard.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-unknown-guard");
+  check("a guard the classifier cannot evaluate leaves the sweep counting", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control for the three above: a filter that admits an OPEN set is still a sweep, and
+  // refusing it would trade a false accept for a false refusal.
+  config("sweep-open-filter", { suite: ["bin/smoke/listing-filtered-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-open-filter");
+  check("a sweep filtered by extension still covers the source it finds", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The discriminator for the DIRECTION of the equality: excluding one entry is not selecting one.
+  config("sweep-skips-one", { suite: ["bin/smoke/listing-skip-one.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-skips-one");
+  check("a sweep that skips one entry is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // Cardinality is a property of the guard, not of how the guard is written, so every spelling of
+  // the same narrowing has to land on the same verdict. Parentheses, a De Morgan negation and an
+  // `&&`/`||` operand are three ways to write `f === ONE` that a spelling-shaped classifier reads
+  // as something else.
+  config("sweep-narrowed-paren", { suite: ["bin/smoke/listing-narrowed-paren.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-paren");
+  check("a narrowing in parentheses is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-paren/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-negated", { suite: ["bin/smoke/listing-narrowed-negated.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-negated");
+  check("a narrowing spelled as a negated inequality is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-negated/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-and", { suite: ["bin/smoke/listing-narrowed-and.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-and");
+  check("a narrowing in one operand of an && guard is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-and/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-or", { suite: ["bin/smoke/listing-narrowed-or.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-or");
+  check("a narrowing in one operand of an || exit guard is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-or/.test(result.stderr), report(result));
+
+  // The two accept controls that keep the decomposition and the projection rule honest. Each one
+  // fails exactly when the corresponding rule is widened too far, which is the direction that
+  // costs coverage silently: a wrongly refused sweep reds nothing, it just stops counting.
+  config("sweep-compound-open", { suite: ["bin/smoke/listing-compound-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-compound-open");
+  check("an && exit guard leaves every other entry going through", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-suffix-equality", { suite: ["bin/smoke/listing-suffix-equality.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-suffix-equality");
+  check("an extension filter written as an equality is still a sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // #1605 v3: one cell per row of the design record's table. These are the spellings that defeated
+  // v1 and v2. They are recorded as ROWS, not as grammar cases, because the classifier now answers
+  // the cardinality question by resolution and three-valued evaluation rather than by matching.
+  config("sweep-narrowed-ternary", { suite: ["bin/smoke/listing-narrowed-ternary.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-ternary");
+  check("a narrowing spelled as a ternary with boolean arms is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-ternary/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-as", { suite: ["bin/smoke/listing-narrowed-as.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-as");
+  check("a type assertion around the entry does not hide the narrowing", result.status !== 0 && /REFUSED sweep-narrowed-as/.test(result.stderr), report(result));
+
+  config("sweep-narrowed-alias", { suite: ["bin/smoke/listing-narrowed-alias.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-alias");
+  check("a loop-local alias of the entry is still the entry", result.status !== 0 && /REFUSED sweep-narrowed-alias/.test(result.stderr), report(result));
+
+  // The disputed row, pinned in BOTH harnesses. sol measured this shape as accepted and the
+  // maintainer's harness measured it as refused; the two fixtures differ only in whether the READER
+  // is handed the alias. Cardinality does not depend on that, so both must refuse.
+  config("sweep-narrowed-alias-read", { suite: ["bin/smoke/listing-narrowed-alias-read.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-narrowed-alias-read");
+  check("an alias that is also what the reader is handed is still a named read", result.status !== 0 && /REFUSED sweep-narrowed-alias-read/.test(result.stderr), report(result));
+
+  // The four accept controls. Each one fails exactly when the corresponding rule over-refuses,
+  // which is the direction with no alarm attached: a wrongly refused sweep reds nothing, it just
+  // stops counting. v2 shipped exactly such a regression in the two below.
+  config("sweep-alias-open", { suite: ["bin/smoke/listing-alias-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-alias-open");
+  check("binding the entry before reading it is still an open sweep", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-helper-string", { suite: ["bin/smoke/listing-helper-string.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-helper-string");
+  check("a projection through a property named String is not the global conversion", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-shadowed-string", { suite: ["bin/smoke/listing-shadowed-string.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-shadowed-string");
+  check("a local binding that shadows String is not the global conversion", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("sweep-ternary-open", { suite: ["bin/smoke/listing-ternary-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-ternary-open");
+  check("a ternary whose arms both read leaves the sweep open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control that actually grades the DIRECTION of the `&&` rule. `sweep-compound-open`
+  // spells its equality with `!==`, which a direction-blind decomposition answers the same way, so
+  // it cannot tell the two apart; this one can.
+  config("sweep-and-exit-open", { suite: ["bin/smoke/listing-and-exit-open.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-and-exit-open");
+  check("a false && leaves the entry free, so the sweep is still open", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // The accept control for a ternary GUARD with non-literal arms: reaching the read can happen down
+  // either arm, so one pinning arm is not enough to pin the entry.
+  config("sweep-ternary-arms", { suite: ["bin/smoke/listing-ternary-arms.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("sweep-ternary-arms");
+  check("a ternary guard pins only when every arm that reaches the read pins", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("uncalled-dynamic-import", { suite: ["packages/seat/smoke/parked-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("uncalled-dynamic-import");
+  check("a dynamic import in a function nobody calls never loads", result.status !== 0 && /REFUSED uncalled-dynamic-import/.test(result.stderr), report(result));
+
+  config("referenced-dynamic-import", { suite: ["packages/seat/smoke/referenced-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("referenced-dynamic-import");
+  check("referencing a function without calling it does not run its body", result.status !== 0 && /REFUSED referenced-dynamic-import/.test(result.stderr), report(result));
+
+  config("dead-branch-import", { suite: ["packages/seat/smoke/dead-branch-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("dead-branch-import");
+  check("a call a literal condition excludes never runs", result.status !== 0 && /REFUSED dead-branch-import/.test(result.stderr), report(result));
+
+  // The near neighbour: a condition the program COMPUTES is not foldable, so it still counts.
+  config("live-branch-import", { suite: ["packages/seat/smoke/live-branch-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("live-branch-import");
+  check("a call under a computed condition is still reachable", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  // THE DISCRIMINATOR: a call that RECEIVES a function but never invokes it. `console.log(used)`
+  // puts `used` in argument position exactly as a callback would, so this is the cell that
+  // separates "modelled invoking API" from "any call argument".
+  config("logged-dynamic-import", { suite: ["packages/seat/smoke/logged-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("logged-dynamic-import");
+  check("passing a function to a call that never invokes it is not execution", result.status !== 0 && /REFUSED logged-dynamic-import/.test(result.stderr), report(result));
+
+  config("dead-copy", { suite: ["bin/smoke/dead-copy.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dead-copy");
+  check("a copy inside a function nobody calls never happens", result.status !== 0 && /REFUSED dead-copy/.test(result.stderr), report(result));
+
+  config("callback-dynamic-import", { suite: ["packages/seat/smoke/callback-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("callback-dynamic-import");
+  check("a function handed to a call as a callback does run", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("called-dynamic-import", { suite: ["packages/seat/smoke/called-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/impl.ts")] });
+  result = run("called-dynamic-import");
+  check("a dynamic import that is actually evaluated does load", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("scoped-argv-decoy", { suite: ["bin/smoke/scoped-argv.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("scoped-argv-decoy");
+  check("a same-named argv array in another scope cannot stand in for the launcher's", result.status !== 0 && /REFUSED scoped-argv-decoy/.test(result.stderr), report(result));
+
+  config("named-root-identifier", { suite: ["bin/smoke/named-root.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("named-root-identifier");
+  check("an identifier merely SPELLED like a root is not the repo root", result.status !== 0 && /REFUSED named-root-identifier/.test(result.stderr), report(result));
+
+  config("malformed-assembles", { suite: ["bin/smoke/assembling.smoke.ts"], command: tally, assembles: "packages/seat", mutations: [mutation("packages/seat/package.json")] });
+  result = run("malformed-assembles");
+  check('a non-array "assembles" is refused', result.status !== 0 && /"assembles" must be an array/.test(result.stderr), report(result));
+
+  config("copy-into-root", { suite: ["bin/smoke/copy-into-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("copy-into-root");
+  check("a root appearing as a copy's DESTINATION is not a copy of that root", result.status !== 0 && /REFUSED copy-into-root/.test(result.stderr), report(result));
+
+  config("unused-root", { suite: ["bin/smoke/unused-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("unused-root");
+  check("an unused root spelling beside a by-name import is refused", result.status !== 0 && /REFUSED unused-root/.test(result.stderr), report(result));
+
+  config("unrelated-spawn", { suite: ["bin/smoke/unrelated-spawn.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("unrelated-spawn");
+  check("an unrelated spawn near a quoted path is refused", result.status !== 0 && /REFUSED unrelated-spawn/.test(result.stderr), report(result));
+
+  config("eval-extra-arg", { suite: ["bin/smoke/eval-extra-arg.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("eval-extra-arg");
+  check("a path after -e is not a launched script", result.status !== 0 && /REFUSED eval-extra-arg/.test(result.stderr), report(result));
+
+  config("eval-env", { suite: ["bin/smoke/eval-env.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("eval-env");
+  check("a path in spawn env is not a launched script", result.status !== 0 && /REFUSED eval-env/.test(result.stderr), report(result));
+
+  config("eval-then-script", { suite: ["bin/smoke/eval-then-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("eval-then-script");
+  check("a path after -e and -- is not a launched script", result.status !== 0 && /REFUSED eval-then-script/.test(result.stderr), report(result));
+
+  config("import-then-script", { suite: ["bin/smoke/import-then-script.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("import-then-script");
+  check("a script after --import still witnesses the launched file", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("url-entry", { suite: ["bin/smoke/url-entry.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("url-entry");
+  check("a launched path built with new URL still witnesses the file", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("url-entry-unused", { suite: ["bin/smoke/url-entry-unused.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("url-entry-unused");
+  check("a new URL path never launched is still refused", result.status !== 0 && /REFUSED url-entry-unused/.test(result.stderr), report(result));
+
+  config("tsx-cli", { suite: ["bin/smoke/tsx-cli.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("tsx-cli");
+  check("a script run through the tsx CLI slot is witnessed", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("tsx-cli-only", { suite: ["bin/smoke/tsx-cli-only.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("tsx-cli-only");
+  check("a runner CLI without a following script does not witness a nearby path", result.status !== 0 && /REFUSED tsx-cli-only/.test(result.stderr), report(result));
+
+  config("launch-reached", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/reached.ts")] });
+  result = run("launch-reached");
+  check("a launched entrypoint's own relative import is reached", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("launch-unreached", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/other/src/index.ts")] });
+  result = run("launch-unreached");
+  check("a by-name package the launched entrypoint imports is not reached in source", result.status !== 0 && /REFUSED launch-unreached/.test(result.stderr), report(result));
+
+  config("launch-foreign", { suite: ["bin/smoke/launch-entry-main.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/unreached.ts")] });
+  result = run("launch-foreign");
+  check("a source file the launched entrypoint never imports is refused", result.status !== 0 && /REFUSED launch-foreign/.test(result.stderr), report(result));
+
+  config("argv-conditional", { suite: ["bin/smoke/argv-conditional.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("argv-conditional");
+  check("a launch whose argument list is bound first still witnesses the script", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("argv-conditional-unrelated", { suite: ["bin/smoke/argv-conditional-unrelated.smoke.ts"], command: tally, mutations: [mutation("scripts/direct.mjs")] });
+  result = run("argv-conditional-unrelated");
+  check("a bound argument list that never names the target is refused", result.status !== 0 && /REFUSED argv-conditional-unrelated/.test(result.stderr), report(result));
+
+  config("dist-built", { suite: ["bin/smoke/dist-import.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-built");
+  check("a value import of built output plus the build that produces it is gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("dist-unbuilt", { suite: ["bin/smoke/dist-import.smoke.ts"], command: tally, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-unbuilt");
+  check("a value import of built output without the build is refused", result.status !== 0 && /REFUSED dist-unbuilt/.test(result.stderr), report(result));
+
+  config("dist-type-only", { suite: ["bin/smoke/dist-type-only.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-type-only");
+  check("a type-only import of built output is not a load", result.status !== 0 && /REFUSED dist-type-only/.test(result.stderr), report(result));
+
+  config("dist-named-script", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm smoke:seat-dist && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("dist-named-script");
+  check("a build named indirectly through a package script still counts", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A worker thread runs its entry; the `new Worker` is inside the helper, so the fact this file
+  // carries is the dist URL it hands over as `entry`. Paired with the build, that is execution.
+  config("worker-entry-built", { suite: ["bin/smoke/worker-entry.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("worker-entry-built");
+  check("a dist entry handed to a worker plus its build is gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The discriminator: the same URL, bound and logged, never handed to anything that runs it.
+  config("worker-entry-unused", { suite: ["bin/smoke/worker-entry-unused.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("worker-entry-unused");
+  check("a dist URL that is only logged never starts a thread", result.status !== 0 && /REFUSED worker-entry-unused/.test(result.stderr), report(result));
+
+  // #1434, the route `worker-entry-unused` does not reach: the URL IS under an `entry:` key, so
+  // the property is present exactly as in the accept control, and the object carrying it is only
+  // printed. Writing the key is not handing it to anything that runs it.
+  config("entry-object-unused", { suite: ["bin/smoke/entry-object-unused.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("entry-object-unused");
+  check("an entry object that is only logged never starts a thread", result.status !== 0 && /REFUSED entry-object-unused/.test(result.stderr), report(result));
+
+  // And the provenance half, matching the launcher, reader and copier rules: the receiver has to be
+  // an imported binding. A local function spelled like the helper starts nothing.
+  config("entry-local-helper", { suite: ["bin/smoke/entry-local-helper.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("entry-local-helper");
+  check("an entry handed to a local function spelled like the worker helper is refused", result.status !== 0 && /REFUSED entry-local-helper/.test(result.stderr), report(result));
+
+  // `build:emit` is a real build: the package declares it and it runs a compiler.
+  config("build-variant", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm --filter @cotal-ai/seat build:emit && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("build-variant");
+  check("a build: variant the package declares with a compiler counts as the build", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The discriminator: same `build:` prefix, but the script emits docs, not dist.
+  config("build-variant-nonemitting", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm --filter @cotal-ai/seat build:docs && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("build-variant-nonemitting");
+  check("a build: script that emits no dist is not the build", result.status !== 0 && /REFUSED build-variant-nonemitting/.test(result.stderr), report(result));
+
+  config("executed", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("executed");
+  check("a spawned repo entrypoint plus target-package build is gradable", result.status === 0 && /graded=1 refused-with-reason=0 unparsed=0/.test(result.stdout), report(result));
+
+  const skippedBuild = `false && pnpm --filter @cotal-ai/seat build || ${tally}`;
+  config("skipped-build", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: skippedBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("skipped-build");
+  check("a package build that never runs is refused", result.status !== 0 && /REFUSED skipped-build/.test(result.stderr), report(result));
+
+  config("pty-executed", { suite: ["bin/smoke/pty-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("pty-executed");
+  check("a pty-spawned repo entrypoint is also gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("direct", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("direct");
+  check("a directly spawned mutated source entrypoint needs no build", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("declaration-only", { suite: ["bin/smoke/by-name.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("declaration-only");
+  check("an executes declaration alone is refused", result.status !== 0 && /REFUSED declaration-only/.test(result.stderr), report(result));
+
+  config("reference-only", { suite: ["bin/smoke/reference-only.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("reference-only");
+  check("an entrypoint reference not passed to a subprocess is refused", result.status !== 0 && /REFUSED reference-only/.test(result.stderr), report(result));
+
+  config("wrong-entry", { suite: ["bin/smoke/spawn-other.smoke.ts"], command: seatBuild, executes: ["bin/other-entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("wrong-entry");
+  check("an unrelated spawned entrypoint is refused", result.status !== 0 && /REFUSED wrong-entry/.test(result.stderr), report(result));
+
+  config("wrong-build", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: otherBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("wrong-build");
+  check("building an unrelated package does not admit the target", result.status !== 0 && /REFUSED wrong-build/.test(result.stderr), report(result));
+
+  for (const [name, suite, entry, command] of [
+    ["wrong-executable", "bin/smoke/wrong-executable.smoke.ts", "bin/entry.ts", seatBuild],
+    ["commented-spawn", "bin/smoke/commented-spawn.smoke.ts", "bin/entry.ts", seatBuild],
+    ["despawn", "bin/smoke/despawn.smoke.ts", "bin/entry.ts", seatBuild],
+    ["comment-import", "bin/smoke/comment-import.smoke.ts", "bin/comment-entry.ts", seatBuild],
+    ["printed-build", "bin/smoke/spawn-entry.smoke.ts", "bin/entry.ts", fakePrintedBuild],
+  ]) {
+    config(name, { suite: [suite], command, executes: [entry], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`${name} cannot fabricate executes evidence`, result.status !== 0 && new RegExp(`REFUSED ${name}`).test(result.stderr), report(result));
+  }
+
+  config("args-variable", { suite: ["bin/smoke/args-variable.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("args-variable");
+  check("a genuine subprocess argument array is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // The `executes` witness, branch by branch. Every accepting branch below is paired with a
+  // refusing cell whose fixture differs only in the fact under test, because a suite of accepts
+  // cannot tell a witness apart from a rule that says yes to everything.
+  //
+  // Each refusal is anchored on the REASON the validator prints, not merely on a non-zero exit. A
+  // config that crashes the resolver also exits non-zero, and grading that as a refusal is how a
+  // cell reports success over a tool that fell over.
+  const refusedForReach = (name, result) => result.status !== 0
+    && new RegExp(`REFUSED ${name}`).test(result.stderr)
+    && /nor reaches through a declared subprocess entrypoint/.test(result.stderr);
+
+  // B2 scope. The launcher's argv is its own parameter; a same-named `args` elsewhere in the file
+  // is bound to the declared entrypoint. Resolving by NAME reports a launch the program never makes.
+  config("scoped-entry-decoy", { suite: ["bin/smoke/scoped-entry-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scoped-entry-decoy");
+  check("a same-named argv array in another scope cannot witness an entrypoint launch", refusedForReach("scoped-entry-decoy", result), report(result));
+
+  // The SCALAR twin of the cell above. These two differ only in the name of the decoy's binding,
+  // so a verdict that flips between them is about scope and nothing else. A lookup by identifier
+  // text grades the first, because an unrelated function's `ENTRY` stands in for the launch's own.
+  config("scalar-decoy", { suite: ["bin/smoke/scalar-decoy.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scalar-decoy");
+  check("a same-named scalar in another scope cannot witness an entrypoint launch", refusedForReach("scalar-decoy", result), report(result));
+
+  config("scalar-own-scope", { suite: ["bin/smoke/scalar-own-scope.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("scalar-own-scope");
+  check("a scalar declared in the launch's own scope still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A block is a scope, and the resolver finds the FIRST matching declaration, so the decoy is
+  // tested in BOTH source orders. One order alone passes against a resolver that treats a block
+  // as transparent, which is how a first-match walk hides half its behaviour.
+  for (const [name, before] of [["block-decoy-before", true], ["block-decoy-after", false]]) {
+    const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+    const real = '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n  spawnSync(process.execPath, [ENTRY]);\n';
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${before ? decoy + real : real + decoy}}\nrun(false);\n`);
+    config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`a binding in a block the launch is not inside cannot witness it (${before ? "decoy first" : "decoy last"})`, refusedForReach(name, result), report(result));
+  }
+  // The accept twin. Refusing every block binding closes the false accept by breaking real suites,
+  // so a launch INSIDE the block, using that block's own binding, must still be witnessed.
+  write("bin/smoke/block-own-scope.smoke.ts",
+    'function run(flag) {\n' +
+    '  if (flag) {\n' +
+    '    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    '    spawnSync(process.execPath, [ENTRY]);\n' +
+    '  }\n' +
+    '}\n' +
+    'run(true);\n');
+  config("block-own-scope", { suite: ["bin/smoke/block-own-scope.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("block-own-scope");
+  check("a binding in the block the launch sits in still witnesses it", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // A use before its own declaration is a temporal dead zone error, not a launch. Resolving it
+  // reports a data-flow fact the program cannot reach.
+  write("bin/smoke/use-before-decl.smoke.ts",
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run();\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n');
+  config("use-before-decl", { suite: ["bin/smoke/use-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("use-before-decl");
+  check("a use before its declaration cannot witness an entrypoint launch", refusedForReach("use-before-decl", result), report(result));
+
+  // Its accept twin, differing in ONE fact: the declaration precedes the use.
+  write("bin/smoke/decl-before-use.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run();\n');
+  config("decl-before-use", { suite: ["bin/smoke/decl-before-use.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("decl-before-use");
+  check("a declaration before the use still witnesses the launch", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // Textual order is not execution order, and a first-match walk tested in ONE order hides half its
+  // behaviour, so the same declaration/use pair is driven in BOTH execution orders. The launcher is
+  // a function, so what decides the verdict is where that function is CALLED relative to the
+  // binding, not where the identifier sits in the file.
+  //
+  // Call after the declaration: ENTRY is initialized before `run` runs, so the launch is real and
+  // refusing it is a false refusal of a correct suite.
+  write("bin/smoke/call-after-decl.smoke.ts",
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'run();\n');
+  config("call-after-decl", { suite: ["bin/smoke/call-after-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("call-after-decl");
+  check("a launcher called after the declaration witnesses the launch it makes", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  // Its opposite twin, differing in ONE fact: the call precedes the declaration. The identifier now
+  // sits textually AFTER the binding, which is exactly what a source-position rule accepts, and the
+  // program reads ENTRY in its dead zone. Accepting this is a launch that is not there.
+  write("bin/smoke/call-before-decl.smoke.ts",
+    'run();\n' +
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n');
+  config("call-before-decl", { suite: ["bin/smoke/call-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("call-before-decl");
+  check("a launcher called before the declaration cannot witness an entrypoint launch", refusedForReach("call-before-decl", result), report(result));
+
+  // `const A = B` beside `const B = A` is a program. A resolver without a visited set answers it
+  // with a stack overflow, which is a crash rather than a verdict.
+  write("bin/smoke/cyclic-binding.smoke.ts",
+    'const A = B;\nconst B = A;\nconst ENTRY = A;\nspawnSync(process.execPath, [ENTRY]);\n');
+  // A launcher whose path is its OWN parameter, shadowing an outer binding that names the
+  // entrypoint. The outer binding is not what the call passes, so reading it reports a launch the
+  // program never makes. The parameter shadows, and resolution stops rather than walking outward.
+  write("bin/smoke/param-shadow.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run(ENTRY) { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run(join(import.meta.dirname, "..", "direct.mjs"));\n');
+  config("param-shadow", { suite: ["bin/smoke/param-shadow.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("param-shadow");
+  check("a parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("param-shadow", result), report(result));
+
+  // The DESTRUCTURED twin of the cell above. These differ only in how the parameter is written, so a
+  // verdict that flips between them is about the spelling of a binding and nothing else. A rule that
+  // only recognises an Identifier parameter lets the outer target-valued ENTRY resolve through, and
+  // reports a launch the program never makes -- a false witness, the dangerous direction.
+  write("bin/smoke/destructured-param.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run({ ENTRY }) { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'run({ ENTRY: join(import.meta.dirname, "..", "direct.mjs") });\n');
+  config("destructured-param", { suite: ["bin/smoke/destructured-param.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("destructured-param");
+  check("a destructured parameter shadows an outer binding rather than letting it witness a launch", refusedForReach("destructured-param", result), report(result));
+
+  // A destructured LEXICAL declaration binds the name just as a parameter does, and its value comes
+  // from a call this tool cannot follow. Walking past it to an outer ENTRY reports that outer value
+  // as the launched path, which is the same false witness one declaration form over.
+  write("bin/smoke/destructured-decl.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run(opts) {\n' +
+    '  const { ENTRY } = opts;\n' +
+    '  spawnSync(process.execPath, [ENTRY]);\n' +
+    '}\n' +
+    'run({ ENTRY: join(import.meta.dirname, "..", "direct.mjs") });\n');
+  config("destructured-decl", { suite: ["bin/smoke/destructured-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("destructured-decl");
+  check("a destructured declaration shadows an outer binding rather than letting it witness a launch", refusedForReach("destructured-decl", result), report(result));
+
+  config("cyclic-binding", { suite: ["bin/smoke/cyclic-binding.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("cyclic-binding");
+  check("a cyclic binding is refused rather than crashing the resolver",
+    refusedForReach("cyclic-binding", result) && !/Maximum call stack/.test(report(result)), report(result));
+
+  // B1 slot. A path sitting in argv AFTER `-e` is an argument to the evaluated program, and node
+  // never opens it. Both spellings, because the slot rule is not about how the argv was written.
+  for (const [name, suite] of [
+    ["eval-then-entry", "bin/smoke/eval-then-entry.smoke.ts"],
+    ["eval-then-entry-inline", "bin/smoke/eval-then-entry-inline.smoke.ts"],
+  ]) {
+    config(name, { suite: [suite], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check(`${name}: an entrypoint after -e is not a launched entrypoint`, refusedForReach(name, result), report(result));
+  }
+
+  // B3 conditional argv: each branch is a real argument list for this call, so the accepting form
+  // must grade, and the same conditional with every branch behind `-e` must be refused BY REASON.
+  // The refusing half is the cell that catches the crash: an argv this resolver could not reduce to
+  // an array reached an array-literal test as `undefined` and threw, which reads as a refusal from
+  // the outside while naming a TypeError instead of a reachability fact.
+  config("conditional-argv", { suite: ["bin/smoke/conditional-argv.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("conditional-argv");
+  check("a conditional argv still witnesses the entrypoint it launches", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("conditional-eval-argv", { suite: ["bin/smoke/conditional-eval-argv.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("conditional-eval-argv");
+  check("a conditional argv whose every branch runs -e is refused with a reason, not a crash", refusedForReach("conditional-eval-argv", result), report(result));
+
+  // B4 launcher identity: an alias imported from child_process is a launcher, and a callee merely
+  // SPELLED like one, imported from a local module, is not.
+  config("aliased-entry", { suite: ["bin/smoke/aliased-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("aliased-entry");
+  check("an aliased child_process launcher still witnesses the entrypoint", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("foreign-launcher", { suite: ["bin/smoke/foreign-launcher.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("foreign-launcher");
+  check("a callee merely spelled like a launcher is not one", refusedForReach("foreign-launcher", result), report(result));
+
+  // #1612, the launchers cell, and the half `foreign-launcher` cannot reach: there the callee is
+  // imported from somewhere, so a rule checking the import's MODULE catches it. Here nothing is
+  // imported at all, and the only witness the tool had was the spelling of a local function that
+  // returns `{ status: 0 }` and starts no child. `aliased-entry` is the accept control.
+  config("local-launcher", { suite: ["bin/smoke/local-launcher.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("local-launcher");
+  check("a local function spelled like a launcher does not witness a launch", refusedForReach("local-launcher", result), report(result));
+
+  // The packed-tarball witness, which is a launcher call like any other and needs the same
+  // provenance. Without it a local no-op spelled `execFileSync` credits a suite with reading an
+  // artifact no pack ever produced.
+  config("real-packer", { suite: ["bin/smoke/real-packer.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("real-packer");
+  check("a package this suite really packs and whose build runs is gradable", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("local-packer", { suite: ["bin/smoke/local-packer.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("local-packer");
+  check("a local function spelled like a launcher does not pack anything", refusedForReach("local-packer", result), report(result));
+
+  // #1434: the packed tree is the positional after `pack`, not every non-literal element. A root
+  // the call only writes the tarball INTO is a mention in the slot one to the left of the work.
+  config("pack-destination", { suite: ["bin/smoke/pack-destination.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("pack-destination");
+  check("a root named as the pack DESTINATION is not a packed root", refusedForReach("pack-destination", result), report(result));
+
+  // B5 reachability: a launch runs only if control reaches it.
+  config("called-entry", { suite: ["bin/smoke/called-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("called-entry");
+  check("an entrypoint launched from a function that is called is witnessed", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("uncalled-entry", { suite: ["bin/smoke/uncalled-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("uncalled-entry");
+  check("an entrypoint launch inside a function nobody calls is refused", refusedForReach("uncalled-entry", result), report(result));
+
+  config("equals-filter", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: equalsSeatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("equals-filter");
+  check("the pnpm --filter=value build form is accepted", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  config("malformed-executes", { suite: ["bin/smoke/spawn-entry.smoke.ts"], command: seatBuild, executes: "bin/entry.ts", mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("malformed-executes");
+  check("a non-array executes declaration is refused", result.status !== 0 && /"executes" must be an array/.test(result.stderr), report(result));
+
+  config("fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: summaryCommand("ENDPOINT RESULTS: 4/4"), completionMarker: "ENDPOINT RESULTS:", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("fraction");
+  check("a completed all-passed fraction supplies the executed total", result.status === 0 && result.stdout.includes("1 /   4 cells observed failing"), report(result));
+
+  config("partial-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: summaryCommand("ENDPOINT RESULTS: 3/4"), completionMarker: "ENDPOINT RESULTS:", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("partial-fraction");
+  check("a partial fraction is unparsed rather than graded", result.status !== 0 && /UNPARSED partial-fraction/.test(result.stderr) && /unparsed=1/.test(result.stdout), report(result));
+
+  config("zero-failed", { suite: ["bin/smoke/direct.smoke.ts"], command: summaryCommand("FIXTURE SMOKE OK (0 failed)"), executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("zero-failed");
+  check("zero failures without a total stays unparsed", result.status !== 0 && /UNPARSED zero-failed/.test(result.stderr), report(result));
+
+  const ticks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED')")}`;
+  config("progress-banner", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-banner");
+  check(
+    "a declared terminal banner is not an executed-cell total",
+    result.status !== 0 && /UNPARSED progress-banner/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress");
+  check(
+    "a terminal banner without a printed number is unparsed",
+    result.status !== 0 && /UNPARSED progress/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr)
+      && /the instrument grades only a number the suite printed/.test(result.stderr),
+    report(result),
+  );
+
+  const noCompletion = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three')")}`;
+  config("unfinished-progress", { suite: ["bin/smoke/direct.smoke.ts"], command: noCompletion, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("unfinished-progress");
+  check("progress without a printed number is unparsed", result.status !== 0 && /UNPARSED unfinished-progress/.test(result.stderr), report(result));
+
+  config("progress-no-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-no-marker");
+  check(
+    "progress without a declared completionMarker names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-no-marker/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr)
+      && /the instrument grades only a number the suite printed/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress-no-minticks", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, progressPattern: "^  ✓ ", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-no-minticks");
+  check(
+    "progress without minTicks names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-no-minticks/.test(result.stderr)
+      && /progressPattern is present and minTicks is absent/.test(result.stderr),
+    report(result),
+  );
+
+  config("progress-minticks-no-pattern", { suite: ["bin/smoke/direct.smoke.ts"], command: ticks, minTicks: 3, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-minticks-no-pattern");
+  check(
+    "minTicks without progressPattern names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-minticks-no-pattern/.test(result.stderr)
+      && /minTicks is present and progressPattern is absent/.test(result.stderr)
+      && /the progress path cannot run at all/.test(result.stderr),
+    report(result),
+  );
+
+  const markerOffTerminal = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nhost pins the seat binary against background self-update\\nJCODE HOST SMOKE PASSED (85 checks)')")}`;
+  config("progress-marker-not-terminal", {
+    suite: ["bin/smoke/direct.smoke.ts"],
+    command: markerOffTerminal,
+    progressPattern: "^  ✓ ",
+    minTicks: 3,
+    completionMarker: "host pins the seat binary against background self-update",
+    executes: ["bin/direct.mjs"],
+    mutations: [mutation("bin/direct.mjs")],
+  });
+  result = run("progress-marker-not-terminal");
+  check(
+    "progress with a non-terminal completionMarker names why it is unparsed",
+    result.status !== 0 && /UNPARSED progress-marker-not-terminal/.test(result.stderr)
+      && /progress ticks are not an executed-cell total/.test(result.stderr),
+    report(result),
+  );
+
+  for (const [name, text] of [
+    ["early-ok", "SETUP OK\\n  ✓ one\\n  ✓ two\\nWORK REMAINS"],
+    ["tick-passed", "  ✓ setup PASSED\\n  ✓ second\\nWORK REMAINS"],
+  ]) {
+    config(name, { suite: ["bin/smoke/direct.smoke.ts"], command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`console.log(${JSON.stringify(text)})`)}`, progressPattern: "^  ✓ ", minTicks: 2, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+    result = run(name);
+    check(`${name} is not a terminal completion witness`, result.status !== 0 && new RegExp(`UNPARSED ${name}`).test(result.stderr), report(result));
+  }
+
+  const ticksNot = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nNOT FIXTURE PASSED')")}`;
+  config("progress-not-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksNot, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-not-marker");
+  check("a terminal line that contains and negates the marker is unparsed without a printed number", result.status !== 0 && /UNPARSED progress-not-marker/.test(result.stderr), report(result));
+
+  const ticksPrefixed = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED')")}`;
+  config("progress-prefixed-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixed, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-prefixed-marker");
+  check("a prefixed completion marker without a printed number is unparsed (the #1464 must-accept pin was pinning banner-as-completion)", result.status !== 0 && /UNPARSED progress-prefixed-marker/.test(result.stderr), report(result));
+
+  const ticksPrefixedFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nrun complete: FIXTURE PASSED 3/3')")}`;
+  config("progress-prefixed-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksPrefixedFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-prefixed-fraction");
+  check("a prefixed completion marker still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksChecks = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n  42 checks passed')")}`;
+  config("midline-checks", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksChecks, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "checks passed", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("midline-checks");
+  check("a mid-line checks-passed marker still grades", result.status === 0 && /graded=1/.test(result.stdout), report(result));
+
+  const ticksAnsi = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED\\u001b[0m')")}`;
+  config("progress-ansi-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsi, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-ansi-marker");
+  check("an ANSI-coloured banner without a printed number is unparsed (the #1464 must-accept pin was pinning banner-as-completion)", result.status !== 0 && /UNPARSED progress-ansi-marker/.test(result.stderr), report(result));
+
+  const ticksAnsiFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\n\\u001b[32mFIXTURE PASSED 3/3\\u001b[0m')")}`;
+  config("progress-ansi-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksAnsiFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-ansi-fraction");
+  check("an ANSI-coloured completion banner still grades", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  const ticksTrail = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED but cleanup failed')")}`;
+  config("progress-trailing-marker", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrail, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-trailing-marker");
+  check("trailing text after the marker is unparsed without a printed number", result.status !== 0 && /UNPARSED progress-trailing-marker/.test(result.stderr), report(result));
+
+  const ticksTrailFraction = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("console.log('  ✓ one\\n  ✓ two\\n  ✓ three\\nFIXTURE PASSED 3/3 but cleanup failed')")}`;
+  config("progress-trailing-fraction", { suite: ["bin/smoke/direct.smoke.ts"], command: ticksTrailFraction, progressPattern: "^  ✓ ", minTicks: 3, completionMarker: "FIXTURE PASSED", executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("progress-trailing-fraction");
+  check("trailing text after a complete fraction on the marker line is accepted today (see #1464)", result.status === 0 && result.stdout.includes("1 /   3 cells observed failing"), report(result));
+
+  config("invalid-regex", { suite: ["bin/smoke/direct.smoke.ts"], command: tally, progressPattern: "[", minTicks: 1, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("invalid-regex", "fraction");
+  check("an invalid progress regex is refused without hiding the next config", result.status !== 0 && /enumerated=2 examined=2 graded=1 refused-with-reason=1/.test(result.stdout), report(result));
+
+  config("no-suite", { command: tally, mutations: [mutation("bin/direct.mjs")] });
+  result = run("no-suite");
+  check("missing suite metadata is still refused", result.status !== 0 && /REFUSED no-suite/.test(result.stderr) && /MISSING SUITE METADATA|required top-level "suite"/.test(report(result)), report(result));
+
+  config("legacy-suite", { suite: "bin/smoke/direct.smoke.ts", command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("legacy-suite");
+  check("a legacy string suite is still refused", result.status !== 0 && /REFUSED legacy-suite/.test(result.stderr) && /MALFORMED SUITE METADATA|legacy string/.test(report(result)), report(result));
+
+  config("multi-source", { suite: ["bin/smoke/direct.smoke.ts", "bin/smoke/assembling.smoke.ts"], command: tally, executes: ["bin/direct.mjs"], mutations: [mutation("bin/direct.mjs")] });
+  result = run("multi-source");
+  check("a valid multi-source fixture is still graded", result.status === 0 && /graded=1 refused-with-reason=0/.test(result.stdout), report(result));
+
+  result = run("declaration-only", "zero-failed", "fraction");
+  check(
+    "one bad config does not hide later configs",
+    result.status !== 0 && /enumerated=3 examined=3 graded=1 refused-with-reason=1 unparsed=1/.test(result.stdout),
+    report(result),
+  );
+  check("the audit summary names the exact checkout tree", result.stdout.includes(`head=${fixtureHead}`), report(result));
+
+  const sentinelPath = (name) => join(root, `mark-${name}`);
+  const sentinelCmd = (name, tag = "") => {
+    const inner = `require("fs").writeFileSync(${JSON.stringify(sentinelPath(name))}, "ran"); console.log("FIXTURE: 3 passed, 0 failed");`;
+    const node = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(inner)}`;
+    return tag ? `${node} # ${tag}` : node;
+  };
+  const fenceBody = (command) => ({
+    suite: ["bin/smoke/direct.smoke.ts"],
+    command,
+    executes: ["bin/direct.mjs"],
+    mutations: [mutation("bin/direct.mjs")],
+  });
+  const clearSentinels = (...names) => {
+    for (const name of names) try { unlinkSync(sentinelPath(name)); } catch { /* absent */ }
+  };
+  const fenceNames = ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e", "suffix", "ops"];
+  for (const name of ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"]) {
+    write(`bin/smoke/mutations/${name}.json`, JSON.stringify(fenceBody(sentinelCmd(name))));
+  }
+  write("bin/smoke/mutations/suffix.json", JSON.stringify(fenceBody(sentinelCmd("suffix", "pnpm smoke:user-spawn:live"))));
+  write("bin/smoke/mutations/ops.json", JSON.stringify(fenceBody(sentinelCmd("ops", "pnpm smoke:manager-service-ops"))));
+  execFileSync("git", ["add", "bin/smoke/mutations"], { cwd: root });
+
+  clearSentinels(...fenceNames);
+  result = runArgs(
+    "bin/smoke/mutations/safe-a.json",
+    "bin/smoke/mutations/safe-b.json",
+    "bin/smoke/mutations/safe-c.json",
+    "bin/smoke/mutations/safe-d.json",
+    "bin/smoke/mutations/safe-e.json",
+    "bin/smoke/mutations/suffix.json",
+  );
+  check(
+    "a glob-shaped argv still fences a live-suite command",
+    result.status === 0
+      && !existsSync(sentinelPath("suffix"))
+      && ["safe-a", "safe-b", "safe-c", "safe-d", "safe-e"].every((name) => existsSync(sentinelPath(name)))
+      && /bin\/smoke\/mutations\/suffix\.json\s+REFUSED `.*smoke:user-spawn:live`/.test(report(result))
+      && /1 live-shaped config\(s\) refused/.test(result.stdout)
+      && /fenced-live=1/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs("bin/smoke/mutations/ops.json");
+  check(
+    "an always-live suite name is fenced without a :live suffix",
+    result.status === 0
+      && !existsSync(sentinelPath("ops"))
+      && /bin\/smoke\/mutations\/ops\.json\s+REFUSED `/.test(report(result))
+      && new RegExp(`declares ${liveMarker}`).test(report(result))
+      && /1 live-shaped config\(s\) refused/.test(result.stdout)
+      && /fenced-live=1/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs();
+  check(
+    "a discovered run does not execute any config",
+    fenceNames.every((name) => !existsSync(sentinelPath(name)))
+      && /fenced-discovered=[1-9]\d*/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs("bin/smoke/mutations/safe-a.json");
+  check(
+    "a named non-live config still executes without a flag",
+    existsSync(sentinelPath("safe-a")) && /graded=1/.test(result.stdout) && /fenced-live=0/.test(result.stdout),
+    report(result),
+  );
+
+  clearSentinels(...fenceNames);
+  result = runArgs("--gradable-only", "bin/smoke/mutations/safe-a.json");
+  check(
+    "gradable-only accepts a named config without executing it",
+    !existsSync(sentinelPath("safe-a"))
+      && /ACCEPTED bin\/smoke\/mutations\/safe-a\.json/.test(result.stdout)
+      && /graded=1 refused-with-reason=0/.test(result.stdout),
+    report(result),
+  );
+} finally {
+  rmSync(root, { recursive: true, force: true });
+}
+/**
+ * How many cells this file is expected to run.
+ *
+ * A tally of what DID run cannot tell a full green run from one that quietly did less: guard three
+ * cells out with a refactor accident and the suite still prints `0 failed` and exits 0, just with a
+ * smaller first number that nothing compares against. The count is the only thing that notices, so
+ * it is asserted rather than reported. Raise it in the same change that adds a cell.
+ */
+const EXPECTED_CELLS = 174;
+// `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
+// report-all mode, where the run continues, and the exit status follows it rather than the literal.
+console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, ${failed} failed`);
+// Only meaningful for a run that reached the end. A run that exited early on a failing cell has
+// already reported why, and its partial count is not a second, different fault.
+if (failed === 0 && pass !== EXPECTED_CELLS) {
+  console.error(`\n  ✗ expected ${EXPECTED_CELLS} cells, ran ${pass}: silently skipped cells must not read as green`);
+  process.exit(1);
+}
+if (failed > 0) process.exit(1);

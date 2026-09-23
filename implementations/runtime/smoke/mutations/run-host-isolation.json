@@ -2,10 +2,10 @@
   "suite": [
     "implementations/runtime/smoke/run-driver-auth.smoke.ts"
   ],
-  "guard": "A workflow driver has no cross-run broker authority. Host operations check the current journal, reject copied foreign tokens and forged receipts, and preserve parent-owned cancellation cleanup.",
+  "guard": "A workflow driver has no cross-run broker authority. Host operations check the current journal, reject copied foreign tokens and forged receipts, and preserve parent-owned cancellation cleanup. Every channel effect is checked against the run's admitted ceiling and current revocation state, re-read leader-served each time.",
   "command": "pnpm smoke:runtime-run-driver-auth",
   "completionMarker": "run-driver-auth.smoke:",
-  "progressPattern": "  ✓ ",
+  "progressPattern": "  \u2713 ",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-host-isolation.json",
   "mutations": [
     {
@@ -101,6 +101,78 @@
       "replace": "      if (entry.requestId === undefined) continue;",
       "expectRed": "a forked child resumes through the host with its inherited settled prefix",
       "cell": "a forked child resumes through the host with its inherited settled prefix"
+    },
+    {
+      "name": "the wait host opens a consumer without the admitted-read check",
+      "file": "implementations/runtime/src/run-wait-host.ts",
+      "find": "      await admitted(channel);\n      await broker.jsm.consumers.add(stream, waitConsumerConfig(broker.space, requestId, channel));",
+      "replace": "      await broker.jsm.consumers.add(stream, waitConsumerConfig(broker.space, requestId, channel));",
+      "expectRed": "a run admitted with an explicit `none` ceiling cannot open a wait on any channel, though the mediator itself could",
+      "cell": "a run admitted with an explicit `none` ceiling cannot open a wait on any channel, though the mediator itself could"
+    },
+    {
+      "name": "the wait host fetches without re-reading the admission",
+      "file": "implementations/runtime/src/run-wait-host.ts",
+      "find": "      if (typeof channel !== \"string\") throw new RunScopeDenied(entry.run, requestId, \"fetch unrecorded wait channel\");\n      await admitted(channel);",
+      "replace": "      if (typeof channel !== \"string\") throw new RunScopeDenied(entry.run, requestId, \"fetch unrecorded wait channel\");",
+      "expectRed": "a revocation written under the admitter refuses the next fetch of an open wait",
+      "cell": "a revocation written under the admitter refuses the next fetch of an open wait"
+    },
+    {
+      "name": "a recorded match is re-read without the admission",
+      "file": "implementations/runtime/src/run-wait-host.ts",
+      "find": "      if (typeof channel !== \"string\") throw new RunScopeDenied(entry.run, requestId, \"read unrecorded wait channel\");\n      await admitted(channel);",
+      "replace": "      if (typeof channel !== \"string\") throw new RunScopeDenied(entry.run, requestId, \"read unrecorded wait channel\");",
+      "expectRed": "and the already-matched message is no longer readable once revoked",
+      "cell": "and the already-matched message is no longer readable once revoked"
+    },
+    {
+      "name": "a deny row on the subscribe ceiling loses to its allow",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "  if (parsed.deny.some((d) => patternsOverlap(d, pattern))) return false;\n  if (parsed.allow.mode === \"none\") return false;\n  return parsed.allow.mode === \"all\" || parsed.allow.patterns.some((a) => patternCovers(a, pattern));",
+      "replace": "  if (parsed.allow.mode === \"none\") return false;\n  return parsed.allow.mode === \"all\" || parsed.allow.patterns.some((a) => patternCovers(a, pattern));",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a deny row on the admitted ceiling wins over an unrestricted allow",
+      "cell": "a deny row on the admitted ceiling wins over an unrestricted allow"
+    },
+    {
+      "name": "the subscribe check ignores the revocation marker",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "export function assertAdmittedSubscribe(view: RunAdmissionView, channel: string): void {\n  assertNotRevoked(view);",
+      "replace": "export function assertAdmittedSubscribe(view: RunAdmissionView, channel: string): void {",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a revocation written under the admitter refuses the next fetch of an open wait",
+      "cell": "a revocation written under the admitter refuses the next fetch of an open wait"
+    },
+    {
+      "name": "an admission record can be replaced",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "    return await kv.create(admissionKey(snap.endpoint, snap.runId), enc.encode(canonicalJson(snap)));",
+      "replace": "    return await kv.put(admissionKey(snap.endpoint, snap.runId), enc.encode(canonicalJson(snap)));",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "an admission is immutable: a second record for the same run is a conflict, never a replacement",
+      "cell": "an admission is immutable: a second record for the same run is a conflict, never a replacement"
+    },
+    {
+      "name": "a missing admission record reads as an unrestricted one",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  if (entry === undefined)\n    throw new EpEnvelopeError(\"permission-denied\", `run ${runId} has no admission record on endpoint ${endpoint}; a run with no admission runs no channel effect (SPEC 14.8)`);\n  let admission: RunAdmission;\n  try {\n    admission = admissionSnapshot(entry.value);",
+      "replace": "  let admission: RunAdmission;\n  try {\n    admission = admissionSnapshot(entry === undefined ? { version: 1, space, endpoint, runId, instanceId: \"i\".repeat(26), caller: { owner: \"local\", actor: \"x\", uid: \"u\".repeat(26) }, ceiling: { publish: { allow: { mode: \"all\" }, deny: [] }, subscribe: { allow: { mode: \"all\" }, deny: [] } }, provenance: { kind: \"operator\", by: \"x\", reason: \"x\" }, admittedAt: 1 } : entry.value);",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-driver-auth",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a run with no admission record is refused at its first channel effect, never served under the host's scope",
+      "cell": "a run with no admission record is refused at its first channel effect, never served under the host's scope"
+    },
+    {
+      "name": "hosted conclave publish is checked against the run-driver principal instead of the admitted caller",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      assertAdmittedPublish(view, plan.channel, view.admission.caller);",
+      "replace": "      assertAdmittedPublish(view, plan.channel, this.binding.caller);",
+      "expectRed": "a conclave on a channel the admitted caller may publish to is admitted under THAT caller's triple, not the run-driver's",
+      "cell": "a conclave on a channel the admitted caller may publish to is admitted under THAT caller's triple, not the run-driver's"
     }
   ]
 }

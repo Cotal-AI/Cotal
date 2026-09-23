@@ -1,0 +1,60 @@
+{
+  "suite": [
+    "implementations/auth/smoke/manager-goal-index-scanner.native.ts",
+    "implementations/auth/smoke/remote-manager-executor-authority.probe.ts"
+  ],
+  "guard": "the sealed host scan is owner-filtered, key/body-bound, and unconditionally cleaned, while the minted remote executor holds no records consumer lifecycle authority",
+  "command": "pnpm probe:remote-manager-security",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/manager-goal-index-scanner.json",
+  "why": [
+    "The native scanner fixture writes a valid own row, valid and malformed foreign-owner rows, then runs the production sealed scanner over a real authenticated broker.",
+    "M1 removes authenticated-owner filtering, so the malformed foreign row reaches the scan and the own-row success assertion never completes.",
+    "M2 removes key/body binding, so the deliberately mismatched own row is accepted instead of failing on the named qualifier assertion.",
+    "M3 restores the shipped wildcard records consumer lifecycle to the executor; the real minted-credential probe observes enumeration, push export, and foreign deletion instead of three denials.",
+    "M4 removes the host scanner's unconditional final delete; the real broker retains the literal consumer and the named cleanup assertion fails."
+  ],
+  "mutations": [
+    {
+      "name": "M1 remove authenticated-owner filter from the broker consumer",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "    const rawFilter = `goalidx.manager.${expectedOwner}.>`;",
+      "replace": "    const rawFilter = \"goalidx.manager.>\";",
+      "expectRed": "own scan succeeds despite valid and malformed foreign owners",
+      "cell": "own scan succeeds despite valid and malformed foreign owners",
+      "completionMarker": "manager goal-index scanner native:",
+      "note": "The malformed foreign row becomes deliverable and makes the scan fail before it can return the valid own row."
+    },
+    {
+      "name": "M2 remove exact key/body qualifier binding",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "        if (JSON.stringify(parsedKey.qualifiers) !== JSON.stringify(bodyQualifiers))",
+      "replace": "        if (false)",
+      "expectRed": "own key/body mismatch fails named",
+      "cell": "own key/body mismatch fails named",
+      "completionMarker": "manager goal-index scanner native:",
+      "note": "The mismatched own row is accepted, so the fixture's named rejection assertion fails."
+    },
+    {
+      "name": "M3 reintroduce wildcard records consumer lifecycle on the remote executor",
+      "file": "packages/core/src/provision.ts",
+      "find": "        ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),\n        `$JS.API.STREAM.MSG.GET.KV_${REC}`,",
+      "replace": "        ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),\n        `$JS.API.STREAM.MSG.GET.KV_${REC}`,\n        `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,\n        `$JS.API.CONSUMER.INFO.KV_${REC}.>`,\n        `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,",
+      "expectRed": "all three participant records-consumer powers are absent",
+      "cell": "all three participant records-consumer powers are absent",
+      "completionMarker": "REMOTE EXECUTOR AUTHORITY PROBE",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm probe:remote-manager-security",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The real typed minted executor regains the measured sweep, push exporter, and foreign delete powers, so the final absence assertion prints FAIL."
+    },
+    {
+      "name": "M4 remove unconditional final deletion of the host scan consumer",
+      "file": "implementations/auth/src/records-scanner.ts",
+      "find": "      try { await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME); } catch { /* bounded inactivity is the orphan backstop */ }",
+      "replace": "      if (false) try { await jsm.consumers.delete(stream, MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME); } catch { /* bounded inactivity is the orphan backstop */ }",
+      "expectRed": "host scan consumer is cleaned after the scan",
+      "cell": "host scan consumer is cleaned after the scan",
+      "completionMarker": "manager goal-index scanner native:",
+      "note": "The first successful native scan leaves the literal consumer behind, and the fixture's independent INFO check observes it."
+    }
+  ]
+}

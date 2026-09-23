@@ -35,6 +35,10 @@ function permits(name: string, run: () => void): void {
 
 try {
   assert.doesNotThrow(() => assertSmokeSandboxDown(anchor, ["down"], { cwd: root, env }));
+  permits(
+    "explicit destructive down retains the same exact sandbox identity guard",
+    () => assertSmokeSandboxDown(anchor, ["down", "--with-agents"], { cwd: root, env }),
+  );
   const foreign = join(base, "operator-checkout");
   const foreignHome = join(base, "operator-home");
   const foreignConfig = join(base, "operator-config");
@@ -44,6 +48,11 @@ try {
   refuses(
     "foreign sandbox root is refused by identity",
     () => assertSmokeSandboxDown(anchor, ["down"], { cwd: foreign, env }),
+    /observed root.*operator-checkout.*expected root.*root.*identity verdicts root=foreign/,
+  );
+  refuses(
+    "explicit destructive down still refuses a foreign sandbox root",
+    () => assertSmokeSandboxDown(anchor, ["down", "--with-agents"], { cwd: foreign, env }),
     /observed root.*operator-checkout.*expected root.*root.*identity verdicts root=foreign/,
   );
   assert.throws(

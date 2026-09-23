@@ -170,6 +170,14 @@ try {
   await throws("non-integer expectation refused", () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 1.5 }), (e) => !isCasLoss(e));
   await throws("wildcard channel refused", () => ep.multicastExpecting({ channel: "events.>", parts: [{ kind: "text", text: "x" }], id: randomUUID(), expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
   await throws("empty parts refused", () => ep.multicastExpecting({ channel: CH, parts: [], id: randomUUID(), expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
+  // #1404: the CAS path publishes DIRECTLY (not through publishMsg), so it carries its own copy of
+  // the parts guard — this cell is the only thing that goes red if that copy is deleted. NaN is the
+  // discriminator: the transport would store it as null happily, so only our check refuses it.
+  await throws(
+    "multicastExpecting refuses a non-JSON data value (NaN stores as null if unchecked)",
+    () => ep.multicastExpecting({ channel: CH, parts: [{ kind: "data", data: Number.NaN }] as unknown as CotalMessage["parts"], id: randomUUID(), expectedLastSubjectSeq: 0 }),
+    (e) => !isCasLoss(e) && /non-JSON value/.test((e as Error).message),
+  );
 
   // ── the CLASSIFIER PAIR, asserted directly rather than only through whatever the broker happens
   //    to return. A CAS loss is classified on the 10071/10164 pair via `isCasLoss`, never on

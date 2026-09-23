@@ -19,3 +19,87 @@ export const pickFreePort = (): Promise<number> =>
       probe.close((err) => (err ? reject(err) : resolve(addr.port)));
     });
   });
+
+/** One attempt's outcome, for the error a failed run raises. */
+interface PortAttempt {
+  port: number;
+  reason: string;
+}
+
+export interface StartedOnPort<T> {
+  started: T;
+  port: number;
+  attempts: number;
+}
+
+export interface StartOnFreePortOptions<T> {
+  attempts?: number;
+  /**
+   * What the CALLER can say about a start that never answered. Without it every
+   * failure reads `never became reachable`, and a broker that bound the port
+   * and stayed silent is reported as the collision this helper exists to
+   * recover from — the two are indistinguishable from here, because both leave
+   * the port occupied. Only the caller knows whether its own process is still
+   * running, what it exited with, and what it said on the way out.
+   */
+  describe?: (started: T) => string;
+}
+
+/**
+ * Start something on a free loopback port, and treat "it never came up" as a
+ * reason to try another port rather than as the end of the run.
+ *
+ * `pickFreePort` closes its probe before the caller binds, so the port belongs
+ * to nobody in between. Under a parallel shard that window is wide enough to
+ * lose: a fixture broker was promised 45019, something else took it, and the
+ * readiness loop then waited the full 10s for a server that was never going to
+ * come up (#1583). The window cannot be closed for a SPAWNED process — the
+ * handle cannot be handed to `nats-server` — so the answer is to notice and
+ * move, which is also what every call site's readiness probe already knows how
+ * to do.
+ *
+ * `stop` runs for every attempt that fails readiness, so a process that DID
+ * start but stayed unreachable is not left behind. A failure names every port
+ * tried: a rare red that reports one port reads as an unhealthy runner, and
+ * that is how this one was misread for as long as it was.
+ */
+export const startOnFreePort = async <T>(
+  start: (port: number) => Promise<T> | T,
+  isUp: (port: number) => Promise<boolean>,
+  stop: (started: T) => Promise<void> | void,
+  options: StartOnFreePortOptions<T> = {},
+): Promise<StartedOnPort<T>> => {
+  const { attempts = 3, describe } = options;
+  if (attempts < 1) throw new Error(`startOnFreePort: attempts must be at least 1, got ${attempts}`);
+  const tried: PortAttempt[] = [];
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const port = await pickFreePort();
+    let started: T;
+    try {
+      started = await start(port);
+    } catch (error) {
+      tried.push({ port, reason: `start threw: ${(error as Error).message}` });
+      continue;
+    }
+
+    if (await isUp(port)) return { started, port, attempts: attempt };
+
+    let detail = "";
+    try {
+      detail = describe ? describe(started) : "";
+    } catch (error) {
+      detail = `describe threw: ${(error as Error).message}`;
+    }
+    tried.push({ port, reason: detail ? `never became reachable — ${detail}` : "never became reachable" });
+    // Awaited, and the caller's `stop` is expected to resolve when the thing is
+    // actually GONE rather than when the kill was sent. Three retries otherwise
+    // leave three live children racing each other for the next port.
+    await stop(started);
+  }
+
+  throw new Error(
+    `startOnFreePort: nothing came up after ${attempts} attempt(s) — ` +
+      tried.map((t) => `${t.port} (${t.reason})`).join(", "),
+  );
+};

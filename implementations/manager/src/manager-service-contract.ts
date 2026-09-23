@@ -57,7 +57,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "staticReconciliation"],
+  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "classSpawn", "staticReconciliation"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
@@ -69,6 +69,10 @@ const STATUS_OUTPUT_SCHEMA = {
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
     uptimeMs: { type: "integer", minimum: 0 },
+    /** Whether this instance takes unpinned `spawn`/`launch` on the class `one` rail.
+     *  False when every declared connector is unavailable at boot: those commands stay
+     *  on scatter and `inst` so a sibling that can launch them can win the class queue. */
+    classSpawn: { type: "boolean" },
     /** Connector harness availability measured once during manager boot. */
     connectors: {
       type: "array",
@@ -138,6 +142,7 @@ export interface ManagerStatus {
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
+  classSpawn: boolean;
   staticReconciliation: ManagerStaticReconciliationStatus;
 }
 
@@ -196,6 +201,11 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // The observing manager's presence-view state at the time of the read: `current` (the mesh
+    // column is a verdict), `stale` (its watch has been silent past TTL; `mesh` is last-known),
+    // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
+    // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
+    meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
     lifecycleUid: { type: "string" },
     authHealth: { type: "string" },
     authReason: { type: "string" },
@@ -450,9 +460,19 @@ const PURGE_OUTPUT_SCHEMA = {
   properties: { chat: { type: "integer", minimum: 0 }, dm: { type: "integer", minimum: 0 } },
 } as const;
 
+const CHANNEL_LIST = { type: "array", items: { type: "string" } } as const;
 const PERSONA_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "persona"],
-  properties: { name: { type: "string", minLength: 1 }, persona: { type: "string", minLength: 1 }, model: { type: "string" } },
+  properties: {
+    name: { type: "string", minLength: 1 },
+    persona: { type: "string", minLength: 1 },
+    model: { type: "string" },
+    role: { type: "string" },
+    agent: { type: "string" },
+    subscribe: CHANNEL_LIST,
+    allowSubscribe: CHANNEL_LIST,
+    allowPublish: CHANNEL_LIST,
+  },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "path"],
@@ -460,7 +480,7 @@ const PERSONA_OUTPUT_SCHEMA = {
 } as const;
 
 /** Catalog row for the mesh-side persona read (#402). Content only: name / role / model /
- *  description / owner. Policy (capabilities, ACLs) has no slot — the write path stays closed. */
+ *  description / owner. Capabilities have no slot — the write path still cannot self-grant spawn. */
 const PERSONA_CATALOG_ROW_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -697,14 +717,48 @@ const ROWS: CommandRow[] = [
   { name: "abort-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: ATTEMPT_STATE_OUTPUT_SCHEMA, targeted: false, handler: "abortPreservation" },
 ];
 
-const cc = (root: unknown): CompiledContract => compileContract({ root: root as Record<string, unknown> });
-const COMPILED: Record<string, { input: CompiledContract; output: CompiledContract }> =
-  Object.fromEntries(ROWS.map((r) => [r.name, { input: cc(r.input), output: cc(r.output) }]));
+// WHEN THE COMPILE HAPPENS (#1323): every CLI invocation loads this module before its verb is
+// read (`bin/run.ts` self-registers the manager), and compiling the 41 distinct schema roots cost
+// ~1.8 CPU-seconds of Ajv work paid by `cotal --version`. The compile therefore runs ON FIRST
+// ACCESS, not at import: importing this module builds only the source table and its digests (pure
+// canonical JSON, no Ajv), and the first read of a contract pair — `managerCommandDefs` at serve
+// registration, or a caller hand-importing `MANAGER_CONTRACTS` — compiles then. A compile failure
+// that import used to surface at module load now surfaces at that first read, as the same
+// ContractInvalidError from the same compileContract; nothing is swallowed or retried.
+type ContractPair = { input: CompiledContract; output: CompiledContract };
+
+const COMPILED = new Map<string, ContractPair>();
+
+function pairFor(name: string): ContractPair {
+  let pair = COMPILED.get(name);
+  if (!pair) {
+    const r = ROWS.find((row) => row.name === name);
+    if (!r) throw new Error(`unknown manager command contract "${name}"`);
+    pair = { input: compileContract({ root: r.input as Record<string, unknown> }), output: compileContract({ root: r.output as Record<string, unknown> }) };
+    COMPILED.set(name, pair);
+  }
+  return pair;
+}
+
+/** The §13.7 closure digest of a self-contained schema root, WITHOUT compiling: the manifest
+ *  `{ v: 1, root, members: [] }` over the source document's artifact digest — the identical value
+ *  `compileContract` returns as `closureDigest` for a member-free closure (schema-profile's
+ *  `assertClosureProfile` derives it the same way, from the source, before any Ajv work). The
+ *  cluster document pins these, so `describe`-only readers never pay the compile. */
+function closureDigestOfSource(root: unknown): string {
+  return contractDigest({ v: 1, root: contractDigest(root), members: [] });
+}
 
 /** Per-command compiled contract pairs, exported for CALLERS (`epCall` pins the same digests the
- *  cluster document registers; the generic invoke CLI compiles these from the STORE instead). */
+ *  cluster document registers; the generic invoke CLI compiles these from the STORE instead).
+ *  LAZY: a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
 export const MANAGER_CONTRACTS: Readonly<Record<string, { input: CompiledContract; output: CompiledContract }>> =
-  Object.freeze(COMPILED);
+  new Proxy({} as Record<string, ContractPair>, {
+    has: (_, name: string) => ROWS.some((r) => r.name === name),
+    ownKeys: () => ROWS.map((r) => r.name) as Array<string | symbol>,
+    getOwnPropertyDescriptor: (_, name: string) => (ROWS.some((r) => r.name === name) ? { configurable: true, enumerable: true, get: () => pairFor(name) } : undefined),
+    get: (_, name: string | symbol) => (typeof name === "string" && ROWS.some((r) => r.name === name) ? pairFor(name) : undefined),
+  });
 
 /** Every §13.7 contract artifact the manager PUBLISHES to the EPC store at registration (P2 item
  *  1, 1c): each DISTINCT schema root plus its single-member closure manifest — the two artifacts
@@ -726,7 +780,10 @@ export function managerContractArtifactValues(): unknown[] {
 }
 
 /** The 1a `status` pair, kept as a named export (existing callers/smokes). */
-export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } = MANAGER_CONTRACTS.status;
+export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } =
+  new Proxy({} as { input: CompiledContract; output: CompiledContract }, {
+    get: (_, key: string | symbol) => pairFor("status")[key as "input" | "output"],
+  });
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
  *  surface. Revisions: 3 = the 1c any-mode despawn/attach admission; 4 = item-2's spawn-as-action;
@@ -772,7 +829,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  14 = manager `status` adds static reconciliation state. Its output digest changed again, so
  *  cached revision-13 descriptions cannot name the new required output contract. This is a
  *  second, independent output change landing on the same command as 13, so it cannot fold into
- *  it: a caller holding a revision-13 descriptor would be told the surface it already knows. */
+ *  it: a caller holding a revision-13 descriptor would be told the surface it already knows.
+ *
+ *  15 = manager `status` adds `classSpawn`: whether this instance takes unpinned spawn/launch
+ *  on the class rail. A changed output contract is a changed described surface even though
+ *  the command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -790,7 +851,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 14,
+    revision: 15,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -799,8 +860,8 @@ export function managerClusterDocument(): {
       targeted: r.targeted,
       ...(r.modes ? { modes: r.modes } : {}),
       capability: r.capability,
-      inputDigest: COMPILED[r.name].input.closureDigest,
-      outputDigest: COMPILED[r.name].output.closureDigest,
+      inputDigest: closureDigestOfSource(r.input),
+      outputDigest: closureDigestOfSource(r.output),
     })),
   };
 }
@@ -879,9 +940,12 @@ export interface ManagerServiceHandlers {
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes: each command's provenance-branded compiled
  *  contracts (matching the document's pinned digests exactly) plus its handler. */
 export function managerCommandDefs(handlers: ManagerServiceHandlers): EpCommandDef[] {
+  // First use MATERIALIZES the compiled pairs (the Proxy compiles lazily; a compile failure
+  // surfaces here, at registration, exactly where serve would need the validators).
+  for (const r of ROWS) pairFor(r.name);
   return ROWS.map((r) => ({
     command: r.name,
-    contract: COMPILED[r.name],
+    contract: pairFor(r.name),
     handler: (ctx: EpServeContext) => handlers[r.handler](ctx),
   }));
 }

@@ -14,13 +14,13 @@
       "expectRed": "answer presents as the arming holder and is accepted",
       "completionMarker": "run-command:",
       "cell": "answer presents as the arming holder and is accepted",
-      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The anchor moved with the strand fix: the presenter is no longer supplied at the CLI call site, it is bound inside resolveCheckpoint off the checkpoint's own record, so the substitution now lives there. The substituted holder differs from the arming one in BOTH components (the arming id is cli-run-<hex> per invocation and the lifecycleUid never matches), so the refusal is on holder identity, not on one lucky field. Re-measured 2026-09-02 at the new anchor: the named cell reds FIRST with the SPEC 13.10 refusal, 18 ok 6 failed, and the suite EXITS red on its own — the re-measure also caught an unbounded `await orphan` in block 6b that HUNG the suite under this mutant class and is now raced against the same 15s bound as the completions beside it. Re-anchored 2026-09-06: the resolver split into locate (reads the holder) and answer (presents it), so the substitution now sits on `answerOpenCheckpoint`'s presenter."
+      "note": "The wire refuses a presenter that is not the arming holder (permission-denied, SPEC 13.10); the smoke converts that throw into the named cell going red rather than the suite dying. The anchor moved with the strand fix: the presenter is no longer supplied at the CLI call site, it is bound inside resolveCheckpoint off the checkpoint's own record, so the substitution now lives there. The substituted holder differs from the arming one in BOTH components (the arming id is cli-run-<hex> per invocation and the lifecycleUid never matches), so the refusal is on holder identity, not on one lucky field. Re-measured 2026-09-02 at the new anchor: the named cell reds FIRST with the SPEC 13.10 refusal, 18 ok 6 failed, and the suite EXITS red on its own \u2014 the re-measure also caught an unbounded `await orphan` in block 6b that HUNG the suite under this mutant class and is now raced against the same 15s bound as the completions beside it. Re-anchored 2026-09-06: the resolver split into locate (reads the holder) and answer (presents it), so the substitution now sits on `answerOpenCheckpoint`'s presenter."
     },
     {
       "name": "a constant holder id lets concurrent drives co-activate through the exact-tuple relaxation",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
-      "replace": "  return { id: \"cli-run\", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: \"cli_run\", lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
       "expectRed": "concurrent drives never co-activate: every activation token is held exactly once",
       "completionMarker": "run-command:",
       "cell": "concurrent drives never co-activate: every activation token is held exactly once",
@@ -35,6 +35,36 @@
       "completionMarker": "run-command:",
       "cell": "the journal render shows an open pause's question under the step an answer is addressed by",
       "note": "An open checkpoint is answered by step key, and the only place a person can read WHAT it asks is this render. Without it the journal shows a pending row and no question, and the answerer has to guess what they are approving."
+    },
+    {
+      "name": "a local holder contains a forbidden owner-token separator",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "replace": "  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };",
+      "expectRed": "local authenticated publish admission accepts its generated holder identity",
+      "completionMarker": "run-command:",
+      "cell": "local authenticated publish admission accepts its generated holder identity",
+      "note": "Exercise authenticated local admission with a publish channel; the forbidden separator must fail the named start cell before any workflow effect is performed. A none ceiling does not format a chat subject and cannot observe this defect."
+    },
+    {
+      "name": "the verb table drops the dispatch of migrate",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "    else if (verb === \"migrate\") await migrate(values, planes, a, takeoverId);",
+      "replace": "    else if (verb === \"migrate\") { console.error(USAGE); process.exit(1); }",
+      "expectRed": "an admissible edit prints the report and exits 0",
+      "completionMarker": "run-command:",
+      "cell": "an admissible edit prints the report and exits 0",
+      "note": "The dispatch is the whole lane: migrateRun existed and no surface reached it. Dropping the dispatch back to the usage refusal is the base defect exactly, and the admissible cell is the one that cannot pass without the walk running: it asserts the report text and the exit code the dispatched verb produces."
+    },
+    {
+      "name": "the report claims admissible on a rejected orphan",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  if (!report.admissible) process.exitCode = 1;",
+      "replace": "  void report;",
+      "expectRed": "and the exit status is non-zero, because the check refused",
+      "completionMarker": "run-command:",
+      "cell": "and the exit status is non-zero, because the check refused",
+      "note": "The exit status is the verb's contract: 0 on admissible, non-zero on not, so a caller can branch without parsing the report. Voiding the refusal's exit code leaves the printed report intact and only the status wrong, which is the half a print-only assertion can never see."
     }
   ]
 }

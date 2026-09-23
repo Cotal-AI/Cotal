@@ -111,6 +111,17 @@
  * and reaches the behavior it is meant to break. The other five mutations killed their predicted
  * named cells on that first run.
  *
+ * Harness correction after close-after-disable (#1480/#1486): FakeNc previously implemented only
+ * drain(). Product teardown after a reconnect fence now calls close(), so the missing method threw
+ * inside closeWithoutLibraryReconnect, the catch swallowed it, and #975 went red at HEAD
+ * (mutation-reproof PRE-RED: base GREEN -> head RED). FakeNc.close() is the product path;
+ * drain() delegates to close() for older teardown. DrainWitnessNc counts them separately so a
+ * drain() restore still reds #975.
+ *
+ * M17 restores drain() inside closeWithoutLibraryReconnect.
+ *   IN  #975: the witness requires close() and zero drain().
+ *   OUT every other cell: they do not count teardown method.
+ *
  * Run: pnpm smoke:transport-liveness
  */
 import type { Status } from "@nats-io/nats-core";
@@ -169,7 +180,9 @@ class FakeNc {
   status(): AsyncIterable<Status> { return this.queue; }
   getServer(): string { return this.server; }
   isClosed(): boolean { return this.closedFlag; }
-  async drain(): Promise<void> { this.closedFlag = true; this.queue.push({ type: "close" }); this.queue.close(); }
+  /** Product teardown after a reconnect fence uses close(), not drain(). */
+  async close(): Promise<void> { this.closedFlag = true; this.queue.push({ type: "close" }); this.queue.close(); }
+  async drain(): Promise<void> { await this.close(); }
   async closed(): Promise<void> { return new Promise(() => {}); }
 }
 
@@ -182,7 +195,9 @@ class ClosingNc extends FakeNc {
 
 class DrainWitnessNc extends FakeNc {
   drains = 0;
+  closes = 0;
   override async drain(): Promise<void> { this.drains++; await super.drain(); }
+  override async close(): Promise<void> { this.closes++; await super.close(); }
 }
 
 const cfg: AgentConfig = {
@@ -414,9 +429,10 @@ releaseBind();
 await startingPromise;
 check(
   "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
-  freshNc.drains === 1 && freshNc.closedFlag === true && startingEp.nc === undefined &&
+  freshNc.closes === 1 && freshNc.drains === 0 && freshNc.closedFlag === true && startingEp.nc === undefined &&
     startingEp.heartbeatTimer === undefined && supervised === 0,
   {
+    closes: freshNc.closes,
     drains: freshNc.drains,
     closed: freshNc.closedFlag,
     hasNc: startingEp.nc !== undefined,
@@ -428,7 +444,7 @@ check(
 // nc live, which is the named failure above. Clear/close them after observing so the suite reaches its
 // terminal marker and mutation-proof can grade the red instead of timing out on the leaked resource.
 if (startingEp.heartbeatTimer) clearInterval(startingEp.heartbeatTimer);
-if (!freshNc.closedFlag) await freshNc.drain();
+if (!freshNc.closedFlag) await freshNc.close();
 
 const failing = new MeshAgent({ ...cfg, name: "failing-start-agent" });
 let rejectStart!: (error: Error) => void;

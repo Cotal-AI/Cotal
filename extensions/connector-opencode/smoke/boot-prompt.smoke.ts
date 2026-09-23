@@ -51,7 +51,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 // ── 1. the launch spec: does the connector hand the prompt over at all? ──────────────────────────
 const BOOT_TEXT = "Introduce yourself in #general, then wait.";
 {
-  const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT });
+  const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT, events: false });
   check(
     "the launch spec carries the initial prompt to the plugin",
     withPrompt.env?.COTAL_OPENCODE_PROMPT === BOOT_TEXT,
@@ -70,7 +70,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     withPrompt.env?.OPENCODE_CONFIG_CONTENT,
   );
 
-  const noPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-2" });
+  const noPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-2", events: false });
   check(
     "no initial prompt means no carrier in the launch spec",
     !("COTAL_OPENCODE_PROMPT" in (noPrompt.env ?? {})),
@@ -80,7 +80,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
   // A prompt the connector cannot turn into a turn is refused at launch — never accepted and dropped.
   let refused = "";
   try {
-    opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-3", prompt: "   " });
+    opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-3", prompt: "   ", events: false });
   } catch (e) {
     refused = (e as Error).message;
   }
@@ -91,6 +91,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     const pinned = opencodeConnector.buildLaunch({
       space: "bootspace",
       name: "boot-pinned",
+      events: false,
       resolvedBinaries: { opencode: "/boot/resolved-opencode" },
     });
     check(
@@ -126,6 +127,8 @@ const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let sessionSeq = 0;
 let sessionID = "";
 const prompts: { session: string; text: string }[] = [];
+let serverModels: Record<string, unknown> = { "catalog-only": {} };
+let providerReads = 0;
 let sessionGate: Promise<void> | undefined;
 let forcedSessionId: string | undefined;
 const oc = createHttpServer((req, res) => {
@@ -137,6 +140,11 @@ const oc = createHttpServer((req, res) => {
   req.setEncoding("utf8");
   req.on("data", (d) => (raw += d));
   req.on("end", () => {
+    if (req.method === "GET" && req.url === "/provider") {
+      providerReads++;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ all: [{ id: "or1stub", models: serverModels }], connected: ["or1stub"], default: {} }));
+      return;
+    }
     if (req.method === "POST" && req.url === "/session") {
       // GATED FOR ARM C ONLY. The boot task awaits session creation, so holding this is what lets a
       // native turn get in front of the boot prompt deterministically instead of by racing it.
@@ -214,13 +222,48 @@ try {
   watcher.on("error", () => undefined);
   await watcher.start();
 
+  // The CLI catalog can advertise an id absent from this server's provider listing. The same
+  // server and real broker are used by the normal boot arms below; only its available models change.
+  const catalog = { source: "opencode models --pure --verbose", models: [{ id: "or1stub/catalog-only" }] };
+  const beforeSession = sessionSeq;
+  process.env.COTAL_NAME = "ModelReadiness";
+  process.env.COTAL_ID = "model_readiness";
+  process.env.COTAL_MODEL = catalog.models[0].id;
+  serverModels = { "served-only": {} };
+  let modelRefusal = "";
+  let exitCode: number | undefined;
+  const originalExit = process.exit;
+  const originalStderrWrite = process.stderr.write;
+  process.exit = ((code?: number) => { exitCode = code; }) as typeof process.exit;
+  process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+    const line = String(chunk);
+    if (line.includes("or1stub/catalog-only")) modelRefusal = line;
+    return originalStderrWrite.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+  }) as typeof process.stderr.write;
+  clearPluginGuard();
+  await bootPlugin();
+  for (let i = 0; i < 30 && exitCode === undefined; i++) await sleep(100);
+  process.exit = originalExit;
+  process.stderr.write = originalStderrWrite;
+  check("catalog/server model mismatch refuses before mesh join",
+    exitCode === 1 && providerReads === 1 && sessionSeq === beforeSession &&
+    !watcher.getRoster().some((p) => p.card.name === "ModelReadiness") &&
+    modelRefusal.includes("or1stub/catalog-only") &&
+    modelRefusal.includes(catalog.source) && modelRefusal.includes("server /provider"),
+    { exitCode, providerReads, sessionSeq, beforeSession, modelRefusal });
+  delete process.env.COTAL_MODEL;
+  serverModels = { "catalog-only": {} };
+
   // ARM A — booted WITH a prompt. Exactly one turn, carrying that text.
   process.env.COTAL_NAME = "Booty";
   process.env.COTAL_ID = "booty";
+  process.env.COTAL_MODEL = "or1stub/catalog-only";
   process.env.COTAL_OPENCODE_PROMPT = BOOT_TEXT;
   clearPluginGuard();
   armA = await bootPlugin();
   await waitForPrompts(1);
+  check("a model served by the running server boots normally", providerReads === 2, providerReads);
+  delete process.env.COTAL_MODEL;
   check("a boot prompt drives a turn without any peer traffic", prompts.length === 1, prompts);
   check("the boot turn carries the operator's prompt text", prompts[0]?.text.includes(BOOT_TEXT) === true, prompts[0]);
 

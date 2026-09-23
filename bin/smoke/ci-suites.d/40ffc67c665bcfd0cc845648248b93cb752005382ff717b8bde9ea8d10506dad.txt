@@ -1,0 +1,3 @@
+# The durable wait on a non-mesh resource: its observations are journalled AS OBSERVATIONS, so a
+# resumed wait re-observes the world instead of replaying what it last saw.
+smoke:lang-wait-until

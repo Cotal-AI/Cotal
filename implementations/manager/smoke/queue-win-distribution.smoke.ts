@@ -169,7 +169,7 @@ try {
   // one manager: the extreme of asymmetry, which at least establishes whether the queue re-balances
   // at all, and whether a single-responder space is silently indistinguishable from a fair race.
   console.log(`\n3. asymmetry probe: with manager B stopped, does the class queue still answer?`);
-  await m2.stop(); m2 = undefined;
+  await m2.stop({ withAgents: true }); m2 = undefined;
   await wait(1000);
   const seq3 = await sample();
   const r3 = report(seq3, "distribution with only A live:");
@@ -193,8 +193,8 @@ try {
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   await nc.drain().catch(() => nc.close());
 } finally {
-  await m1?.stop().catch(() => {});
-  await m2?.stop().catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

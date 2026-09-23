@@ -63,18 +63,21 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
     case "unreachable":
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
-      if (t.origin === "manual")
+      if (t.origin === "manual" || t.origin === "catalog")
         return `✗ no broker answered at ${t.server} - "${t.space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`;
-      return `✗ no mesh running at ${t.server}${pruned ? " (stale registry entry - removed)" : ""} - run \`cotal up\``;
+      // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
+      // so existing attach/mint cells still recognise the classified refusal, and name
+      // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
+      return `✗ no mesh running at ${t.server} - mesh "${t.space}" is recorded at ${t.root} but not running; run \`cotal up\` there to restart`;
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering
     // the entry — `cotal up` would start a DIFFERENT, local mesh under that name.
     case "registry-creds-rejected":
-      return t.origin === "manual"
+      return t.origin === "manual" || t.origin === "catalog"
         ? `✗ mesh "${t.space}" at ${t.server} rejected the credentials under ${t.root} - re-mint them where that mesh runs, or re-register it with \`cotal meshes add ${t.space} --server <url> --root <dir> --force\``
         : `✗ mesh "${t.space}" at ${t.server} no longer matches its registry entry (credentials rejected - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
     case "registry-open-now-auth":
-      return t.origin === "manual"
+      return t.origin === "manual" || t.origin === "catalog"
         ? `✗ "${t.space}" is registered as an open mesh, but the broker at ${t.server} requires auth - copy that mesh's account + creds under ${t.root} and re-register with \`cotal meshes add ${t.space} --server ${t.server} --mode auth --force\``
         : `✗ open mesh "${t.space}" at ${t.server} no longer matches its registry entry (broker now requires auth - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
     case "creds-rejected":

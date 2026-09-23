@@ -1,0 +1,18 @@
+{
+  "suite": [
+    "packages/workspace/smoke/space-segmentation.smoke.ts"
+  ],
+  "guard": "the renewal record is per-space, keyed by the same injective hex the pidfiles use, so two spaces at one root keep two records and a read for one space never returns the other's verdict (#1850)",
+  "command": "pnpm smoke:space-segmentation",
+  "proveWith": "pnpm mutation-proof --config packages/workspace/smoke/mutations/renewal-record-space.json",
+  "mutations": [
+    {
+      "name": "the renewal record path drops the space and returns to the root-only file",
+      "file": "packages/workspace/src/renewal.ts",
+      "find": "  return join(root, \".cotal\", RENEWAL_RECORD_FILE.replaceAll(\"{space}\", spaceKey(space)));",
+      "replace": "  return join(root, \".cotal\", LEGACY_RENEWAL_RECORD_FILE);",
+      "expectRed": "#1850: two spaces at one root keep two renewal records",
+      "cell": "two spaces at one root keep two renewal records"
+    }
+  ]
+}

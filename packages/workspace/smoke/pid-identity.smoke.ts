@@ -10,18 +10,18 @@
  * pid) will meet in production.
  *
  * THE DESIGN: the launch writes a sibling identity pin `<pidfile>.identity` holding `pid token`
- * (the process-start token the advisory lock already uses on Linux/macOS), and every teardown runs
- * ONE shared open-verify-terminate rule: mismatch (pid reuse) refuses and preserves; legacy (no
- * pin) live records warn and proceed for upgrade compatibility; torn pins refuse; only an
- * ESRCH-proven death clears a record.
+ * (the process-start token the advisory lock already uses on Linux/macOS, and on Windows the
+ * process creation FILETIME), and every teardown runs ONE shared open-verify-terminate rule:
+ * mismatch (pid reuse) refuses and preserves; legacy (no pin) live records warn and proceed for
+ * upgrade compatibility; torn pins refuse; only an ESRCH-proven death clears a record.
  *
  * WHAT IS AND IS NOT PROVEN HERE. Every cell drives the REAL stop entry points with REAL child
  * processes and REAL pins; the pid-reuse state itself is built by pinning a start token that
  * differs from the live process's actual start (the truthful post-reuse state: the recorded start
- * belongs to the dead process, the live process started later). The NATIVE WINDOWS surface
- * (CreateProcess handle lifetime, DETACHED_PROCESS parent exit, the absence of a stable start
- * token on win32) is NOT exercised here and is named as the gap in the PR: this suite runs the
- * cross-platform seam, not the Windows-native launcher.
+ * belongs to the dead process, the live process started later). The NATIVE WINDOWS launcher
+ * (CreateProcess handle lifetime, DETACHED_PROCESS parent exit) is not exercised here. The win32
+ * identity token IS: cell F drives the Windows reader/writer seam, including a mutation that
+ * restores "write no pin on win32" and must red.
  *
  * Run: pnpm smoke:pid-identity
  */
@@ -32,7 +32,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  defaultStartToken, formatRecord, identityPinPath, parseRecord,
+  defaultStartToken, formatRecord, identityPinPath, identityStartToken, parseRecord,
+  parseWin32CreationToken, verifyIdentityPin, writeIdentityPin,
 } from "@cotal-ai/workspace";
 
 const prevCwd = process.cwd();
@@ -54,16 +55,18 @@ const alive = (pid: number | undefined): boolean => {
 };
 const reap = (child: { kill: (s?: NodeJS.Signals) => void }) => { try { child.kill("SIGKILL"); } catch { /* gone */ } };
 
-/** A child that dies on SIGTERM, reporting its own exit through `exitCode`. */
-const spawnTarget = (): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
-  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);"], { stdio: "ignore" });
+/** A child that dies on SIGTERM, reporting its own exit through `exitCode`. `as` adds the argv
+ *  token that path's own command attribution reads, so a cell grading the identity pin is not
+ *  answered first by attribution (#1528). */
+const spawnTarget = (as?: "supervise" | "deliver"): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);", ...(as ? [as] : [])], { stdio: "ignore" });
   return { child, pid: child.pid };
 };
 /** A FOREIGN process: it records being signalled by dying with a distinctive exit code. For the
- *  manager cell, `asSupervisor` adds a trailing argv token so the process passes the manager
- *  path's OWN command attribution first - grading the identity refusal, not attribution. */
-const spawnForeign = (asSupervisor = false): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
-  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(9)); setInterval(()=>{},1000);", ...(asSupervisor ? ["supervise"] : [])], { stdio: "ignore" });
+ *  manager and delivery cells the argv token (`supervise` / `deliver`) is added so the process
+ *  passes that path's OWN command attribution first - grading the identity refusal, not attribution. */
+const spawnForeign = (as?: "supervise" | "deliver"): { child: ReturnType<typeof spawn>; pid: number | undefined } => {
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>process.exit(9)); setInterval(()=>{},1000);", ...(as ? [as] : [])], { stdio: "ignore" });
   return { child, pid: child.pid };
 };
 
@@ -81,7 +84,10 @@ try {
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const foreign = spawnForeign();
+    // The trailing `deliver` argv makes command attribution PASS, so the PIN is the only thing that
+    // can refuse here: a reused pid running a delivery-looking command line (another mesh's daemon)
+    // is exactly the case attribution cannot catch and the pin must (#1528).
+    const foreign = spawnForeign("deliver");
     strays.push(foreign.child);
     await wait(150);
     // The post-reuse state: pidfile holds the FOREIGN process's pid, the pin holds a start token
@@ -106,7 +112,7 @@ try {
     // The trailing `supervise` argv makes command attribution PASS, so the pin is the only thing
     // that can refuse here: a reused pid that happens to run a supervisor-looking command line
     // (another mesh's manager) is exactly the case attribution cannot catch and the pin must.
-    const foreign = spawnForeign(true);
+    const foreign = spawnForeign("supervise");
     strays.push(foreign.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "manager.pid"), String(foreign.pid));
@@ -158,7 +164,7 @@ try {
   // ── C. THE HAPPY PATH still tears down: a MATCHING pin is signalled and its death confirmed ─
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const target = spawnTarget();
+    const target = spawnTarget("deliver");
     strays.push(target.child);
     await wait(150);
     const token = defaultStartToken(target.pid!); // the REAL start token of the REAL process
@@ -190,7 +196,7 @@ try {
   // ── E. LEGACY records warn + proceed; TORN records still refuse on a LIVE pid ─────────────
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-    const foreign = spawnForeign();
+    const foreign = spawnForeign("deliver");
     strays.push(foreign.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(foreign.pid)); // legacy: no pin
@@ -203,7 +209,7 @@ try {
     await wait(200);
     check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", sent === 1 && foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { sent, exitCode: foreign.child.exitCode, warning });
     check("E2 the legacy record auto-clears after confirmed death", !existsSync(join(root, ".cotal", "delivery.pid")));
-    const torn = spawnForeign();
+    const torn = spawnForeign("deliver");
     strays.push(torn.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(torn.pid));
@@ -216,6 +222,38 @@ try {
     check("E4 the torn pair is preserved", existsSync(join(root, ".cotal", "delivery.pid")) && existsSync(join(root, ".cotal", "delivery.pid.identity")));
     reap(torn.child);
   }
+
+  // ── F. WIN32 LAUNCHES WRITE A PIN (#1437). The pre-fix defect: processStartToken was undefined
+  // on win32, writeIdentityPin skipped, every teardown took the legacy path. Cell F1 is the
+  // mutation target: restoring "never write a pin" must red here, on this host, without Windows.
+  {
+    check("F0 a FILETIME integer is a win32 pin token; a MSYS ps date is not",
+      parseWin32CreationToken("  133000000000000000\r\n") === "133000000000000000"
+      && parseWin32CreationToken("Wed Sep 11 23:05:21 2026") === undefined
+      && parseWin32CreationToken("") === undefined);
+    const win32Token = "133000000000000000";
+    check("F1 win32 identity uses the creation-time reader, not undefined",
+      identityStartToken(4242, "win32", () => win32Token) === win32Token);
+    const pidPath = join(root, ".cotal", "win32.pid");
+    writeFileSync(pidPath, "4242");
+    writeIdentityPin(pidPath, 4242, (pid) => identityStartToken(pid, "win32", () => win32Token));
+    check("F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
+      existsSync(identityPinPath(pidPath)), { pin: identityPinPath(pidPath) });
+    check("F3 the written pin is a two-field record, not a bare pid",
+      parseRecord(readFileSync(identityPinPath(pidPath), "utf8")).kind === "record");
+    check("F4 a matching win32 pin verifies as match",
+      verifyIdentityPin(pidPath, () => win32Token).kind === "match");
+    check("F5 a win32 pin mismatch is mismatch, never the legacy proceed-and-signal path",
+      verifyIdentityPin(pidPath, () => "133000000000000001").kind === "mismatch");
+    const liveLegacy = spawnTarget();
+    strays.push(liveLegacy.child);
+    await wait(150);
+    const legacyPath = join(root, ".cotal", "win32-legacy.pid");
+    writeFileSync(legacyPath, String(liveLegacy.pid));
+    check("F6 a live record with no sibling pin is still legacy (upgrade path only)",
+      verifyIdentityPin(legacyPath, () => win32Token).kind === "legacy");
+    reap(liveLegacy.child);
+  }
 } finally {
   for (const s of strays) reap(s);
   process.chdir(prevCwd);
@@ -225,9 +263,8 @@ try {
 console.log(`\nPID IDENTITY TESTS PASSED ✅  (${pass} checks)`);
 console.log(
   "  COVERAGE, precisely: every cell drives a REAL stop entry point against REAL child processes.\n" +
-  "  What this suite does NOT prove: the native Windows surface - CreateProcess handle lifetime,\n" +
-  "  DETACHED_PROCESS parent exit, and the fact that win32 has no stable start token (a pin cannot\n" +
-  "  be written there, so every record is the reduced-guarantee legacy shape and warns). That is named as the\n" +
-  "  gap in the PR; the Windows-native launcher (PR #880) must integrate with this seam there.",
+  "  Cell F proves the win32 identity seam: a creation-time token is a pin, a launch writes the\n" +
+  "  sibling, mismatch refuses, and a missing sibling remains the legacy upgrade path. What this\n" +
+  "  suite does NOT prove: CreateProcess handle lifetime and DETACHED_PROCESS parent exit.",
 );
 process.exit(0);

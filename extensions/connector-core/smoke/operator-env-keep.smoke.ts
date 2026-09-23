@@ -19,11 +19,15 @@
  *
  * Run: pnpm smoke:operator-env-keep
  */
-import { strict as assert } from "node:assert";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OPERATOR_ENV_KEEP } from "../src/launch.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const extensionsRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const repoRoot = join(extensionsRoot, "..");
@@ -166,3 +170,4 @@ console.log(
     `${OPERATOR_ENV_KEEP.length} keep-list names, 0 conflicts, ` +
     `${callers.length} launchEnv call sites, none outside the walked tree contributing a COTAL_ name`,
 );
+emitSentinel({ passed: cells(), failed: 0 });

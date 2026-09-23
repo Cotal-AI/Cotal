@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, isReachable } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import * as herdr from "../../extensions/herdr/src/driver.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = `he2e${randomUUID().slice(0, 6)}`;
 const HERDR_SESSION = `cotal-${SPACE}`;
@@ -93,7 +94,7 @@ console.log(`\n── herdr e2e: space ${SPACE} ──────────�
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const auth = await createSpaceAuth(SPACE);
-scratch = mkdtempSync(join(tmpdir(), "cotal-herdr-e2e-"));
+scratch = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}herdr-e2e-`));
 const workspaceRoot = join(scratch, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -102,6 +103,7 @@ writeFileSync(join(scratch, "server.conf"), serverConfig(auth, [auth], {
   transport: { kind: "plaintext" }, port: PORT, storeDir: join(scratch, "js"),
 }));
 const srv = spawn("nats-server", ["-c", join(scratch, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(srv);
 srvPid = srv.pid;
 check("broker started on an ephemeral port, not the live mesh", srvPid !== undefined && PORT !== 4222);
 check("broker reachable", await until(() => isReachable(SERVERS), 20_000));

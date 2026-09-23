@@ -47,6 +47,8 @@ import {
   writeServiceStatus,
 } from "@cotal-ai/core";
 import { webProbeTarget } from "../src/commands/status.js";
+import { renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -54,7 +56,7 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const HOLDER = join(import.meta.dirname, "component-health-holder.mjs");
 const SPACE = "component-health";
 const INSTANCE = "h".repeat(26);
-const root = mkdtempSync(join(tmpdir(), "cotal-component-health-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-component-health-home-"));
 const store = join(root, "jetstream");
 mkdirSync(join(root, ".cotal"), { recursive: true });
@@ -273,6 +275,7 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
       agentCount: 0,
       uptimeMs: 1,
       connectors: [],
+      classSpawn: true,
       staticReconciliation: {
         state: "failed",
         failures: [{
@@ -311,18 +314,21 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
     pid: process.pid,
   };
   const managerLeaseRevision = await health.acquireManagerLease(managerLease);
-  const deliveryLeaseRevision = await health.acquireDeliveryLease(0);
-  await health.markDeliveryLeaseReady(0, deliveryLeaseRevision);
+  // The READY flip moves the revision, and release is a compare-and-swap against the revision this
+  // endpoint last owned, so carry the one markReady returned, not the one acquire did.
+  const deliveryLeaseRevision = await health.markDeliveryLeaseReady(0, await health.acquireDeliveryLease(0));
   writeFileSync(join(root, ".cotal", "manager.pid"), String(process.pid));
   writeFileSync(join(root, ".cotal", "delivery.pid"), String(process.pid));
-  writeFileSync(join(root, ".cotal", "renewal.json"), JSON.stringify({
+  // The per-space renewal record, through the workspace seam (#1850): the root-only spelling
+  // this fixture used to write is a pre-per-space leftover that `status` deliberately does not read.
+  writeRenewalRecord(root, SPACE, {
     ts: "2026-09-06T00:00:00.000Z", owner: "fixture", results: [], adoption: { ok: true },
-  }));
+  });
 
   return {
     close: async () => {
       await service.stop();
-      await health.releaseDeliveryLease(0);
+      await health.releaseDeliveryLease(0, deliveryLeaseRevision);
       await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision);
       await health.stop().catch(() => {});
       await nc.drain().catch(() => nc.close());
@@ -339,6 +345,7 @@ let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
 try {
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+  teardownOnSignal(broker);
   for (let i = 0; i < 100 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture broker started", await portOpen(port));
 
@@ -419,14 +426,15 @@ try {
   web = undefined;
   rmSync(join(root, ".cotal", "web.pid"), { force: true });
 
-  // The delivery daemon owns its ready lease and records its last adoption proof in renewal.json.
-  // Put a holder in the pre-ready state, then flip the record to a refused adoption: neither must
-  // be rendered as absence, and the latter must survive even though its PID is alive.
+  // The delivery daemon owns its ready lease and records its last adoption proof in its renewal
+  // record. Put a holder in the pre-ready state, then flip the record to a refused adoption: neither
+  // must be rendered as absence, and the latter must survive even though its PID is alive. Written
+  // through the workspace seam (#1850) so the cell grades what `status` actually reads.
   delivery = await writeDeliveryHolder();
-  writeFileSync(join(root, ".cotal", "renewal.json"), JSON.stringify({
+  writeRenewalRecord(root, SPACE, {
     ts: "2026-08-21T00:00:00.000Z", owner: "fixture", results: [],
     adoption: { ok: false, error: "fixture broker refusal" },
-  }));
+  });
   const deliveryNotReady = cli("status", "--components", "--space", SPACE, "--server", server);
   const deliveryNotReadyText = `${deliveryNotReady.stdout}${deliveryNotReady.stderr}`;
   check("delivery ready lease and renewal adoption report independently from its own surfaces",
@@ -434,7 +442,7 @@ try {
   await stop(delivery);
   delivery = undefined;
   rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
-  rmSync(join(root, ".cotal", "renewal.json"), { force: true });
+  rmSync(renewalRecordPath(root, SPACE), { force: true });
   await sleep(10_500);
 
   web = await writeWebHarness(await freePort());

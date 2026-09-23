@@ -1,0 +1,6 @@
+# A manager killed between the seat launch and the slot activation CAS. Its custody reference was
+# reserved before the launch and rides the slot's first durable row, so the successor addresses and
+# reaps the seat even though the slot never reached `active`. Split from smoke:orphan-seat-reap:
+# both wait out a manager liveness lease, and one command carrying both crossed mutation-proof's
+# 15-minute timeout.
+smoke:orphan-seat-spawn-window

@@ -169,13 +169,13 @@ try {
 
   // A — the issue's exact shape: file pins `pin`, env points at `other`, no --agent, detached.
   process.env.COTAL_DEFAULT_AGENT = "other";
-  const aOut = await capture(() => run("spawn", ["pinned", "--detach", "--space", SPACE]));
+  const aOut = await capture(() => run("spawn", ["pinned", "--detach", "--no-events", "--space", SPACE]));
   ok("A: detached spawn of the pinned persona succeeded", /spawned .*pinned/.test(aOut), aOut);
   ok("A: the persona's agent: pin built the launch (file beats env, detached)", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length });
   ok("A: the reply names the pinned harness", /pin /.test(aOut) && !/other /.test(aOut), aOut);
 
   // B — an explicit --agent still wins over the pin (flag > file > env > default).
-  const bOut = await capture(() => run("spawn", ["pinned", "--detach", "--space", SPACE, "--agent", "other", "--name", "flagwins"]));
+  const bOut = await capture(() => run("spawn", ["pinned", "--detach", "--no-events", "--space", SPACE, "--agent", "other", "--name", "flagwins"]));
   ok("B: explicit --agent spawn succeeded", /spawned .*flagwins/.test(bOut), bOut);
   ok("B: the flag's connector built the launch, not the pin", builds.other.length >= 1 && builds.pin.length === 1, { pin: builds.pin.length, other: builds.other.length });
 
@@ -196,7 +196,7 @@ try {
   builds.other = [];
   const child = await captureProcess(
     "pnpm",
-    ["exec", "tsx", "bin/cotal.ts", "spawn", "unpinned", "--detach", "--space", SPACE],
+    ["exec", "tsx", "bin/cotal.ts", "spawn", "unpinned", "--detach", "--no-events", "--space", SPACE],
     { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_DEFAULT_AGENT: "other", COTAL_SKIP_CONNECTOR_SEED: "1" },
   );
   ok("C: detached child spawn with a caller-only default succeeded", child.code === 0 && /spawned .*unpinned/.test(child.out), child);
@@ -209,7 +209,7 @@ try {
   process.env.COTAL_DEFAULT_AGENT = "other";
   builds.pin = [];
   builds.other = [];
-  const cOut = await capture(() => run("spawn", ["pinned", "--space", SPACE, "--name", "fgpin"]));
+  const cOut = await capture(() => run("spawn", ["pinned", "--no-events", "--space", SPACE, "--name", "fgpin"]));
   ok("D: foreground spawn of the pinned persona ran to completion", /spawning fgpin/.test(cOut), cOut);
   ok("D: foreground honored the persona's agent: pin", builds.pin.length === 1 && builds.other.length === 0, { pin: builds.pin.length, other: builds.other.length, out: cOut });
 
@@ -333,7 +333,7 @@ try {
   console.log(`\npersona-agent 869 reachability smoke: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 } finally {
-  try { await mgr?.stop(); } catch { /* teardown best-effort */ }
+  try { await mgr?.stop({ withAgents: true }); } catch { /* teardown best-effort */ }
   for (const k of kids) k.kill("SIGKILL");
   releaseBroker?.();
 }

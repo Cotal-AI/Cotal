@@ -43,7 +43,8 @@ import {
   AguiEmitterHalted,
   aguiFrame,
   applyAguiEgressPolicy,
-  frozenBodyViolatesEgressPolicy,
+  frozenBodyEgressVerdict,
+  type FrozenBodyEgressVerdict,
   isAguiFramePart,
   parseAguiFrame,
   runStarted,
@@ -226,7 +227,7 @@ try {
     );
     c(
       "chokepoint:CONTROL-a-frame-with-only-lifecycle-does-not-violate",
-      frozenBodyViolatesEgressPolicy([
+      frozenBodyEgressVerdict([
         aguiFrame({
           threadId: THREAD,
           runId: "run-eq-2",
@@ -234,7 +235,7 @@ try {
           seq: 1,
           events: [runStarted({ threadId: THREAD, runId: "run-eq-2", timestamp: 1 })],
         }),
-      ]) === false,
+      ]) === "clean",
     );
   }
 
@@ -468,6 +469,162 @@ try {
     );
   }
 
+  // ── RECOVERY: a frozen body whose EVENT LIST CANNOT BE READ ──────────────────────────────────
+  //
+  // The shape a reviewer used to defeat the earlier fail-open fence, reproduced here as a
+  // regression guard at the coordinate where it actually leaked. `events` IS the tool bytes, so a
+  // scan of `.events[].type` looks in exactly the right place and finds no array. It survives a
+  // JSON round-trip, `EventWal` admits any non-empty `pending.body`, and the old fence published it
+  // verbatim onto a channel with a different read ACL. Renderers declining to fold it is not the
+  // boundary; the wire is.
+  //
+  // NOT built with `aguiFrame()`, deliberately: that constructor enforces a non-empty events ARRAY
+  // at runtime and would refuse this. A body like it can only be frozen by something other than
+  // this version's writer, which is the upgrade-across-a-pending-frame case the halt names.
+  {
+    const { wal, walPath, source } = await fresh("recover-unreadable");
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
+    const unreadable = {
+      kind: "ag-ui.frame",
+      protocol: "ag-ui/0.0.57",
+      threadId: THREAD,
+      runId: "run-unreadable",
+      epoch: wal.epoch,
+      seq: 1,
+      events: `TOOL_CALL_RESULT: ${RECOVER_RESULT}`,
+    };
+    await wal.beginSend({
+      id: "frozen-unreadable-695",
+      E: 0,
+      seq: 1,
+      sourceCursor: "1:2:0:0000000000000000",
+      body: [JSON.parse(JSON.stringify(unreadable)) as Part],
+      brackets: { run: "run-unreadable", text: [], reasoning: [], tools: [] },
+    });
+    const wal2 = await EventWal.open(walPath, {
+      space: SPACE,
+      threadId: THREAD,
+      principal: PRINCIPAL_KEY,
+      subjectMayExist: true,
+    });
+    const ep = new FakeEndpoint();
+    const started = await attempt(() =>
+      AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: sf, source, map: () => null }),
+    );
+    const wire = publishedWire(ep);
+    const halted = started.err instanceof AguiEmitterHalted ? started.err : undefined;
+    c(
+      "recover:an UNREADABLE frozen event list HALTS by name rather than publishing opaque bytes",
+      halted?.reason === "egress-unreadable" && ep.publishes.length === 0,
+      { reason: halted?.reason, publishes: ep.publishes.length, err: started.err?.message },
+    );
+    c(
+      "recover:the tool bytes carried in that event list never reached the wire",
+      !wire.includes(RECOVER_RESULT),
+      { wire: wire.slice(0, 200) },
+    );
+    c(
+      "recover:CONTROL the halt is NOT the generic egress-policy one, so the diagnosis is specific",
+      halted?.reason !== "egress-policy",
+      halted?.reason,
+    );
+  }
+
+  // ── RECOVERY, ENVELOPE: a malformed envelope must HALT on the live boot path ─────────────────
+  // A cell that calls `frozenBodyEgressVerdict` directly proves what the function returns. It does
+  // NOT prove a real entry point reaches it, and `recover()` bypassing the mapper is the live
+  // carrier this whole issue turns on. These freeze an envelope-broken frame in a real WAL via
+  // `beginSend`, reopen it from disk, and boot `AguiEmitter.start()` — the concrete route by which
+  // a body the predecessor refused to publish reached the wire. `aguiFrame()` cannot construct
+  // these, which is the point: they come from a foreign writer or a version-skewed WAL, and
+  // `beginSend` admits any non-empty body of parts.
+  {
+    for (const [label, over] of [
+      ["seq -1", { seq: -1 }],
+      ["protocol mismatch", { protocol: "ag-ui/9.9.9" }],
+    ] as const) {
+      const slug = label.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const { wal, walPath, source } = await fresh(`recover-env-${slug}`);
+      const sf = memorySubjectFrontier();
+      await wal.bindSubjectFrontier(sf);
+      const wellFormed = aguiFrame({
+        threadId: THREAD,
+        runId: "run-env",
+        epoch: wal.epoch,
+        seq: 1,
+        events: [runStarted({ threadId: THREAD, runId: "run-env", timestamp: 1 })],
+      });
+      const brokenEnvelope = { ...(wellFormed as unknown as Record<string, unknown>), ...over };
+      await wal.beginSend({
+        id: `env-${slug}`,
+        E: 0,
+        seq: 1,
+        sourceCursor: "1:2:0:0000000000000000",
+        body: [brokenEnvelope as unknown as Part],
+        brackets: { run: "run-env", text: [], reasoning: [], tools: [] },
+      });
+      const wal2 = await EventWal.open(walPath, {
+        space: SPACE,
+        threadId: THREAD,
+        principal: PRINCIPAL_KEY,
+        subjectMayExist: true,
+      });
+      const ep = new FakeEndpoint();
+      const started = await attempt(() =>
+        AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: sf, source, map: () => null }),
+      );
+      const halted = started.err instanceof AguiEmitterHalted ? started.err : undefined;
+      // Spelled out per case rather than templated so the cell name is greppable in source: the
+      // mutation fixture names one of these in `expectRed`, and a name that only exists at runtime
+      // cannot be checked against the suite when the fixture is reviewed.
+      const cellName =
+        label === "seq -1"
+          ? "recover:an envelope-broken frozen body (seq -1) HALTS egress-unreadable with zero publishes"
+          : "recover:an envelope-broken frozen body (protocol mismatch) HALTS egress-unreadable with zero publishes";
+      c(
+        cellName,
+        halted?.reason === "egress-unreadable" && ep.publishes.length === 0,
+        { reason: halted?.reason, publishes: ep.publishes.length, err: started.err?.message },
+      );
+    }
+    // CONTROL on the same path: a well-formed frozen body must still be republished, or the two
+    // cells above would also pass on an emitter that refuses everything on boot.
+    const { wal, walPath, source } = await fresh("recover-env-control");
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
+    const clean = aguiFrame({
+      threadId: THREAD,
+      runId: "run-env-ok",
+      epoch: wal.epoch,
+      seq: 1,
+      events: [runStarted({ threadId: THREAD, runId: "run-env-ok", timestamp: 1 })],
+    });
+    await wal.beginSend({
+      id: "env-control",
+      E: 0,
+      seq: 1,
+      sourceCursor: "1:2:0:0000000000000000",
+      body: [clean as unknown as Part],
+      brackets: { run: "run-env-ok", text: [], reasoning: [], tools: [] },
+    });
+    const wal2 = await EventWal.open(walPath, {
+      space: SPACE,
+      threadId: THREAD,
+      principal: PRINCIPAL_KEY,
+      subjectMayExist: true,
+    });
+    const ep = new FakeEndpoint();
+    const started = await attempt(() =>
+      AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: sf, source, map: () => null }),
+    );
+    c(
+      "recover:CONTROL a well-formed frozen body still republishes on boot",
+      started.err === undefined && ep.publishes.length === 1,
+      { err: started.err?.message, publishes: ep.publishes.length },
+    );
+  }
+
   // ── NEGATIVE CONTROL: sibling text survives; a dropped shape stays dropped ───────────────────
   {
     const map: RecordMapper<{ kind: "mixed" | "drop"; text?: string; result?: string }> = (rec) => {
@@ -533,7 +690,337 @@ try {
     );
   }
 
-  const EXPECTED = 22;
+  // ── THE FENCE IS TOTAL, AND FAILS CLOSED ────────────────────────────────────────────────────
+  //
+  // PLACED LAST ON PURPOSE. `frozenBodyEgressVerdict` is what T-ARGS and T-RESULT mutate, so a cell
+  // asserting on it directly reddens under those mutations too. Sited earlier it would steal FIRST
+  // RED from the carrier cells those mutations are meant to grade, and the fixture's expectRed names
+  // a carrier. Last, the carrier cells red first and these still red.
+  //
+  // WHY THREE ANSWERS AND NOT A BOOLEAN. A frozen body whose event list cannot be read has to go
+  // somewhere, and both boolean answers were wrong. Reading it through the strict parser threw a
+  // bare vocabulary error out of a machine whose every other abnormal outcome is a named halt.
+  // Skipping it PUBLISHED it, and the string case below is not hypothetical: those bytes reached a
+  // recorded publish through AguiEmitter.start over a real reopened WAL. The boundary is the wire,
+  // not what a renderer folds.
+  {
+    const verdict = (body: readonly unknown[]): FrozenBodyEgressVerdict | string => {
+      try {
+        return frozenBodyEgressVerdict(body);
+      } catch (e) {
+        return `THREW: ${(e as Error).message}`;
+      }
+    };
+    const frame = (extra: Record<string, unknown>) => ({
+      kind: "ag-ui.frame",
+      protocol: "ag-ui/0.0.57",
+      ...extra,
+    });
+
+    // A frame that BOTH fails to parse AND carries a forbidden event answers `unreadable`, because
+    // the parse runs before the scan. That is the strict read's order too - it threw before it ever
+    // reached its own scan - so this is equivalence rather than a new preference, and the halt is
+    // named either way. Reporting `forbidden-kind` here would claim a diagnosis off an envelope the
+    // validator refused to read.
+    const malformed = frame({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] });
+    c(
+      "total:a frame too malformed to PARSE, even carrying TOOL_CALL_RESULT, is unreadable",
+      verdict([malformed]) === "unreadable",
+      verdict([malformed]),
+    );
+
+    // The shape that made fail-open untenable. `events` IS the tool bytes, so the scan looks in
+    // exactly the place the bytes live and finds no array. It survives a JSON round-trip intact.
+    const eventsIsAString = frame({ events: `TOOL_CALL_RESULT: ${RECOVER_RESULT}` });
+    c(
+      "total:a frame whose events is a BARE STRING of tool bytes is unreadable, not published",
+      verdict([eventsIsAString]) === "unreadable",
+      verdict([eventsIsAString]),
+    );
+    c(
+      "total:...and it survives a JSON round-trip, so the WAL cannot launder it",
+      verdict([JSON.parse(JSON.stringify(eventsIsAString))]) === "unreadable",
+    );
+
+    const noEventList = frame({});
+    c(
+      "total:a frame-shaped body with NO event list is unreadable rather than clean",
+      verdict([noEventList]) === "unreadable",
+      verdict([noEventList]),
+    );
+
+    const olderProtocol = frame({
+      protocol: "ag-ui/0.0.1",
+      threadId: THREAD,
+      runId: "r",
+      epoch: "e",
+      seq: 1,
+      events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }],
+    });
+    // The production upgrade path, and the reason `0492bcd11` stopped calling the strict parser at
+    // all: a frame frozen under an older protocol used to escape `attempt()` as a bare
+    // `AguiVocabularyError` out of a machine whose every other abnormal outcome is a named halt. It
+    // now takes `egress-unreadable`. What that commit got wrong was concluding that not throwing
+    // meant publishing; this cell grades the halt, not the verdict word.
+    c(
+      "total:a frame frozen under an OLDER protocol takes a NAMED halt, not a bare throw",
+      verdict([olderProtocol]) === "unreadable",
+      verdict([olderProtocol]),
+    );
+
+    // "No input makes it throw" has to survive an accessor, or it is not a promise. These cannot
+    // come off a WAL, since JSON has no getters, but the exported signature takes `readonly
+    // unknown[]` and a function that accepts unknown and throws on some of it traps its caller.
+    const eventsGetter = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57", get events(): unknown { throw new Error("events getter ran"); } };
+    c("total:an events GETTER that throws does not escape the fence", verdict([eventsGetter]) === "unreadable", verdict([eventsGetter]));
+    const typeGetter = { kind: "ag-ui.frame", protocol: "ag-ui/0.0.57", events: [{ get type(): unknown { throw new Error("type getter ran"); } }] };
+    c("total:an event TYPE getter that throws does not escape the fence", verdict([typeGetter]) === "unreadable", verdict([typeGetter]));
+
+    // An element the vocabulary does not define cannot be classified, only refused. The strict read
+    // this replaced rejected an unrecognised `type` outright; treating one as harmless publishes
+    // tool bytes hung under a nested `events`, or under a case-variant spelling, as clean. Both
+    // shapes survive a JSON round-trip.
+    const nested = frame({ events: [{ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] }] });
+    c(
+      "total:tool bytes under a NESTED events are unreadable rather than clean",
+      verdict([nested]) === "unreadable",
+      verdict([nested]),
+    );
+    const caseVariant = frame({ events: [{ type: "tool_call_result", content: RECOVER_RESULT }] });
+    c(
+      "total:a CASE-VARIANT event type is unreadable rather than clean",
+      verdict([caseVariant]) === "unreadable",
+      verdict([caseVariant]),
+    );
+
+    // Precedence: a body carrying both must report the more specific diagnosis, because the halts
+    // are graded on carrying the right one.
+    // The forbidden part has to be WELL-FORMED, or this grades two unreadable parts and passes for
+    // the wrong reason. Precedence is across PARTS: an earlier part the validator refused does not
+    // stop a later part's forbidden event being named as the more specific diagnosis.
+    const both = [
+      frame({}),
+      frame({ threadId: THREAD, runId: "both-run", epoch: "both-epoch", seq: 2, events: [{ type: "TOOL_CALL_ARGS", delta: CLAUDE_ARGS }] }),
+    ];
+    c("total:forbidden-kind wins over unreadable when a body carries both", verdict(both) === "forbidden-kind", verdict(both));
+
+    // An EMPTY event list passes `Array.isArray` and makes the scan loop a no-op, so a fence that
+    // tests only arrayness reports `clean` on it. `aguiFrame()` refuses an empty list at
+    // construction and `parseAguiFrame` refuses it on the way back in, so a frozen `events: []` is
+    // a malformed frame and the strict read this replaced threw on it. Publishing it is therefore
+    // strictly weaker than the predecessor, and the two sibling cases below carry real bytes while
+    // doing it — which is NOT the pre-existing sibling-property gap (#1432), because there the
+    // predecessor published too. This shape regressed at `350b8eb7a` and is guarded here.
+    const emptyEvents = frame({ events: [] });
+    c(
+      "total:an EMPTY events list is unreadable rather than clean",
+      verdict([emptyEvents]) === "unreadable",
+      verdict([emptyEvents]),
+    );
+    const emptyWithPayloadSibling = { ...frame({ events: [] }), payload: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] };
+    c(
+      "total:an empty events list carrying tool bytes on a sibling is withheld, not published",
+      verdict([emptyWithPayloadSibling]) === "unreadable",
+      verdict([emptyWithPayloadSibling]),
+    );
+    const emptyWithRecoverySibling = { ...frame({ events: [] }), recovery: { events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] } };
+    c(
+      "total:an empty events list with a nested recovery sibling is withheld, not published",
+      verdict([emptyWithRecoverySibling]) === "unreadable",
+      verdict([emptyWithRecoverySibling]),
+    );
+
+    // ENVELOPE. Scanning `events` answers "does this carry a forbidden kind" and says nothing about
+    // the envelope around it. The strict read this replaced called `parseAguiFrame(part)`, which
+    // validates `protocol`, `threadId`, `runId`, `epoch` and `seq` and throws, so every one of these
+    // used to halt the publish; reading `.events` directly turned all of them into `clean`. A cell
+    // per field, because a single representative would have passed while the other four regressed —
+    // that is how this class shipped three times. No CI shard covers any of these shapes.
+    const goodEvents = [{ type: "RUN_STARTED", threadId: THREAD, runId: "envelope-run" }];
+    const envelope = (over: Record<string, unknown>) => ({
+      kind: "ag-ui.frame",
+      protocol: "ag-ui/0.0.57",
+      threadId: THREAD,
+      runId: "envelope-run",
+      epoch: "envelope-epoch",
+      seq: 1,
+      events: goodEvents,
+      ...over,
+    });
+    c(
+      "envelope:a wrong protocol version is unreadable, not clean",
+      verdict([envelope({ protocol: "ag-ui/0.0.1" })]) === "unreadable",
+      verdict([envelope({ protocol: "ag-ui/0.0.1" })]),
+    );
+    c(
+      "envelope:a missing threadId is unreadable, not clean",
+      verdict([envelope({ threadId: undefined })]) === "unreadable",
+      verdict([envelope({ threadId: undefined })]),
+    );
+    c(
+      "envelope:a missing runId is unreadable, not clean",
+      verdict([envelope({ runId: undefined })]) === "unreadable",
+      verdict([envelope({ runId: undefined })]),
+    );
+    c(
+      "envelope:an empty epoch is unreadable, not clean",
+      verdict([envelope({ epoch: "" })]) === "unreadable",
+      verdict([envelope({ epoch: "" })]),
+    );
+    c(
+      "envelope:a negative seq is unreadable, not clean",
+      verdict([envelope({ seq: -1 })]) === "unreadable",
+      verdict([envelope({ seq: -1 })]),
+    );
+    // THE ONE DELIBERATE BEHAVIOUR CHANGE OF THIS ROUND, recorded with the answer rather than
+    // suppressed. Within a single part the parse now runs first, so a frame that is both malformed
+    // and carrying a forbidden event answers `unreadable`, where the previous head answered
+    // `forbidden-kind`. Against the strict read this replaced it is neither weaker nor stricter:
+    // that read threw here, and both outcomes halt the publish without claiming a cause the
+    // validator never got to see. The sibling cell below keeps the well-formed forbidden frame
+    // pinned, so a fix that quietly turned every forbidden frame into `unreadable` still reds.
+    const badEnvelopeForbidden = envelope({ seq: -1, events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] });
+    c(
+      "envelope:a malformed envelope is unreadable even when it carries a forbidden event",
+      verdict([badEnvelopeForbidden]) === "unreadable",
+      verdict([badEnvelopeForbidden]),
+    );
+    c(
+      "envelope:a WELL-FORMED frame carrying a forbidden event is still forbidden-kind",
+      verdict([envelope({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] })]) === "forbidden-kind",
+      verdict([envelope({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] })]),
+    );
+    // A well-formed frame must stay publishable, or the fence is just refusing everything and the
+    // cells above prove nothing.
+    c(
+      "envelope:a well-formed frame is still clean",
+      verdict([envelope({})]) === "clean",
+      verdict([envelope({})]),
+    );
+
+    // DIST PARITY. connector-core's package exports resolve to `dist/`, but every cell above reads
+    // `../src/agui.js`, so a stale or poisoned `dist` is invisible to all of them. `mutation-proof`
+    // restores the source and rebuilds only when the mutation carries `afterRestore`; T-ENVELOPE
+    // shipped without one and left `try { void part; }` in `dist/agui.js`, where this panel's own
+    // freshness check - a grep for the real call - then read the mutant as fresh code.
+    //
+    // Compare behaviour rather than text, so the cell cannot be fooled by whether the compiler
+    // keeps comments. During a mutation run both copies are built from the mutant and agree; a
+    // restore that skips the rebuild is the only state that disagrees. This reaches any mutation to
+    // the classifier or the forbidden set, which is four of the five. T-RETRY mutates `attempt()`
+    // and is out of its range; it carries its own `afterRestore`.
+    {
+      const built = (await import("../dist/agui.js")) as {
+        frozenBodyEgressVerdict: (body: readonly unknown[]) => FrozenBodyEgressVerdict;
+      };
+      const answer = (fn: (body: readonly unknown[]) => FrozenBodyEgressVerdict, body: readonly unknown[]): string => {
+        try {
+          return fn(body);
+        } catch (e) {
+          return `THREW: ${(e as Error).message}`;
+        }
+      };
+      const corpus: ReadonlyArray<readonly [string, readonly unknown[]]> = [
+        ["well-formed", [envelope({})]],
+        ["TOOL_CALL_RESULT", [envelope({ events: [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }] })]],
+        ["TOOL_CALL_ARGS", [envelope({ events: [{ type: "TOOL_CALL_ARGS", delta: "x" }] })]],
+        ["sibling text", [envelope({ events: goodEvents })]],
+        ["broken envelope (seq -1)", [envelope({ seq: -1 })]],
+        ["empty event list", [envelope({ events: [] })]],
+        ["unknown event type", [envelope({ events: [{ type: "WEIRD" }] })]],
+      ];
+      const drift = corpus
+        .map(([name, body]) => [name, answer(built.frozenBodyEgressVerdict, body), answer(frozenBodyEgressVerdict, body)] as const)
+        .filter(([, d, s]) => d !== s);
+      c(
+        "dist:the built connector-core dist agrees with src on every fence verdict",
+        drift.length === 0,
+        drift.map(([name, d, s]) => `${name}: dist=${d} src=${s}`),
+      );
+    }
+
+    // STATEFUL ACCESSOR CLASS, ACROSS REPRESENTATIONS. Five regressions of one family reached this
+    // fence, and the fifth was a guard that DETECTED the objects able to exhibit it. That guard
+    // inspected an own getter descriptor, held for the shape its author had in mind, and lost the
+    // same hour to an inherited getter and to a Proxy reporting a data descriptor while its `get`
+    // trap returned something else. Enumerating representations is what keeps losing, so these
+    // cells enumerate them instead of the code doing it: each asserts the fence answers exactly
+    // what the strict read it replaced answered, at every flip point, whatever the object is made
+    // of. A cell built from one representation certifies its author's imagination, which is what
+    // the previous head's cell did.
+    {
+      const CLEAN_EVENTS = [{ type: "RUN_STARTED", threadId: THREAD, runId: "envelope-run" }];
+      const FORBIDDEN_EVENTS = [{ type: "TOOL_CALL_RESULT", content: RECOVER_RESULT }];
+      // What the strict read answers at flipAfter 0..4. It reads `events` four times - three inside
+      // the validator, once in its own scan - so a list that turns forbidden on or before read four
+      // is refused and one that turns on read five is allowed. This fence reads the same four times
+      // in the same order, which is why it can be pinned to this vector at all.
+      const PREDECESSOR = ["forbidden-kind", "forbidden-kind", "forbidden-kind", "forbidden-kind", "clean"];
+      const nextEvents = (state: { reads: number }, flipAfter: number): unknown =>
+        ++state.reads > flipAfter ? FORBIDDEN_EVENTS : CLEAN_EVENTS;
+
+      /** `events` is an OWN accessor on the frame. */
+      const ownGetter = (flipAfter: number): unknown => {
+        const f: Record<string, unknown> = { ...envelope({}) };
+        const state = { reads: 0 };
+        delete f.events;
+        Object.defineProperty(f, "events", {
+          get: () => nextEvents(state, flipAfter),
+          enumerable: true,
+          configurable: true,
+        });
+        return f;
+      };
+
+      /** `events` is an accessor on the PROTOTYPE, so there is no own descriptor to inspect. */
+      const inheritedGetter = (flipAfter: number): unknown => {
+        const state = { reads: 0 };
+        const proto = {
+          get events(): unknown {
+            return nextEvents(state, flipAfter);
+          },
+        };
+        const f = Object.create(proto) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(envelope({}))) if (k !== "events") f[k] = v;
+        return f;
+      };
+
+      /** A Proxy whose descriptor trap reports plain DATA while its `get` trap returns state. */
+      const lyingProxy = (flipAfter: number): unknown => {
+        const state = { reads: 0 };
+        const target: Record<string, unknown> = { ...envelope({}) };
+        return new Proxy(target, {
+          get: (t, p, r) => (p === "events" ? nextEvents(state, flipAfter) : Reflect.get(t, p, r)),
+          getOwnPropertyDescriptor: (t, p) =>
+            p === "events"
+              ? { value: CLEAN_EVENTS, writable: true, enumerable: true, configurable: true }
+              : Reflect.getOwnPropertyDescriptor(t, p),
+        });
+      };
+
+      const representations: readonly (readonly [string, (n: number) => unknown])[] = [
+        ["an OWN getter", ownGetter],
+        ["an INHERITED getter, which leaves no own descriptor to inspect", inheritedGetter],
+        ["a PROXY whose descriptor trap disagrees with its get trap", lyingProxy],
+      ];
+      for (const [label, make] of representations) {
+        const got = [0, 1, 2, 3, 4].map((flipAfter) => String(verdict([make(flipAfter)])));
+        c(
+          `accessor:${label} answers what the strict read answered, at every flip point`,
+          got.join(",") === PREDECESSOR.join(","),
+          `got ${got.join(",")} want ${PREDECESSOR.join(",")}`,
+        );
+      }
+      // Without this, every cell above passes on a policy that refuses each and every frame.
+      c(
+        "accessor:CONTROL a plain data-property events list is still clean",
+        verdict([envelope({})]) === "clean",
+        verdict([envelope({})]),
+      );
+    }
+  }
+
+  const EXPECTED = 54;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
