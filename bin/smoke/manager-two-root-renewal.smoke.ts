@@ -202,7 +202,7 @@ try {
   // COUPLING: the four cells below are ABSENCE-detectors - they assert the non-owner did nothing,
   // which is also true if nothing happened at all. The unified-root CONTROL at the end of this file
   // is their positive twin and is what reds when renewal breaks for everyone. Keep them together.
-  const rec = readRenewalRecord(rootA);
+  const rec = readRenewalRecord(rootA, SPACE_DIVERGED);
   ok(
     "#1634: the non-owner never reminted (no manager renewal record, no write into A)",
     rec === undefined,
@@ -235,8 +235,8 @@ try {
   } catch (e) {
     peerRefusal = (e as Error).message;
   }
-  const recD = readRenewalRecord(rootD);
-  const recE = readRenewalRecord(rootE);
+  const recD = readRenewalRecord(rootD, SPACE_DIVERGED);
+  const recE = readRenewalRecord(rootE, SPACE_DIVERGED);
   ok("#1634: two managers sharing the daemon's ONE store BOTH start", peerRefusal === undefined, peerRefusal);
   ok(
     "#1634: exactly ONE of them owns daemon renewal ACROSS the lease TTL (the lease breaks the tie, store identity cannot)",
@@ -291,7 +291,7 @@ try {
   mgrC = new Manager({ space: SPACE_UNIFIED, servers: servers2, runtime: "pty", workspaceRoot: rootC });
   await mgrC.start();
 
-  const recC = readRenewalRecord(rootC);
+  const recC = readRenewalRecord(rootC, SPACE_UNIFIED);
   ok("control: the SAME Manager renewal path over a UNIFIED root ADOPTS (adoption.ok:true)", recC?.adoption?.ok === true, recC?.adoption);
   const detailC = (recC?.adoption?.detail ?? {}) as {
     delivery?: { ok?: boolean; brokerAccepted?: { identity?: string } };
