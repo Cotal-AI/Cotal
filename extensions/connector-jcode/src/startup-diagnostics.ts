@@ -9,7 +9,8 @@ export type JcodeConnectorFailureCode =
   | "model_mismatch"
   | "private_state"
   | "readiness_timeout"
-  | "sessions_enumeration_failed";
+  | "sessions_enumeration_failed"
+  | "sessions_unwritable";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
@@ -27,6 +28,22 @@ export class JcodeSessionsEnumerationFailure extends Error {
     readonly causeText: string,
   ) {
     super(`could not enumerate stored sessions at ${sessionsPath}: ${causeText}`);
+  }
+}
+
+/** The seat's stored-sessions directory exists but will not take the harness's writes. Raised
+ * BEFORE any `create_session`: the harness accepts that request and only dies while persisting
+ * the session during the first turn, which lands outside every guard this connector owns and
+ * renders as `startup failed (unknown)` (#1538). Like the enumeration failure above, the path and
+ * the errno are connector-owned facts, never harness or provider bytes. */
+export class JcodeSessionsUnwritableFailure extends Error {
+  readonly code = "sessions_unwritable" as const;
+
+  constructor(
+    readonly sessionsPath: string,
+    readonly errnoCode: string,
+  ) {
+    super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
   }
 }
 

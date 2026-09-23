@@ -15,6 +15,7 @@ import {
   installJcodeDiagnosticLog,
   JcodeConnectorError,
   JcodeSessionsEnumerationFailure,
+  JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
@@ -24,6 +25,7 @@ import {
   inspectStoredSessions,
   isEmptyStoredSessionsDirectory,
   storedSessionsPath,
+  unwritableStoredSessions,
 } from "./stored-sessions.js";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
@@ -1724,6 +1726,14 @@ export async function runJcodeHost(): Promise<void> {
         client = await launchPrivateJcode();
       }
     }
+    // The harness accepts create_session on a sessions/ it cannot write and dies only while
+    // persisting the session during the first turn, outside every guard this connector owns, so
+    // the seat renders as `startup failed (unknown)` (#1538). Ask the kernel what the harness
+    // will need, not what a readdir reports: a readable-but-unwritable directory is the same
+    // defect as an unreadable one. A missing directory is a first launch and stays untouched;
+    // permissions are never repaired or widened here — the refusal names them for the operator.
+    const unwritable = unwritableStoredSessions(stored);
+    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);
     let session;
     try {
       if (prior) {
