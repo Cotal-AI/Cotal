@@ -62,6 +62,9 @@ interface CatalogAccountState {
   etag?: string;
   fetchedAt?: string;
   snapshot?: unknown;
+  /** The consumer applied this snapshot in full. Absent while a fetched snapshot is being applied,
+   *  so a preparation that finds it absent applies the cached snapshot again. */
+  applied?: boolean;
 }
 
 interface CatalogsFile {
@@ -436,6 +439,7 @@ interface PrepareCatalogOpts {
   idpUrl?: string;
   force?: boolean;
   validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+  apply(result: AuthSpaceCatalogResult): void;
 }
 
 const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();
@@ -489,9 +493,24 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
           file.accounts[key] = state;
           changed = true;
         }
-        if (!state.catalogUrl) {
+        const catalogUrl = state.catalogUrl;
+        if (!catalogUrl) {
           results.push({ account: accountView(state), state: "no-catalog", ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}) });
           continue;
+        }
+        // A cached snapshot whose application never finished (the applying process died or is
+        // paused; this process holds the lock, so it is not running) is applied again before any
+        // freshness or conditional answer can present it as complete.
+        if (state.snapshot !== undefined && !state.applied) {
+          const result: AuthSpaceCatalogResult = { account: accountView(state), state: "updated", snapshot: state.snapshot, fetchedAt: state.fetchedAt };
+          opts.apply(result);
+          state = { ...state, applied: true };
+          file.accounts[key] = state;
+          changed = true;
+          if (!opts.force && fresh(state)) {
+            results.push(result);
+            continue;
+          }
         }
         if (!opts.force && fresh(state)) {
           results.push({ account: accountView(state), state: "fresh", snapshot: state.snapshot, fetchedAt: state.fetchedAt });
@@ -499,35 +518,48 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         }
         const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
         if (state.etag) headers["if-none-match"] = state.etag;
-        const response = await idpFetch(state.catalogUrl, { headers, redirect: "manual" });
+        const response = await idpFetch(catalogUrl, { headers, redirect: "manual" });
         if (response.status === 304) {
           if (state.snapshot === undefined) throw new Error("the catalog returned 304 before this machine had a snapshot");
           state = { ...state, fetchedAt: new Date().toISOString() };
           file.accounts[key] = state;
           changed = true;
-          results.push({ account: accountView(state), state: "not-modified", snapshot: state.snapshot, fetchedAt: state.fetchedAt });
+          const result: AuthSpaceCatalogResult = { account: accountView(state), state: "not-modified", snapshot: state.snapshot, fetchedAt: state.fetchedAt };
+          opts.apply(result);
+          results.push(result);
           continue;
         }
-        if (!response.ok) throw new Error(`${state.catalogUrl} failed (HTTP ${response.status})`);
-        const snapshot = await idpJson<unknown>(state.catalogUrl, response);
+        if (!response.ok) throw new Error(`${catalogUrl} failed (HTTP ${response.status})`);
+        const snapshot = await idpJson<unknown>(catalogUrl, response);
         opts.validate(snapshot, accountView(state));
         state = {
           ...state,
           snapshot,
           fetchedAt: new Date().toISOString(),
           ...(response.headers.get("etag") ? { etag: response.headers.get("etag")! } : { etag: undefined }),
+          applied: false,
         };
+        // Commit the candidate as NOT applied before the first registry write. A death anywhere in
+        // the application leaves a cache that names the snapshot and says it is incomplete.
+        file.accounts[key] = state;
+        writeCatalogsFile(opts.dir, file);
+        changed = false;
+        const result: AuthSpaceCatalogResult = { account: accountView(state), state: "updated", snapshot, fetchedAt: state.fetchedAt };
+        opts.apply(result);
+        state = { ...state, applied: true };
         file.accounts[key] = state;
         changed = true;
-        results.push({ account: accountView(state), state: "updated", snapshot, fetchedAt: state.fetchedAt });
+        results.push(result);
       } catch (e) {
-        results.push({
+        const result: AuthSpaceCatalogResult = {
           account: accountView(state),
           state: "failed",
           ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}),
           ...(state.fetchedAt ? { fetchedAt: state.fetchedAt } : {}),
           error: e instanceof Error ? e.message : String(e),
-        });
+        };
+        opts.apply(result);
+        results.push(result);
       }
     }
     if (changed) writeCatalogsFile(opts.dir, file);

@@ -194,10 +194,33 @@ function sameEntry(a: MeshEntry, b: MeshEntry): boolean {
   return JSON.stringify(clean(a)) === JSON.stringify(clean(b));
 }
 
+const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] });
+
+/** One account can be applied twice in one preparation: a repair of an interrupted application,
+ * then the refreshed snapshot. Report each slug against the registry the command started from, so
+ * the first classification of a slug stands. */
+function mergeDiff(prior: CatalogDiff | undefined, next: CatalogDiff): CatalogDiff {
+  if (!prior) return next;
+  const lists = ["added", "changed", "removed", "unchanged"] as const;
+  const seen = new Set(lists.flatMap((k) => prior[k]));
+  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort() };
+  for (const k of lists) merged[k] = [...prior[k], ...next[k].filter((s) => !seen.has(s))].sort();
+  if (!merged.selectionInvalidated && next.selectionInvalidated) merged.selectionInvalidated = next.selectionInvalidated;
+  return merged;
+}
+
+/** Reconcile the registry with one account's result. The provider calls this under its catalog
+ * lock, so no other preparation reads or writes discovered entries while it runs, and it is
+ * idempotent: the provider applies a cached snapshot again when an earlier application never
+ * finished. An unforced fresh or not-modified result is already applied and writes nothing. */
+function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
+  return result.state === "updated" || result.state === "failed" || force ? applyResult(result) : emptyDiff();
+}
+
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
   const before = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
   const priorByName = new Map(before.map((m) => [m.space, m]));
-  const diff: CatalogDiff = { added: [], changed: [], removed: [], unchanged: [], collisions: [] };
+  const diff = emptyDiff();
   if (result.state === "failed") {
     for (const old of before)
       recordMesh({ ...old, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: result.error ?? "refresh failed" });
@@ -239,18 +262,15 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
+  const applied = new Map<string, CatalogDiff>();
   const results = await provider.prepareSpaceCatalogs({
     dir: homeCotalDir(),
     ...(opts.idpUrl ? { idpUrl: opts.idpUrl } : {}),
     ...(opts.force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
+    apply: (result) => void applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force)))),
   });
-  if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined))
-    return { results, diffs: results.map(() => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] })) };
-  const diffs = results.map((result) => result.state === "updated" || result.state === "failed" || opts.force
-    ? applyResult(result)
-    : { added: [], changed: [], removed: [], unchanged: [], collisions: [] });
-  return { results, diffs };
+  return { results, diffs: results.map((result) => applied.get(result.account.ownerKey) ?? emptyDiff()) };
 }
 
 /** Shared once-per-command preparation. A named manual/local entry never depends on discovery.
@@ -292,16 +312,15 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   if (registry.all<AuthProvider>("auth-provider").length === 0) return;
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs) return;
+  const diffs: CatalogDiff[] = [];
   const results = await provider.prepareSpaceCatalogs({
     dir: homeCotalDir(),
     ...(named?.origin === "catalog" && named.userAuth?.idp.url ? { idpUrl: named.userAuth.idp.url } : {}),
     ...(force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
+    apply: (result) => void diffs.push(consume(result, force)),
   });
   if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined)) return;
-  const diffs = results.map((result) => result.state === "updated" || result.state === "failed" || force
-    ? applyResult(result)
-    : { added: [], changed: [], removed: [], unchanged: [], collisions: [] });
   const vanished = diffs.map((d) => d.selectionInvalidated).filter((s): s is string => Boolean(s));
   if (vanished.length) {
     const message = `selected space "${vanished.join("\", \"")}" vanished from its account catalog; no default mesh is selected`;
@@ -339,7 +358,7 @@ const spaceCatalogConsumer: SpaceCatalogConsumer = {
   kind: "space-catalog-consumer",
   name: "workspace",
   validate: validateCatalogSnapshot,
-  apply: (result) => void applyResult(result),
+  apply: (result) => void consume(result, true),
 };
 
 registry.register(spaceCatalogConsumer);

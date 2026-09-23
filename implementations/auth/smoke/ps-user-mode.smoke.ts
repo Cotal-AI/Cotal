@@ -51,7 +51,6 @@ let root!: string;
 let configDir!: string;
 let sandbox!: SmokeSandboxAnchor;
 let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
-let prepareIdpSpaceCatalogs!: typeof import("../src/index.js").prepareIdpSpaceCatalogs;
 
 // Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
 // have launched detached processes, and those are exactly the ones whose pidfiles must survive.
@@ -204,7 +203,7 @@ try {
   // above it in between. Ownership then does not depend on the timing of any check, which is the
   // only way to close a race against a child that re-resolves cwd for itself.
   sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-  ({ establishIdpSession, prepareIdpSpaceCatalogs } = await import("../src/index.js"));
+  ({ establishIdpSession } = await import("../src/index.js"));
   SERVER = `nats://127.0.0.1:${await pickFreePort()}`;
   PUBLIC_EXCHANGE_PORT = await pickFreePort();
 
@@ -379,7 +378,6 @@ try {
   removeMesh(SPACE);
   const catalogCache = join(home, "space-catalogs.json");
   rmSync(catalogCache, { force: true });
-  await prepareIdpSpaceCatalogs({ dir: home, idpUrl: base, force: true, validate: validateCatalogSnapshot });
   await prepareCatalogTargets({ idpUrl: base, force: true });
   execFileSync("pnpm", ["--filter", "@cotal-ai/auth", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
   execFileSync("pnpm", ["--filter", "@cotal-ai/cli", "build"], { cwd: join(import.meta.dirname, "..", "..", ".."), stdio: "ignore" });
