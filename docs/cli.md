@@ -676,6 +676,11 @@ registration trust is stored under the account's private auth state, and the reg
 session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
 `name` is rendered only as a label.
 
+A registry record this build cannot use is refused by name, never rendered and never skipped. One
+that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
+`space`), makes every registry command exit 1 with the file's path and what is wrong with it.
+Remove the file or restore the record; nothing repairs or invents a field for you.
+
 An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
 adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds
 is used without a request. After that, commands that select a discovered space require one successful

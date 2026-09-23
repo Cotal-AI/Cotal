@@ -1111,6 +1111,67 @@ try {
   check("an empty registry points at both ways to fill it", empty.out.includes("cotal up") && empty.out.includes("cotal meshes add"), empty.out);
 
   recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  // ── a record the shipped code cannot use is refused BY NAME, never rendered ───────────────────
+  // The renderer pads m.server/mode to compute column widths, so a parseable record missing them
+  // reached the listing and crashed it with "Cannot read properties of undefined (reading 'length')"
+  // while `status` printed `undefined` columns. A SKIPPED record is no better: it is invisible to
+  // `meshes` AND to `meshes rm`, so the operator can neither see it nor remove it by name.
+  // loadMeshes refuses it instead, and the refusal names the file. Both cells assert the REASON,
+  // not just the throw: an error naming any file would satisfy a bare "it threw".
+  const brokenFile = join(home, "meshes", "space.broken.json");
+  writeFileSync(brokenFile, JSON.stringify({ space: "broken", catalogSlug: "broken-tenant", root }));
+  let loadError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    loadError = (e as Error).message;
+  }
+  check("a record missing required fields refuses naming the file and the fields",
+    loadError.includes(brokenFile) && loadError.includes("server") && loadError.includes("mode") && loadError.includes("ts"), loadError);
+  // `run` only converts process.exit; loadMeshes throws before the command prints, and runCli is
+  // what renders it as the operator's one ✗ line (verified against the shipped binary). Capture
+  // the raw throw and assert it carries the named-file sentence, not a TypeError.
+  let listingError = "";
+  try {
+    await run([]);
+  } catch (e) {
+    listingError = (e as Error).message;
+  }
+  check("the listing refuses naming the file instead of crashing on a TypeError",
+    listingError.includes(brokenFile) && listingError.includes("not a usable mesh record")
+      && !listingError.includes("Cannot read properties"), listingError);
+  let rmError = "";
+  try {
+    await run(["rm", "tabbed"]);
+  } catch (e) {
+    rmError = (e as Error).message;
+  }
+  check("the registry refuses WHOLE while a malformed record is planted - even `rm` of a good record",
+    rmError.includes(brokenFile) && existsSync(join(home, "meshes", `space.${Buffer.from("tabbed", "utf8").toString("hex")}.json`)), rmError);
+  recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  writeFileSync(brokenFile, "{ not json");
+  let parseError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    parseError = (e as Error).message;
+  }
+  check("a registry file that does not parse refuses naming the file (no silent skip)",
+    parseError.includes(brokenFile) && parseError.includes("does not parse"), parseError);
+  writeFileSync(brokenFile, JSON.stringify({ space: "sideways", server: LIVE, root, mode: "sometimes", ts: new Date(0).toISOString() }));
+  let modeError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    modeError = (e as Error).message;
+  }
+  check("a record with a mode this build does not know refuses naming the file",
+    modeError.includes(brokenFile) && modeError.includes("sometimes") && modeError.includes("auth, open, user"), modeError);
+  rmSync(brokenFile);
+  check("the registry is usable again once the damaged record is removed by hand",
+    (await run([])).code === 0 && loadMeshes().some((m) => m.space === "tabbed"));
+  removeMesh("tabbed");
+  recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   // The kernel hands a completer the words AFTER the command name (`emitCommandCompletion`).
   check("completion offers the subcommands first", meshesComplete([""]).items.some((i) => i.value === "add"));
   check("completion offers registered spaces after `rm`", meshesComplete(["rm", ""]).items.some((i) => i.value === "tabbed"));
