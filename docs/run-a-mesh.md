@@ -54,7 +54,11 @@ the broker. A missing callout account for an enabled space stops the boot rather
 starting with a reduced resolver. An already-running broker is refreshed without rewriting
 its config.
 
-There is no broker-only `up`. Auth-mode `up` still starts nats, the delivery daemon, and a
+A broker-only host is a first-class `up` mode. `cotal up --no-manager` boots the broker and, in
+auth mode, the delivery daemon, and no local manager, so the broker host never has a manager to
+stop and never leaves a manager slot stale. A refresh under the flag of a mesh whose manager is
+live refuses rather than keeping or stopping it: `cotal down manager` first. Without the flag,
+auth-mode `up` still starts nats, the delivery daemon, and a
 local manager. A space may run more than one manager, addressed by instance id
 ([control surface](control-surface.md#instance-routing)); putting no manager on the broker host
 is a topology choice, not a singleton invariant. A manager whose boot inventory has no
@@ -66,25 +70,27 @@ supported split is:
 
 ```bash
 # broker host (project root that owns the generated conf, pidfiles, and logs)
-cotal up --detach --host 0.0.0.0 --space main
-# wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`
-cotal down manager   # so this host keeps broker + delivery
+cotal up --detach --host 0.0.0.0 --space main --no-manager
+# no local manager starts: the summary lists nats-server + delivery daemon, and there is no
+# `.cotal/manager.<spaceKey>.log` to wait for on this host
 
 # manager host (registered remote mesh, same space)
 cotal meshes add --server nats://broker.example:4222 --root ~/meshes/main
 cotal supervise --space main --server nats://broker.example:4222
 ```
 
-Wait for `✓ manager up` in `.cotal/manager.<spaceKey>.log` before `cotal down manager` on the
-broker host. `cotal up --detach` prints `✓ running in the background:` with `manager` listed
-once the manager pidfile is live. That detach stdout is not a safe teardown boundary: it is
+Wait for `✓ manager up` in `.cotal/manager.<spaceKey>.log` on the manager host before spawning
+agents. On a broker host started without `--no-manager`, `cotal up --detach` prints `✓ running in
+the background:` with `manager` listed once the manager pidfile is live; stop that local manager
+only after the `✓ manager up` line. A host started WITH `--no-manager` never runs one, so neither
+the wait nor the stop applies there. That detach stdout is not a safe teardown boundary: it is
 pidfile liveness, not `✓ manager up`. `✓ manager up` is supervise's post-start line after
 `await mgr.start()`. `cotal down manager` after only the detach line can still default-terminate
 the child during registration after it has taken the governance slot. Stopping before that
 post-start log line can leave the endpoint governance slot held until the holder's gate
 reopens past the stamp (the successor's boot heal, or
 [`cotal reconcile-gate`](cli.md#reconcile-gate) when that boot cannot run). See
-[Gate recovery](#gate-recovery). Broker-only `up` remains a product request.
+[Gate recovery](#gate-recovery).
 
 Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
 the manager and the daemon to address one credential store. Separate host filesystems still
@@ -199,8 +205,9 @@ RestartSec=5s
 
 An active unit then proves the foreground launcher and broker are still running, but it still does
 not prove that every child component serves. Pair it with the component check below. Also remember
-that `cotal up` starts a local manager as well as the broker and delivery daemon; do not run this
-whole-stack unit on a host intended to be broker-only.
+that `cotal up` starts a local manager as well as the broker and delivery daemon; run
+`cotal up --no-manager` (add the flag to the unit's `ExecStart` too) on a host intended to be
+broker-only, so the unit and the host agree.
 
 That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
 `Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote

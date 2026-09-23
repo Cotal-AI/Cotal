@@ -186,6 +186,7 @@ export const upFlags: FlagSpec[] = [
   { name: "detach", type: "boolean", description: "run in the background (stop with `cotal down`)" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling for the mesh manager (default 64; one session per console pane, so size for agents × panes). Recorded and reused by later manager launches" },
+  { name: "no-manager", type: "boolean", description: "broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager (refuses on a mesh whose manager is live)" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
 ];
@@ -229,6 +230,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
+    "no-manager"?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };
@@ -285,6 +287,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // read. A rotation is a stopped, fresh boot; a half-finished maintenance attempt is neither.
   if (values["rotate-sys"] && (values.__restoreAttempt || values.__ordinaryResumeAttempt))
     throw new Error("--rotate-sys cannot run during a restore/resume re-entry - finish or roll back the maintenance attempt, then `cotal down` and `cotal up --rotate-sys`");
+  // Same seam, same reason: a restore/resume re-entry needs the manager to commit the preserved
+  // inventory (completeResumeActivation asks it for resumePreserved/commitResume/finalizeResume), so
+  // a broker-only ask there is a contradiction to refuse, never a flag to drop mid-recovery.
+  if (values["no-manager"] && (values.__restoreAttempt || values.__ordinaryResumeAttempt))
+    throw new Error("--no-manager cannot run during a restore/resume re-entry - the resume needs a manager to commit the preserved inventory; finish or roll back the maintenance attempt first");
   if (!values.__restoreAttempt && !values.__ordinaryResumeAttempt && !values.file) {
     const root = cotalRoot();
     // Same refusal for the AUTO-recovered journal, raised before the recovery is prepared and
@@ -292,6 +299,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // `up` that has already begun adopting a maintenance attempt.
     if (values["rotate-sys"] && readMaintenanceJournal(root))
       throw new Error("--rotate-sys is refused while this root has a maintenance attempt to recover - finish or roll back that attempt (`cotal up` alone recovers it), then `cotal down` and `cotal up --rotate-sys`");
+    // Raised here for the stronger reason the journal itself carries: a pending maintenance attempt
+    // means the store is mid-recovery, and a broker-only boot over it is wrong with or without the
+    // manager half. The manager half is why the FLAG specifically cannot apply.
+    if (values["no-manager"] && readMaintenanceJournal(root))
+      throw new Error("--no-manager is refused while this root has a maintenance attempt to recover - a resume needs a manager to commit the preserved inventory; recover it (`cotal up` alone) or roll it back first");
     const lock = acquireMaintenanceLock(root);
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;
@@ -513,6 +525,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (values.idp && !wantUser && !values.file) {
     throw new Error('--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest');
   }
+  // BROKER-ONLY MODE (#1417). `--no-manager` names what it omits, and the two manager-shaping flags
+  // are refused beside it rather than silently dropped: a runtime selected or a ceiling recorded for
+  // a manager that will never start is a misunderstanding, and dropping it quietly is the exact
+  // silent-no-op shape this repo refuses everywhere else.
+  const noManager = Boolean(values["no-manager"]);
+  if (noManager && values.runtime)
+    throw new Error("--no-manager cannot be combined with --runtime - no manager starts, so there is no runtime to select; drop --runtime, or drop --no-manager");
+  if (noManager && values["max-sessions"])
+    throw new Error("--no-manager cannot be combined with --max-sessions - no manager starts, so there is no session ceiling to set; drop --max-sessions, or drop --no-manager");
   const publicExchange = publicExchangeArgs(values, wantUser);
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
@@ -604,6 +625,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         idp: values.idp,
         rotateSys: values["rotate-sys"],
         maxSessions,
+        noManager,
       });
       return;
     }
@@ -622,6 +644,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         idp: values.idp,
         rotateSys: values["rotate-sys"],
         maxSessions,
+        noManager,
       });
     } finally {
       releaseMaintenanceLock(lock);
@@ -782,6 +805,22 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           process.exit(1);
         }
       }
+      // `--no-manager` on a refresh whose manager is LIVE is the same class of refusal: this branch
+      // starts nothing, so the flag cannot apply, and silently keeping the manager would answer a
+      // broker-only ask with a full stack while silently stopping it would kill agents this command
+      // was never asked to touch. Same shape as `--runtime`/`--max-sessions` above: refuse, name the
+      // exact remedy. A refresh of a mesh whose manager is NOT live simply proceeds broker-only.
+      if (noManager) {
+        const live = managerRecordState(undefined, undefined, held.space);
+        if (live.state === "alive") {
+          console.error(
+            c.red(
+              `✗ mesh "${held.space}" is already running at ${server} with a live manager - \`cotal up --no-manager\` will not keep or stop one; \`cotal down manager\` first, then \`cotal up --no-manager\``,
+            ),
+          );
+          process.exit(1);
+        }
+      }
       // Live INFO must agree with the recorded/requested transport. A bare refresh that greets
       // "already running" over a plaintext listener while policy claims TLS is S5's second half —
       // the refuse left a durable lie and this path used to reprint TLS success over cleartext.
@@ -900,6 +939,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           runtime: values.runtime,
           attachHost: attachHostFor(held.space, values.host),
           maxSessions: maxSessionsFor(held.space, maxSessions),
+          noManager,
         });
         if (!controlPlane) process.exitCode = 1;
       }
@@ -961,6 +1001,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       host: values.host,
       runtime: values.runtime,
       maxSessions,
+      noManager,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
       ...(restored ? {
@@ -1167,6 +1208,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // is never a side effect of anything but the operator binding the mesh somewhere reachable.
       attachHost: effectiveAttachHost,
       maxSessions: effectiveMaxSessions,
+      noManager,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
       wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
@@ -1873,6 +1915,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const open = m.broker?.auth === false; // default is auth
   const userAuth = m.broker?.auth === "user" ? { idpUrl: opts.idp ?? m.broker?.idp } : undefined; // flag > manifest
   const runtime = m.runtime ?? "pty";
+  // A manifest's agents are booted BY the manager `up -f` starts with the mesh, so `--no-manager`
+  // against a manifest declaring agents asks for a boot that cannot deliver its own plan. Refused
+  // before the dry-run print and before anything boots, with the two workable spellings named.
+  if (opts.noManager && eff.agents.length)
+    throw new Error(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits). Deploy it from a manager host with \`cotal spawn -f\`, or drop --no-manager.`);
+  const effectiveNoManager = Boolean(opts.noManager);
   // The open-mesh refusal must be RE-STATED here, not only against the CLI `--open` flag: on this
   // path openness comes from the MANIFEST (`broker.auth: false`), which the flag-level guard cannot
   // see. Without it, `cotal up -f open.yaml --rotate-sys` boots an open broker, exits 0 and rotates
@@ -1889,6 +1937,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     assertServesDialHost(opts.transport, new URL(server).hostname);
     if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
     console.log(renderUpPlan(eff, server));
+    // The omission is part of the plan (#1417): a dry run that lists a manager the real boot
+    // will not start is the exact "green-lit a launch the applying command refuses" failure.
+    if (effectiveNoManager)
+      console.log(c.dim("  no manager will start on this host (--no-manager): broker, channels and, in auth mode, the delivery daemon come up, and no agents launch from here"));
     return;
   }
 
@@ -1944,7 +1996,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   try {
     // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
     // manifest actually declared is an exposure decision worth persisting.
-    ({ pid, controlPlane, authService } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions }));
+    ({ pid, controlPlane, authService } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions, noManager: effectiveNoManager }));
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
@@ -1954,7 +2006,11 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
   // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
   // degraded control plane (announced above) means the agents are NOT coming up.
-  if (controlPlane) {
+  if (effectiveNoManager) {
+    // Truthful summary for the broker-only boot (#1417): nothing was omitted by accident, and the
+    // agents this manifest declares (none — a declaring manifest is refused above) launch elsewhere.
+    console.log(c.dim(`  broker-only (--no-manager): no manager started on this host - run \`cotal supervise --space ${m.space} --server ${server}\` from a manager host to manage agents`));
+  } else if (controlPlane) {
     // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
     console.log(c.green(`✓ launching ${eff.agents.length} agent(s)`) + c.dim(` via manager (${runtime})${owner ? ` as you (owner ${owner})` : ""} - see ${managerLogDisplayPath(m.space)}`));
   } else {
@@ -1992,6 +2048,10 @@ interface UpManifestFlags {
   rotateSys?: boolean;
   /** Operator-set live-session ceiling, recorded and handed to the manager started with the mesh. */
   maxSessions?: number;
+  /** #1417 broker-only boot: the broker (+ channels, + delivery daemon in auth mode) comes up and
+   *  NO manager starts on this host. The manifest's agents are booted BY its manager, so a manifest
+   *  declaring agents under `--no-manager` is a contradiction refused before anything boots. */
+  noManager?: boolean;
 }
 
 /** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
@@ -2050,6 +2110,8 @@ async function startDeliveryWithBroker(
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
     maxSessions?: number;
+    /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
+    noManager?: boolean;
   },
 ): Promise<boolean> {
   try {
@@ -2114,6 +2176,11 @@ export interface DetachOpts {
   resumeAttempt?: string;
   resumeCommitToken?: string;
   maxSessions?: number;
+  /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
+   *  the flag boots the broker + channels and launches NO agents from this host — a manifest's
+   *  agents are booted by its manager, so a launch spec under `--no-manager` would promise a boot
+   *  nothing can deliver. Refused at the flag level; carried here so every path is explicit. */
+  noManager?: boolean;
   /** Maintenance-bound listener (restore target or ordinary-resume source): named spawn, durable
    *  ownership bind immediately after, wire verification after readiness. */
   boundListener?: {
@@ -2257,6 +2324,7 @@ export async function startMeshDetached(
     // See the foreground path: the broker's bind address is what makes attach reachable off-box.
     attachHost: effectiveAttachHost,
     maxSessions: effectiveMaxSessions,
+    noManager: opts.noManager,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
