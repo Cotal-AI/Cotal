@@ -34,7 +34,8 @@
  *
  * #1614 added four cells while this branch sat in review, moving the scanner from 61 to 65 cells
  * and this suite from 149 to 173 checks; the inline-registry check added in this revision takes
- * the suite to 175. That is why the labelled figures below read 61 and 149.
+ * the suite to 175. The pinned-total regression check added later takes it to 176. That is why the
+ * labelled figures below read 61 and 149.
  *
  * THE MEASUREMENT. A discriminator is alive only if it can still say NO. For each subject cell we
  * TAMPER the cell's planted subject so the property the secondary asserts is genuinely destroyed,
@@ -1004,6 +1005,63 @@ try {
     copyRun.exitCode === 0 && copySummary !== undefined
       && copySummary.status === "PASS" && copySummary.passed === copySummary.total,
     `exit=${copyRun.exitCode}/0 cells=${copySummary?.passed}/${copySummary?.total} status=${copySummary?.status}`,
+  );
+
+  // The scanner's required-cell membership is derived from CELL_EXPECTATIONS, so deleting a cell
+  // and its registration used to shrink both sides of the summary to 64/64 and exit 0. Remove the
+  // body through the same block-scoped helper every discriminator tamper uses, then remove its one
+  // registration entry with the same exact-once refusal. The pinned total must reject the copy
+  // before any remaining cell runs.
+  const removedCellBody = tamperCell(
+    tracked,
+    "missing-subject",
+    "  scanCell('missing-subject', 'broken', 'missing', 1, missingSubjectResult),",
+    "",
+  );
+  const emptyCellBlock = [
+    "// SELFTEST_CELL missing-subject START",
+    "",
+    "  // SELFTEST_CELL missing-subject END",
+  ].join("\n");
+  const cellBlockOccurrences = removedCellBody.split(emptyCellBlock).length - 1;
+  if (cellBlockOccurrences !== 1) {
+    throw new Error(
+      `cell missing-subject: empty block occurs ${cellBlockOccurrences} time(s), expected exactly 1`,
+    );
+  }
+  const removedCellBlock = removedCellBody.replace(`${emptyCellBlock}\n`, "");
+  const removedRegistration = "  ['missing-subject', 'scanner=broken missing=1/1'],\n";
+  const registrationOccurrences = removedCellBlock.split(removedRegistration).length - 1;
+  if (registrationOccurrences !== 1) {
+    throw new Error(
+      `cell missing-subject: registration tamper occurs ${registrationOccurrences} time(s), expected exactly 1`,
+    );
+  }
+  const missingCellSource = removedCellBlock.replace(removedRegistration, "");
+  if (missingCellSource === removedCellBlock) {
+    throw new Error("cell missing-subject: registration tamper was a no-op");
+  }
+  const missingCellPath = join(workdir, "tampered-missing-cell-registration.mjs");
+  writeFileSync(missingCellPath, missingCellSource);
+  const missingCellRun = runSelftest(missingCellPath);
+  const countMismatchRows = missingCellRun.rows
+    .filter((row) => row.startsWith("SELFTEST_CELL_COUNT_ROW "))
+    .map((row) => /\bexpected=(\d+) registered=(\d+) status=FAIL\b/.exec(row))
+    .filter(Boolean);
+  const mismatchExpected = Number(countMismatchRows[0]?.[1]);
+  const mismatchRegistered = Number(countMismatchRows[0]?.[2]);
+  const missingCellResultRows = missingCellRun.rows.filter(
+    (row) => row.startsWith("SELFTEST_RESULT_ROW "),
+  );
+  check(
+    "pinned cell total: removing one registration and its cell body reports both totals and exits nonzero before any cell runs",
+    missingCellRun.exitCode === 2 && countMismatchRows.length === 1
+      && baseSummary !== undefined
+      && mismatchExpected === baseSummary.total
+      && mismatchRegistered === baseSummary.total - 1
+      && missingCellRun.rows.some((row) => row.includes("increment EXPECTED_SELFTEST_CELL_TOTAL deliberately"))
+      && missingCellResultRows.length === 0,
+    `exit=${missingCellRun.exitCode}/2 expected=${mismatchExpected}/${baseSummary?.total} registered=${mismatchRegistered}/${baseSummary === undefined ? "undefined" : baseSummary.total - 1} mismatch_rows=${countMismatchRows.length}/1 result_rows=${missingCellResultRows.length}/0`,
   );
 
   // THE CENSUS, over CELLS. The denominator is every cell the scanner declares, not every factory.
