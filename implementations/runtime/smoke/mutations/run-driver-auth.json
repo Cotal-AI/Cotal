@@ -41,6 +41,15 @@
       "expectRed": "the operator `ps` walk lists the run over its STREAM.MSG.GET row",
       "cell": "the operator `ps` walk lists the run over its STREAM.MSG.GET row",
       "note": "The walk exists so a principal with no consumer verb on the records store can list its keys. Routed back through the ordered consumer it works on every open broker and fails on every authed one."
+    },
+    {
+      "name": "the settle returns without draining its fire pump (#1460)",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      await pump;",
+      "replace": "      void pump;",
+      "expectRed": "a settled wait returns with its fire pump drained: no takeFire in flight when the drive resolves (#1460)",
+      "cell": "a settled wait returns with its fire pump drained: no takeFire in flight when the drive resolves (#1460)",
+      "note": "The exact shipped defect, reproduced on a live broker before the fix: the drive resolved while the pump's in-flight takeFire — a journal replay under the drive's takeover id — was still open, and the replay consumer then appeared after the drive had returned. The cell parks that fire deterministically (the suite owns the pump's queue position), so the mutation is killed on the parked window, not on a timing race."
     }
   ]
 }
