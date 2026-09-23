@@ -1409,10 +1409,21 @@ export async function performScope(
     // effect path hands it one. That asymmetry predates this rule (measured with a plain throw on
     // both paths) and it is recorded as a finding rather than repaired here, because repairing it
     // moves the spec, the walker and the engine together.
+    //
+    // A `RuntimeFault` KEEPS ITS OWN CODE (#1519). It is a classified refusal the LANGUAGE raised
+    // (`L3021` for a fanOut with no stable key), and flattening it to `L4000` wrote a code the spec
+    // says an UNCLASSIFIED failure carries, with the real sentence still inside the message. The
+    // record and the rethrow then disagreed with every resume, which replayed the recorded `L4000`
+    // as an `EffectError` while the live run had thrown the `RuntimeFault` itself. The kind is
+    // `runtime`, the kind a program's `catch` already binds for this class on both engines'
+    // `toProgramError` (a fault the PROGRAM caused), so a reader branching on `kind` reads the same
+    // verdict from the record that the program read live.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
-        : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
+        : reason instanceof RuntimeFault
+          ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
+          : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
     await host.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
