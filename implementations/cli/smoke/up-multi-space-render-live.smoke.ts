@@ -171,9 +171,9 @@ try {
   refused.stdout?.on("data", (b: Buffer) => { err += b.toString(); });
   await Promise.race([once(refused, "exit"), sleep(60_000)]);
   ok("the boot exited non-zero", refused.exitCode !== 0, { code: refused.exitCode });
-  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
   ok("…and left the previous config untouched (no partially-rendered tenant list)",
     readFileSync(confPath, "utf8") === before);
+  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
   rmSync(corrupt);
 
   console.log("\n4) a second boot keeps every persisted sibling callout account");
