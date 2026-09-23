@@ -433,12 +433,24 @@ export interface ManagerStopOptions {
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
 
+/** A manager-initiated stop: WHICH door stopped the seat, and — where a door had one — the
+ *  authenticated wire principal that asked for it (`callerOf(ctx)` or the `caller` the door already
+ *  resolved, never a name taken from the request payload). The stop family carries its principal
+ *  inside the cause so the reap line can say who asked, not just that a stop happened: on a shared
+ *  host several principals hold stop authority, and `u_alice.actor`'s despawn must not read
+ *  identically to `u_bob.actor`'s. */
+export type FreeSlotStopCause =
+  | { kind: "stopped-requested"; requester: string }
+  | { kind: "stopped-self" }
+  | { kind: "stopped-reap"; parent: string }
+  | { kind: "stopped-shutdown" };
+
 /** Which path gave up a seat's slot. Required at every `freeSlot` call, with no default: a default
  *  is how the one caller that matters ends up unlabelled, and the whole point of recording a cause
  *  is that an unexplained death cannot masquerade as a routine one. A new free path must name
  *  itself here or it will not compile. */
 export type FreeSlotCause =
-  | "stopped"
+  | FreeSlotStopCause
   | "process-exit"
   | "pi-crash-loop"
   | "pi-recovery-failed"
@@ -448,9 +460,10 @@ export type FreeSlotCause =
   | "resume-session-rebind-failed";
 
 /** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
- *  is a type error rather than a blank in the log. */
-const FREE_SLOT_CAUSE_TEXT: Record<FreeSlotCause, string> = {
-  "stopped": "this manager stopped it (despawn or shutdown)",
+ *  is a type error rather than a blank in the log. The stop family's sentences carry the principal
+ *  from the cause, so they render through {@link STOP_CAUSE_TEXT} under the same exhaustive-Record
+ *  discipline: a new stop kind without a renderer is a type error too. */
+const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, string> = {
   "process-exit": "its own process exited and this manager did not stop it",
   "pi-crash-loop": "this manager retired it after a Pi crash loop",
   "pi-recovery-failed": "this manager retired it after Pi session recovery failed",
@@ -459,6 +472,22 @@ const FREE_SLOT_CAUSE_TEXT: Record<FreeSlotCause, string> = {
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
 };
+
+/** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
+ *  causes, beside it so both stay the single place a cause becomes a sentence. A requested stop's
+ *  sentence embeds the authenticated principal and a recursive reap's embeds the parent that
+ *  left, so they cannot sit in a static Record keyed by kind; this exhaustive switch is their
+ *  single home, and the `satisfies never` default keeps the discipline: a new stop kind without a
+ *  sentence is a type error rather than a blank in the log. */
+function stopCauseText(cause: FreeSlotStopCause): string {
+  switch (cause.kind) {
+    case "stopped-requested": return `this manager stopped it at ${cause.requester}'s request`;
+    case "stopped-self": return "it stopped itself (self-stop)";
+    case "stopped-reap": return `this manager stopped it because its parent ${cause.parent} left (recursive reap)`;
+    case "stopped-shutdown": return "this manager stopped it on manager shutdown";
+    default: return cause satisfies never;
+  }
+}
 
 export type ManagerResumeIdentity =
   // lifecycleUid is the agent's ORIGINAL incarnation uid (its durables are keyed by it): the resume
@@ -1592,7 +1621,7 @@ export class Manager {
 
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
-   *  delivery-admin rail and persist the audit record (`.cotal/renewal.json`) that `cotal doctor auth`
+   *  delivery-admin rail and persist the audit record (`.cotal/renewal.<spaceKey>.json`) that `cotal doctor auth`
    *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
    *  (no responder) is recorded honestly: each daemon's own 75% renewal timer remains the adoption backstop.
    *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
@@ -1645,7 +1674,7 @@ export class Manager {
       // A non-owner (#1634) re-signed nothing, so it writes no record: an empty one renders in
       // `doctor auth` as a pass that never ran.
       if (this.daemonRenewalOwner)
-        writeRenewalRecord(this.workspaceRoot, { ts: new Date().toISOString(), owner: "manager", results, adoption });
+        writeRenewalRecord(this.workspaceRoot, this.space, { ts: new Date().toISOString(), owner: "manager", results, adoption });
       this.warnOnSystemCredExpiry();
       // F5(b) (Unit B): the MANAGER is the renewal owner for its managed-static agent creds —
       // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
@@ -2156,6 +2185,10 @@ export class Manager {
       this.agents.delete(a.name);
       this.stopHandle(a, false);
     }
+    // The slot delete above bypasses freeSlot, which is where the reap line lives — so say it here,
+    // once per seat, with the one stop cause that names this path: the shutdown itself. Without
+    // this a `--with-agents` stop left every seat unaccounted for in the log (see #1423).
+    for (const a of managed) this.logSeatReaped(a, { kind: "stopped-shutdown" });
     // A runtime stop request is not exit proof. Do not release the manager lease or registration
     // while any seat may still hold this instance's broker rails: that creates the exact orphan
     // window where a successor sees a dead manager but live predecessor authority. Every shipped
@@ -2770,7 +2803,7 @@ export class Manager {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
-        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true));
+        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -2978,7 +3011,7 @@ export class Manager {
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
     this.stopHandle(target, graceful);
-    this.trackStoppedHandle(target, true);
+    this.trackStoppedHandle(target, true, { kind: "stopped-self" });
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
 
@@ -3013,7 +3046,9 @@ export class Manager {
   }
 
   /** Keep an accepted stop inside the lifecycle drain until the runtime proves the child is gone,
-   * so a maintenance prepare can never fence ahead of a child that is still dying.
+   * so a maintenance prepare can never fence ahead of a child that is still dying. The `cause` is
+   * the stop-family cause the door already knows (which door, and who asked); it rides every
+   * freeSlot below so the reap line can say it.
    *
    * An operator-accepted stop frees its slot at once: `stop` replying ✓ means `ps` no longer lists
    * the agent. That cannot omit a still-live child from a cut, because runPreparation drains the
@@ -3021,7 +3056,7 @@ export class Manager {
    * slot lingering. A recursive reap (`requireAuthoritativeExit`) instead keeps the slot until the
    * wait proves exit: nobody asked for those children to be gone, so they stay managed until the
    * runtime says otherwise, and a runtime that cannot prove exit records an unverified stop. */
-  private trackStoppedHandle(a: ManagedAgent, floor: boolean, requireAuthoritativeExit = false): void {
+  private trackStoppedHandle(a: ManagedAgent, floor: boolean, cause: FreeSlotStopCause, requireAuthoritativeExit = false): void {
     if (!a.handle.waitForExit) {
       // Preserve ordinary external-runtime stop behavior, but retain enough evidence for a later
       // maintenance prepare to fail if that runtime still cannot prove the surface disappeared.
@@ -3035,13 +3070,13 @@ export class Manager {
           : undefined,
       });
       if (requireAuthoritativeExit) return;
-      this.freeSlot(a, floor, "stopped", true);
+      this.freeSlot(a, floor, cause, true);
       return;
     }
-    if (!requireAuthoritativeExit) this.freeSlot(a, floor, "stopped", true);
+    if (!requireAuthoritativeExit) this.freeSlot(a, floor, cause, true);
     this.lifecycleInFlight++;
     void this.awaitHandleExit(a.handle)
-      .then(() => this.freeSlot(a, floor, "stopped", true)) // no-op once an accepted stop already freed it
+      .then(() => this.freeSlot(a, floor, cause, true)) // no-op once an accepted stop already freed it
       .catch((e) => {
         this.unverifiedStops.push({
           name: a.name,
@@ -3197,6 +3232,7 @@ export class Manager {
    * that could not provide it.
    */
   private logSeatReaped(a: ManagedAgent, cause: FreeSlotCause): void {
+    const causeText = typeof cause === "string" ? FREE_SLOT_CAUSE_TEXT[cause] : stopCauseText(cause);
     let detail: string;
     try {
       const info = a.handle.exitInfo?.();
@@ -3209,7 +3245,7 @@ export class Manager {
       detail = `exit detail unreadable from runtime "${a.handle.kind}": ${(e as Error).message}`;
     }
     console.error(
-      `seat reaped: ${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""}) - ${FREE_SLOT_CAUSE_TEXT[cause]}; ${detail}`,
+      `seat reaped: ${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""}) - ${causeText}; ${detail}`,
     );
   }
 
@@ -3557,7 +3593,7 @@ export class Manager {
       if (child.spawner !== parentId) continue;
       this.reapChildrenOf(this.managedPrincipal(child));
       this.stopHandle(child, false);
-      this.trackStoppedHandle(child, true, true);
+      this.trackStoppedHandle(child, true, { kind: "stopped-reap", parent: parentId }, true);
     }
   }
 
@@ -5527,14 +5563,16 @@ export class Manager {
   private async despawnCore(a: ManagedAgent, caller: string, admin: boolean, graceful: boolean): Promise<ControlReply> {
     const denied = await this.authorizeNamed(a, caller, admin);
     if (denied) return { ok: false, error: denied };
-    return this.despawnAuthorized(a, graceful, !admin);
+    return this.despawnAuthorized(a, graceful, !admin, caller);
   }
 
   /** The post-authorization terminal effect (both doors). `trackNonAdmin` mirrors the ctl door's
-   *  `trackStoppedHandle(a, !admin)` disposition. */
-  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean): ControlReply {
+   *  `trackStoppedHandle(a, !admin)` disposition. The reap line names `caller` — the AUTHENTICATED
+   *  wire principal the door already resolved — so an operator reading the log can tell one peer's
+   * despawn from another's. */
+  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply {
     this.stopHandle(a, graceful);
-    this.trackStoppedHandle(a, trackNonAdmin);
+    this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // M4: cancel a live spawn goal
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }

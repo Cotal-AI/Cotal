@@ -807,8 +807,10 @@ state wins):
   reconciliation say `static reconciliation not reported by this manager build`; the line stays
   visible even when the manager is otherwise `serving`.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
-  signal), and the latest `renewal.json` adoption verdict. A re-signed credential and a
-  broker-accepted adoption stay distinct facts.
+  signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
+  command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
+  broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
+  names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
 - **web**: local PID record and the dashboard's own loopback `/api/meta` response, which must name
   the same PID and its requested port. A different process on the port, an unreadable PID command,
   or an unrecognizable process record is `refused`, not a green default-port guess.
