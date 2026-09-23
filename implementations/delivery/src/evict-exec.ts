@@ -171,13 +171,17 @@ export async function executeEviction(server: string, target: ScanTarget, princi
   if (!parsed || !isPrincipalOwnerToken(parsed.owner))
     throw new Error(`evictPrincipal: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
   const { accountId } = validateScanTarget(target, "evictPrincipal");
-  const sys = await loadCheckedSys(target, "evictPrincipal", "both");
+  // The observer is enough to answer a complete scan that matches nothing. The evictor is loaded
+  // only once that scan finds a live connection to kick, and a missing one still refuses with the
+  // provisioning message (never a silent deny-new-only). When the opener loads both halves, the
+  // torn-rotation check still runs.
+  const sys = await loadCheckedSys(target, "evictPrincipal", "observer");
   return evictDeniedPrincipalWithCreds({
     servers: server,
     observerCreds: sys.observer,
-    evictorCreds: sys.evictor as string,
     accountId,
     principal,
+    openEvictor: async () => (await loadCheckedSys(target, "evictPrincipal", "both")).evictor as string,
   });
 }
 
