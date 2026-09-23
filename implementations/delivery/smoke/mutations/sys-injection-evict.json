@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/delivery/smoke/sys-injection-evict.smoke.ts"
+  ],
+  "guard": "a complete observer scan that matches nothing answers verified-gone without loading the evictor credential",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build && pnpm smoke:sys-injection-evict",
+  "progressPattern": "✓",
+  "minTicks": 8,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/sys-injection-evict.json",
+  "mutations": [
+    {
+      "name": "the zero-match path loads the evictor before it scans",
+      "file": "implementations/delivery/src/evict-exec.ts",
+      "find": "  const sys = await loadCheckedSys(target, \"evictPrincipal\", \"observer\");\n  return evictDeniedPrincipalWithCreds({\n    servers: server,\n    observerCreds: sys.observer,\n    accountId,\n    principal,\n    openEvictor: async () => (await loadCheckedSys(target, \"evictPrincipal\", \"both\")).evictor as string,\n  });",
+      "replace": "  const sys = await loadCheckedSys(target, \"evictPrincipal\", \"both\");\n  return evictDeniedPrincipalWithCreds({\n    servers: server,\n    observerCreds: sys.observer,\n    evictorCreds: sys.evictor as string,\n    accountId,\n    principal,\n  });",
+      "expectRed": "cell 9: an observer-only zero-match answers verified-gone under a complete scan",
+      "cell": "cell 9: an observer-only zero-match answers verified-gone under a complete scan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build"
+    }
+  ]
+}
