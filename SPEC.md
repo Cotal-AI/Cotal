@@ -282,6 +282,10 @@ as described in §11:
 - `{ "kind": "artifact", "name": string, "mediaType": string, "digest": string, "size": number }`
 - `{ "kind": "<reverse-DNS extension kind>", ... }`
 
+A `data` part's `data` MUST be a JSON value; a publisher MUST refuse the part rather than
+serialize a value JSON cannot represent (a top-level `undefined` serializes to a keyless
+`{"kind":"data"}` object, which readers reject as malformed).
+
 An `artifact` part REFERENCES bytes held outside the message. `digest` MUST be
 `sha256:<lowercase hex>` over the raw bytes and is the artifact's identity; the part carries no
 location, so resolution is the receiver's. `name`, `mediaType`, and `size` are the publisher's

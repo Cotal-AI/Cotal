@@ -2028,6 +2028,7 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error("multicastExpecting requires at least one part");
 
     const message = this.casEnvelope(opts);
+    assertPartsSerializable(message.parts);
     // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
     // the ack, and publishMsg deliberately does neither.
     const ack = await this.js.publish(
@@ -3438,6 +3439,7 @@ export class CotalEndpoint extends EventEmitter {
 
   private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
+    assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
     await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
   }
@@ -5950,6 +5952,32 @@ function isMessagePart(value: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** A part `data` value `JSON.stringify` can carry as JSON at the top level. `undefined`, functions,
+ *  and symbols make stringify return `undefined`, dropping the `data` key — the keyless
+ *  `{"kind":"data"}` row that `isMessagePart` rejects while history returns it (#1404). A bigint
+ *  makes stringify THROW. Nested optional keys whose value is `undefined` are fine: stringify drops
+ *  the key, the same behavior the envelope itself relies on for `replyTo`/`contextId`, and the row
+ *  stays a `data` part on every read path. */
+function isJsonDataValue(value: unknown): boolean {
+  const t = typeof value;
+  return value !== undefined && t !== "function" && t !== "symbol" && t !== "bigint";
+}
+
+/** Refuse, at publish, the parts `JSON.stringify` cannot carry as a `data` part. The guard is the
+ *  runtime half of `Part`'s `data: JsonValue` arm: with it, a non-JSON `data` value never reaches
+ *  the wire, so every reader (live core-sub, Plane-3 durable, history) gives one answer — the
+ *  message was never sent — instead of the old split where history returned the keyless row while
+ *  Plane-3 terminated it as malformed. Throws rather than coercing: no fallback. */
+function assertPartsSerializable(parts: readonly Part[]): void {
+  for (const p of parts) {
+    if (p.kind === "data" && !isJsonDataValue((p as { data?: unknown }).data)) {
+      throw new Error(
+        `cannot publish a data part whose data is not a JSON value (SPEC §5) - got ${String((p as { data?: unknown }).data)}`,
+      );
+    }
+  }
 }
 
 

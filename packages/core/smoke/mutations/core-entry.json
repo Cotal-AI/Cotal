@@ -67,6 +67,17 @@
       "replace": "  broker.kill(\"SIGTERM\");",
       "expectRed": "the owned broker exits before its JetStream tree is removed",
       "cell": "the owned broker exits before its JetStream tree is removed"
+    },
+    {
+      "name": "drop the publish-time JSON-value guard on message parts",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    assertPartsSerializable(msg.parts);",
+      "replace": "    void msg.parts;",
+      "expectRed": "publish refuses a data part whose data is not a JSON value (undefined omitted by stringify)",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "publish refuses a data part whose data is not a JSON value (undefined omitted by stringify)"
     }
   ],
   "grades": "tool"

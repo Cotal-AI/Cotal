@@ -12,12 +12,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint,
   isReachable,
   setupSpaceStreams,
   unicastSubject,
   chatSubject,
+  type Part,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -81,8 +83,19 @@ try {
 
   const honest = await alice.unicast(bob.card.id, "honest-line");
   const own = await viewer.unicast(bob.card.id, "viewer-own-line");
-  const dataUndef = await alice.unicast(bob.card.id, "unused-text", {
-    parts: [{ kind: "data", data: undefined }],
+  // #1404: a data part whose data is not a JSON value must be REFUSED at publish, not serialized
+  // to a keyless {"kind":"data"} row that history returns while Plane-3 terminates it as malformed.
+  let undefRefused: string | undefined;
+  try {
+    await alice.unicast(bob.card.id, "unused-text", {
+      parts: [{ kind: "data", data: undefined }] as unknown as Part[],
+    });
+  } catch (e) {
+    undefRefused = e instanceof Error ? e.message : String(e);
+  }
+  // `null` is a JSON value (SPEC §5): a data part carrying it keeps working end to end.
+  const dataNull = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: null }],
   });
   const chatHonest = await alice.multicast("chat-honest", { channel: "log" });
   await wait(200);
@@ -102,6 +115,15 @@ try {
   const raw = await connect({ servers: SERVER });
   const dmSubj = unicastSubject(SPACE, "local", "bob", "local", "alice");
   const chatSubj = chatSubject(SPACE, "local", "alice", "log");
+
+  // #1404: the wire never carries a keyless data row — the null part round-trips with its key.
+  const jsm = await jetstreamManager(raw);
+  const stored = await jsm.streams.getMessage(`DM_${SPACE}`, { last_by_subj: dmSubj });
+  check(
+    "the stored DM payload keeps the data key (null is a JSON value)",
+    stored !== null && JSON.parse(stored.string()).parts.some((p: { kind: string }) => p.kind === "data" && Object.hasOwn(p, "data")),
+    stored?.string(),
+  );
 
   raw.publish(dmSubj, JSON.stringify(envelope({
     id: "spoof-388",
@@ -162,8 +184,13 @@ try {
   check("non-string id is ABSENT", !page.some((m) => String(m.id) === "123" || (m as { id?: unknown }).id === 123));
   check("extra-token inst subject is ABSENT (parseSubject arity)", !page.some((m) => m.id === "extra-token-388"));
   check(
-    "public-API data part with undefined data still appears in dmHistory",
-    page.some((m) => m.id === dataUndef.id),
+    "publish refuses a data part whose data is not a JSON value (undefined omitted by stringify)",
+    undefRefused !== undefined && /not a JSON value/.test(undefRefused),
+    undefRefused,
+  );
+  check(
+    "a data part carrying null (a JSON value) still appears in dmHistory with its data key",
+    page.some((m) => m.id === dataNull.id && m.parts.some((p) => p.kind === "data" && "data" in p && p.data === null)),
     page.map((m) => m.id),
   );
 
