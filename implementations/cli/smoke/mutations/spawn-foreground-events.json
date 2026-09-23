@@ -38,10 +38,10 @@
     {
       "name": "F2 the foreground stops refusing a connector that publishes no event plane",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "  if (events && !connector.eventChannel) {",
+      "find": "  if (launchEvents && !connector.eventChannel) {",
       "replace": "  if (false) {",
-      "expectRed": "--events on a connector that publishes no event plane REFUSES, by name",
-      "cell": "--events on a connector that publishes no event plane REFUSES, by name",
+      "expectRed": "a bare spawn on a connector that publishes no event plane REFUSES, by name and opt-out",
+      "cell": "a bare spawn on a connector that publishes no event plane REFUSES, by name and opt-out",
       "note": "The other half of the shipped state: the flag was accepted and silently did nothing, which is the failure mode the manager's refusal exists to prevent."
     }
   ]
