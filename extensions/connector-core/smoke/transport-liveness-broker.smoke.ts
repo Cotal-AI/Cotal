@@ -76,6 +76,7 @@ agent.ep.on("error", (error: Error) => {
 let rebuildAgent: MeshAgent | undefined;
 let staleAgent: MeshAgent | undefined;
 let inflightAgent: MeshAgent | undefined;
+let overlapAgent: MeshAgent | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -409,7 +410,79 @@ try {
     boundAfterRebuild && rebindEp.presenceWriteFailure() === undefined,
     { boundAfterRebuild, record: rebindEp.presenceWriteFailure() },
   );
+
+  // #1461: TWO PUTS ON ONE EPOCH, SETTLED IN REVERSE ORDER. The fence above orders epochs, not
+  // puts: both puts below run against one live connection, so it cannot speak. Heartbeats (2s)
+  // against a ~5s JetStream put timeout make the overlap routine. The stimulus again holds the
+  // kv.put promises open and settles them, because the defect is entirely about WHICH settle lands
+  // last: put A (held open) starts first, put B rejects and plants the record, then A — the OLDER
+  // put — succeeds. A success is the latest evidence only when its put is the newest one in
+  // flight, so A's success must not clear B's refusal. Put C then starts AFTER the refusal and
+  // succeeds: that success is newer evidence and must still clear it.
+  //
+  // The agent gets its OWN variable: reusing inflightAgent would orphan inflight2 (its stop lives
+  // only in the finally, which would then stop the wrong agent) and an unstopped endpoint's
+  // reestablish loop outlives the suite — the process never exits.
+  overlapAgent = new MeshAgent({ ...cfg, name: `transport-live-inflight3-${port}` });
+  await overlapAgent.start(100);
+  await until(() => overlapAgent!.connected, 30_000);
+  const overlapEp = overlapAgent.ep as unknown as {
+    kv?: unknown;
+    publishPresence(): Promise<void>;
+    presenceWriteFailure(): { since?: number; error?: string } | undefined;
+  };
+  const heldSameEpoch: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const liveOverlapKv = overlapEp.kv;
+  // Every put the stub sees lands in heldSameEpoch, the cell's own calls and the heartbeat's
+  // alike, so nothing is ever silently swallowed. That makes raw indices unusable — a heartbeat
+  // tick can land a put between any two awaits — so the cell takes puts from the FRONT of the
+  // queue one at a time and settles each before starting the next leg, and a heartbeat put simply
+  // plays the role the leg was about to cast anyway: any extra put settled with the same script
+  // leaves every assertion below on the same observations.
+  overlapEp.kv = { put: () => new Promise<void>((resolve, reject) => heldSameEpoch.push({ resolve, reject })) };
+  const takePut = async (): Promise<{ resolve: () => void; reject: (e: Error) => void }> => {
+    await until(() => heldSameEpoch.length > 0, 10_000);
+    return heldSameEpoch.shift()!;
+  };
+  // Put A is held open across put B's rejection.
+  const putAPromise = overlapEp.publishPresence().catch(() => {});
+  const putA = await takePut();
+  const putBPromise = overlapEp.publishPresence().catch(() => {});
+  const putB = await takePut();
+  putB.reject(new Error("bucket refuses writes"));
+  await putBPromise;
+  const refusal = overlapEp.presenceWriteFailure();
+  putA.resolve();
+  await putAPromise;
+  const afterOlderSuccess = overlapEp.presenceWriteFailure();
+  // The C leg runs while the stub is STILL INSTALLED, so the only puts in flight are the ones this
+  // cell started and settles itself. Restoring the real kv first would let a heartbeat-era put
+  // resolve, and its condition-repair path would then re-issue into the real kv unparked — a put
+  // the cell no longer controls. After the C leg the cell drains every held put and only then
+  // restores the real kv, so stop()'s best-effort offline publish never touches the stub (the
+  // shipped cell's note) and no promise is left parked inside a stopped endpoint.
+  const putCPromise = overlapEp.publishPresence().catch(() => {});
+  const putC = await takePut();
+  putC.resolve();
+  await putCPromise;
+  const afterNewerSuccess = overlapEp.presenceWriteFailure();
+  check(
+    "an OLDER put succeeding late does not clear a newer same-epoch refusal record",
+    refusal !== undefined && afterOlderSuccess !== undefined && afterOlderSuccess.error === "bucket refuses writes",
+    { refusal, afterOlderSuccess, afterNewerSuccess },
+  );
+  check(
+    "a success whose put started AFTER the refusal still clears it",
+    afterNewerSuccess === undefined,
+    { afterNewerSuccess },
+  );
+  // Drain every held put (the cell's own leftovers and any heartbeat tick the stub captured), then
+  // restore the real kv BEFORE teardown: stop() makes a best-effort offline publishPresence of its
+  // own, and leaving the never-settling stub in place deadlocks it.
+  for (const held of heldSameEpoch.splice(0)) held.resolve();
+  overlapEp.kv = liveOverlapKv;
 } finally {
+  await overlapAgent?.stop().catch(() => {});
   await inflightAgent?.stop().catch(() => {});
   await staleAgent?.stop().catch(() => {});
   await rebuildAgent?.stop().catch(() => {});
@@ -420,7 +493,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 19;
+const EXPECTED_CELLS = 21;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

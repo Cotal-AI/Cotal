@@ -11,6 +11,14 @@
       "replace": "      this.presenceWriteFailingSince ??= Date.now();\n      this.lastPresenceWriteError = (e as Error)?.message ?? String(e);\n",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "a presence put that settles AFTER stop() does not resurrect the record on the stopped endpoint"
+    },
+    {
+      "name": "F2 the success arm in publishPresence clears the refusal record without the same-epoch generation ordering, so an earlier put that succeeds after a later put's rejection erases the refusal while the bucket still refuses writes. Heartbeats run every 2s against a ~5s JetStream put timeout, so two puts sharing one live epoch is the routine shape, not a corner: the record then says the bucket is healthy while the newest evidence says it refuses every write. Same dist/ note as F1: this suite imports @cotal-ai/core, which resolves to dist/, so the command builds core first and afterRestore rebuilds it after the source is restored.",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const generation = ++this.presencePutGeneration;\n    let superseded = false;\n    this.presencePutInFlight = generation;\n",
+      "replace": "    const generation = ++this.presencePutGeneration;\n    let superseded = false;\n",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "an OLDER put succeeding late does not clear a newer same-epoch refusal record"
     }
   ]
 }
