@@ -93,7 +93,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_EVENTS_REQUIRED` | hand-driven user-mode connector | Trusted registration says events are mandatory; arms the plane and refuses if the session grant omits its event channel. Launcher-managed sessions carry this in launch material instead | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin) | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
-| `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works | off |
+| `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works. `agent-bearer` skips the gate by name, no flag needed | off |
 | `COTAL_ALLOW_CHECKOUT_SEED` | seed store | Permit a source-checkout CLI to write the operator-global seed store (`1`) after isolating `$XDG_CONFIG_HOME`. Used by in-tree seed smokes that spawn the checkout-shaped `bin/` CLI into a scratch config. Any other value is ignored. The checkout refusal does not name this variable. | off |
 | `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (`ctrl-<char>` / `^<char>`) | `ctrl-]` |
 | `COTAL_FEEDBACK_KEY` | `feedback`, connector | Beta feedback key → keyed intake | none (public intake) |
