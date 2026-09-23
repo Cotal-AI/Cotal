@@ -53,8 +53,8 @@ export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
   prepareSpaceCatalogs: prepareIdpSpaceCatalogs,
-  syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate }) => {
-    const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate });
+  syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate, apply }) => {
+    const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate, apply });
     const failed = results.find((r) => r.state === "failed");
     if (failed) throw new Error(`space catalog for ${idpUrl} failed after login: ${failed.error}`);
     return results;

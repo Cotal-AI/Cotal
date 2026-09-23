@@ -349,10 +349,14 @@ console.log("C2) advertised space catalog cache");
     validateCalls++;
     validateCatalogSnapshot(snapshot, account);
   };
-  const first = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
+  // The consumer the provider drives under its lock. These provider-level cells record what was
+  // handed to it; the registry consequences are graded through prepareCatalogTargets below.
+  const applied: Awaited<ReturnType<typeof prepareIdpSpaceCatalogs>> = [];
+  const apply = (result: (typeof applied)[number]) => void applied.push(result);
+  const first = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
   check("first preparation learns the Link relation and publishes one validated snapshot",
     first[0]?.state === "updated" && tokenRequests === 1 && catalogRequests === 1, first);
-  const warm = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate });
+  const warm = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
   check("a snapshot younger than five seconds makes zero requests", warm[0]?.state === "fresh" && tokenRequests === 1 && catalogRequests === 1, warm);
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = catalogDir;
@@ -386,30 +390,108 @@ console.log("C2) advertised space catalog cache");
   const staleTokenBase = tokenRequests;
   const staleCatalogBase = catalogRequests;
   makeStale();
-  const refresh = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate });
+  const refresh = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
   check("a stale snapshot makes one conditional request and accepts 304 only with prior bytes",
     refresh[0]?.state === "not-modified" && tokenRequests === staleTokenBase && catalogRequests === staleCatalogBase + 1 && conditional >= 1, refresh);
   makeStale();
   const beforeConcurrent = catalogRequests;
   await Promise.all([
-    prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate }),
-    prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate }),
+    prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply }),
+    prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply }),
   ]);
   check("two concurrent preparations coalesce behind the account lock", catalogRequests === beforeConcurrent + 1, catalogRequests);
+  // An application that never finished. The provider commits a fetched candidate as `applied: false`
+  // before the consumer's first registry write and marks it applied after the last, so a process
+  // that dies or is paused mid-way leaves exactly this cache. The next preparation must apply that
+  // snapshot again before it can answer fresh or not-modified.
+  const cachedAccount = () => Object.values(JSON.parse(readFileSync(cacheFile, "utf8")).accounts as Record<string, { applied?: boolean; etag?: string }>)[0];
+  const markUnapplied = () => {
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    Object.values(cached.accounts as Record<string, { applied?: boolean }>)[0].applied = false;
+    writeFileSync(cacheFile, JSON.stringify(cached));
+  };
+  applied.length = 0;
+  const repairTokenBase = tokenRequests;
+  const repairCatalogBase = catalogRequests;
+  markUnapplied();
+  const repaired = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
+  check("a cached snapshot whose application never finished is applied again inside the freshness window with zero requests",
+    applied.length === 1 && applied[0].state === "updated" && applied[0].snapshot !== undefined && repaired[0]?.state === "updated" &&
+      tokenRequests === repairTokenBase && catalogRequests === repairCatalogBase && cachedAccount().applied === true,
+    { applied: applied.map((r) => r.state), repaired: repaired[0]?.state, tokenRequests, catalogRequests, cached: cachedAccount() });
+  applied.length = 0;
+  const settled = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
+  check("an applied snapshot inside the window is reported fresh and handed to the consumer no more",
+    settled[0]?.state === "fresh" && applied.length === 0, { settled: settled[0]?.state, applied: applied.map((r) => r.state) });
+  makeStale();
+  markUnapplied();
+  applied.length = 0;
+  const staleRepairBase = catalogRequests;
+  const repairedStale = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
+  check("an interrupted application older than the window is applied again before its conditional 304 is accepted",
+    applied.map((r) => r.state).join(",") === "updated,not-modified" && repairedStale[0]?.state === "not-modified" &&
+      catalogRequests === staleRepairBase + 1 && cachedAccount().applied === true,
+    { applied: applied.map((r) => r.state), result: repairedStale[0]?.state, catalogRequests, cached: cachedAccount() });
+  // The commit order itself: while the consumer applies a fetched candidate, the cache on disk
+  // already names that candidate and says it is not applied; after the consumer returns, it is.
+  const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+  Object.values(cached.accounts as Record<string, { etag?: string; fetchedAt?: string }>)[0].etag = '"v0"';
+  Object.values(cached.accounts as Record<string, { etag?: string; fetchedAt?: string }>)[0].fetchedAt = new Date(0).toISOString();
+  writeFileSync(cacheFile, JSON.stringify(cached));
+  let duringApply: { applied?: boolean; etag?: string } | undefined;
+  const observing = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply: (result) => {
+    applied.push(result);
+    duringApply = cachedAccount();
+  } });
+  check("a fetched candidate is committed as not applied before the consumer's first write and as applied after its last",
+    observing[0]?.state === "updated" && duringApply?.applied === false && duringApply?.etag === '"v1"' && cachedAccount().applied === true,
+    { result: observing[0]?.state, duringApply, after: cachedAccount() });
+  // A selection naming a space the snapshot no longer carries is cleared BEFORE the first registry
+  // write. The consumer's first write here is the removal itself, so the cell reads the selection
+  // from inside the shipped registry removal: a death right after that removal would otherwise
+  // leave the selection pointing at nothing, and a later application could no longer tell the
+  // name had been this account's.
+  const workspaceMod = await import("@cotal-ai/workspace");
+  const stalePrior = JSON.parse(readFileSync(cacheFile, "utf8"));
+  const staleAccount = Object.values(stalePrior.accounts as Record<string, { snapshot: { spaces: { slug: string }[] } }>)[0];
+  process.env.COTAL_HOME = catalogDir;
+  workspaceMod.recordMesh({ ...workspaceMod.findMesh("space_1")!, space: "vanishing", catalogSlug: "vanishing", root: join(catalogDir, "catalog", "vanishing") });
+  workspaceMod.setCurrent("vanishing");
+  let selectionAtRemoval: string | undefined = "unread";
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const originalRm = fs.rmSync;
+  const meshesPrefix = join(catalogDir, "meshes") + "/";
+  fs.rmSync = ((target: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+    if (selectionAtRemoval === "unread" && String(target).startsWith(meshesPrefix)) selectionAtRemoval = workspaceMod.getCurrent();
+    return originalRm(target, options);
+  }) as typeof fs.rmSync;
+  syncBuiltinESMExports();
+  try {
+    await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
+  } finally {
+    fs.rmSync = originalRm;
+    syncBuiltinESMExports();
+  }
+  check("a selection the snapshot no longer carries is cleared before the first registry write",
+    selectionAtRemoval === undefined && workspaceMod.getCurrent() === undefined && workspaceMod.findMesh("vanishing") === undefined,
+    { selectionAtRemoval, current: workspaceMod.getCurrent(), staleSnapshot: staleAccount.snapshot.spaces.length });
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
   makeStale();
   failCatalog = true;
-  const failed = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate });
+  const failed = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });
   check("a failed refresh reports failure while retaining the previous snapshot", failed[0]?.state === "failed" && failed[0].snapshot !== undefined, failed);
   failCatalog = false;
   invalidCatalog = true;
-  const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
+  const invalid = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
   check("an invalid candidate refuses the whole update and retains the prior snapshot", invalid[0]?.state === "failed" && invalid[0].snapshot !== undefined, invalid);
   invalidCatalog = false;
   const cacheBeforeTrustProbe = readFileSync(cacheFile, "utf8");
   const registryBeforeTrustProbe = new Map(readdirSync(meshDir).map((file) => [file, readFileSync(join(meshDir, file), "utf8")]));
   for (const trustCase of ["idp", "issuer", "endpoint"] as const) {
     foreignTrust = trustCase;
-    const refused = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate });
+    const refused = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, force: true, validate, apply });
     const trustLabel = trustCase === "idp" ? "IdP pin" : trustCase === "issuer" ? "exact issuer pin" : "exchange endpoint";
     check(`a foreign ${trustLabel} refuses the whole snapshot and preserves prior state`,
       refused[0]?.state === "failed" && refused[0].snapshot !== undefined &&
@@ -427,25 +509,25 @@ console.log("C2) advertised space catalog cache");
   const beforeLegacyToken = tokenRequests;
   const beforeLegacyCatalog = catalogRequests;
   invalidCatalog = false;
-  const legacy = await prepareIdpSpaceCatalogs({ dir: legacyDir, idpUrl: catalogIdp, force: true, validate });
+  const legacy = await prepareIdpSpaceCatalogs({ dir: legacyDir, idpUrl: catalogIdp, force: true, validate, apply });
   check("a valid legacy cached login learns sub lazily and discovers the catalog without re-login",
     legacy[0]?.state === "updated" && tokenRequests === beforeLegacyToken + 1 && catalogRequests === beforeLegacyCatalog + 1 && loadIdpSession(legacyDir, catalogIdp)?.sub === "cat-user",
     { legacy, tokenRequests, catalogRequests, session: loadIdpSession(legacyDir, catalogIdp) });
   const lateDir = mkdtempSync(join(tmpdir(), "cotal-login-catalog-late-"));
   saveIdpSession(lateDir, catalogIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
   advertiseCatalog = false;
-  const absent = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, force: true, validate });
+  const absent = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, force: true, validate, apply });
   check("an IdP without the Link records no catalog", absent[0]?.state === "no-catalog", absent);
   advertiseCatalog = true;
   const lateTokenBase = tokenRequests;
   const lateCatalogBase = catalogRequests;
-  const enabled = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, force: true, validate });
+  const enabled = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, force: true, validate, apply });
   check("explicit sync discovers a Link enabled after login with one token and one catalog request",
     enabled[0]?.state === "updated" && tokenRequests === lateTokenBase + 1 && catalogRequests === lateCatalogBase + 1,
     { enabled, tokenRequests, catalogRequests });
   const lateWarmToken = tokenRequests;
   const lateWarmCatalog = catalogRequests;
-  const enabledWarm = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, validate });
+  const enabledWarm = await prepareIdpSpaceCatalogs({ dir: lateDir, idpUrl: catalogIdp, validate, apply });
   check("a warm repeat after late discovery makes no requests",
     enabledWarm[0]?.state === "fresh" && tokenRequests === lateWarmToken && catalogRequests === lateWarmCatalog,
     enabledWarm);

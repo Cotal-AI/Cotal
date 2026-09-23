@@ -683,6 +683,12 @@ conditional refresh before target resolution. A failed refresh refuses the opera
 bypasses freshness and reports added, changed, removed, unchanged, and name collisions. `--idp`
 limits it to one signed-in account. It never connects to a broker.
 
+The registry is updated under the same lock that guards the catalog cache, so a command never lists
+a discovered space set that another command is still writing. The cache records a fetched snapshot
+as not yet applied before the first registry write and as applied after the last. If a command dies
+or is stopped in between, the next command applies that snapshot again before it can use it, with
+no request inside the freshness window.
+
 The shared dispatcher applies this preparation to every command that declares both `--space` and
 `--server` as mesh-target flags, including commands registered by other packages and commands that
 declare their own equivalent flag objects. Daemon and startup commands that use those names only as

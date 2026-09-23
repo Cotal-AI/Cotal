@@ -65,19 +65,25 @@ export interface AuthProvider extends Extension {
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
    * the private cache. The caller supplies the product validator so an invalid candidate is never
-   * published over the last valid snapshot.
+   * published over the last valid snapshot, and the consumer's `apply`, which the provider runs
+   * under its own lock: a candidate is committed to the cache as not yet applied before the first
+   * registry mutation and marked applied after the last, so a process that dies or pauses while
+   * applying leaves a cache that says so, and the next preparation applies that snapshot again
+   * before reporting it fresh or not modified.
    */
   prepareSpaceCatalogs?(opts: {
     dir: string;
     idpUrl?: string;
     force?: boolean;
     validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+    apply(result: AuthSpaceCatalogResult): void;
   }): Promise<AuthSpaceCatalogResult[]>;
   /** Complete login-time catalog discovery while the provider alone holds the new session. */
   syncSpaceCatalogAfterLogin?(opts: {
     dir: string;
     idpUrl: string;
     validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+    apply(result: AuthSpaceCatalogResult): void;
   }): Promise<AuthSpaceCatalogResult[]>;
   /** Whether the just-proved account advertised a catalog. Reads provider state only. */
   hasSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): boolean;
@@ -260,7 +266,9 @@ export interface AuthSpaceCatalogResult {
   error?: string;
 }
 
-/** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI. */
+/** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI.
+ *  `apply` runs inside the provider's catalog lock and must be idempotent: an interrupted
+ *  application is applied again from the cached snapshot by the next preparation. */
 export interface SpaceCatalogConsumer extends Extension {
   readonly kind: "space-catalog-consumer";
   validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
