@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 
-const host = process.env.COTAL_FEEDBACK_SSH ?? "cotal@63.143.44.130";
-const remoteRoot = process.env.COTAL_FEEDBACK_REMOTE_ROOT ?? "/home/cotal/SWARL";
-const [cmd, ...args] = process.argv.slice(2);
-
 function usage() {
   console.log(`Usage: feedback-remote <command> [args]
 
@@ -24,10 +20,23 @@ Commands:
       Open a shell in the remote repo.
 
 Environment:
-  COTAL_FEEDBACK_SSH          Default: cotal@63.143.44.130
-  COTAL_FEEDBACK_REMOTE_ROOT  Default: /home/cotal/SWARL
+  COTAL_FEEDBACK_SSH          Required. Example: user@host
+  COTAL_FEEDBACK_REMOTE_ROOT  Required. Example: /srv/cotal
 `);
 }
+
+function requireEnv(name, example) {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`Missing ${name}. Example: ${name}="${example}"`);
+    process.exit(2);
+  }
+  return value;
+}
+
+const host = requireEnv("COTAL_FEEDBACK_SSH", "user@host");
+const remoteRoot = requireEnv("COTAL_FEEDBACK_REMOTE_ROOT", "/srv/cotal");
+const [cmd, ...args] = process.argv.slice(2);
 
 function quote(s) {
   return `'${String(s).replaceAll("'", `'"'"'`)}'`;
