@@ -74,6 +74,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
+  // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
+  sync: { flags: ["idp:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
@@ -171,6 +173,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
+  // `service` (2026-09): the manager as a user service; the subcommand is the positional.
+  service: { flags: ["json:boolean", "linger:boolean", "mesh:string"], positionals: true },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
