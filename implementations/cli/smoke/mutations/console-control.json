@@ -1,5 +1,7 @@
 {
-  "suite": ["implementations/cli/smoke/console-control.smoke.ts"],
+  "suite": [
+    "implementations/cli/smoke/console-control.smoke.ts"
+  ],
   "guard": "the console's operator verbs reach the manager that hosts the seat, name the seat the operator asked for, kill the way the key says, and purge for real",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-control",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-control.json",
@@ -31,8 +33,8 @@
     {
       "name": "C3 :spawn drops the requested name",
       "file": "implementations/cli/src/console/commands.ts",
-      "find": "      const r = await ctx.control(\"start\", identity ? { name: persona, identity } : { name: persona });",
-      "replace": "      const r = await ctx.control(\"start\", { name: persona });",
+      "find": "      const r = await ctx.control(\"start\", identity ? { name: persona, identity, events: false } : { name: persona, events: false });",
+      "replace": "      const r = await ctx.control(\"start\", { name: persona, events: false });",
       "expectRed": ":spawn shows the accepted name, the one requested rather than the persona's",
       "cell": ":spawn shows the accepted name, the one requested rather than the persona's",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
