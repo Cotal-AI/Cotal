@@ -423,7 +423,8 @@ try {
     while (!frames.flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
     const types = frames.flatMap((frame) => frame.events.map((event) => event.type));
-    assert.deepEqual(types, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"]);
+    assert.deepEqual(types, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"],
+      "managed Pi first turn publishes native tool and text frames without PI_SESSION_ID");
     assert.ok(frames.every((frame) => frame.threadId === manager.getSessionId()));
     provider.setResponses([
       fauxAssistantMessage([fauxToolCall("bash", { command: "printf skipped" }, { id: "pi-failed-call" })],
