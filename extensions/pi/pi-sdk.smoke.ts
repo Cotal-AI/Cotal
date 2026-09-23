@@ -383,7 +383,10 @@ try {
       const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`Pi ${stage} stage timed out`)); }, 12_000);
       child.once("exit", (code) => {
         clearTimeout(timer);
-        if (stage === "recover" && code !== 0) reject(new Error(`Pi recovery stage failed: ${output.slice(-1500)}`));
+        if (stage === "recover" && code !== 0) {
+          const assertion = "idle reopen publishes the saved first native turn before any next prompt";
+          reject(new Error(`Pi recovery stage failed${output.includes(assertion) ? `: ${assertion}` : `: ${output.slice(-1500)}`}`));
+        }
         else done(code);
       });
     });
