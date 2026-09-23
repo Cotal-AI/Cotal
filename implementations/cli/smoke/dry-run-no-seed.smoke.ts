@@ -13,6 +13,10 @@
  *      config dir untouched (no seed store, no manifest, no npm prefix);
  *   2. a VALID dry run (`down --dry-run`) plans, prints and exits 0 while writing nothing, so the
  *      guard is about dry runs rather than about this one usage error.
+ * The same gate must not capture `agent-bearer` either: it is the machine-facing helper a spawned
+ * seat execs on EVERY bearer refresh (read one 0600 token file, exchange, print, exit), so a
+ * newer-generation stamp must not refuse it (#1857) and a matching one must not make a credential
+ * exchange seed the operator-global store.
  *
  * Exits non-zero the moment a dry run writes, so the defect cannot ride green through CI.
  * Every `down` call is anchored to a throwaway sandbox root/COTAL_HOME/XDG_CONFIG_HOME and passed
@@ -22,7 +26,7 @@
  * that first. Run: pnpm smoke:dry-run-no-seed
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -114,6 +118,65 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
     "a valid dry run never reports a seed or usage failure",
     !/seed store payload|bare-whole-stack only/.test(out),
     out.slice(0, 400),
+  );
+}
+
+// ── 3. `agent-bearer` gets past a newer-generation stamp to its own refusal (#1857) ───────────────
+// The helper is exec'd by a spawned seat on every bearer refresh. Before the skip, a stamp newer
+// than the invoking binary refused the BOOT (`this cotal X is older than the seed store's
+// generation Y`) before the token file was read, and the seat died at its token's expiry. With the
+// skip, the refusal must be the helper's own argument validation — reached here without --actor,
+// so no exchange and no token file is ever touched — and the staged stamp must still be exactly
+// what was staged (nothing rewrote it).
+{
+  const cfg = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-"));
+  const sandboxRoot = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-root-"));
+  cleanup.push(cfg, sandboxRoot);
+  const seedDir = join(cfg, "cotal", "seed");
+  mkdirSync(seedDir, { recursive: true });
+  const stagedStamp = `${JSON.stringify({ generation: "99.0.0", writtenBy: "/usr/local/bin/cotal", writtenAt: "2026-09-01T00:00:00.000Z" })}\n`;
+  writeFileSync(join(seedDir, "stamp.json"), stagedStamp);
+  const r = spawnSync(
+    "node",
+    [BIN, "agent-bearer", "--exchange-url", "https://exchange.invalid/", "--space", "s", "--owner", "u_x", "--token-file", "/dev/null"],
+    { cwd: sandboxRoot, env: { ...HOST_ENV, COTAL_HOME: join(sandboxRoot, "home"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8" },
+  );
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  check(
+    "a newer-generation stamp does not gate `agent-bearer`: its own usage refusal answers",
+    /usage: cotal agent-bearer/.test(out) && !/older than the seed store/.test(out),
+    { status: r.status, out: out.slice(0, 400) },
+  );
+  check(
+    "the staged newer-generation stamp is untouched",
+    readFileSync(join(seedDir, "stamp.json"), "utf8") === stagedStamp,
+    readFileSync(join(seedDir, "stamp.json"), "utf8").slice(0, 200),
+  );
+}
+
+// ── 4. `agent-bearer` on a pristine home writes NOTHING (no seed on a credential exchange) ────────
+// Same shape as the dry-run cells: any entry the run creates under `<config>/cotal` is a mutation
+// the helper must not make. `--exchange-url` points at a guaranteed-dead port, so the helper runs
+// its whole body and fails at the exchange — the sentinel that it got past the boot gate.
+{
+  const r = cotal([
+    "agent-bearer",
+    "--exchange-url",
+    "http://127.0.0.1:9/",
+    "--space",
+    "s",
+    "--owner",
+    "u_x",
+    "--actor",
+    "a",
+    "--token-file",
+    "/dev/null",
+  ]);
+  const out = `${r.stdout}${r.stderr}`;
+  check(
+    "a credential exchange reaches the helper body (past the gate)",
+    /agent-bearer: the pinned exchange did not answer/.test(out),
+    { status: r.status, out: out.slice(0, 400) },
   );
 }
 
