@@ -1,0 +1,49 @@
+{
+  "suite": [
+    "extensions/pi/smoke/tool-input-closed.smoke.ts"
+  ],
+  "guard": "every tool handed pi.registerTool is a closed object whose JSON round-trip carries only JSON Schema keywords — no vendor brand survives stringify (#1835)",
+  "command": "pnpm smoke:pi-tool-closed",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pi-tool-schema.json",
+  "why": [
+    "THE BRAND CAME BACK ONCE ALREADY. The original converter branded Zod's JSON Schema render with",
+    "`Type.Unsafe`, and the brand's clone made Zod's non-enumerable `~standard` metadata enumerable,",
+    "so every tool's parameters serialized with `~standard.{vendor,version}` and strict providers",
+    "refused the whole declaration. A converter can re-grow that wrapper for the best of reasons",
+    "(TSchema looks like it wants a TypeBox value), which is why the guard lives at the seam pi owns:",
+    "what registerTool actually receives.",
+    "",
+    "P1 RESTORES THE #1835 DEFECT VERBATIM: the pre-fix `Type.Unsafe(...)` brand. It must redden the",
+    "round-trip cell, whose stray-path list is the direct measurement of the provider-facing leak;",
+    "closure cells stay green under it, exactly as they did at base — the defect is orthogonal to",
+    "closure, and a mutation that reddened a closure cell would be proving a different regression.",
+    "",
+    "P2 IS THE SUBTLER RE-INTRODUCTION: not the brand, but an ordinary enumerable member smuggled onto",
+    "the render. It proves the cell walks ALL keys at every depth rather than matching the one string",
+    "`~standard` — a cell that special-cased yesterday's key name would pass the next vendor's",
+    "metadata member straight through to the provider.",
+    "",
+    "NO BUILD STEP: the suite imports the extension's src through tsx and registers tools against a",
+    "fake ExtensionAPI, so there is no dist/ copy that could disagree with the mutation."
+  ],
+  "mutations": [
+    {
+      "name": "P1 the Type.Unsafe brand returns (the #1835 defect verbatim)",
+      "file": "extensions/pi/src/tools.ts",
+      "find": "  return z.toJSONSchema(schema, { io: \"input\" }) as TSchema;",
+      "replace": "  return Type.Unsafe(z.toJSONSchema(schema, { io: \"input\" }));",
+      "expectRed": "a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (22 tools)",
+      "cell": "a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (22 tools)",
+      "note": "The pre-fix shape exactly. The brand's clone makes Zod's non-enumerable ~standard enumerable, so stringify carries parameters(cotal_*).~standard for all 22 tools and the round-trip cell names every path."
+    },
+    {
+      "name": "P2 an ordinary enumerable vendor member is smuggled onto the render",
+      "file": "extensions/pi/src/tools.ts",
+      "find": "  return z.toJSONSchema(schema, { io: \"input\" }) as TSchema;",
+      "replace": "  return Object.assign(z.toJSONSchema(schema, { io: \"input\" }), { vendor: \"zod\" }) as TSchema;",
+      "expectRed": "a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (22 tools)",
+      "cell": "a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (22 tools)",
+      "note": "A non-brand re-introduction: one enumerable key no JSON Schema defines, on every tool. Proves the cell grades key names against the vocabulary at all depths rather than matching the literal ~standard."
+    }
+  ]
+}
