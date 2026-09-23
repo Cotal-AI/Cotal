@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -160,6 +160,11 @@ try {
     empty.child.kill("SIGTERM");
     await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
     check("the empty-directory seat exits cleanly", empty.child.exitCode === 0, { code: empty.child.exitCode, stderr: empty.stderr() });
+    check(
+      "the write probe leaves nothing behind in a writable sessions directory",
+      readdirSync(join(emptyHome, "sessions")).every((entry) => !entry.startsWith(".cotal-write-probe-")),
+      readdirSync(join(emptyHome, "sessions")),
+    );
   }
 
   const panicName = "panicpeer";
@@ -223,6 +228,44 @@ try {
       chmodSync(lockedSessions, 0o700);
       locked.child.kill("SIGTERM");
       await Promise.race([once(locked.child, "exit"), sleep(15_000)]);
+    }
+  }
+
+  const writeOnlyName = "writeonlypeer";
+  const writeOnlyHome = managedHome("jcodeempty", writeOnlyName);
+  const writeOnlySessions = join(writeOnlyHome, "sessions");
+  mkdirSync(writeOnlySessions, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") {
+    check("the write-only sessions directory refuses before the harness is asked (unreachable on Windows)", true);
+  } else {
+    // #1538 round 2: mode 0200 carries the write bit and no search bit, so a permission test on
+    // the directory alone (access W_OK, or the mode bits) passes while creating a file inside
+    // fails EACCES - the exact gap that let the harness accept create_session and the seat die
+    // as startup failed (unknown). The refusal must key on the create the harness performs.
+    chmodSync(writeOnlySessions, 0o200);
+    const writeOnly = startHost(writeOnlyName, {});
+    child = writeOnly.child;
+    try {
+      const writeOnlyExit = await Promise.race([once(writeOnly.child, "exit"), sleep(20_000).then(() => undefined)]);
+      const writeOnlyErr = writeOnly.stderr();
+      check(
+        "the write-only sessions directory refuses before the harness is asked",
+        writeOnlyExit !== undefined &&
+          writeOnly.child.exitCode === 1 &&
+          /startup failed \(sessions_unwritable\)/.test(writeOnlyErr) &&
+          /EACCES/.test(writeOnlyErr) &&
+          !/startup failed \(unknown\)/.test(writeOnlyErr),
+        { exit: writeOnly.child.exitCode, stderr: writeOnlyErr },
+      );
+      check(
+        "the write-only sessions directory never reaches the harness",
+        !existsSync(writeOnly.log) || !entriesOf(writeOnly.log).some((entry) => entry.frame?.req === "create_session"),
+        existsSync(writeOnly.log) ? entriesOf(writeOnly.log).map((entry) => entry.frame?.req ?? entry.ev) : ["(no harness log)"],
+      );
+    } finally {
+      chmodSync(writeOnlySessions, 0o700);
+      writeOnly.child.kill("SIGTERM");
+      await Promise.race([once(writeOnly.child, "exit"), sleep(15_000)]);
     }
   }
 

@@ -9,17 +9,22 @@
     "#1538: real jcode v0.81.5 accepts create_session on a sessions/ directory it cannot write",
     "and dies only later, while persisting the session during the first turn, so the seat rendered",
     "as `startup failed (unknown)` - a death outside every guard the connector owns. The connector",
-    "now asks the kernel the question the harness will actually face (W_OK on the directory), not",
+    "now answers the question the harness will actually face (can a file be created inside), not",
     "the question a readdir can answer: a readable-but-unwritable directory is the same defect as an",
     "unreadable one, and a missing directory is a first launch that must stay untouched.",
     "",
     "M1 is the shipped defect: the refusal removed entirely, so the harness is asked, accepts, and",
     "the seat dies on the first turn - the cell that must go red first names the create_session",
     "that reached the harness. M2 narrows the check to directories the connector can also read,",
-    "recreating the exact gap this lane closed (readdir succeeds, W_OK refuses, nothing stops the",
-    "launch). M3 makes the render lie by falling back to the scrubbed unknown diagnostic. M4 and",
-    "M5 attack the accept control from both sides: refusing a first launch with no directory yet,",
-    "and refusing the legitimately empty writable directory the panic-recovery path exists to serve.",
+    "recreating the exact gap this lane closed (readdir succeeds, the create probe refuses, nothing",
+    "stops the launch). M3 makes the render lie by falling back to the scrubbed unknown diagnostic.",
+    "M4 and M5 attack the accept control from both sides: refusing a first launch with no directory",
+    "yet, and refusing the legitimately empty writable directory the panic-recovery path exists to",
+    "serve. M6 is the round-2 reviewer's finding reverted to shape: a directory permission test",
+    "(access W_OK) passes a mode-0200 directory because the write bit is set, while every create",
+    "inside it fails EACCES - search permission is separate from write - so only the create probe",
+    "catches it. M7 removes the probe's own cleanup, so a directory that accepts the write keeps a",
+    "stray file and the no-leftovers cell goes red.",
     "",
     "No completionMarker: this suite is fail-fast at its first red cell and prints no line common",
     "to both outcomes, so a marker would discard exactly the kills it exists to count."
@@ -59,6 +64,20 @@
       "find": "    const unwritable = unwritableStoredSessions(stored);\n    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);",
       "replace": "    const unwritable = { path: storedSessionsPath(socketHome.jcodeHome), code: \"EACCES\" };\n    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);",
       "expectRed": "an empty sessions directory still starts a fresh session"
+    },
+    {
+      "name": "M6 revert to a directory permission test, missing the mode-0200 create failure",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "  const probe = join(inspection.path, `${WRITE_PROBE_PREFIX}${process.pid}`);\n  try {\n    const fd = openSync(probe, \"wx\", 0o600);\n    closeSync(fd);\n    unlinkSync(probe);\n    return undefined;\n  } catch (error) {\n    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? \"unknown\" };\n  }",
+      "replace": "  try {\n    accessSync(inspection.path, constants.W_OK);\n    return undefined;\n  } catch (error) {\n    return { path: inspection.path, code: (error as NodeJS.ErrnoException).code ?? \"unknown\" };\n  }",
+      "expectRed": "the write-only sessions directory refuses before the harness is asked"
+    },
+    {
+      "name": "M7 leave the probe file behind in a directory that accepts the write",
+      "file": "extensions/connector-jcode/src/stored-sessions.ts",
+      "find": "    const fd = openSync(probe, \"wx\", 0o600);\n    closeSync(fd);\n    unlinkSync(probe);\n    return undefined;",
+      "replace": "    const fd = openSync(probe, \"wx\", 0o600);\n    closeSync(fd);\n    return undefined;",
+      "expectRed": "the write probe leaves nothing behind in a writable sessions directory"
     }
   ]
 }
