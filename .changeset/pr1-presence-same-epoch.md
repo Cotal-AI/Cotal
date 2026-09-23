@@ -2,4 +2,4 @@
 "@cotal-ai/core": patch
 ---
 
-Order same-epoch presence puts so a late success cannot erase a newer refusal record. PublishPresence now snapshots a per-put generation and a success clears the presence-refusal record only when its put is still the newest one in flight; an earlier put that succeeds after a later put rejected no longer reports a refusing bucket as healthy. The cross-epoch fence is unchanged. Refs #1461.
+Order same-epoch presence evidence by settle, not start: a settle (success or refusal) is the latest evidence only while no put that started after it has already settled, and a newer put merely in flight supersedes nothing. An earlier put that settles after a later put settled no longer speaks, so a late success cannot erase a newer refusal record and a record can no longer outlive a write the bucket accepted. The cross-epoch fence is unchanged. Refs #1461.
