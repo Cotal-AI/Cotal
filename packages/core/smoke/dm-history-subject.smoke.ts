@@ -203,6 +203,21 @@ try {
     channel: "other",
     parts: [{ kind: "text", text: "chat-injected" }],
   }));
+  // #1413 REPRO, raw-row stage: a stored row carrying only id + object from SITS on the same
+  // DM subject with a matching sender. Read back through the PUBLIC dmHistory only.
+  raw.publish(dmSubj, JSON.stringify({
+    id: "partial-1413",
+    from: { id: "local.alice" },
+  }));
+  // Control arms for the new contract: a full row published raw on the same subject, the
+  // pre-fix keyless data part, a nameless from, and a non-finite ts.
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "full-1413" })));
+  raw.publish(dmSubj, JSON.stringify(envelope({
+    id: "pre-fix-keyless-data-1413",
+    parts: [{ kind: "data" }],
+  })));
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "nameless-from-1413", from: { id: "local.alice" } })));
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "bad-ts-1413", ts: Number.NaN })));
   await raw.flush();
   await raw.close();
   await wait(200);
@@ -259,6 +274,52 @@ try {
     "authenticatedDmMessage strips channel/toService on a surviving DM",
     toSpoof !== undefined && toSpoof.channel === undefined && toSpoof.toService === undefined,
     toSpoof,
+  );
+
+  // ---- #1413: what dmHistory returns for rows lacking what CotalMessage promises ----
+  // The CONTRACT cells read the page as its consumers do. `as Record<string, unknown>` is
+  // deliberate: the fix under development types this row honestly, so the smoke must observe
+  // the shipped fields rather than lean on the type being wrong or right.
+  const field = (m: { id?: unknown } | undefined, key: string) =>
+    (m as Record<string, unknown> | undefined)?.[key];
+  const partial1413 = page.find((m) => m.id === "partial-1413");
+  console.log(`  [#1413 repro] partial row via dmHistory: id=${partial1413?.id} ts=${field(partial1413, "ts")} space=${field(partial1413, "space")} parts=${JSON.stringify(field(partial1413, "parts"))} from.name=${JSON.stringify(field(partial1413?.from, "name"))} to=${field(partial1413, "to")}`);
+  check(
+    "partial row (id + object from only): ts/space/parts/EndpointRef.name are NOT undefined",
+    partial1413 !== undefined &&
+      field(partial1413, "ts") !== undefined &&
+      field(partial1413, "space") !== undefined &&
+      field(partial1413, "parts") !== undefined &&
+      partial1413.from.name !== undefined,
+    partial1413,
+  );
+  // A full row published raw round-trips: same id, ts preserved exactly, from.name intact,
+  // to derived from the subject, and text renders through the shipped partsToText.
+  const full1413 = page.find((m) => m.id === "full-1413");
+  check(
+    "full raw row round-trips unchanged (id, finite ts, EndpointRef.name, subject-derived to, text)",
+    full1413 !== undefined && typeof full1413.ts === "number" && Number.isFinite(full1413.ts) &&
+      full1413.from.name === "alice" && full1413.to === bob.card.id && text(full1413) === "x",
+    full1413,
+  );
+  // A pre-fix producer's keyless {kind:"data"} row is still SURFACED, not dropped.
+  check(
+    "pre-fix keyless data part row is still surfaced by dmHistory",
+    page.some((m) => m.id === "pre-fix-keyless-data-1413" && m.parts.some((p) => p.kind === "data" && !("data" in p))),
+    page.map((m) => m.id),
+  );
+  // Same rule per field: a nameless from and a non-finite ts.
+  const nameless = page.find((m) => m.id === "nameless-from-1413");
+  check(
+    "row whose from lacks name: name is NOT undefined on the row history returns",
+    nameless === undefined || nameless.from.name !== undefined,
+    nameless?.from,
+  );
+  const badTs = page.find((m) => m.id === "bad-ts-1413");
+  check(
+    "row with non-finite ts: ts on the row history returns is a finite number",
+    badTs === undefined || (typeof badTs.ts === "number" && Number.isFinite(badTs.ts)),
+    badTs?.ts,
   );
 
   let chatPage: Awaited<ReturnType<typeof viewer.channelHistory>> = [];
