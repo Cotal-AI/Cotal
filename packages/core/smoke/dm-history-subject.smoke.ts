@@ -218,6 +218,14 @@ try {
   })));
   raw.publish(dmSubj, JSON.stringify(envelope({ id: "nameless-from-1413", from: { id: "local.alice" } })));
   raw.publish(dmSubj, JSON.stringify(envelope({ id: "bad-ts-1413", ts: Number.NaN })));
+  // R2 (grok verdict) rows: a null parts slot, and optional members in the wrong shape.
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "parts-null-slot-1413", parts: [null] })));
+  raw.publish(dmSubj, JSON.stringify(envelope({ id: "mentions-number-1413", mentions: 7 })));
+  raw.publish(chatSubj, JSON.stringify(envelope({
+    id: "chat-parts-null-1413",
+    channel: "log",
+    parts: [null],
+  })));
   await raw.flush();
   await raw.close();
   await wait(200);
@@ -319,6 +327,20 @@ try {
     page.map((m) => m.id),
   );
 
+  // R2 (grok verdict): same rule for parts members and the optional members. A null parts slot
+  // used to reach partsToText and throw "Cannot read properties of null (reading 'kind')".
+  check(
+    "row with a null parts slot is ABSENT (every part checked readable: object with string kind)",
+    !page.some((m) => m.id === "parts-null-slot-1413"),
+    page.map((m) => m.id),
+  );
+  // And one optional member in the wrong shape: mentions must be an array of strings when present.
+  check(
+    "row with mentions not an array of strings is ABSENT (checked, never asserted)",
+    !page.some((m) => m.id === "mentions-number-1413"),
+    page.map((m) => m.id),
+  );
+
   let chatPage: Awaited<ReturnType<typeof viewer.channelHistory>> = [];
   let chatThrew: string | undefined;
   try {
@@ -329,6 +351,7 @@ try {
   check("channelHistory does not throw on a spoofed sibling", chatThrew === undefined, chatThrew);
   check("channelHistory keeps the honest multicast", chatPage.some((m) => m.id === chatHonest.id), chatPage.map((m) => m.id));
   check("channelHistory drops a from.id mismatch (same drainWindow as dmHistory)", !chatPage.some((m) => m.id === "chat-spoof-388"), chatPage.map((m) => m.id));
+  check("channelHistory also drops a null parts slot (one contract serves both reads)", !chatPage.some((m) => m.id === "chat-parts-null-1413"), chatPage.map((m) => m.id));
 
   let multi: Awaited<ReturnType<typeof viewer.multiChannelHistory>> = [];
   let multiThrew: string | undefined;

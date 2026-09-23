@@ -5939,19 +5939,36 @@ type HistoryDrainEnvelope = {
 
 /** The members `HistoryMessage` promises beyond the drain envelope (#1413): a full
  *  `EndpointRef` (`from.name`, and `from.role` only when a string), a finite `ts`, a string
- *  `space`, `parts` the drain could read. Every field the PUBLIC row type promises is checked
- *  here, before the row is returned. A row missing one is dropped, never returned with that
- *  member silently `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`,
- *  `msg.parts` or `msg.from.name` must not be able to reach one that was never there. Nothing
- *  is invented for an absent field. `parts` is held to "readable" (an array), NOT to
- *  `isMessagePart`: a pre-#1404 producer could publish a keyless `{kind:"data"}` part, and
- *  history must surface that row rather than drop it. */
+ *  `space`, `parts` the drain could read, and the optional members in their promised shape
+ *  when present. Every field the PUBLIC row type promises is checked here, before the row is
+ *  returned. A row missing one is dropped, never returned with that member silently
+ *  `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`
+ *  or `msg.from.name` must not be able to reach one that was never there. Nothing is invented
+ *  for an absent field.
+ *
+ *  `parts` is held to READABLE, not to `isMessagePart`: every member must be an object with a
+ *  string `kind` (so `partsToText` can read `part.kind` without throwing), but a keyless
+ *  `{kind:"data"}` row from a pre-#1404 producer is not dropped — history must surface it.
+ *  `mentions`, `replyTo`, and `contextId` keep exactly their `CotalMessage` shapes when
+ *  present: an array of strings, a string, a string. */
 function isVerifiedHistoryRow(row: HistoryDrainEnvelope): row is HistoryDrainEnvelope & HistoryMessage {
   if (typeof row.from.name !== "string") return false;
   if (row.from.role !== undefined && typeof row.from.role !== "string") return false;
   if (typeof row.ts !== "number" || !Number.isFinite(row.ts)) return false;
   if (typeof row.space !== "string") return false;
-  return Array.isArray(row.parts);
+  if (!Array.isArray(row.parts) || !row.parts.every(isReadableMessagePart)) return false;
+  if (row.mentions !== undefined &&
+      (!Array.isArray(row.mentions) || !row.mentions.every((name) => typeof name === "string"))) return false;
+  if (row.replyTo !== undefined && typeof row.replyTo !== "string") return false;
+  if (row.contextId !== undefined && typeof row.contextId !== "string") return false;
+  return true;
+}
+
+/** A part `partsToText` can read without throwing: an object with a string `kind` (#1413).
+ *  Deliberately weaker than `isMessagePart` — a keyless `{kind:"data"}` part passes here —
+ *  because history must surface rows a pre-#1404 producer wrote, not drop them. */
+function isReadableMessagePart(value: unknown): boolean {
+  return isRecord(value) && typeof value.kind === "string";
 }
 
 /**
