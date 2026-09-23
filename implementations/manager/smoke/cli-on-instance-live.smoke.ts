@@ -60,17 +60,18 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
+  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+const repoRoot = join(import.meta.dirname, "..", "..", "..");
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -340,10 +341,59 @@ try {
       { status: r.status, tail: out.slice(-300) });
   }
 
+  // One compiled manager build serves a different ps output contract. Copying the compiled build
+  // into the disposable root keeps this variant isolated from the normal manager and CLI imports.
+  console.log("\n7. a mixed-contract class census is incomplete, not a successful seat list");
+  const variant = join(dir, "variant");
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+  cpSync(join(repoRoot, "implementations/manager/dist"), variant, { recursive: true });
+  symlinkSync(join(repoRoot, "implementations/manager/node_modules"), join(dir, "node_modules"), "dir");
+  const contractFile = join(variant, "manager-service-contract.js");
+  const source = readFileSync(contractFile, "utf8");
+  const oldSchema = 'const PS_OUTPUT_SCHEMA = { type: "array", items: AGENT_ROW_SCHEMA };';
+  if (source.split(oldSchema).length !== 2) throw new Error("fixture requires the compiled ps schema in manager/dist; build before running");
+  writeFileSync(contractFile, source.replace(oldSchema,
+    'const PS_OUTPUT_SCHEMA = { type: "array", items: { ...AGENT_ROW_SCHEMA, properties: { ...AGENT_ROW_SCHEMA.properties, fixtureVariant: { type: "string" } } } };'));
+  const { Manager: VariantManager } = await import(join(variant, "manager.js"));
+  const stub = join(import.meta.dirname, "e2e-stub.mjs");
+  const envFor = (o: LaunchOpts): Record<string, string> => ({
+    COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? ""), COTAL_CREDS: String(o.creds),
+    COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+    ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+  });
+  const connector: Connector = { kind: "connector", name: "ps-census-stub", requires: ["node"],
+    buildLaunch: (o): LaunchSpec => ({ command: "node", args: [stub], env: envFor(o) }) };
+  registry.register(connector);
+  await m2.stop();
+  const root3 = mkRoot("ws3");
+  recordMesh({ space, server: SERVERS, root: root3, mode: "auth", ts: new Date().toISOString() });
+  for (const [root, name] of [[root1, "census-a"], [root3, "census-b"]] as const)
+    writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
+  const mixedManager = new VariantManager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root3 });
+  m2 = mixedManager;
+  await mixedManager.start();
+  const seatA = await m1.startAgent({ name: "census-a", agent: "ps-census-stub", cwd: repoRoot, events: false });
+  const seatB = await mixedManager.startAgent({ name: "census-b", agent: "ps-census-stub", cwd: repoRoot, events: false });
+  check("both real managers started a seat", seatA.ok === true && seatB.ok === true, { seatA, seatB });
+  const observed = new Set<string>();
+  for (let attempt = 0; attempt < 20 && observed.size < 2; attempt++) {
+    const result = await cotal(["ps", "--space", space], root1);
+    mustHaveRun(result, "mixed-contract ps");
+    const out = strip(result.out);
+    const listed = out.includes("census-a") ? "census-a" : out.includes("census-b") ? "census-b" : "none";
+    observed.add(listed);
+    check(`partial census attempt ${attempt + 1} refuses success, keeps one row, and reports the two digest pairs once`,
+      result.status !== 0 && listed !== "none" && !out.includes(listed === "census-a" ? "census-b" : "census-a") &&
+      /Incomplete manager census/.test(out) && /Managers in this space serve different ps contracts/.test(out) &&
+      !/SPEC 13\.7/.test(out) && (out.match(/requested input\/output sha256:[a-f0-9]{64} \/ sha256:[a-f0-9]{64}; served input\/output sha256:[a-f0-9]{64} \/ sha256:[a-f0-9]{64}/g) ?? []).length === 1,
+      { status: result.status, out });
+  }
+  check("both describe orderings were observed", observed.has("census-a") && observed.has("census-b"), [...observed]);
+
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
-  await m1?.stop().catch(() => {});
-  await m2?.stop().catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

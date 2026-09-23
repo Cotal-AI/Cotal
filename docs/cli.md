@@ -972,8 +972,12 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
 - **Static / open mesh.** Bare `ps` is a **class scatter**: it freezes the live manager class from
   the records registry, merges every registered instance's agents grouped and attributed per
   instance, and a non-answering instance is shown as `registered, no answer within the deadline`
-  (never silently omitted). That label is the whole claim: the instance is registered and did not
-  answer. It does not say the host is down, because a dead host never deregisters itself and a
+  (never silently omitted). A refused list or a missing answer makes the census incomplete: rows
+  from other instances remain visible, but `ps` prints an incomplete-census warning on stderr and
+  exits non-zero, including with `--json`. Those rows are not a complete seat count. A contract
+  mismatch prints one plain comparison of the requested and served input/output digest pairs and
+  advises aligning manager versions. The no-answer label means only that the instance is registered
+  and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
   live one can be slow; if it is gone, deregister it.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
   rather than falling through: a well-formed id that no live manager carries is reported as

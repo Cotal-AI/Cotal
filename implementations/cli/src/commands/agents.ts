@@ -435,12 +435,15 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // abbreviated header therefore showed the operator an id that the very next command refuses
   // (`"4ik6rb0e" is not a valid lifecycle token`), with the full value printed nowhere: the remedy
   // was named and then withheld. Width costs one line here; the prefix cost the flag entirely.
+  let incomplete = false;
+  const mismatches: string[] = [];
   for (const inst of instances) {
     const label = `manager ${inst.instanceId}`;
     // Under --json the instance headers are STRUCTURE, not data: they go to stderr so stdout is
     // pure rows (each row carries its own instanceId/host, so nothing is lost).
     const header = (line: string): void => { (opts.json ? console.error : console.log)(line); };
     if (!inst.reachable) {
+      incomplete = true;
       // Not "unreachable": the client holds no network verdict. What it knows is which question it
       // asked about this instance and what came back, which is narrower and more useful. The four
       // cases and their wording are `silentManagerRow`.
@@ -448,12 +451,25 @@ export async function ps(args: ParsedArgs): Promise<void> {
       continue;
     }
     if (inst.error) {
-      header(`${c.bold(label)}  ${c.red(inst.error)}`);
+      incomplete = true;
+      const mismatch = /^pinned digests (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64}) do not match the served contract (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64});/.exec(inst.error);
+      if (mismatch) {
+        header(`${c.bold(label)}  ${c.red("contract mismatch; seats not listed")}`);
+        mismatches.push(`manager ${inst.instanceId}: requested input/output ${mismatch[1]} / ${mismatch[2]}; served input/output ${mismatch[3]} / ${mismatch[4]}`);
+      } else {
+        header(`${c.bold(label)}  ${c.red(`list refused: ${inst.error}`)}`);
+      }
       continue;
     }
     const rows = (inst.data as AgentRow[]) ?? [];
     header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
     for (const r of rows) printSeat(r, opts, "  ");
+  }
+  if (mismatches.length)
+    console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
+  if (incomplete) {
+    console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
+    process.exitCode = 1;
   }
 }
 
