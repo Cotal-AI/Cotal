@@ -178,6 +178,12 @@ export async function createRunAdmission(kv: KV, admission: RunAdmission): Promi
 /** Create the revocation marker, create-only and idempotent on an existing marker. */
 export async function revokeRunAdmission(kv: KV, endpoint: string, revocation: RunRevocation): Promise<void> {
   const snap = revocationSnapshot(revocation, revocation.runId);
+  // A marker is written naming who revoked the run and why, as an operator admission's provenance
+  // is. The READER stays tolerant of an empty field on purpose: a marker already written that way is
+  // still a revocation, and refusing to read it would make the run's admission unreadable, which
+  // also refuses the conclave cleanup a revoked run is still owed.
+  if (snap.by.length === 0 || snap.reason.length === 0)
+    throw new Error(`run revocation of ${snap.runId} names who revoked it and why; by and reason must be non-empty`);
   try {
     await kv.create(revocationKey(endpoint, snap.runId), enc.encode(canonicalJson(snap)));
   } catch (e) {
@@ -204,9 +210,33 @@ export async function readRunAdmission(jsm: JetStreamManager, space: string, end
   }
   if (admission.space !== space || admission.endpoint !== endpoint || admission.runId !== runId)
     throw new EpEnvelopeError("permission-denied", `run ${runId}'s admission record names other coordinates (${admission.space}/${admission.endpoint}/${admission.runId}); refused (SPEC 14.8)`);
+  // Its own read of the marker, not a call into the display helper below. Sharing one reader was
+  // tried and measured: a mutation of the helper's key then breaks every host read too, so the
+  // suite dies at `resume` before the cell that grades the table ever runs, and the mutant is
+  // ungradable. The host path also has no business depending on a function whose contract is
+  // written for a listing.
   const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
   const revoked = marker === undefined ? undefined : revocationSnapshot(marker.value, runId);
   return Object.freeze({ admission, revoked });
+}
+
+/**
+ * The revocation marker alone, without the admission record beside it.
+ *
+ * {@link readRunAdmission} refuses when the admission is missing, unreadable or names other
+ * coordinates, which is the only safe answer for a host about to perform a channel effect. A
+ * DISPLAY surface is in a different position: it is not about to act on the record, and refusing a
+ * whole listing because one row has no admission would hide every other row from the operator
+ * reading it. So a reader that only needs to know "was this revoked" reads the marker key and
+ * nothing else.
+ *
+ * A read that FAILS still throws. "No marker" and "could not look" are different answers, and a
+ * caller that cannot tell them apart would render a revoked run as live the moment the store went
+ * away.
+ */
+export async function readRunRevocation(jsm: JetStreamManager, space: string, endpoint: string, runId: string): Promise<RunRevocation | undefined> {
+  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
+  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);
 }
 
 /** The channel checks a host applies, over the admitted ceiling. Concrete channels only: a

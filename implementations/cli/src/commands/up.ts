@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createConnection, createServer } from "node:net";
 import { hostname } from "node:os";
 import {
@@ -89,6 +89,7 @@ import {
   localProcessOwnerStatus,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
+  seatCheckpointDir,
   readStoreIdentity,
   recordOrdinaryResumeManagerCommit,
   releaseMaintenanceLock,
@@ -108,6 +109,7 @@ import {
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
+import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
@@ -170,6 +172,7 @@ export const upFlags: FlagSpec[] = [
   { name: "restore", type: "string", value: "<dir>", description: "restore an offline backup before exposing the normal listener" },
   { name: "restore-only", type: "string", value: "<registry>", description: "restore only the registry component" },
   { name: "accept-missing-source", type: "boolean", description: "explicit disaster consent when the inode-bound preserved source is absent" },
+  { name: "accept-stale-checkpoint", type: "boolean", description: "explicit consent to resume a seat checkpoint captured outside its recorded recency horizon" },
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
@@ -222,6 +225,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
+    "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
     __restoreAttempt?: string;
@@ -340,6 +344,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
+        // Admit every seat checkpoint the cut wrote and take custody, BEFORE the resume attempt is
+        // journalled and long before a manager starts. A refusal here costs nothing because
+        // nothing has been started; the same refusal after a launch would be a second writer.
+        const staleConsent = admitAndRestoreSeatCheckpoints(root, journal.space, journal.cut.attemptId, values, resume.inventory);
         const serverNonce = randomUUID().replaceAll("-", "");
         const serverName = `${attemptId}-${serverNonce}`;
         beginOrdinaryResume(lock, {
@@ -351,6 +359,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             detached: Boolean(values.detach),
             serverName,
             serverNonce,
+            // Durable evidence of consent, not a print. An operator asking later why a seat resumed
+            // from a checkpoint past its horizon must be able to read that it was admitted, for
+            // which seat, and by how far, from the journal rather than from a lost terminal.
+            ...(staleConsent.length
+              ? { acceptedStaleCheckpoints: staleConsent.map((seat) => ({ ...seat })) }
+              : {}),
           },
         });
         pending = {
@@ -2328,8 +2342,8 @@ export async function claimSpace(space: string, server: string, root: string): P
   // reclaimed: unreachable is not proof the mesh is gone (the record describes a broker on another
   // machine), the reclaim runs BEFORE this launch starts anything, and `cotal down` — what the
   // liveness branch below would advise — cannot stop a mesh this machine does not run.
-  if (existing.origin === "manual")
-    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it was registered by hand, so \`cotal up\` neither takes it over nor reclaims the name: \`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``);
+  if (existing.origin === "manual" || existing.origin === "catalog")
+    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name: ${existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : `\`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``}`);
   if (await isReachable(existing.server)) {
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
@@ -2393,7 +2407,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
   const prior = findMesh(m.space);
-  const origin = provenance === "refresh" && prior?.origin === "manual" ? "manual" : "up";
+  const origin = provenance === "refresh" && (prior?.origin === "manual" || prior?.origin === "catalog") ? prior.origin : "up";
   // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, and rebuilds `m`
   // from what THIS launch knows, which is never the operator's past decisions. `origin` was already
   // carried across for that reason; the overlay acceptance is the same class and was not, so a

@@ -24,7 +24,7 @@ process.env.COTAL_HOME = home;
 const { connect } = await import("@nats-io/transport-node");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 const {
-  probeConnect, registry, DEV_OWNER, openRecordsBucket,
+  probeConnect, registry, DEV_OWNER, openRecordsBucket, eventChannel,
   replayRunJournal, newTakeoverId, resolveService, invokeCommand, setupSpaceStreams,
 } = await import("@cotal-ai/core");
 type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
@@ -85,6 +85,7 @@ const joinCon: ConnectorT = {
   kind: "connector",
   name: "join",
   requires: ["node"],
+  eventChannel,
   buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: [SEAT], env: envJoin(o) }),
 };
 registry.register(joinCon);

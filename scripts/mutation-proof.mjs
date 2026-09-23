@@ -34,6 +34,13 @@
  *   node scripts/mutation-proof.mjs --config mutations.json
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
+ *   node scripts/mutation-proof.mjs --recover     put back what a killed proof left, and exit
+ *
+ * A killed proof cannot restore anything, so each mutation first writes a breadcrumb outside the
+ * tree: the file, its pre-mutation hash and where the backup is. Every run reads those before it
+ * looks at the tree and puts a recorded mutation back, bytes and timestamp; `--recover` does only
+ * that. A mutation it cannot put back is refused by name rather than measured. This is the one
+ * path that survives SIGKILL, which is what the reproof harness sends a proof past its budget.
  *
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
@@ -198,6 +205,33 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.kill(process.pid, signal);
   });
 }
+/** Hand a signal that arrived during synchronous work its turn, then stand aside.
+ *
+ *  `process.kill` in the handler above QUEUES the signal; the handler itself only runs when the
+ *  event loop reaches its poll phase. Every point that wants to know "were we killed?" is reached
+ *  from synchronous code, so reading `terminating` there reads it BEFORE any dispatch could have
+ *  happened, and the answer is false no matter what was sent.
+ *
+ *  The previous guard was `if (!terminating) setTimeout(resolve, 0)`, which papered over this by
+ *  accident: on an idle machine the loop reaches its timers phase in microseconds, the 1ms timer is
+ *  not ripe yet, poll runs first and the signal wins. Lose 3ms to the scheduler between scheduling
+ *  that timer and checking it, which a loaded CI runner does constantly, and the timer is already
+ *  overdue, fires first, and the module runs on to its own `process.exit` while the kill is still
+ *  queued. The parent then reads a tidy status for a run that was killed (#1701).
+ *
+ *  Measured with an isolated harness on Linux x64 and macOS arm64, Node 22, 40 runs per cell:
+ *  with 0ms of injected jitter the old guard died by signal 40/40; with 3ms it died by signal 0/40
+ *  and exited 1 instead; with 10ms, 0/40. This shape held 40/40 in all three.
+ *
+ *  `setImmediate` resolves in the check phase, which is strictly after poll, so a pending handler
+ *  has always been dispatched by the time this returns. The wait afterwards is bounded rather than
+ *  indefinite: if some platform swallows the re-raise, falling through still reports a non-zero
+ *  status instead of hanging the run forever. */
+async function settleSignals() {
+  await new Promise((resolve) => setImmediate(resolve));
+  if (terminating) await new Promise((resolve) => setTimeout(resolve, 5_000));
+}
+
 /** Failing lines to rescue from the MIDDLE of a transcript, on top of head and tail.
  *
  *  MEASURED, not anticipated: a WRONG-RED on `creds-supply-expiry` echoed
@@ -760,7 +794,7 @@ for (const m of mutations) {
   // when it may have run to completion.
   results.push({ ...proveOne(m, opts), file: m.file, command: m.command ?? opts.command,
     baseTicks: baseTicksBy.get(m.command ?? opts.command) });
-  await new Promise((resolve) => { if (!terminating) setTimeout(resolve, 0); });
+  await settleSignals();
 }
 
 // ---- APPLIES IS NOT MUTATES: a SURVIVED needs a positive control in the same file ----------
@@ -849,4 +883,5 @@ if (bad === 0) {
 } else {
   say(`${C.red}${bad} of ${results.length} mutation(s) did not produce a clean, named red.${C.off}`);
 }
+await settleSignals();
 process.exit(bad === 0 ? 0 : 1);

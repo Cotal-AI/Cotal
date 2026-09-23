@@ -1,5 +1,0 @@
----
-"@cotal-ai/manager": patch
----
-
-Submit seat input on the call that sends it. `input` wrote the text and its carriage return as one pty write, so a TUI harness read the return as the last character of the text rather than as the submit key: the text waited in the composer and the next call's return submitted the previous call's text. The return is now written on its own, and the text is delivered as a bracketed paste (`ESC[200~ … ESC[201~`) in slices under the pty's 4096-byte input buffer. The paste markers matter on their own: a TUI classifies a fast burst of input as a paste and consumes the newline that trails it, so a text long enough to need more than one write stayed one call behind even with the return written alone. Measured on a real seat, texts of 120 and 700 bytes were submitted on their own call while 2500 and 3100 bytes were not; with the paste framing, 120, 2600 and 5912 bytes each submit on the call that sends them. The markers are framing rather than content, so the reported byte count still covers only the text and its return.

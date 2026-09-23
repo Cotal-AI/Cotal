@@ -12,7 +12,8 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, realpathSync, mkdirSync, statSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { execSync, spawnSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -59,6 +60,27 @@ const check = (name, cond, extra) => {
 const stripAnsi = (s) => s.replace(/\[[0-9;]*m/g, "");
 const verdictIs = (out, v) =>
   out.split("\n").some((l) => stripAnsi(l).startsWith(v + " "));
+
+/** The breadcrumbs the tool has left in tmpdir for `tree`. Filtered on the tree each one names,
+ *  because tmpdir is shared: a bare count would also read other proofs' records, including those of
+ *  a proof that is mutating this suite's own tool. */
+const breadcrumbsFor = (tree) => {
+  const key = realpathSync(tree);
+  return readdirSync(tmpdir())
+    .filter((name) => name.startsWith("mutation-proof-bc-") && name.endsWith(".json"))
+    .map((name) => {
+      const path = join(tmpdir(), name);
+      try { return { path, body: JSON.parse(readFileSync(path, "utf8")) }; } catch { return undefined; }
+    })
+    .filter((entry) => entry?.body?.treeKey === key);
+};
+const shaOf = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+/** Files this suite writes into the shared tmpdir, out of reach of the fixture cleanup. Removed on
+ *  every exit, a failed check's included. */
+const sharedTmpFiles = [];
+process.on("exit", () => {
+  for (const path of sharedTmpFiles) rmSync(path, { force: true });
+});
 
 // ---- a fixture repo: one guard, one suite that depends on it, one that does not ----------------
 mkdirSync(join(root, "src"), { recursive: true });
@@ -124,6 +146,12 @@ let r = runTool([
 ]);
 check("a killed mutation exits 0 and reports KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
 check("...and a multi-line target matches (the compiled shape of a guard)", !r.stdout.includes("not found"));
+// A proof that finished removes its breadcrumb. Graded HERE, after the first completed proof, and
+// the position is load-bearing: a breadcrumb left behind records the clean hash of src/impl.js, so
+// once `a dirty tree is refused` dirties that file, the next run reads the leftover as an
+// unrecovered mutation and refuses for that reason, which reddens the wrong cell first.
+check("a proof that completes leaves no breadcrumb behind", breadcrumbsFor(root).length === 0,
+  breadcrumbsFor(root).map((entry) => entry.path));
 
 // 2. THE ONE THAT MATTERS: a mutation the suite does NOT catch must be reported, not passed.
 // Paired with a KILLING control in the SAME FILE, which is what licenses the SURVIVED verdict:
@@ -894,9 +922,18 @@ const child = spawn(process.execPath, [TOOL,
   "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
   "--expect-red", "oversized values are refused",
 ], { cwd: root, stdio: "ignore" });
+// Wait for the REPLACEMENT TEXT, not for a dirty tree. `git status --porcelain` is non-empty from
+// the moment the tool writes its own lock at `.cotal/mutation-proof.lock`, which it does at startup,
+// about 500ms in and roughly 3.7s before the mutation is applied (measured: dirty at 500ms, mutated
+// at 4250ms, with a 4s baseline in between). Gating on dirt therefore fired during the BASELINE run
+// and the kill landed while nothing was mutated at all, so this control asserted the one thing it
+// was written to rule out. The tree then came back clean either way, because releasing the lock
+// leaves `.cotal/` empty and git does not report empty directories, so the byte-identical check
+// below passed and only the exit-status check saw anything wrong (#1701).
+const mutantPath = join(root, "src", "impl.js");
 let observedApplied = false;
 for (let i = 0; i < 600 && !observedApplied; i++) {
-  observedApplied = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() !== "";
+  observedApplied = readFileSync(mutantPath, "utf8").includes("if (false)");
   if (!observedApplied) await new Promise((done) => setTimeout(done, 50));
 }
 check("the kill lands while a mutation is really applied (the control that would otherwise lie)", observedApplied);
@@ -922,23 +959,36 @@ check("...and the exit status still reports the signal, not a tidy 0",
 {
   const hungSuite = join(root, "hung-suite.mjs");
   writeFileSync(hungSuite, [
+    "import { existsSync } from 'node:fs';",
     "import { admit } from './src/impl.js';",
     "if (admit(50) === false) {",
     "  console.log('  ✓ clean baseline');",
     "  process.exit(0);",
     "} else {",
     "  console.log('  ✓ mutated hanging');",
-    "  setInterval(() => {}, 1000);",
+    // Hang until this suite says so, not forever. The kill below takes the proof, not this child,
+    // which `run()` starts in a process group of its own, so a bare `setInterval` outlived the
+    // self-test: one orphan per run, and one per mutation when a config drives this suite. Not keyed
+    // on the parent dying: the kill usually lands before the proof has spawned this, so the child
+    // starts already reparented. The timeout bounds a run that never reaches the release.
+    "  const release = process.env.MUTATION_SELFTEST_RELEASE;",
+    "  setInterval(() => { if (release && existsSync(release)) process.exit(0); }, 100);",
+    "  setTimeout(() => process.exit(0), 60_000);",
     "}",
     "",
   ].join("\n"));
   execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm hung-suite", { cwd: root });
+  const impl = join(root, "src/impl.js");
+  const shaClean = shaOf(impl);
+  const mtimeClean = statSync(impl).mtimeMs;
 
+  const release = `${root}-release`;
+  sharedTmpFiles.push(release);
   const hardChild = spawn(process.execPath, [TOOL,
     "--command", `${process.execPath} hung-suite.mjs`,
     "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
     "--expect-red", "oversized values are refused",
-  ], { cwd: root, stdio: "ignore" });
+  ], { cwd: root, stdio: "ignore", env: { ...process.env, MUTATION_SELFTEST_RELEASE: release } });
 
   let hardApplied = false;
   for (let i = 0; i < 600 && !hardApplied; i++) {
@@ -947,19 +997,81 @@ check("...and the exit status still reports the signal, not a tidy 0",
   }
   check("hard kill lands while mutation is applied", hardApplied);
   hardChild.kill("SIGKILL");
+  // Kept until this suite exits: a child the proof spawned just before it died may start later.
+  writeFileSync(release, "");
   await new Promise((done) => setTimeout(done, 200));
 
   // The mutant is left on disk right after SIGKILL
   check("mutant was left on disk after SIGKILL before recovery",
     readFileSync(join(root, "src/impl.js"), "utf8").includes("if (false)"));
+  {
+    const crumbs = breadcrumbsFor(root);
+    check("...and a breadcrumb outside the tree names the file, its pre-mutation hash and the backup",
+      crumbs.length === 1 && crumbs[0].body.targetPath === realpathSync(impl)
+        && crumbs[0].body.shaBefore === shaClean && existsSync(crumbs[0].body.backupPath),
+      crumbs.map((entry) => entry.body));
+  }
 
   // Next run recovers the breadcrumb automatically
+  const recoverStartedMs = Date.now();
   r = runTool(["--recover"]);
   check("next invocation recovers from breadcrumb",
     r.status === 0 && stripAnsi(r.stdout).includes("restored original contents"),
     r.stdout.slice(-300));
   check("...and the working tree is clean again after breadcrumb recovery",
     execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "");
+  // Same tolerance as `a restored file keeps its original mtime`, for the reason given there. The
+  // bytes alone are not the recovery: a timestamp that becomes the time of the recovery is what
+  // `smoke:dist-freshness` reads as a stale package, and no hash comparison can see it.
+  const mtimeRecovered = statSync(impl).mtimeMs;
+  check("...and recovery puts the timestamp back, not the time of the recovery",
+    mtimeRecovered < recoverStartedMs && Math.abs(mtimeRecovered - mtimeClean) <= 1,
+    { mtimeClean, mtimeRecovered, recoverStartedMs, movedMs: mtimeRecovered - mtimeClean });
+}
+
+// A breadcrumb whose file already matches its baseline is evidence of nothing: the proof was killed
+// before it wrote the mutant, or the operator recovered with git. Refusing on it would turn the
+// `git checkout` recovery the refusal recommends into a state that refuses every later run.
+const proveImpl = [
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
+  "--expect-red", "oversized values are refused",
+];
+{
+  const impl = join(root, "src/impl.js");
+  const stale = join(tmpdir(), "mutation-proof-bc-selftest-stale.json");
+  sharedTmpFiles.push(stale);
+  writeFileSync(stale, JSON.stringify({
+    targetPath: realpathSync(impl), backupPath: join(tmpdir(), "mutation-proof-selftest-no-such-backup.bak"),
+    shaBefore: shaOf(impl), treeKey: realpathSync(root), pid: 1,
+  }));
+  r = runTool(proveImpl);
+  check("a breadcrumb whose file already matches its baseline is cleared, and the proof runs",
+    r.status === 0 && verdictIs(r.stdout, "KILLED") && !existsSync(stale),
+    { status: r.status, out: stripAnsi(r.stdout).slice(0, 400), staleLeft: existsSync(stale) });
+}
+
+// A mutation still on disk whose backup is gone cannot be put back by this tool, and the run has to
+// stop, because measuring in that tree grades a mutant stacked on a mutant. It has to stop by NAMING
+// the interrupted proof: the dirty-tree refusal would stop it too, while telling the operator to
+// commit work they never did.
+{
+  const impl = join(root, "src/impl.js");
+  const live = join(tmpdir(), "mutation-proof-bc-selftest-live.json");
+  sharedTmpFiles.push(live);
+  const shaBaseline = shaOf(impl);
+  writeFileSync(impl, readFileSync(impl, "utf8").replace("if (n > 10)", "if (false)"));
+  writeFileSync(live, JSON.stringify({
+    targetPath: realpathSync(impl), backupPath: join(tmpdir(), "mutation-proof-selftest-no-such-backup.bak"),
+    shaBefore: shaBaseline, treeKey: realpathSync(root), pid: 1,
+  }));
+  r = runTool(proveImpl);
+  const out = stripAnsi(r.stdout);
+  check("a live mutation with no backup is refused by naming the interrupted proof, not the dirty tree",
+    r.status === 3 && out.includes("live unrecovered mutation") && !out.includes("working tree is dirty"),
+    { status: r.status, out: out.slice(0, 400) });
+  execSync("git checkout -- .", { cwd: root });
+  rmSync(live, { force: true });
 }
 
 // ---- the cleanup's own containment (#1625) -----------------------------------------------------

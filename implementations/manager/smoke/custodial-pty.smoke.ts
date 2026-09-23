@@ -53,6 +53,7 @@ const file = (path: string): string => {
     agentCount: 0,
     uptimeMs: 0,
     connectors: [],
+    classSpawn: true,
     staticReconciliation: { state: "idle", failures: [] },
   };
   check("status output accepts custodied", MANAGER_STATUS_CONTRACT.output.validate(sample) === true);
@@ -71,6 +72,7 @@ const file = (path: string): string => {
       agentCount: 0,
       uptimeMs: 0,
       connectors: [],
+      classSpawn: true,
     }) === false,
   );
 }

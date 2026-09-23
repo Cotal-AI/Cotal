@@ -148,6 +148,28 @@ try {
       filter: (src) => !src.split(sep).includes("node_modules"),
     });
     cpSync(join(repo, "tsconfig.base.json"), join(cloneRoot, "tsconfig.base.json"));
+    // The clone is packed against a `node_modules` of hand-made symlinks rather than an install, so
+    // any `workspace:` entry left in its manifest is unresolvable and `pnpm pack` refuses the whole
+    // tree with ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL. Neither step the clone runs reads
+    // devDependencies: prepack is `tsc -p tsconfig.json`, whose `include` is `src` alone, and the
+    // published manifest drops them anyway. Removing them is what makes this survive whichever
+    // devDependency is added next, which the symlink list above does not: #1666 added
+    // `@cotal-ai/smoke-kit` for the seat smokes and took shard 3/4 down on a tree where nothing
+    // that ships had changed.
+    const cloneManifestPath = join(clone, "package.json");
+    const cloneManifest = JSON.parse(readFileSync(cloneManifestPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    delete cloneManifest.devDependencies;
+    writeFileSync(cloneManifestPath, `${JSON.stringify(cloneManifest, null, 2)}\n`);
+    const unresolvable = Object.entries(cloneManifest.dependencies ?? {})
+      .filter(([, spec]) => spec.startsWith("workspace:"));
+    assert.equal(
+      unresolvable.length,
+      0,
+      `clone manifest keeps ${unresolvable.length} workspace: dependency the hand-built node_modules cannot resolve: ${unresolvable.map(([name]) => name).join(", ")}`,
+    );
     const cloneModules = join(clone, "node_modules");
     mkdirSync(join(cloneModules, "@lydell"), { recursive: true });
     mkdirSync(join(cloneModules, "@types"), { recursive: true });

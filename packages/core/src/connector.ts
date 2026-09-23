@@ -82,14 +82,18 @@ export interface LaunchOpts {
   continueSession?: string;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
-   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
-   *  to opt in, surfaced as the `--events` flag on `cotal spawn` / `cotal start`.
+   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to ON for a
+   *  connector that declares an event channel; set `false` to opt out (`--no-events`).
    *
    *  The flag ARMS the emitter. It is deliberately separate from the grant the manager mints from
    *  {@link Connector.eventChannel}: holding publish rights on a channel is not a request to publish
    *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
    *  path never armed. */
   events?: boolean;
+  /** The selected registration requires this session's structured event plane. A launcher sets this
+   *  from trusted registration material; connectors carry it into launch material for session-side
+   *  enforcement as well as arming the emitter. */
+  eventsRequired?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
    *  secret refs intact. A connector renders them into its own host format; the default is none

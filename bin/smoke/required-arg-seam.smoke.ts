@@ -250,7 +250,7 @@
  * Run: pnpm smoke:required-arg-seam
  */
 import ts from "typescript";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -350,7 +350,13 @@ const SEAMS: Seam[] = [
   // `find`/`replace` STRINGS in bin/smoke/mutations/attach-open-mode.json, which arrived on main,
   // and it counts because this reader scans text and a mutation body is text that will become
   // code. All three state `tls` explicitly, so the seam itself is unchanged.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 156, untypecheckedSites: 116 },
+  // 156/116 -> 157/117: one more smoke-side connection, in
+  // implementations/runtime/smoke/run-command.smoke.ts (#1633). It exists to write a revocation
+  // marker RAW, under the one-shot `run-admitter` profile `revoke` mints, because the exported
+  // writer validates what it writes and a marker the reader CANNOT read has to be created past it.
+  // That is what lets `run ps` be graded on the `unchecked` path, where the marker is unreadable
+  // rather than absent. It states `tls` explicitly, so the seam itself is unchanged.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 157, untypecheckedSites: 117 },
 ];
 
 /**
@@ -441,11 +447,20 @@ function frontmatter(text: string): { code: string; restAt: number } | undefined
   return close < 0 ? undefined : { code: `\n${text.slice(open[0].length, close)}`, restAt: close };
 }
 
+/**
+ * Another checkout parked inside this one is not part of this tree, and its copy of a source file
+ * answers to its own commit. `.git` marks one whether it is a clone (a directory) or a worktree (a
+ * file holding `gitdir:`), so `existsSync` covers both without caring which. This is deliberately a
+ * structural test rather than another SKIP_DIRS name: a name list cannot know where someone parks a
+ * worktree, and the counts below are exact numbers that a second copy multiplies.
+ */
+const isNestedCheckout = (path: string): boolean => existsSync(join(path, ".git"));
+
 function sources(dir: string, acc: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name)) continue;
+      if (SKIP_DIRS.has(e.name) || isNestedCheckout(p)) continue;
       sources(p, acc);
     } else if (EXTS.some((x) => e.name.endsWith(x)) || scanned(extOf(e.name))) acc.push(p);
   }
@@ -1577,7 +1592,10 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
  *  repository rather than against memory. */
 function extensionsPresent(dir: string, acc: Set<string> = new Set()): Set<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) extensionsPresent(join(dir, e.name), acc); }
+    if (e.isDirectory()) {
+      const p = join(dir, e.name);
+      if (!SKIP_DIRS.has(e.name) && !isNestedCheckout(p)) extensionsPresent(p, acc);
+    }
     else acc.add(extOf(e.name));
   }
   return acc;

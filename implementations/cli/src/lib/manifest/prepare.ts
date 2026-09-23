@@ -49,6 +49,8 @@ export interface PreparedAgent {
   body?: string;
   /** Kickoff prompt auto-submitted at session start (manifest-only; personas carry none). */
   prompt?: string;
+  /** Explicit event-plane choice. `false` is the declarative opt-out. */
+  events?: boolean;
   /** Effective merged capabilities. */
   capabilities: string[];
   capabilitySource: "manifest" | "persona" | "none";
@@ -149,6 +151,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       description,
       body,
       prompt: agent.prompt,
+      events: agent.events,
       capabilities,
       capabilitySource,
       policy,

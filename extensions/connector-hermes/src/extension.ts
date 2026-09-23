@@ -67,7 +67,7 @@ export const hermesConnector: Connector = {
       ...aclEnv(opts),
       // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
       // mints the control endpoint itself and merges the token into the same file (see launch.ts).
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };

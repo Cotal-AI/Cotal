@@ -39,6 +39,11 @@ export const MAX_TOKEN_TTL_SEC = 900;
 export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
+/** Human views the public exchange face will mint (still ledger-gated). Every other
+ *  {@link USER_TOKEN_VIEWS} value stays loopback-only; a managed-agent secret exchange
+ *  never mints a view on either face. */
+export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger"] as const satisfies readonly UserTokenView[];
+
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
  *  the callout re-asserts, defense in depth). `admin` = operator authority (god-view read +
  *  destructive space writes); `deployer` is spawn-grade — deploying YOUR OWN team's manifest rides

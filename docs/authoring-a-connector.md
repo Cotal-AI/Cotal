@@ -41,7 +41,9 @@ fails loud before any provisioning), list `requires` so a missing CLI fails with
 implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your
 session publishes a structured event plane: it names the channel the manager grants that session
 publish rights on, so the grant and the subject the session publishes to come from one function
-rather than two that can drift, and `--events` refuses a connector that does not implement it. See
+rather than two that can drift. Event planes are on by default when this method exists. A connector
+that omits it refuses a launch unless the caller explicitly opts out with `--no-events` or
+`events: false`. See
 the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.

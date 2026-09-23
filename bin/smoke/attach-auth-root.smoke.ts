@@ -336,7 +336,7 @@ try {
   process.chdir(rootLive);
   try {
     await cmd("spawn").run(
-      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
+      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
     );
   } finally {
     process.chdir(prevCwd);

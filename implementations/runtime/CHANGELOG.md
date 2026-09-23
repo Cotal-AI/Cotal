@@ -1,5 +1,208 @@
 # @cotal-ai/runtime
 
+## 0.50.1
+
+### Patch Changes
+
+- c499a85: `cotal run ps --local` now reads the revocation marker beside each run record and prints `revoked`
+  for a run that carries one, whatever state the record itself holds, with the revoker and the reason
+  under the table. A revocation is a create-only marker in the admission store and nothing rewrites
+  the record, which is written only by a driver, so a driver that died mid-run left `running` behind
+  with nothing left to write anything else: `resume` refused on the marker while the table listed the
+  same run as live indefinitely, and an operator counting capacity from it counted that row. A run
+  whose marker could not be read prints `unchecked` in the `STATE` column, since a failed read is
+  absence of evidence rather than evidence of absence. The reason and the record's own state go to
+  stderr, every other row still prints, and the command exits 1. The change is display only: a revoke
+  writes no terminal state, because no host drove the run to one. `revoke` now says what the table
+  will show, and `readRunRevocation` reads the marker alone so a listing does not refuse over a run
+  with no admission record. `revokeRunAdmission` refuses a revocation with an empty `by` or `reason`
+  before it writes, since the argument parser passed `--by ""` through and the permanent marker it left
+  printed as `revoked by  ()`; a marker already written that way still reads as a revocation.
+
+  Refs #1621
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+  - @cotal-ai/lang@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- 87dda9f: The caller half of a durable spawn's physical working directory, pinned to one manager instance
+
+  A durable spawn can name a physical working directory with `cwd`, and doing so requires an explicit
+  `placement` target naming one manager instance as `{ endpoint, instanceId }`. A directory is
+  host-local, so a `cwd` with no target would ride the class anycast queue and land wherever the
+  anycast fell; that combination refuses rather than guessing, with no fallback. The target is
+  hashed into the step identity beside the directory, so a replay retargeted at a different instance
+  diverges as a migration instead of replaying a resolution taken against the old host. Logical
+  `worktree` keeps its meaning and its exclusivity, and a spawn that names neither option hashes
+  exactly the object it hashed before, byte for byte, so recorded runs replay unchanged.
+
+  **Explicit `cwd` placement does not resolve yet on a shipped manager, and refuses by name until it
+  does.** What ships here is the caller half: the language forwards and hashes the options, the
+  runtime asks its pinned target to state the directory's canonical form before it submits anything,
+  and the core grant builder mints the instance-pinned rails that ask would need. The question is
+  asked with a `resolve-cwd` command, and **no manager in this release serves `resolve-cwd`** — the
+  only servers of it are the smoke suites that grade this code. So on a real manager every explicit
+  `cwd` placement ends in a named refusal saying that this manager serves no `resolve-cwd` command
+  and can therefore state no canonical form. That is the intended direction and it is not a crash:
+  nothing is submitted, allocated or launched, and the caller is told why. A non-`ok` reply and a
+  reply whose path is not absolute are refused the same way. Until a manager serves the command,
+  treat `cwd` with `placement` as unavailable rather than as a directory that silently differs from
+  the one you named.
+
+  The grant surface and the serving surface are deliberately asymmetric, and it is worth stating
+  plainly: `runMediatorGrants` does mint the three placement capabilities (`describe`, `resolve-cwd`,
+  `spawn`) for the one named instance when a program names a target, bounded to that instance with
+  no anycast rail and no wildcard, but the manager's hosted-run credential minting never passes a
+  program's placement into it, so an authenticated hosted run receives none of those rows today. The
+  rails are built and graded; nothing production yet asks for them or answers them.
+
+  A malformed `placement` is now refused by name at the call. `placement: null` used to raise a raw
+  `TypeError` from inside the interpreter's identity projection, with no code, no effect kind and no
+  journal entry, because the option reader guarded the option bag being null rather than the value it
+  held. A primitive, an empty record and a half-filled record were quieter and worse: they were
+  forwarded, projected two undefined fields into the step identity, and the run carried on under an
+  identity describing a placement the program never named. All of these are now `L3048`, raised
+  before the step key is minted, so nothing is journalled and the repair is an edit to the program.
+
+- fc6f0b1: Scope an unanswered endpoint verdict to the rail the request rode
+
+  A CLI whose caller carries an issued generation rides the versioned `ep.v1` rail. SPEC 13.15 makes
+  that rail a separate subject space from the legacy `ep` rail and requires an endpoint to serve
+  both, so a manager built before the versioned rail serves `ep` alone and never receives the
+  request. The describe waited out its whole budget and every hosted `cotal run` verb reported that
+  no manager answered on the endpoint rails, asked whether one was running, and offered `--local`,
+  against a manager that was up, on the roster and answering `cotal ps` throughout. `--local` drives
+  the run from the calling process and names the caller as the run's answerer, so an operator who
+  took the suggestion would submit an answer under the wrong identity.
+
+  The unanswered marker now carries the `ep` plane the request was published on, and `describe`
+  names it in its own refusal. `cotal ps` and the other manager verbs state the reachability verdict
+  against that rail instead of against the mesh, and say what silence on a versioned rail does not
+  establish. `cotal run`'s hosted verbs do the same and drop both the question and the `--local`
+  suggestion there, since neither follows from what was observed. On the legacy rail every message is
+  unchanged: there is no second rail its silence could be hiding a manager on.
+
+  No fallback describe is issued on the other rail. A caller holds broker rows for its own rail only,
+  so the request would be refused at publish rather than answered.
+
+- 5a34b2b: A durable run's unpinned spawn survives the class-queue split instead of dying at it
+
+  A run resolves the manager on the class rail and binds the incarnation that answered its describe.
+  The invoke is a second, independent trip through the same anycast queue, so in a space served by
+  more than one manager it routinely reaches another member. That member refuses before dispatching
+  and says so: SPEC 13.2 marks the refusal `not-executed`, meaning the command did not run and no
+  effect of it exists. The refusal is correct for one command and destructive for a run. Raised as the
+  effect's own L4000 it ended a durable Lang run at its first `spawn` with no `placement`, consuming
+  the run id and its journal, and a retry started a fresh run that failed the same way about half the
+  time.
+
+  The manager calls a run performs now re-issue such a refusal rather than returning it. The stale
+  class handle is dropped, the endpoint is re-described, and the call goes out again, up to a bounded
+  number of attempts, after which the refusal surfaces unchanged and still states that the command
+  did not run. This is the licence core's `Endpoint.invokeService` already re-issues on: the marker
+  together with `not-executed` is the responder's own statement that the re-issue is a first attempt
+  and not a second, so nothing is duplicated. It covers `spawn`, `turn`, the relay a paused `ask` or
+  `checkpoint` submits, and the `despawn` a cancelled spawn discharges with.
+
+  A handle pinned to one instance is never repaired. It addresses that incarnation by name, so a
+  refusal from it is that instance answering about itself, and re-resolving onto the class rail would
+  be the anycast fallback an explicit placement exists to remove.
+
+  The repair converges rather than eliminating: the re-issue draws the same queue, so a space of m
+  managers still splits (m-1)/m of the time per attempt. Nine attempts leave two managers a 1-in-512
+  residual where the unrepaired refusal was 1-in-2. Removing the residual means addressing one
+  instance, which the run's caller holds no instance-rail grant for unless its program named a
+  placement.
+
+### Patch Changes
+
+- 5e23b1d: Keep the versioned rail's subject token out of source comments
+
+  The issued-profile census scans every shipped source for the versioned rail's subject token and
+  allows only core's subject and grant builders to spell it. Five comments in core, the CLI and the
+  runtime spelled the token and failed that cell on main. They now say "the versioned rail" or "the
+  versioned plane". No code changes.
+
+- aaedc42: `cotal run journal` renders an expired checkpoint differently from an answered one. A settled
+  checkpoint's status is `ok` whether its pause was answered or expired, and the journal render took
+  the status, so both read `ok` and an operator could not tell an unanswered human gate from a
+  timeout. The render now reads the disposition the settle named (`resolved` / `expired`) from the
+  settled result, in both the `--local` journal path and the hosted status view, and keeps the
+  settled status for steps whose result is not a checkpoint disposition.
+- 43a4281: Fix locally driven workflow starts with publish-channel admission by generating a valid actor token.
+- c59d96d: Stop a parked step from dying on one slow pause-plane reply. A workflow `ask` that waited long enough settled `failed` with `{code: "L4000", kind: "handler-fault", message: "timeout"}` while most of its deadline was still unspent, the seat was alive, and nothing in the program threw. Measured on the reporting run: the two asks under 4.5 minutes settled `ok` and the two over 7.5 minutes failed with that exact record, with 11 minutes of deadline left.
+
+  The cause is how long a parked step reads for. While a pause is parked the run host polls the plane for the life of the step, once for the settle fact and once for the broker's fire, each read riding a NATS API request with its own 5s client-side deadline. A reply that arrives after that deadline raises the client's bare `TimeoutError: timeout`, and the interpreter records any non-`EffectError` throw as `L4000 handler-fault` verbatim. So the step issued roughly one unretried request per second for its whole duration and one late reply ended it, which is why the exposure grew with how long the step waited rather than with anything about the program.
+
+  A late reply is a fact about that one request and not about the pause behind it. The pause is a durable record on the plane, its timer is armed, and it is still answerable, so the read is now re-issued rather than raised, and the step settles on the answer it was waiting for. Re-reading is safe for the same reason the starvation repair's re-entry is: the plane's operations are idempotent by construction, and reading a one-use settle fact again observes the same world.
+
+  It is the second half of a distinction the host already drew for #1508 and it reuses that machinery rather than adding its own. A client deadline has two causes that produce the identical error, and the host can tell them apart by measuring whether its own event loop ran: off the CPU is the host's own starvation (`L4025`), and on it is a plane that answered late. The case that moves is only the second, which the classifier previously answered "fault" and handed to the program as its own failure.
+
+  Neither retry is unbounded and neither is merged into the other. A run that cannot be served must fail rather than hang, so the two conditions carry separate counts that are never reset, which bounds the call however they interleave; a host that stays starved still fails under `L4025`, and a plane that never answers now fails under the new `L4026` naming the measurement rather than the effect. The two are kept apart because the remedies differ: one says give this host capacity, the other says the broker is behind. Every failure that is not a client deadline is still raised on the first attempt, unretried and unwrapped, and still recorded as `L4000`.
+
+  A recorded handler fault also carries the stack of the value that was thrown, in a new optional `error.stack` on the journal entry. A handler fault is the one failure class whose cause is in neither the program nor the language, so `message` alone ("timeout") is the symptom with no origin, and the durable entry is usually the only look anyone gets at it. The field is written only when the thrown value carried a non-empty string `stack`: a handler may throw a primitive, and a recorder that trusted the field would replace the handler's failure with its own.
+
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [c59d96d]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+  - @cotal-ai/lang@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes

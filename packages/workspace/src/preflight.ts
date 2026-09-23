@@ -223,6 +223,11 @@ export async function pruneStaleMeshes(): Promise<MeshSweep> {
   const sweep: MeshSweep = { pruned: [], offline: [] };
   await Promise.all(
     loadMeshes().map(async (m) => {
+      // A catalog snapshot is registry preparation, not broker discovery. Catalog-owned entries are
+      // never pruned from liveness and must not be probed here either: `meshes`, `use`, and a
+      // space-less control command may prepare hundreds of registrations, while only the command's
+      // selected target is allowed to connect.
+      if (m.origin === "catalog") return;
       if (await isReachable(m.server)) return;
       if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
       // pruneMesh, not removeMesh: a liveness miss keeps the record (manual and up alike).

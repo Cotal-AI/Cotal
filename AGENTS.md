@@ -155,7 +155,9 @@ fix works. If you can't reproduce it, report that and stop, don't ship a guess.
 mutation-proof` breaks the implementation on purpose and requires the suite to go red **on the
 assertion you name**. It refuses an absent or ambiguous target, refuses a dirty tree (git must be
 your recovery, not the tool), refuses an already-red suite, verifies its own restore, and reports
-`SURVIVED` rather than a pass when the suite fails to notice. Red alone is not proof: an unrelated
+`SURVIVED` rather than a pass when the suite fails to notice. A proof that is killed cannot
+restore, so it records what it broke before it breaks it: the next run puts the file back, and
+`node scripts/mutation-proof.mjs --recover` does only that. Red alone is not proof: an unrelated
 early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
 real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
