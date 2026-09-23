@@ -327,9 +327,15 @@ interface ArtifactPartShape {
   size: number;
 }
 
+/** Any JSON value (SPEC §5): `null`, a boolean, a number, a string, an array, or an object whose
+ * members are JSON values. `undefined` is not a JSON value — `JSON.stringify` omits the key carrying
+ * it — so it is excluded at the top level, where it would drop the whole `data` key; an optional
+ * member is allowed because serialization drops just that key. */
+export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue | undefined };
+
 export type Part =
   | { kind: "text"; text: string }
-  | { kind: "data"; data: unknown }
+  | { kind: "data"; data: JsonValue }
   | ArtifactPartShape
   | { kind: ExtensionPartKind; [key: string]: unknown };
 

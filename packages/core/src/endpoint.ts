@@ -2036,6 +2036,7 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error("multicastExpecting requires at least one part");
 
     const message = this.casEnvelope(opts);
+    assertPartsSerializable(message.parts);
     // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
     // the ack, and publishMsg deliberately does neither.
     const ack = await this.js.publish(
@@ -3446,6 +3447,7 @@ export class CotalEndpoint extends EventEmitter {
 
   private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
+    assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
     await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
   }
@@ -5924,9 +5926,9 @@ function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): C
  * Does NOT verify SPEC §5 message shape. It does not require a string `from.id` (the SPEC §5
  * comparison still rejects a mismatch), exactly one route key, a finite `ts`, a string
  * `space`, a full EndpointRef `from` (`name`/`role`), or well-formed `parts`. Those belong
- * to `isCotalMessage` (Plane-3). History must not use that guard: a public
- * `unicast(..., { parts: [{ kind: "data", data: undefined }] })` serializes to `{kind:"data"}`
- * and must still surface.
+ * to `isCotalMessage` (Plane-3). History must not use that guard: a publisher now REFUSES a
+ * `data` part carrying a non-JSON value, but a keyless `{kind:"data"}` row from a pre-fix
+ * producer can still sit in a stream, and history must surface it rather than drop it.
  */
 function isHistoryDrainEnvelope(value: unknown): value is CotalMessage {
   return isRecord(value) && isUsableMessageId(value.id) && isRecord(value.from);
@@ -5975,6 +5977,77 @@ function isMessagePart(value: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** A `data` part value the wire can carry faithfully: a JSON value at EVERY depth (SPEC §5's
+ *  `<any JSON value>`). `JSON.stringify` does not reject what it cannot represent — it silently
+ *  rewrites: `undefined` (and a function-valued member) drops the key, `NaN`/`Infinity` store as
+ *  `null`, a `Date` stores as a string, a sparse array's holes store as `null`, a `Map` stores as
+ *  `{}`, a `Buffer` stores as `{"type":"Buffer",...}`. A reader then cannot tell a stored `null`
+ *  from a real one (#1404 fix round). So the producer checks structurally, matching the exported
+ *  `JsonValue`: null, boolean, finite number, string, an array whose every slot (holes included)
+ *  passes, or a plain object (prototype `null` or `Object.prototype`) whose every defined member
+ *  passes. A cycle is refused here too, never left for stringify's TypeError.
+ *
+ *  THE OBJECT/ARRAY ASYMMETRY ON `undefined`: an `undefined`-valued MEMBER of a plain object is
+ *  allowed — stringify drops just that key, which is faithful (and the exported type says so) —
+ *  while `undefined` at the top level or in an ARRAY SLOT is refused, because there stringify
+ *  cannot drop a position: it stores `null`, which is a rewrite a reader cannot distinguish from
+ *  a real `null`.
+ *
+ *  `seen` is the set of ANCESTORS on the current path, not every object visited: it is deleted
+ *  from on the way out, so a SHARED subtree (`{a: x, b: x}`) passes — stringify carries it twice,
+ *  which is faithful — while an object that contains itself at any depth still reports its path. */
+function jsonPathProblem(path: string, value: unknown, seen: Set<object>): string | undefined {
+  if (value === null) return undefined;
+  const t = typeof value;
+  if (t === "boolean" || t === "string") return undefined;
+  if (t === "number") return Number.isFinite(value) ? undefined : `${path} is not a finite number`;
+  if (t === "undefined" || t === "function" || t === "symbol" || t === "bigint") return `${path} is not a JSON value`;
+  if (typeof value === "object") {
+    if (seen.has(value)) return `${path} is cyclic`;
+    seen.add(value);
+    let problem: string | undefined;
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        problem = jsonPathProblem(`${path}[${i}]`, value[i], seen);
+        if (problem) return problem;
+      }
+    } else {
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== null && proto !== Object.prototype) {
+        seen.delete(value);
+        return `${path} is not a plain object`;
+      }
+      for (const key of Object.keys(value)) {
+        // A member whose value is undefined is the allowed key-drop, not a defect: stringify omits
+        // the key, the object stays a JSON object, so skip it rather than walk it.
+        if (value[key as keyof typeof value] === undefined) continue;
+        problem = jsonPathProblem(`${path}.${key}`, value[key as keyof typeof value], seen);
+        if (problem) return problem;
+      }
+    }
+    seen.delete(value);
+    return undefined;
+  }
+  return `${path} is not a JSON value`;
+}
+
+/** Refuse, at publish, a `data` part `JSON.stringify` would silently rewrite. The guard is the
+ *  runtime half of `Part`'s `data: JsonValue` arm: with it, a non-JSON value at any depth never
+ *  reaches the wire, so every reader (live core-sub, Plane-3 durable, history) gives one answer —
+ *  the message was never sent — instead of the old split where history returned a rewritten row
+ *  while Plane-3 terminated a keyless one as malformed. The error names the path to the offending
+ *  value (e.g. `data[2].at`), so a caller learns which member to fix rather than that stringify
+ *  would have mangled something. Throws rather than coercing: no fallback. */
+function assertPartsSerializable(parts: readonly Part[]): void {
+  for (const p of parts) {
+    if (p.kind !== "data") continue;
+    const problem = jsonPathProblem("data", (p as { data?: unknown }).data, new Set());
+    if (problem !== undefined) {
+      throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
+    }
+  }
 }
 
 

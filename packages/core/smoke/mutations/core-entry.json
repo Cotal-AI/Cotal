@@ -67,6 +67,50 @@
       "replace": "  broker.kill(\"SIGTERM\");",
       "expectRed": "the owned broker exits before its JetStream tree is removed",
       "cell": "the owned broker exits before its JetStream tree is removed"
+    },
+    {
+      "name": "drop the publish-time JSON-value guard on message parts",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    assertPartsSerializable(msg.parts);",
+      "replace": "    void msg.parts;",
+      "expectRed": "publish refuses a data part with top-level undefined (the key stringify drops)",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "publish refuses a data part with top-level undefined (the key stringify drops)"
+    },
+    {
+      "name": "drop the multicastExpecting copy of the parts guard",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    assertPartsSerializable(message.parts);",
+      "replace": "    void message.parts;",
+      "expectRed": "multicastExpecting refuses a non-JSON data value (NaN stores as null if unchecked)",
+      "command": "pnpm smoke:cas-publish",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "cas-publish smoke: ",
+      "cell": "multicastExpecting refuses a non-JSON data value (NaN stores as null if unchecked)"
+    },
+    {
+      "name": "drop the non-finite-number arm of the structural JSON check",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (t === \"number\") return Number.isFinite(value) ? undefined : `${path} is not a finite number`;",
+      "replace": "  if (t === \"number\") return undefined;",
+      "expectRed": "publish refuses NaN (a non-finite number stringify stores as null)",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "publish refuses NaN (a non-finite number stringify stores as null)"
+    },
+    {
+      "name": "drop the undefined-member skip so a key-drop object is refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (value[key as keyof typeof value] === undefined) continue;",
+      "replace": "        void key;",
+      "expectRed": "an undefined object member publishes and the stored row drops just that key",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "an undefined object member publishes and the stored row drops just that key"
     }
   ],
   "grades": "tool"

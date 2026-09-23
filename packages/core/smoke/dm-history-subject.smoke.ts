@@ -12,12 +12,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint,
   isReachable,
   setupSpaceStreams,
   unicastSubject,
   chatSubject,
+  type Part,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -81,8 +83,57 @@ try {
 
   const honest = await alice.unicast(bob.card.id, "honest-line");
   const own = await viewer.unicast(bob.card.id, "viewer-own-line");
-  const dataUndef = await alice.unicast(bob.card.id, "unused-text", {
-    parts: [{ kind: "data", data: undefined }],
+  // #1404 fix round: a data part must carry a JSON value at ANY depth. Each refusal is its own
+  // cell so a mutation can kill exactly one arm of the structural check. The errors must name the
+  // path to the offending value, so a caller learns which member to fix.
+  const refuse = async (name: string, data: unknown, wantPath: string) => {
+    let msg: string | undefined;
+    try {
+      await alice.unicast(bob.card.id, "unused-text", { parts: [{ kind: "data", data }] as unknown as Part[] });
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    check(
+      name,
+      msg !== undefined && /non-JSON value/.test(msg) && msg.includes(wantPath),
+      msg,
+    );
+  };
+  await refuse("publish refuses a data part with top-level undefined (the key stringify drops)", undefined, "data is not a JSON value");
+  await refuse("publish refuses undefined inside an array slot (a position stringify rewrites to null)", [1, undefined], "data[1] is not a JSON value");
+  await refuse("publish refuses NaN (a non-finite number stringify stores as null)", Number.NaN, "data is not a finite number");
+  await refuse("publish refuses a Date (stringify stores it as a string, not a JSON value it was)", new Date(0), "data is not a plain object");
+  await refuse("publish refuses a function nested in an object member (stringify drops it)", { at: () => 1 }, "data.at is not a JSON value");
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  await refuse("publish refuses a cycle (never a stringify TypeError or a stack overflow)", cyclic, "data.self is cyclic");
+  // A SHARED subtree is not a cycle: `seen` must hold only the ancestors on the current path, so
+  // {a: x, b: x} publishes (stringify carries x twice, faithfully) and the row keeps both members.
+  const shared = { n: 1 };
+  const dataShared = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: { a: shared, b: shared } }],
+  });
+  // Accept control: an undefined-valued MEMBER of a plain object publishes — stringify drops just
+  // that key (a faithful drop, not a rewrite), and the stored row is {"keep":1} with no drop key.
+  // Wrapped like the refusal cells above: a regression must redden THIS cell, not crash the suite
+  // before its summary line (a crashed run grades INCONCLUSIVE in the mutation rig, not red).
+  let dataUndefMember: Awaited<ReturnType<typeof alice.unicast>> | undefined;
+  let undefMemberErr: string | undefined;
+  try {
+    dataUndefMember = await alice.unicast(bob.card.id, "unused-text", {
+      parts: [{ kind: "data", data: { keep: 1, drop: undefined } }],
+    });
+  } catch (e) {
+    undefMemberErr = e instanceof Error ? e.message : String(e);
+  }
+  // `null` is a JSON value (SPEC §5): a data part carrying it keeps working end to end.
+  const dataNull = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: null }],
+  });
+  // Accept controls: a nested undefined member (stringify drops just that key) and a nested
+  // array-of-objects that must round-trip with its data key.
+  const dataNested = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: [{ a: 1 }, { b: "two" }] }],
   });
   const chatHonest = await alice.multicast("chat-honest", { channel: "log" });
   await wait(200);
@@ -102,6 +153,15 @@ try {
   const raw = await connect({ servers: SERVER });
   const dmSubj = unicastSubject(SPACE, "local", "bob", "local", "alice");
   const chatSubj = chatSubject(SPACE, "local", "alice", "log");
+
+  // #1404: the wire never carries a keyless data row — the null part round-trips with its key.
+  const jsm = await jetstreamManager(raw);
+  const stored = await jsm.streams.getMessage(`DM_${SPACE}`, { last_by_subj: dmSubj });
+  check(
+    "the stored DM payload keeps the data key (null is a JSON value)",
+    stored !== null && JSON.parse(stored.string()).parts.some((p: { kind: string }) => p.kind === "data" && Object.hasOwn(p, "data")),
+    stored?.string(),
+  );
 
   raw.publish(dmSubj, JSON.stringify(envelope({
     id: "spoof-388",
@@ -162,9 +222,26 @@ try {
   check("non-string id is ABSENT", !page.some((m) => String(m.id) === "123" || (m as { id?: unknown }).id === 123));
   check("extra-token inst subject is ABSENT (parseSubject arity)", !page.some((m) => m.id === "extra-token-388"));
   check(
-    "public-API data part with undefined data still appears in dmHistory",
-    page.some((m) => m.id === dataUndef.id),
+    "a data part carrying null (a JSON value) still appears in dmHistory with its data key",
+    page.some((m) => m.id === dataNull.id && m.parts.some((p) => p.kind === "data" && "data" in p && p.data === null)),
     page.map((m) => m.id),
+  );
+  check(
+    "a nested array-of-objects data part round-trips with its data key",
+    page.some((m) => m.id === dataNested.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '[{"a":1},{"b":"two"}]'),
+    page.map((m) => m.id),
+  );
+  check(
+    "a shared subtree publishes and round-trips with both members (not a cycle)",
+    page.some((m) => m.id === dataShared.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"a":{"n":1},"b":{"n":1}}'),
+    page.map((m) => m.id),
+  );
+  check(
+    "an undefined object member publishes and the stored row drops just that key",
+    undefMemberErr === undefined &&
+      dataUndefMember !== undefined &&
+      page.some((m) => m.id === dataUndefMember.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"keep":1}'),
+    undefMemberErr ?? page.map((m) => m.id),
   );
 
   const toSpoof = page.find((m) => m.id === "to-spoof-388");
