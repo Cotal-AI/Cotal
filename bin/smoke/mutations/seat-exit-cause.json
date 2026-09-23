@@ -67,20 +67,20 @@
     {
       "name": "the line drops WHICH PATH, keeping only the runtime detail",
       "file": "implementations/manager/src/manager.ts",
-      "find": "- ${FREE_SLOT_CAUSE_TEXT[cause]}; ${detail}`,",
+      "find": "- ${causeText}; ${detail}`,",
       "replace": "- ${detail}`,",
       "expectRed": "…and says the manager did NOT stop it",
       "cell": "…and says the manager did NOT stop it",
-      "note": "Half the answer. A despawn and a crash now print identically, which is exactly the ambiguity that made the incident unattributable."
+      "note": "Half the answer. A despawn and a crash now print identically, which is exactly the ambiguity that made the incident unattributable. Re-anchored when the stop family gained its own renderer: the line now interpolates `causeText`, which both string causes and principal-bearing stop causes go through."
     },
     {
       "name": "the line drops the RUNTIME DETAIL, keeping only the path",
       "file": "implementations/manager/src/manager.ts",
-      "find": "- ${FREE_SLOT_CAUSE_TEXT[cause]}; ${detail}`,",
-      "replace": "- ${FREE_SLOT_CAUSE_TEXT[cause]}`,",
+      "find": "- ${causeText}; ${detail}`,",
+      "replace": "- ${causeText}`,",
       "expectRed": "the runtime's exit code is reported",
       "cell": "the runtime's exit code is reported",
-      "note": "The other half. The path is named but a clean `/exit` and a SIGKILL are still indistinguishable."
+      "note": "The other half. The path is named but a clean `/exit` and a SIGKILL are still indistinguishable. Re-anchored alongside the WHICH PATH mutation above."
     },
     {
       "name": "an absent exitInfo is defaulted to a clean exit (the fabricated code 0)",
@@ -96,9 +96,9 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {",
       "replace": "  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause = \"process-exit\", acceptedBeforeFence = false): void {\n    cause = \"process-exit\";",
-      "expectRed": "an operator despawn is logged as this manager stopping it",
-      "cell": "an operator despawn is logged as this manager stopping it",
-      "note": "The compiler is what currently forces each of the six callers to name itself. With a default, a seventh path added later inherits a label nobody chose."
+      "expectRed": "a requested despawn names the AUTHENTICATED principal that asked",
+      "cell": "a requested despawn names the AUTHENTICATED principal that asked",
+      "note": "The compiler is what currently forces each caller to name itself. With a default, a path added later inherits a label nobody chose. Re-aimed at the door-driven despawn cell when the string-driven `stopped` cell was replaced by the stop-family cells."
     },
     {
       "name": "the pty runtime discards node-pty's exit payload again (the root of the missing information)",
