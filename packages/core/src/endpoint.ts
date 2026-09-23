@@ -1518,6 +1518,10 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.subs.length = 0;
     if (!failedNc) return;
+    // The old status iterator is stale after nc is cleared, so its close cannot report this edge.
+    // As in doRebuild, teardown itself must announce the no-nc window before closing the socket.
+    this.emit("transport", { connected: false } satisfies TransportState);
+    this.emit("connection", { connected: false });
     // Layered teardown, comments kept OUT of the code span below on purpose: the mutation fixture
     // bin/smoke/mutations/failed-bind-cleanup.json anchors on that span verbatim and the fixture
     // census (bin/smoke/mutation-fixtures.smoke.ts) reddens an anchor that crosses a comment line.
