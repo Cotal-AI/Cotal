@@ -33,7 +33,7 @@ const attempt = async (positionals: string[], values: Record<string, string | bo
   runWorkflow({ values: { server: "nats://127.0.0.1:1", space: "usage", ...values }, positionals, raw: [] })
     .then(() => undefined, (e: Error) => e);
 
-const VERBS = ["start", "resume", "ps", "journal", "answer"];
+const VERBS = ["start", "resume", "ps", "journal", "answer", "migrate"];
 
 {
   reset();
@@ -77,6 +77,12 @@ for (const verb of VERBS) c(`the usage line names \`${verb}\``, usage.includes(v
   c("hosted `answer --by` is refused: the manager records the caller", got4 instanceof Exited && got4.code === 1 && ERR.some((l) => l.includes("--by is not taken on the hosted path")), ERR);
   c("and the usage line advertises `--file` and `--by` only beside `--local`",
     usage.includes("resume <runId> [--local --file <program>]") && usage.includes("[--local --by <who>]") && !usage.includes("--by <who> [--value"), usage);
+  // The manager serves no `run-migrate` command (SPEC 14.3's table), so the hosted path refuses
+  // with the sentence that names `--local` rather than routing into an unanswered describe.
+  reset();
+  const got5 = await attempt(["migrate", "run-0"], { file: "p.cotal.js" });
+  c("hosted `migrate` is refused with the `--local` sentence, never routed to a manager",
+    got5 instanceof Exited && got5.code === 1 && ERR.some((l) => l.includes("no run-migrate command") && l.includes("cotal run migrate <runId> --local --file <program>")), ERR);
 }
 
 // #1630: what a hosted verb prints when the manager describe drew no answer. The rail the describe

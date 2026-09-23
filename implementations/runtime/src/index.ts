@@ -93,8 +93,11 @@ const runCommand: Command = {
     { name: "reason", type: "string", value: "<text>", description: "revoke: why the run's admission is revoked, recorded on the marker (required)" },
     { name: "value", type: "string", value: "<json>", description: "checkpoint answer payload as JSON (answer)" },
     { name: "artifact", type: "string", value: "<ref>", description: "artifact reference attached to the answer (answer)" },
+    { name: "adopt", type: "string", value: "<handle>", description: "REFUSED by `migrate`: it decides what a commit does with an orphan, and that verb only checks" },
+    { name: "release", type: "string", value: "<handle>", description: "REFUSED by `migrate`: it decides what a commit does with an orphan, and that verb only checks" },
+    { name: "discard-approvals", type: "boolean", description: "REFUSED by `migrate`: it decides what a commit does with a recorded decision, and that verb only checks" },
   ],
-  positionals: "<start|resume|ps|journal|answer|revoke> …",
+  positionals: "<start|resume|ps|journal|answer|revoke|migrate> …",
   run: (args) => runWorkflowCommand(args),
 };
 

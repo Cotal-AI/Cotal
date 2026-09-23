@@ -125,7 +125,7 @@ try {
   const expected: { delivery?: string; membership?: string } = {};
   for (const r of results.filter((x) => x.ok)) { if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint; else if (r.fingerprint) expected.membership = r.fingerprint; }
   const okReply = await adminReq(ep, "reloadCreds", { expected });
-  writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "manager", results, adoption: okReply.ok ? { ok: true, detail: okReply.data } : { ok: false, error: okReply.error, detail: okReply.data } });
+  writeRenewalRecord(root, space, { ts: new Date().toISOString(), owner: "manager", results, adoption: okReply.ok ? { ok: true, detail: okReply.data } : { ok: false, error: okReply.error, detail: okReply.data } });
   const okData = okReply.data as { delivery?: { brokerAccepted?: unknown }; membership?: { brokerAccepted?: unknown } };
   check("real daemon broker-ACCEPTED the trusted delivery re-sign", okReply.ok === true && okData?.delivery?.brokerAccepted !== undefined, JSON.stringify(okReply).slice(0, 300));
   check("real daemon broker-ACCEPTED the trusted membership re-sign", okData?.membership?.brokerAccepted !== undefined, JSON.stringify(okReply).slice(0, 300));
@@ -137,7 +137,7 @@ try {
   const rogueCred = await mintCreds(rogue, dlvId, "delivery", { expiresInSeconds: 300 });
   writeFileSync(deliveryCredsPath, rogueCred, { mode: 0o600 });
   const refusedReply = await adminReq(ep, "reloadCreds", { expected: { delivery: credsFingerprint(rogueCred) } });
-  writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "manager", results: [{ file: DELIVERY_CREDS_KIND, ok: true }], adoption: refusedReply.ok ? { ok: true, detail: refusedReply.data } : { ok: false, error: refusedReply.error, detail: refusedReply.data } });
+  writeRenewalRecord(root, space, { ts: new Date().toISOString(), owner: "manager", results: [{ file: DELIVERY_CREDS_KIND, ok: true }], adoption: refusedReply.ok ? { ok: true, detail: refusedReply.data } : { ok: false, error: refusedReply.error, detail: refusedReply.data } });
   check("real daemon REFUSED the rogue re-sign (reply ok:false, no brokerAccepted)", refusedReply.ok === false && (refusedReply.data as { delivery?: { brokerAccepted?: unknown } })?.delivery?.brokerAccepted === undefined, JSON.stringify(refusedReply).slice(0, 300));
   const dRefused = runDoctor(root);
   check("`cotal doctor auth` BINARY exits 1 on the broker-refused renewal (no false green)", dRefused.code === 1, `code=${dRefused.code} ${dRefused.out.slice(-250)}`);
