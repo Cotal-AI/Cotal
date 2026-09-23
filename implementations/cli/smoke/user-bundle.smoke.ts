@@ -9,7 +9,7 @@
  */
 import { CATALOG_FRESH_MS, checkAdvertisedServer, checkAgentProvisioningUrl, composeUserBundle, finalizeUserBundleEndpoint, spaceIssuer } from "@cotal-ai/auth";
 import { checkServer, checkUserBundle, userExchangeIssuer } from "../src/commands/meshes-add.js";
-import { POLICY_FRESH_MS } from "../src/commands/sync.js";
+import { POLICY_FRESH_MS } from "@cotal-ai/workspace";
 
 let ran = 0;
 let failed = 0;

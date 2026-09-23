@@ -128,6 +128,14 @@ try {
     mismatched.status !== 0 && /does not match registered space/.test(mismatchOutput) && /refuses to use a different broker/.test(mismatchOutput),
     mismatchOutput.slice(-1200),
   );
+  // The fixture pins an exchange that does not exist. A pre-policy manual entry refreshes its
+  // policy from that exchange, and the refresh must run AFTER the local refusals: neither run above
+  // may end on the transport error of a dial the operator never asked for.
+  check(
+    "a pre-policy manual entry never fails on its policy refresh before the local refusals",
+    !/fetch failed/i.test(output) && !/fetch failed/i.test(mismatchOutput),
+    { supervise: output.slice(-300), mismatch: mismatchOutput.slice(-300) },
+  );
 
   // No marker and no entry is neither a hosting failure nor a remote authority failure. It gets
   // the agreed two-path copy and does not mention a destructive down/up lifecycle.
