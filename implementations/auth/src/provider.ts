@@ -52,6 +52,11 @@ function pidAlive(pid: number): boolean {
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  async preloadAccounts({ store, space }) {
+    const callout = await loadCalloutAuth(store, space);
+    if (!callout) throw new Error(`space "${space}" has user auth enabled but its callout account is missing - restore it from backup before starting the broker`);
+    return [{ pub: callout.account.pub, jwt: callout.account.jwt }];
+  },
   prepareSpaceCatalogs: prepareIdpSpaceCatalogs,
   syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate, apply }) => {
     const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate, apply });

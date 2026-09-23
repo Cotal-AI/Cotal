@@ -48,6 +48,12 @@ broker does not change who can connect. To change the bind: `cotal down`, then `
 <addr>` against a stopped broker so the generated file is rewritten. Do not edit `server.conf`
 by hand; the next real boot overwrites it.
 
+On a stopped shared broker, `up` renders every persisted space account and every enabled
+space's auth-callout account into the resolver preload, regardless of which space starts
+the broker. A missing callout account for an enabled space stops the boot rather than
+starting with a reduced resolver. An already-running broker is refreshed without rewriting
+its config.
+
 There is no broker-only `up`. Auth-mode `up` still starts nats, the delivery daemon, and a
 local manager. A space may run more than one manager, addressed by instance id
 ([control surface](control-surface.md#instance-routing)); putting no manager on the broker host

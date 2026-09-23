@@ -74,6 +74,7 @@ import {
   staleSystemCreds,
   SYSTEM_CREDS_FILES,
   userAuthStateDir,
+  userAuthSpacesOnDisk,
   workspaceSecretStore,
   type MeshEntry,
   type UserAuthInfo,
@@ -2881,7 +2882,20 @@ async function authSetup(
   // map, so a config rendered from one space evicts the rest silently. `auth` leads the list because
   // this function's copy can be fresher than the disk (a space created above, or one whose trust
   // record `--rotate-sys` just replaced). Refuses on an unreadable record rather than dropping it.
-  writeFileSync(confPath, serverConfig(auth, preloadSpaceAccounts(dir, auth), { transport, port, storeDir, host, wsPort, wsHost: host, ...(prepared ? { extraAccounts: prepared.extraAccounts } : {}) }));
+  const spaces = preloadSpaceAccounts(dir, auth);
+  const enabled = userAuthSpacesOnDisk(dir);
+  for (const enabledSpace of enabled) {
+    if (!spaces.some((s) => s.space === enabledSpace))
+      throw new Error(`space "${enabledSpace}" has user auth enabled but no data account record - refusing to render an incomplete broker resolver`);
+  }
+  const extraAccounts: Array<{ pub: string; jwt: string }> = [];
+  for (const enabledSpace of enabled) {
+    const accounts = enabledSpace === space && prepared
+      ? prepared.extraAccounts
+      : await resolveAuthProvider().preloadAccounts({ store, space: enabledSpace });
+    extraAccounts.push(...accounts);
+  }
+  writeFileSync(confPath, serverConfig(auth, spaces, { transport, port, storeDir, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
