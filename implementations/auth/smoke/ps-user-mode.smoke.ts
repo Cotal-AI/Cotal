@@ -22,7 +22,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -388,6 +388,66 @@ try {
   const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
   check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
   check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
+  // #1832: a discovered user-mode space's user-auth material is the REGISTRY ENTRY (origin
+  // "catalog", userAuth.remote + pins + sentinel file), not a local provisioning, so the login
+  // `ps` uses must answer status too. The verbatim base behaviour is recorded in the lane notes:
+  // the login row said "no user-auth material on this machine", the live snapshot said "needs a
+  // signed-in, granted login", and `--components` printed `serve probe refused: Authorization
+  // Violation` with exit 3.
+  check("discovered space: bare status shows the signed-in subject, not a no-material refusal",
+    discoveredStatus.status === 0 && discoveredStatus.out.includes("session until") && !discoveredStatus.out.includes("no user-auth material"),
+    discoveredStatus.out.slice(-600));
+  // The live snapshot needs a GRANTED login, and the grant is a ledger row: for a discovered space
+  // the ledger runs where the space was provisioned, so the honest row is "grant not checkable"
+  // and the snapshot defers. Asserting a roster here would demand status connect on an ungranted
+  // bearer, which the renderer deliberately does not do.
+  check("discovered space: bare status names the grant as not checkable (no local ledger) rather than demanding a login",
+    discoveredStatus.out.includes("grant not checkable on this machine (no local ledger)") && !discoveredStatus.out.includes("no user-auth material"),
+   discoveredStatus.out.slice(-600));
+  const discoveredComponents = await cotal(["status", "--space", SPACE, "--components"], 30_000);
+  console.log(`   #1832 status --components on the discovered space (exit=${discoveredComponents.status}):\n` +
+    discoveredComponents.out.split("\n").filter((l) => /Component Health|^  (manager|delivery|web|broker) /.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n").slice(0, 1200));
+  check("discovered space: components probes as the signed-in login, never a raw Authorization Violation",
+    !/Authorization Violation/i.test(discoveredComponents.out),
+    discoveredComponents.out.slice(-600));
+  check("discovered space: components manager row answers the real service probe (serving: live fixture manager)",
+    /^  manager {9,}serving /m.test(discoveredComponents.out.replace(/\x1b\[[0-9;]*m/g, "")),
+    discoveredComponents.out.slice(-600));
+  // Signed-out machine, same registry shape: a MANUAL remote entry (the `meshes add --from`
+  // registration path) is subject to no catalog gate, so removing the session grades the status
+  // login row alone. The discovered entry stays untouched; the manual entry pins the same IdP and
+  // the same broker, so the only difference from the cells above is the missing login session —
+  // exactly the state under test.
+  const sessionsFile = join(home, "idp-sessions.json");
+  const sessionsBytes = existsSync(sessionsFile) ? readFileSync(sessionsFile) : Buffer.from("{}");
+  const { persistRemoteUserEntry } = await import("../../cli/src/commands/meshes-add.js");
+  const signedOutSpace = `${SPACE}-signedout`;
+  persistRemoteUserEntry(signedOutSpace, original.server, root, {
+    space: signedOutSpace,
+    server: original.server,
+    tlsRequired: false,
+    userAuth: {
+      provider: "cotal",
+      idp: { url: base, issuer: origin, audience: origin },
+      endpoints: { url: origin },
+    },
+    sentinelCreds: callout.sentinelCreds,
+  }, false, false);
+  (await import("../src/index.js")).deleteIdpSession(home, base);
+  try {
+    const signedOutStatus = await cotal(["status", "--space", signedOutSpace], 30_000);
+    console.log(`   #1832 signed-out bare status (exit=${signedOutStatus.status}):\n` +
+      signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
+    check("discovered space, signed out: status says not signed in with the exact login command",
+      signedOutStatus.status === 0 &&
+        signedOutStatus.out.includes("not signed in -") &&
+        signedOutStatus.out.includes(`login --idp ${base}`) &&
+        !signedOutStatus.out.includes("no user-auth material"),
+      signedOutStatus.out.slice(-600));
+  } finally {
+    if (sessionsBytes !== undefined) writeFileSync(sessionsFile, sessionsBytes);
+    removeMesh(signedOutSpace);
+  }
   includeJoining = true;
   const beforeUseRefresh = catalogRequests;
   const discoveredUse = await cotal(["use", "joining"], 20_000);
