@@ -32,6 +32,7 @@ export class PiEvents {
       this.path = path;
       const existed = existsSync(path);
       if (!existed && freshSession) await this.prepareFirstFile(sessionId);
+      if (existed) await this.prepareExistingFile(sessionId, path);
       const holder = this.newHolder(sessionId, path, !existed && freshSession);
       this.holder = holder;
       holder.adopt(path);
@@ -87,6 +88,18 @@ export class PiEvents {
     if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly("pi:first-file");
     if (wal.frontier.sourceCursor !== "pi:first-file" && wal.frontier.seq === 0)
       throw new Error("Pi AG-UI: fresh native session has a different source boundary");
+  }
+
+  /** A resumed/forked native file can already contain history. Capture its end before allowing
+   * the next turn to append. An acknowledged WAL cursor takes precedence on a process restart. */
+  private async prepareExistingFile(threadId: string, path: string): Promise<void> {
+    const workspaceRoot = resolveEventsStateRoot(process.env);
+    const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
+    const { walPath, lock } = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId });
+    this.lock = lock;
+    const wal = await EventWal.open(walPath, { space: this.space, principal, threadId, subjectMayExist: false });
+    if (wal.frontier.sourceCursor === undefined)
+      await wal.advanceCursorOnly((await new JsonlFileSource(path).read(undefined)).cursor);
   }
 
   private newHolder(sessionId: string, path: string, freshFile: boolean): AguiEmitterHolder<PiSessionEntry> {

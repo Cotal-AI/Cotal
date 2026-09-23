@@ -554,9 +554,31 @@ try {
     assert.ok(forkThread !== newThread && frames.slice(forkSwitchAt).length > 0 &&
       frames.slice(forkSwitchAt).every((frame) => frame.threadId === forkThread),
       "native fork-before creates a distinct thread with no parent run replay");
+    const assistantEntry = switched.session.sessionManager.getEntries().find((value) => value.type === "message" && value.message.role === "assistant");
+    assert.ok(assistantEntry, "fork-before answer saved a native assistant entry");
+    const forkAt = frames.length;
+    await switched.fork(assistantEntry.id, { position: "at" });
+    switchedProvider.setResponses([fauxAssistantMessage("Fork at assistant publishes only this answer.")]);
+    await switched.session.prompt("Answer after fork at assistant.");
+    const atDeadline = Date.now() + 5_000;
+    while (!frames.slice(forkAt).flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < atDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const atThread = switched.session.sessionManager.getSessionId();
+    assert.ok(frames.slice(forkAt).length > 0 && frames.slice(forkAt).every((frame) => frame.threadId === atThread),
+      "fork-at-assistant publishes new output on a distinct native thread without old-run replay");
+    const resumePath = historic.getSessionFile()!;
+    const resumeAt = frames.length;
+    await switched.switchSession(resumePath);
+    switchedProvider.setResponses([fauxAssistantMessage("Resumed native turn publishes only once.")]);
+    await switched.session.prompt("Answer after switching to existing native session.");
+    const resumeDeadline = Date.now() + 5_000;
+    while (!frames.slice(resumeAt).flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < resumeDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(frames.slice(resumeAt).length > 0 && frames.slice(resumeAt).every((frame) => frame.threadId === historic.getSessionId()),
+      "resumed existing native session publishes only its new turn without replay");
     await switched.dispose();
     switchedProvider.unregister();
-    console.log(`pi native events sdk: ${frames.length} broker frames; tool error, new, fork-before, reload and reopen pass without history replay`);
+    console.log(`pi native events sdk: ${frames.length} broker frames; tool error, new, fork-before/at, resume, reload and reopen pass without replay`);
   } finally {
     await (native as any)?._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     native?.dispose();
