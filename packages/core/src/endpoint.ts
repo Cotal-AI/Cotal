@@ -5962,8 +5962,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *  from a real one (#1404 fix round). So the producer checks structurally, matching the exported
  *  `JsonValue`: null, boolean, finite number, string, an array whose every slot (holes included)
  *  passes, or a plain object (prototype `null` or `Object.prototype`) whose every defined member
- *  passes — an `undefined` member stays allowed because stringify drops just that key. A cycle is
- *  refused here too, never left for stringify's TypeError.
+ *  passes. A cycle is refused here too, never left for stringify's TypeError.
+ *
+ *  THE OBJECT/ARRAY ASYMMETRY ON `undefined`: an `undefined`-valued MEMBER of a plain object is
+ *  allowed — stringify drops just that key, which is faithful (and the exported type says so) —
+ *  while `undefined` at the top level or in an ARRAY SLOT is refused, because there stringify
+ *  cannot drop a position: it stores `null`, which is a rewrite a reader cannot distinguish from
+ *  a real `null`.
  *
  *  `seen` is the set of ANCESTORS on the current path, not every object visited: it is deleted
  *  from on the way out, so a SHARED subtree (`{a: x, b: x}`) passes — stringify carries it twice,
@@ -5990,6 +5995,9 @@ function jsonPathProblem(path: string, value: unknown, seen: Set<object>): strin
         return `${path} is not a plain object`;
       }
       for (const key of Object.keys(value)) {
+        // A member whose value is undefined is the allowed key-drop, not a defect: stringify omits
+        // the key, the object stays a JSON object, so skip it rather than walk it.
+        if (value[key as keyof typeof value] === undefined) continue;
         problem = jsonPathProblem(`${path}.${key}`, value[key as keyof typeof value], seen);
         if (problem) return problem;
       }

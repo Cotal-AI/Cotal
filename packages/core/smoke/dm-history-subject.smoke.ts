@@ -100,6 +100,7 @@ try {
     );
   };
   await refuse("publish refuses a data part with top-level undefined (the key stringify drops)", undefined, "data is not a JSON value");
+  await refuse("publish refuses undefined inside an array slot (a position stringify rewrites to null)", [1, undefined], "data[1] is not a JSON value");
   await refuse("publish refuses NaN (a non-finite number stringify stores as null)", Number.NaN, "data is not a finite number");
   await refuse("publish refuses a Date (stringify stores it as a string, not a JSON value it was)", new Date(0), "data is not a plain object");
   await refuse("publish refuses a function nested in an object member (stringify drops it)", { at: () => 1 }, "data.at is not a JSON value");
@@ -111,6 +112,11 @@ try {
   const shared = { n: 1 };
   const dataShared = await alice.unicast(bob.card.id, "unused-text", {
     parts: [{ kind: "data", data: { a: shared, b: shared } }],
+  });
+  // Accept control: an undefined-valued MEMBER of a plain object publishes — stringify drops just
+  // that key (a faithful drop, not a rewrite), and the stored row is {"keep":1} with no drop key.
+  const dataUndefMember = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: { keep: 1, drop: undefined } }],
   });
   // `null` is a JSON value (SPEC §5): a data part carrying it keeps working end to end.
   const dataNull = await alice.unicast(bob.card.id, "unused-text", {
@@ -220,6 +226,11 @@ try {
   check(
     "a shared subtree publishes and round-trips with both members (not a cycle)",
     page.some((m) => m.id === dataShared.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"a":{"n":1},"b":{"n":1}}'),
+    page.map((m) => m.id),
+  );
+  check(
+    "an undefined object member publishes and the stored row drops just that key",
+    page.some((m) => m.id === dataUndefMember.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"keep":1}'),
     page.map((m) => m.id),
   );
 

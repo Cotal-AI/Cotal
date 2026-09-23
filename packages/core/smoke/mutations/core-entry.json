@@ -100,6 +100,17 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "dm-history-subject smoke: ",
       "cell": "publish refuses NaN (a non-finite number stringify stores as null)"
+    },
+    {
+      "name": "drop the undefined-member skip so a key-drop object is refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (value[key as keyof typeof value] === undefined) continue;",
+      "replace": "        void key;",
+      "expectRed": "an undefined object member publishes and the stored row drops just that key",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "an undefined object member publishes and the stored row drops just that key"
     }
   ],
   "grades": "tool"
