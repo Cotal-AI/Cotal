@@ -57,7 +57,6 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  if (!isVerifiedHistoryRow(raw)) return undefined;\n  const parsed = parseSubject(m.subject);",
       "replace": "  if (!isHistoryDrainEnvelope(raw)) return undefined;\n  const parsed = parseSubject(m.subject);",
-      "replace": "",
       "expectRed": "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
       "cell": "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
       "completionMarker": "dm-history-subject smoke:"

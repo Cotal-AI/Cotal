@@ -386,33 +386,23 @@ export type CotalMessage =
       to?: never;
     });
 
-/** One member of a {@link CotalMessage} that the full type requires but a reader did not verify
- *  (#1413). The word names the rule: a reader may only return a field it checked, so an
- *  unchecked member is an error the type carries, never a default value a caller reads. */
-export type CotalMessageShapeError =
-  | "ts"
-  | "space"
-  | "parts"
-  | "from.name";
-
 /** A history row the drain VERIFIED — the read-side counterpart of {@link CotalMessage}, and
  *  what `channelHistory` / `dmHistory` / `multiChannelHistory` return (#1413). Every field
  *  present is checked before the row is returned: a usable string `id`, a finite number `ts`,
- *  a string `space`, a full `from` (`id` and `name`), `parts` the drain could read, and the
- *  one route key the delivering subject carries (`channel`/`to`/`toService` derived from the
+ *  a string `space`, a full `from` (`id` and `name`, `role` only when a string), and the one
+ *  route key the delivering subject carries (`channel`/`to`/`toService` derived from the
  *  SUBJECT, never the payload). A stored row missing any of those does not appear in history
  *  at all — the alternative, returning it with the member silently `undefined` under the full
  *  type, is what this type exists to make unrepresentable.
  *
- *  Two honest exceptions, both carried in `unverified` rather than dropped or defaulted:
- *  - `"parts"`: a pre-#1404 producer could publish `{kind:"data"}` without a `data` key; that
- *    row is still surfaced, and consumers must treat `parts` as possibly containing a keyless
- *    data part (`CotalMessage` itself allows one via the optional-member rule of `JsonValue`).
- *  - `"from.name"`: never carries — a row that reaches a caller has a checked `from.name`.
+ *  One member is deliberately NOT held to the full `CotalMessage` shape: `parts` is checked
+ *  readable (an array), not validated part by part, because a pre-#1404 producer could publish
+ *  `{kind:"data"}` without a `data` key and history must surface that row rather than drop it.
+ *  A consumer iterating `parts` can therefore meet a part no Plane-3 guard admitted.
  *
- *  What history can promise about `mentions` / `replyTo` / `contextId` is their `CotalMessage`
- *  shape: optional, and a string when present. */
-export type HistoryMessage = CotalMessage & { unverified?: CotalMessageShapeError };
+ *  `mentions` / `replyTo` / `contextId` keep their `CotalMessage` shape: optional, and a
+ *  string (array of strings for `mentions`) when present. */
+export type HistoryMessage = CotalMessage;
 
 export type PresenceEvent =
   | { type: "join"; presence: Presence }
