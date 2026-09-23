@@ -5963,7 +5963,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *  `JsonValue`: null, boolean, finite number, string, an array whose every slot (holes included)
  *  passes, or a plain object (prototype `null` or `Object.prototype`) whose every defined member
  *  passes — an `undefined` member stays allowed because stringify drops just that key. A cycle is
- *  refused here too, never left for stringify's TypeError. */
+ *  refused here too, never left for stringify's TypeError.
+ *
+ *  `seen` is the set of ANCESTORS on the current path, not every object visited: it is deleted
+ *  from on the way out, so a SHARED subtree (`{a: x, b: x}`) passes — stringify carries it twice,
+ *  which is faithful — while an object that contains itself at any depth still reports its path. */
 function jsonPathProblem(path: string, value: unknown, seen: Set<object>): string | undefined {
   if (value === null) return undefined;
   const t = typeof value;
@@ -5973,19 +5977,24 @@ function jsonPathProblem(path: string, value: unknown, seen: Set<object>): strin
   if (typeof value === "object") {
     if (seen.has(value)) return `${path} is cyclic`;
     seen.add(value);
+    let problem: string | undefined;
     if (Array.isArray(value)) {
       for (let i = 0; i < value.length; i++) {
-        const problem = jsonPathProblem(`${path}[${i}]`, value[i], seen);
+        problem = jsonPathProblem(`${path}[${i}]`, value[i], seen);
         if (problem) return problem;
       }
-      return undefined;
+    } else {
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== null && proto !== Object.prototype) {
+        seen.delete(value);
+        return `${path} is not a plain object`;
+      }
+      for (const key of Object.keys(value)) {
+        problem = jsonPathProblem(`${path}.${key}`, value[key as keyof typeof value], seen);
+        if (problem) return problem;
+      }
     }
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== null && proto !== Object.prototype) return `${path} is not a plain object`;
-    for (const key of Object.keys(value)) {
-      const problem = jsonPathProblem(`${path}.${key}`, value[key as keyof typeof value], seen);
-      if (problem) return problem;
-    }
+    seen.delete(value);
     return undefined;
   }
   return `${path} is not a JSON value`;

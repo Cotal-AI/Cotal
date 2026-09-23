@@ -106,6 +106,12 @@ try {
   const cyclic: Record<string, unknown> = {};
   cyclic.self = cyclic;
   await refuse("publish refuses a cycle (never a stringify TypeError or a stack overflow)", cyclic, "data.self is cyclic");
+  // A SHARED subtree is not a cycle: `seen` must hold only the ancestors on the current path, so
+  // {a: x, b: x} publishes (stringify carries x twice, faithfully) and the row keeps both members.
+  const shared = { n: 1 };
+  const dataShared = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: { a: shared, b: shared } }],
+  });
   // `null` is a JSON value (SPEC §5): a data part carrying it keeps working end to end.
   const dataNull = await alice.unicast(bob.card.id, "unused-text", {
     parts: [{ kind: "data", data: null }],
@@ -209,6 +215,11 @@ try {
   check(
     "a nested array-of-objects data part round-trips with its data key",
     page.some((m) => m.id === dataNested.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '[{"a":1},{"b":"two"}]'),
+    page.map((m) => m.id),
+  );
+  check(
+    "a shared subtree publishes and round-trips with both members (not a cycle)",
+    page.some((m) => m.id === dataShared.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '{"a":{"n":1},"b":{"n":1}}'),
     page.map((m) => m.id),
   );
 
