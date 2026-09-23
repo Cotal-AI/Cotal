@@ -304,6 +304,14 @@ it works from any directory; the other components always stop under the folder y
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
 
+Bare `cotal down` inventories by pidfile. When this folder's registered broker answers and no
+`nats.pid` records it, the command does not say nothing is running. It names the space and the
+broker address, says no pidfile records that process, says it will not stop a process it did not
+start, and exits 1. Stop that broker with whatever started it (an init unit, a container, or the
+hand-run process). `cotal meshes rm <space>` only drops the registration. The probe runs whether or
+not other owned components were running: they stop and clear their artifacts first, then the broker
+is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
+
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` records each stack process's
 creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the process start

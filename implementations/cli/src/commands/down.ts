@@ -15,6 +15,7 @@ import {
   completeMaintenanceCut,
   disarmManagerShutdownIntent,
   loadMeshes,
+  meshesForRoot,
   localProcessPath,
   localProcessPathCandidates,
   readMaintenanceJournal,
@@ -252,6 +253,28 @@ export async function down(args: ParsedArgs): Promise<void> {
     for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, contextFor(component)), { force: true });
   }
 
+  // Pidfiles are the only thing this stack owns. A registered broker that answers with no pidfile
+  // is a different situation: something is running that `down` did not start and must not stop.
+  // This runs BEFORE the registry sweep below, which drops this root's records. Probing after that
+  // sweep would find nothing and print "Nothing running" about a broker that is still up.
+  // Owned components (a detached web, a manager) do not change the question: stopping them is not
+  // the same as this stack owning the broker. The probe runs on every bare down that holds no
+  // nats pidfile, AFTER their owned artifacts cleared, so those components stop exactly as they
+  // do with no broker present. Targeted stops and --dry-run stay pidfile-only.
+  if (!requested.length && !values["dry-run"]) {
+    const unowned = await liveUnownedBrokers(folderCtx());
+    if (unowned.length) {
+      for (const broker of unowned) {
+        console.error(c.red(
+          `Broker for "${broker.space}" is running at ${broker.server}, but no pidfile records it. ` +
+          `cotal down will not stop a process it did not start. ` +
+          `Stop that broker with the supervisor that started it, or remove the registration with \`cotal meshes rm ${broker.space}\`.`,
+        ));
+      }
+      process.exit(1);
+    }
+  }
+
   // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
   // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
   if (selected.some((component) => component.clearsMesh)) {
@@ -324,6 +347,18 @@ function printSparedAgents(rows: DownSeatRow[]): void {
 
 function printLegacyManagerSpareUncertainty(): void {
   console.log(c.dim("manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents"));
+}
+
+/** Registered brokers for this root that answer and have no nats pidfile. Never a kill list. */
+async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{ space: string; server: string }>> {
+  const nats = localProcessSurface().find((component) => component.name === "nats");
+  if (!nats || processRecorded(nats, context)) return [];
+  const matching = meshesForRoot(context.root);
+  const live: Array<{ space: string; server: string }> = [];
+  for (const mesh of matching) {
+    if (await isReachable(mesh.server)) live.push({ space: mesh.space, server: mesh.server });
+  }
+  return live;
 }
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {

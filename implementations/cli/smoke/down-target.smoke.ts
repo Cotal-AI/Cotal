@@ -41,6 +41,7 @@ let registry!: typeof import("@cotal-ai/core").registry;
 let cacheLocalProcess!: typeof import("@cotal-ai/workspace").cacheLocalProcess;
 let extensionLocalProcesses!: typeof import("@cotal-ai/workspace").extensionLocalProcesses;
 let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
+let meshesForRoot!: typeof import("@cotal-ai/workspace").meshesForRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
@@ -50,7 +51,7 @@ try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
-  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
+  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down, stopLocalProcess } = await import("../src/commands/down.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
@@ -248,6 +249,8 @@ try {
   registry.register(managerProcess);
   const fixtured: LocalProcess = { kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" };
   registry.register(fixtured);
+  const natsProcess: LocalProcess = { kind: "local-process", name: "nats", label: "nats-server", pidFile: "nats.pid", order: 100, stopLast: true, clearsMesh: true };
+  registry.register(natsProcess);
 
   process.chdir(neutral);
 
@@ -351,6 +354,148 @@ try {
   check("a dead pinned manager record bypasses the pre-signal policy hook", !hookCalled);
   check("a dead pinned manager record clears both pid and identity files", !existsSync(deadPidPath) && !existsSync(`${deadPidPath}.identity`));
   rmSync(deadRoot, { recursive: true, force: true });
+
+  // A broker this stack did not start has no nats.pid. When the folder's registered broker answers,
+  // bare down must name that and refuse to stop it, not claim nothing is running.
+  const unownedRoot = mkdtempSync(join(scratch, "unowned-broker-"));
+  mkdirSync(join(unownedRoot, ".cotal"), { recursive: true });
+  const unownedPort = await new Promise<number>((resolve, reject) => {
+    const probe = spawn(process.execPath, ["-e", "const n=require('net').createServer();n.listen(0,'127.0.0.1',()=>{process.stdout.write(String(n.address().port));n.close(()=>process.exit(0))})"], { stdio: ["ignore", "pipe", "ignore"] });
+    spawnedChildren.push(probe);
+    let out = "";
+    probe.stdout?.on("data", (chunk) => { out += chunk; });
+    probe.once("exit", (code) => code === 0 ? resolve(Number(out)) : reject(new Error(`free port probe exited ${code}`)));
+  });
+  const unownedStore = join(unownedRoot, "store");
+  mkdirSync(unownedStore, { recursive: true });
+  // SMOKE_BROKER_UNADOPTED_OK: this cell proves down will not stop a broker it does not own.
+  // Adopting the smoke reaper would make the process one this suite started on purpose, which is the
+  // opposite of the operator situation. The finally block kills this child by the handle it holds.
+  const unownedBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(unownedPort), "-js", "-sd", unownedStore], { stdio: "ignore" });
+  spawnedChildren.push(unownedBroker);
+  unownedBroker.unref();
+  assert.ok(unownedBroker.pid, "unowned broker fixture must have a pid");
+  for (let i = 0; i < 50; i++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const net = spawn(process.execPath, ["-e", `const n=require('net');const s=n.connect(Number(process.argv[1]),'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))`, String(unownedPort)], { stdio: "ignore" });
+        spawnedChildren.push(net);
+        net.once("exit", (code) => code === 0 ? resolve() : reject(new Error("not yet")));
+      });
+      break;
+    } catch { await sleep(100); }
+  }
+  recordMesh({ space: "unowned", server: `nats://127.0.0.1:${unownedPort}`, root: unownedRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  process.chdir(unownedRoot);
+  let unownedErr = "";
+  const unownedExit = process.exit;
+  const unownedError = console.error;
+  let unownedCode: number | undefined;
+  try {
+    console.error = (...args: unknown[]) => { unownedErr += `${args.join(" ")}\n`; };
+    process.exit = ((code?: number) => { unownedCode = code ?? 0; throw new Error(`exit ${unownedCode}`); }) as typeof process.exit;
+    try { await run([]); } catch (error) {
+      if (!String((error as Error).message).startsWith("exit ")) throw error;
+    }
+  } finally {
+    console.error = unownedError;
+    process.exit = unownedExit;
+    process.chdir(neutral);
+  }
+  check(
+    "a live unowned broker is named and not stopped",
+    unownedCode === 1 &&
+      unownedErr.includes(`Broker for "unowned" is running at nats://127.0.0.1:${unownedPort}`) &&
+      unownedErr.includes("no pidfile records it") &&
+      unownedErr.includes("will not stop a process it did not start") &&
+      unownedErr.includes("cotal meshes rm unowned") &&
+      !/Nothing running for the local stack/.test(unownedErr) &&
+      alive(unownedBroker.pid),
+    { unownedCode, unownedErr, alive: alive(unownedBroker.pid) },
+  );
+  try { process.kill(unownedBroker.pid, "SIGTERM"); } catch { /* already gone */ }
+  for (let i = 0; i < 50 && alive(unownedBroker.pid); i++) await sleep(50);
+  rmSync(unownedRoot, { recursive: true, force: true });
+
+  // Round 2 (issue #1698 follow-up): the probe must not be gated on "!any". With an owned component
+  // pidfile present (a detached web) AND a registered live broker with no nats.pid, the old guard
+  // stopped the web, exited 0, and never named the broker: a false success. The owned component
+  // still stops, its artifacts still clear, the broker is still named and left running, the manual
+  // registration survives, and the command exits 1. Only the wording is captured loosely here; the
+  // exact-diagnosis cell above pins the message.
+  const mixedRoot = mkdtempSync(join(scratch, "mixed-"));
+  mkdirSync(join(mixedRoot, ".cotal"), { recursive: true });
+  const mixedPort = await new Promise<number>((resolve, reject) => {
+    const probe = spawn(process.execPath, ["-e", "const n=require('net').createServer();n.listen(0,'127.0.0.1',()=>{process.stdout.write(String(n.address().port));n.close(()=>process.exit(0))})"], { stdio: ["ignore", "pipe", "ignore"] });
+    spawnedChildren.push(probe);
+    let out = "";
+    probe.stdout?.on("data", (chunk) => { out += chunk; });
+    probe.once("exit", (code) => code === 0 ? resolve(Number(out)) : reject(new Error(`free port probe exited ${code}`)));
+  });
+  const mixedStore = join(mixedRoot, "store");
+  mkdirSync(mixedStore, { recursive: true });
+  // SMOKE_BROKER_UNADOPTED_OK: same reasoning as above — the whole point is a broker this suite
+  // must refuse to own; the finally block kills it by the handle held here.
+  const mixedBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(mixedPort), "-js", "-sd", mixedStore], { stdio: "ignore" });
+  spawnedChildren.push(mixedBroker);
+  mixedBroker.unref();
+  assert.ok(mixedBroker.pid, "mixed-state broker fixture must have a pid");
+  for (let i = 0; i < 50; i++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const net = spawn(process.execPath, ["-e", `const n=require('net');const s=n.connect(Number(process.argv[1]),'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))`, String(mixedPort)], { stdio: "ignore" });
+        spawnedChildren.push(net);
+        net.once("exit", (code) => code === 0 ? resolve() : reject(new Error("not yet")));
+      });
+      break;
+    } catch { await sleep(100); }
+  }
+  recordMesh({ space: "mixed", server: `nats://127.0.0.1:${mixedPort}`, root: mixedRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  const mixedWeb = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
+  spawnedChildren.push(mixedWeb);
+  mixedWeb.unref();
+  assert.ok(mixedWeb.pid, "mixed-state web fixture must have a pid");
+  const mixedWebPidPath = join(mixedRoot, ".cotal", "web.pid");
+  writeFileSync(mixedWebPidPath, String(mixedWeb.pid), { mode: 0o600 });
+  writeFileSync(`${mixedWebPidPath}.identity`, `${mixedWeb.pid} ${defaultStartToken(mixedWeb.pid ?? 0)}`, { mode: 0o600 });
+  writeFileSync(join(mixedRoot, ".cotal", "web.session"), "nonce", { mode: 0o600 });
+  process.chdir(mixedRoot);
+  let mixedErr = "";
+  let mixedOut = "";
+  const mixedExit = process.exit;
+  const mixedError = console.error;
+  const mixedLog = console.log;
+  let mixedCode: number | undefined;
+  try {
+    console.error = (...args: unknown[]) => { mixedErr += `${args.join(" ")}\n`; };
+    console.log = (...args: unknown[]) => { mixedOut += `${args.join(" ")}\n`; };
+    process.exit = ((code?: number) => { mixedCode = code ?? 0; throw new Error(`exit ${mixedCode}`); }) as typeof process.exit;
+    try { await run([]); } catch (error) {
+      if (!String((error as Error).message).startsWith("exit ")) throw error;
+    }
+  } finally {
+    console.error = mixedError;
+    console.log = mixedLog;
+    process.exit = mixedExit;
+    process.chdir(neutral);
+  }
+  for (let i = 0; i < 100 && alive(mixedWeb.pid!); i++) await sleep(50);
+  check(
+    "an owned web plus a live unowned broker stops the web and names the broker",
+    mixedCode === 1 &&
+      /stopped web dashboard/.test(mixedOut) &&
+      mixedErr.includes(`Broker for "mixed" is running at nats://127.0.0.1:${mixedPort}`) &&
+      !/Nothing running for the local stack/.test(mixedErr) &&
+      !alive(mixedWeb.pid!) &&
+      !existsSync(mixedWebPidPath) &&
+      !existsSync(join(mixedRoot, ".cotal", "web.session")) &&
+      alive(mixedBroker.pid) &&
+      meshesForRoot(mixedRoot).some((mesh) => mesh.space === "mixed"),
+    { mixedCode, mixedOut, mixedErr, webAlive: alive(mixedWeb.pid!), brokerAlive: alive(mixedBroker.pid), registry: meshesForRoot(mixedRoot).map((mesh) => mesh.space) },
+  );
+  try { process.kill(mixedBroker.pid, "SIGTERM"); } catch { /* already gone */ }
+  for (let i = 0; i < 50 && alive(mixedBroker.pid); i++) await sleep(50);
+  rmSync(mixedRoot, { recursive: true, force: true });
 
   console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {
