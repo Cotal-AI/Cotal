@@ -1,0 +1,15 @@
+{
+  "defaults": { "replay": false },
+  "channels": {
+    "issues.lanes": {
+      "replay": false,
+      "description": "One line per lane event from the issue workers and the merger: PR opened or updated, merge done or refused.",
+      "instructions": "Advisory only; replayed history binds nothing. Work is assigned by run turns and notices, never by a message here."
+    },
+    "issues.review": {
+      "replay": false,
+      "description": "Reviewer verdicts, posted by reviewers that never read this channel. The run acts on the answered ask, not on this post.",
+      "instructions": "Advisory only; replayed history binds nothing. Reviewers publish here without joining, so no reviewer reads another's verdict."
+    }
+  }
+}
