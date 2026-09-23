@@ -50,6 +50,12 @@ const credsPath = join(dir, "delivery.creds");
 
 let daemon: ReturnType<typeof spawn> | undefined;
 let daemonExited = false;
+// The daemon's stdout/stderr are CAPTURED asynchronously; a check that greps the log needs every
+// byte the daemon wrote before it greps, or a fast exit races the pipe drain and flakes (seen:
+// L4 red with the loss line missing from a log that ended mid-flush).
+const drainDaemonOutput = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) await wait(50);
+};
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -244,6 +250,7 @@ try {
       }
       const windowMs = firstRefusalAt - overtakeAt;
       console.log(`      measured loss-to-quiesce window: ${windowMs}ms (bound 5000ms, renew period 15000ms)`);
+      await drainDaemonOutput();
       check(
         "L3 the loser stops answering within 5s of the row changing hands (was ~one renew period, 15s)",
         firstRefusalAt > 0 && windowMs < 5000,
@@ -255,6 +262,7 @@ try {
         daemonLog,
       );
       // The loser must EXIT (the row is held by another daemon: the `taken` exit), not linger.
+      await drainDaemonOutput();
       let exitedForLoss = false;
       for (let i = 0; i < 40; i++) { if (daemonExited) { exitedForLoss = true; break; } await wait(250); }
       check("L5 and it exits so the holder is single", exitedForLoss, daemonLog);
