@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
@@ -11,6 +12,8 @@ import cotalMesh, { persistSessionId } from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
 import { wrapped } from "./src/wrap.js";
+import { createPiMapper } from "./src/agui-map.js";
+import { PiSessionSource } from "./src/agui-source.js";
 
 let checks = 0;
 const ok = (condition: unknown, message: string): void => {
@@ -141,6 +144,68 @@ function confirm(driver: PiDriver, details: CotalBatchDetails): void {
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+// The persistent Pi JSONL is the data path. Live extension deltas never enter the source.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-native-source-"));
+  const path = join(root, "session.jsonl");
+  const entry = (id: string, role: string, message: Record<string, unknown>) =>
+    JSON.stringify({ type: "message", id, timestamp: "2026-01-01T00:00:00.000Z", message: { role, timestamp: 1_767_225_600_000, ...message } }) + "\n";
+  try {
+    const source = new PiSessionSource(path);
+    writeFileSync(path, JSON.stringify({ type: "session", id: "native" }) + "\n" + entry("user", "user", { content: "private human and peer text" }) +
+      entry("a1", "assistant", { content: [{ type: "text", text: "completed native answer" }, { type: "toolCall", id: "call-1", name: "bash" }], stopReason: "toolUse" }) +
+      entry("result", "toolResult", { toolCallId: "call-1", content: [{ type: "text", text: "private result" }] }) +
+      entry("a2", "assistant", { content: [{ type: "text", text: "done" }], stopReason: "stop" }) +
+      JSON.stringify({ type: "compaction", id: "not-a-turn" }) + "\n" +
+      entry("partial", "assistant", { content: [{ type: "text", text: "uncommitted" }] }).slice(0, -1));
+    const read = await source.read("pi:first-file");
+    ok(read.records.length === 6, "first-file sentinel reads complete native JSONL lines but not trailing partial line");
+    const map = createPiMapper("native");
+    const events = read.records.flatMap(({ value }) => map(value)?.events ?? []);
+    ok(events.map((event) => event.type).join() ===
+      "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_END,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
+      "native assistant and tool records produce ordered, balanced AG-UI events without invented compaction turns");
+    ok(!JSON.stringify(events).includes("private"), "mixed-authorship user content and tool output never enter the event plane");
+    ok((await source.read(read.cursor)).records.length === 0, "the durable cursor never rereads an acknowledged native message");
+    ok((await new PiSessionSource(path).read(undefined)).records.length === 0, "an existing resumed transcript begins at its end, not old history");
+    const boundaryMap = createPiMapper("resumed");
+    ok(boundaryMap({ type: "message", id: "orphan", message: { role: "toolResult", toolCallId: "old-call" } }) === null,
+      "a result for a call before the adopted boundary is not emitted as an orphan tool end");
+    const failedMap = createPiMapper("failed");
+    const failure = failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
+      role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "err-tool", name: "bash" }], stopReason: "error",
+    } });
+    ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_ERROR",
+      "failed assistant closes native tool brackets before the run error");
+    const recovered = failedMap({ type: "message", id: "later", timestamp: "2026-01-01T00:00:01.000Z", message: {
+      role: "assistant", timestamp: 1_767_225_601_000, content: [{ type: "text", text: "later answer" }], stopReason: "stop",
+    } });
+    ok(recovered?.events[0]?.type === "RUN_STARTED" && recovered.events.at(-1)?.type === "RUN_FINISHED",
+      "a native error does not silence the next completed turn");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-fork-source-"));
+  try {
+    const original = SessionManager.create(root, join(root, "sessions"));
+    const sourcePath = original.getSessionFile()!;
+    original.appendMessage({ role: "user", content: "copied user-only history", timestamp: Date.now() });
+    ok(!existsSync(sourcePath), "Pi defers user-only session file before assistant persistence");
+    // Pi's cross-project fork requires a physical source, which a user-only session has not yet
+    // written. A native branch is the relevant deferred-file path for that history.
+    const userEntry = original.getEntries().find((entry) => entry.type === "message");
+    assert.ok(userEntry);
+    original.createBranchedSession(userEntry.id);
+    ok(original.getSessionFile() !== sourcePath, "Pi native branch gives copied user-only history a new session path");
+    ok(!existsSync(original.getSessionFile()!), "Pi branch with copied user-only history also defers its file");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 // Exact-id commit, zero guard, eviction, interleaving, and late duplicate behavior.
 {
@@ -631,6 +696,13 @@ for (const assistant of [
     // bind it once and assert that, rather than reading through an optional at every cell.
     const env = launch.env;
     assert.ok(env, "a managed Pi launch carries a child env");
+    ok(typeof piConnector.eventChannel === "function", "Pi declares the shared event channel for grant minting");
+    ok(env.COTAL_EVENTS === "1" && env.COTAL_WORKSPACE_ROOT === root, "managed Pi arms durable events at the stable workspace root");
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi" }), /workspaceRoot/);
+    checks++;
+    const withoutEvents = piConnector.buildLaunch({ space: "test", name: "pi", events: false });
+    ok(withoutEvents.env?.COTAL_EVENTS === undefined && withoutEvents.env?.COTAL_WORKSPACE_ROOT === undefined,
+      "explicit no-events leaves the event plane unarmed");
     // The user-mode identity is forwarded through the launch material, not the environment: the
     // sentinel creds path and the bearer command are this mode's credential, and a shell the seat
     // runs has no more business holding them than it has holding a creds file.
@@ -652,6 +724,7 @@ for (const assistant of [
         env.COTAL_PI_EXPECTED_SESSION === launch.args[freshSessionAt + 1],
       "a fresh managed Pi seat gets an exact recoverable session id before its first turn",
     );
+    ok(env.COTAL_PI_FRESH_SESSION === "1", "fresh managed Pi seat carries explicit native freshness marker");
     ok(
       typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
       "managed Pi launch env carries the exact session-state path",
@@ -665,14 +738,16 @@ for (const assistant of [
     );
     ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");
     ok(piConnector.supportsSessionContinuation === true, "Pi declares exact-session crash continuation support");
-    const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)" });
+    const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)", events: false });
     const forkAt = forked.args.indexOf("--fork");
     ok(forkAt >= 0 && forked.args[forkAt + 1] === "session weird;$(nope)", "Pi resume renders one opaque --fork argv token");
     ok(!forked.args.includes("--session-id"), "Pi fork resume never reuses the source session id");
-    const continued = piConnector.buildLaunch({ space: "test", name: "pi", continueSession: "session-current" });
+    ok(forked.env?.COTAL_PI_FRESH_SESSION === undefined, "Pi fork never claims a fresh managed native session");
+    const continued = piConnector.buildLaunch({ space: "test", name: "pi", continueSession: "session-current", events: false });
     const sessionAt = continued.args.indexOf("--session-id");
     ok(sessionAt >= 0 && continued.args[sessionAt + 1] === "session-current", "Pi crash recovery reopens the exact current session id");
     ok(!continued.args.includes("--fork"), "Pi crash continuation never forks the session again");
+    ok(continued.env?.COTAL_PI_FRESH_SESSION === undefined, "Pi crash continuation never claims a fresh managed native session");
     assert.throws(
       () => piConnector.buildLaunch({ space: "test", name: "pi", resume: "source", continueSession: "current" }),
       /mutually exclusive/,
@@ -684,13 +759,13 @@ for (const assistant of [
     // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser
     // takes any bare argument as a message, so it must follow every value-taking flag), and a
     // prompt Pi would misread (empty, an option, a file reference) refuses the launch.
-    const prompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", prompt: "  say hello  " });
+    const prompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", prompt: "  say hello  ", events: false });
     ok(prompted.args[prompted.args.length - 1] === "say hello", "the initial prompt is Pi's last positional argument, trimmed");
     ok(prompted.args.indexOf("--model") === prompted.args.length - 3, "the prompt follows the value-taking flags");
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "   " }), /empty/);
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "-p run" }), /cannot start with/);
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize" }), /cannot start with/);
-    const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model" }).args;
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "   ", events: false }), /empty/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "-p run", events: false }), /cannot start with/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize", events: false }), /cannot start with/);
+    const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", events: false }).args;
     ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
     checks += 11;
   } finally {
