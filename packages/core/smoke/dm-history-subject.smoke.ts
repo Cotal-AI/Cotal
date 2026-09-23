@@ -83,19 +83,37 @@ try {
 
   const honest = await alice.unicast(bob.card.id, "honest-line");
   const own = await viewer.unicast(bob.card.id, "viewer-own-line");
-  // #1404: a data part whose data is not a JSON value must be REFUSED at publish, not serialized
-  // to a keyless {"kind":"data"} row that history returns while Plane-3 terminates it as malformed.
-  let undefRefused: string | undefined;
-  try {
-    await alice.unicast(bob.card.id, "unused-text", {
-      parts: [{ kind: "data", data: undefined }] as unknown as Part[],
-    });
-  } catch (e) {
-    undefRefused = e instanceof Error ? e.message : String(e);
-  }
+  // #1404 fix round: a data part must carry a JSON value at ANY depth. Each refusal is its own
+  // cell so a mutation can kill exactly one arm of the structural check. The errors must name the
+  // path to the offending value, so a caller learns which member to fix.
+  const refuse = async (name: string, data: unknown, wantPath: string) => {
+    let msg: string | undefined;
+    try {
+      await alice.unicast(bob.card.id, "unused-text", { parts: [{ kind: "data", data }] as unknown as Part[] });
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    check(
+      name,
+      msg !== undefined && /non-JSON value/.test(msg) && msg.includes(wantPath),
+      msg,
+    );
+  };
+  await refuse("publish refuses a data part with top-level undefined (the key stringify drops)", undefined, "data is not a JSON value");
+  await refuse("publish refuses NaN (a non-finite number stringify stores as null)", Number.NaN, "data is not a finite number");
+  await refuse("publish refuses a Date (stringify stores it as a string, not a JSON value it was)", new Date(0), "data is not a plain object");
+  await refuse("publish refuses a function nested in an object member (stringify drops it)", { at: () => 1 }, "data.at is not a JSON value");
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  await refuse("publish refuses a cycle (never a stringify TypeError or a stack overflow)", cyclic, "data.self is cyclic");
   // `null` is a JSON value (SPEC §5): a data part carrying it keeps working end to end.
   const dataNull = await alice.unicast(bob.card.id, "unused-text", {
     parts: [{ kind: "data", data: null }],
+  });
+  // Accept controls: a nested undefined member (stringify drops just that key) and a nested
+  // array-of-objects that must round-trip with its data key.
+  const dataNested = await alice.unicast(bob.card.id, "unused-text", {
+    parts: [{ kind: "data", data: [{ a: 1 }, { b: "two" }] }],
   });
   const chatHonest = await alice.multicast("chat-honest", { channel: "log" });
   await wait(200);
@@ -184,13 +202,13 @@ try {
   check("non-string id is ABSENT", !page.some((m) => String(m.id) === "123" || (m as { id?: unknown }).id === 123));
   check("extra-token inst subject is ABSENT (parseSubject arity)", !page.some((m) => m.id === "extra-token-388"));
   check(
-    "publish refuses a data part whose data is not a JSON value (undefined omitted by stringify)",
-    undefRefused !== undefined && /not a JSON value/.test(undefRefused),
-    undefRefused,
-  );
-  check(
     "a data part carrying null (a JSON value) still appears in dmHistory with its data key",
     page.some((m) => m.id === dataNull.id && m.parts.some((p) => p.kind === "data" && "data" in p && p.data === null)),
+    page.map((m) => m.id),
+  );
+  check(
+    "a nested array-of-objects data part round-trips with its data key",
+    page.some((m) => m.id === dataNested.id && JSON.stringify(m.parts.find((p) => p.kind === "data")?.data) === '[{"a":1},{"b":"two"}]'),
     page.map((m) => m.id),
   );
 
