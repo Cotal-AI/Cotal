@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/spawn-action-seat-reap.json",
   "why": [
     "The M5 leg's bare stop is the deliberate crash simulation: it releases the manager's custody handles so the goal stays orphaned for the successor to reconcile. Before this guard the suite returned green while nine detached custodians (one per live seat) waited out the ten-minute unattended window, holding ~65 MB each with no manager left to answer them.",
-    "The teardown reaps every remaining custody record in the run's private seat root (the reap verifies process start identity before signalling), then asserts two cells: no record left unsettled, and no custodian carrying this run's marker on the host. The first mutation removes the reap loop, which reintroduces the leak exactly as CI saw it; the second blinds the census cell to its own run so a survivor is counted as zero. Both must go red on the named teardown cell."
+    "The teardown reaps every remaining custody record in the run's private seat root (the reap verifies process start identity before signalling), then asserts two cells: no record left unsettled, and no custodian carrying this run's marker on the host. The first mutation removes the reap loop, which reintroduces the leak exactly as CI saw it and must redden the record cell. The second mutates the reap into a bare record deletion: the disk then looks settled while nine custodians keep running, so only the census cell can catch it, and it must go red on that cell."
   ],
   "mutations": [
     {
@@ -19,11 +19,11 @@
       "expectRed": "teardown: no live seat is left behind"
     },
     {
-      "name": "the leak cell census ignores its own run",
+      "name": "the teardown deletes records instead of proving the processes gone",
       "file": "implementations/manager/smoke/spawn-action.smoke.ts",
-      "find": "check(\"teardown: no custodian of this run outlives the suite (the CI shard-3 leak, as a cell)\",\n    censusCustodians(runMarker()).length === 0,\n    { run: runMarker(), live: censusCustodians(runMarker()).map((c) => c.pid) });",
-      "replace": "check(\"teardown: no custodian of this run outlives the suite (the CI shard-3 leak, as a cell)\",\n    censusCustodians(runMarker() + \"-mutated-blind\").length === 0,\n    { run: runMarker(), live: censusCustodians(runMarker()).map((c) => c.pid) });",
-      "expectRed": "teardown: no live seat is left behind"
+      "find": "for (const id of unsettled) await reapSeat(seatRoot, id, { graceMs: 5_000 });",
+      "replace": "for (const id of unsettled) rmSync(join(seatRoot, id, \"record.json\"), { force: true });",
+      "expectRed": "teardown: no custodian of this run outlives the suite"
     }
   ]
 }
