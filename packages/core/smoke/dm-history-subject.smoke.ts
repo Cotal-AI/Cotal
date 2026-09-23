@@ -278,22 +278,21 @@ try {
 
   // ---- #1413: what dmHistory returns for rows lacking what CotalMessage promises ----
   // The CONTRACT cells read the page as its consumers do. `as Record<string, unknown>` is
-  // deliberate: the fix under development types this row honestly, so the smoke must observe
-  // the shipped fields rather than lean on the type being wrong or right.
+  // deliberate: the fix types this row honestly, so the smoke must observe the shipped fields
+  // rather than lean on the type being wrong or right.
   const field = (m: { id?: unknown } | undefined, key: string) =>
     (m as Record<string, unknown> | undefined)?.[key];
   const partial1413 = page.find((m) => m.id === "partial-1413");
-  console.log(`  [#1413 repro] partial row via dmHistory: id=${partial1413?.id} ts=${field(partial1413, "ts")} space=${field(partial1413, "space")} parts=${JSON.stringify(field(partial1413, "parts"))} from.name=${JSON.stringify(field(partial1413?.from, "name"))} to=${field(partial1413, "to")}`);
+  console.log(`  [#1413 post-fix] partial row via dmHistory: id=${partial1413?.id} ts=${field(partial1413, "ts")} space=${field(partial1413, "space")} parts=${JSON.stringify(field(partial1413, "parts"))} from.name=${JSON.stringify(field(partial1413?.from, "name"))} to=${field(partial1413, "to")}`);
+  // The rule: a row missing a field the public type requires is DROPPED, not returned with
+  // that member undefined. The consumer-visible proof: no row with that id exists on the page,
+  // so partsToText(msg.parts) / new Date(msg.ts) / msg.from.name cannot reach it.
   check(
-    "partial row (id + object from only): ts/space/parts/EndpointRef.name are NOT undefined",
-    partial1413 !== undefined &&
-      field(partial1413, "ts") !== undefined &&
-      field(partial1413, "space") !== undefined &&
-      field(partial1413, "parts") !== undefined &&
-      partial1413.from.name !== undefined,
+    "partial row (id + object from only) is ABSENT: history drops it rather than return it with ts/space/parts/from.name undefined",
+    partial1413 === undefined,
     partial1413,
   );
-  // A full row published raw round-trips: same id, ts preserved exactly, from.name intact,
+  // A full row published raw round-trips: same id, finite ts preserved, from.name intact,
   // to derived from the subject, and text renders through the shipped partsToText.
   const full1413 = page.find((m) => m.id === "full-1413");
   check(
@@ -308,18 +307,16 @@ try {
     page.some((m) => m.id === "pre-fix-keyless-data-1413" && m.parts.some((p) => p.kind === "data" && !("data" in p))),
     page.map((m) => m.id),
   );
-  // Same rule per field: a nameless from and a non-finite ts.
-  const nameless = page.find((m) => m.id === "nameless-from-1413");
+  // Same rule per field: a nameless from and a non-finite ts (stringify stores NaN as null).
   check(
-    "row whose from lacks name: name is NOT undefined on the row history returns",
-    nameless === undefined || nameless.from.name !== undefined,
-    nameless?.from,
+    "row whose from lacks name is ABSENT (EndpointRef.name is checked, never defaulted)",
+    !page.some((m) => m.id === "nameless-from-1413"),
+    page.map((m) => m.id),
   );
-  const badTs = page.find((m) => m.id === "bad-ts-1413");
   check(
-    "row with non-finite ts: ts on the row history returns is a finite number",
-    badTs === undefined || (typeof badTs.ts === "number" && Number.isFinite(badTs.ts)),
-    badTs?.ts,
+    "row with non-finite ts is ABSENT (ts is checked finite, never defaulted)",
+    !page.some((m) => m.id === "bad-ts-1413"),
+    page.map((m) => m.id),
   );
 
   let chatPage: Awaited<ReturnType<typeof viewer.channelHistory>> = [];
