@@ -248,6 +248,8 @@ try {
   registry.register(managerProcess);
   const fixtured: LocalProcess = { kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" };
   registry.register(fixtured);
+  const natsProcess: LocalProcess = { kind: "local-process", name: "nats", label: "nats-server", pidFile: "nats.pid", order: 100, stopLast: true, clearsMesh: true };
+  registry.register(natsProcess);
 
   process.chdir(neutral);
 
@@ -351,6 +353,68 @@ try {
   check("a dead pinned manager record bypasses the pre-signal policy hook", !hookCalled);
   check("a dead pinned manager record clears both pid and identity files", !existsSync(deadPidPath) && !existsSync(`${deadPidPath}.identity`));
   rmSync(deadRoot, { recursive: true, force: true });
+
+  // A broker this stack did not start has no nats.pid. When the folder's registered broker answers,
+  // bare down must name that and refuse to stop it, not claim nothing is running.
+  const unownedRoot = mkdtempSync(join(scratch, "unowned-broker-"));
+  mkdirSync(join(unownedRoot, ".cotal"), { recursive: true });
+  const unownedPort = await new Promise<number>((resolve, reject) => {
+    const probe = spawn(process.execPath, ["-e", "const n=require('net').createServer();n.listen(0,'127.0.0.1',()=>{process.stdout.write(String(n.address().port));n.close(()=>process.exit(0))})"], { stdio: ["ignore", "pipe", "ignore"] });
+    spawnedChildren.push(probe);
+    let out = "";
+    probe.stdout?.on("data", (chunk) => { out += chunk; });
+    probe.once("exit", (code) => code === 0 ? resolve(Number(out)) : reject(new Error(`free port probe exited ${code}`)));
+  });
+  const unownedStore = join(unownedRoot, "store");
+  mkdirSync(unownedStore, { recursive: true });
+  // SMOKE_BROKER_UNADOPTED_OK: this cell proves down will not stop a broker it does not own.
+  // Adopting the smoke reaper would make the process one this suite started on purpose, which is the
+  // opposite of the operator situation. The finally block kills this child by the handle it holds.
+  const unownedBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(unownedPort), "-js", "-sd", unownedStore], { stdio: "ignore" });
+  spawnedChildren.push(unownedBroker);
+  unownedBroker.unref();
+  assert.ok(unownedBroker.pid, "unowned broker fixture must have a pid");
+  for (let i = 0; i < 50; i++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const net = spawn(process.execPath, ["-e", `const n=require('net');const s=n.connect(Number(process.argv[1]),'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))`, String(unownedPort)], { stdio: "ignore" });
+        spawnedChildren.push(net);
+        net.once("exit", (code) => code === 0 ? resolve() : reject(new Error("not yet")));
+      });
+      break;
+    } catch { await sleep(100); }
+  }
+  recordMesh({ space: "unowned", server: `nats://127.0.0.1:${unownedPort}`, root: unownedRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  process.chdir(unownedRoot);
+  let unownedErr = "";
+  const unownedExit = process.exit;
+  const unownedError = console.error;
+  let unownedCode: number | undefined;
+  try {
+    console.error = (...args: unknown[]) => { unownedErr += `${args.join(" ")}\n`; };
+    process.exit = ((code?: number) => { unownedCode = code ?? 0; throw new Error(`exit ${unownedCode}`); }) as typeof process.exit;
+    try { await run([]); } catch (error) {
+      if (!String((error as Error).message).startsWith("exit ")) throw error;
+    }
+  } finally {
+    console.error = unownedError;
+    process.exit = unownedExit;
+    process.chdir(neutral);
+  }
+  check(
+    "a live unowned broker is named and not stopped",
+    unownedCode === 1 &&
+      unownedErr.includes(`Broker for "unowned" is running at nats://127.0.0.1:${unownedPort}`) &&
+      unownedErr.includes("no pidfile records it") &&
+      unownedErr.includes("will not stop a process it did not start") &&
+      unownedErr.includes("cotal meshes rm unowned") &&
+      !/Nothing running for the local stack/.test(unownedErr) &&
+      alive(unownedBroker.pid),
+    { unownedCode, unownedErr, alive: alive(unownedBroker.pid) },
+  );
+  try { process.kill(unownedBroker.pid, "SIGTERM"); } catch { /* already gone */ }
+  for (let i = 0; i < 50 && alive(unownedBroker.pid); i++) await sleep(50);
+  rmSync(unownedRoot, { recursive: true, force: true });
 
   console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
 } finally {

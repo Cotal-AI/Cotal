@@ -1,0 +1,22 @@
+{
+  "grades": "integration",
+  "suite": ["implementations/cli/smoke/down-target.smoke.ts"],
+  "guard": "bare cotal down names a live registered broker that has no pidfile and does not claim nothing is running",
+  "command": "pnpm build > /dev/null && pnpm smoke:down-target",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-unowned-broker.json",
+  "why": [
+    "A broker this stack did not start has no nats.pid. Bare cotal down used to print Nothing running for the local stack while cotal meshes showed that space online. The cell starts a real nats-server, records the mesh, and requires the unowned wording plus a still-live process."
+  ],
+  "mutations": [
+    {
+      "name": "drop the unowned broker probe so the false Nothing running returns",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  if (!requested.length && !values[\"dry-run\"] && !any) {\n    const unowned = await liveUnownedBrokers(folderCtx());\n    if (unowned.length) {\n      for (const broker of unowned) {\n        console.error(c.red(\n          `Broker for \"${broker.space}\" is running at ${broker.server}, but no pidfile records it. ` +\n          `cotal down will not stop a process it did not start. ` +\n          `Stop that broker with the supervisor that started it, or remove the registration with \\`cotal meshes rm ${broker.space}\\`.`,\n        ));\n      }\n      process.exit(1);\n    }\n  }\n",
+      "replace": "",
+      "expectRed": "a live unowned broker is named and not stopped",
+      "cell": "a live unowned broker is named and not stopped",
+      "note": "Removing the probe restores the pidfile-only Nothing running line while the hand-started broker is still alive.",
+      "afterRestore": "pnpm build > /dev/null"
+    }
+  ]
+}
