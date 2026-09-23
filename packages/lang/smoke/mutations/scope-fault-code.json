@@ -2,10 +2,10 @@
   "suite": [
     "packages/lang/smoke/journal.smoke.ts"
   ],
-  "guard": "A scope's failure record keeps a classified refusal's own code (#1519): a RuntimeFault the program caused settles under its catalog code with kind `runtime`, a plain handler throw stays the generic L4000 scope-fault, and a handler's own EffectError keeps its code and kind. Live and resume then read the same code.",
+  "guard": "A scope's failure record keeps a classified refusal's own code (#1519): a RuntimeFault the program caused settles under its catalog code with kind `runtime`, a plain non-EffectError throw stays the generic L4000 scope-fault, and a handler's own EffectError keeps its code and kind through recordableError. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-journal",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/scope-fault-code.json",
-  "why": "One settle site, three arms, and a mutation per arm: reverting the RuntimeFault arm to the flattening form is the exact pre-fix expression; dropping the EffectError arm kills the preserved-code control; dropping the RuntimeFault class check makes every plain throw mint a bogus catalog code and kills the L4000 control.",
+  "why": "One settle site, three arms, and a mutation per arm: reverting the RuntimeFault arm to the flattening form is the exact pre-fix expression; disabling the EffectError arm flattens a coded handler failure and kills the preserved-code control; trusting any thrown object's `code` instead of the class check kills the L4000 control in the earliest scope-fault cell on the page.",
   "mutations": [
     {
       "name": "the scope settle flattens a program's RuntimeFault back to the generic L4000",
@@ -13,19 +13,9 @@
       "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
       "replace": "        : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
       "expectRed": "a program refusal raised inside a scope settles under its own catalog code, not the generic L4000",
-      "completionMarker": "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
+      "completionMarker": "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
       "cell": "a program refusal raised inside a scope settles under its own catalog code, not the generic L4000",
-      "note": "The exact pre-fix expression. With it back, the record says L4000 scope-fault with the L3021 sentence inside the message, and the resume cell reads L4000 where the live run caught L3021."
-    },
-    {
-      "name": "the resume half is left reading the flattened record",
-      "file": "packages/lang/src/perform.ts",
-      "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
-      "replace": "        : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
-      "expectRed": "and a resume over the same journal reads the SAME code the live run caught, not a flattened L4000",
-      "completionMarker": "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
-      "cell": "and a resume over the same journal reads the SAME code the live run caught, not a flattened L4000",
-      "note": "Same revert, different named assertion: the resume cell is the observable harm (#1519's real traffic), and proving it red separately pins the replay path to the record."
+      "note": "The exact pre-fix expression. With it back, the record says L4000 scope-fault with the L3021 sentence inside the message; the resume cell two checks later reads L4000 where the live run caught L3021, and this first red is the named assertion because the suite is fail-fast."
     },
     {
       "name": "the EffectError arm is dropped and every handler failure flattens",
@@ -33,19 +23,19 @@
       "find": "      reason instanceof EffectError\n        ? recordableError(reason, \"scope-fault\").error\n        : reason instanceof RuntimeFault",
       "replace": "      false\n        ? recordableError(reason, \"scope-fault\").error\n        : reason instanceof RuntimeFault",
       "expectRed": "and a handler's own coded failure keeps its code and kind through the same settle",
-      "completionMarker": "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
+      "completionMarker": "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
       "cell": "and a handler's own coded failure keeps its code and kind through the same settle",
-      "note": "The control that the fix did not eat the EffectError path: with the arm disabled, a coded L6002 handler failure records as L4000 scope-fault and the control goes red."
+      "note": "The control that the fix did not eat the EffectError path: with the arm disabled, a coded L6002 handler failure records as L4000 scope-fault and the control goes red. The earlier unrecordable-detail cell stays green by coincidence (it asserts the same L4000 scope-fault the flatten produces), which is why this control names the code it must keep."
     },
     {
-      "name": "the class check is dropped and a plain throw mints the thrown message's code",
+      "name": "the class check is dropped and any thrown object's `code` field is trusted",
       "file": "packages/lang/src/perform.ts",
       "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
       "replace": "        : { code: (reason as { code?: unknown })?.code as string ?? \"L4000\", kind: \"runtime\", message: messageOf(reason) };",
-      "expectRed": "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
-      "completionMarker": "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
-      "cell": "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
-      "note": "The other direction of the fence: trusting any thrown object's `code` field (an errno, an HTTP status) would record unclassified failures under codes the catalog never gave them."
+      "expectRed": "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
+      "completionMarker": "and it is blamed on the handler's dispatch, where L4000 already says exactly that, rather than on a code of its own",
+      "cell": "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
+      "note": "The other direction of the fence: an unclassified throw now takes kind `runtime`, and the earliest existing scope-fault cell (the bind guard, whose NotCrossable reason carries no code) goes red on the kind. The new L4000 control further down reddens the same way; the first red is the named one."
     }
   ]
 }
