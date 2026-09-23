@@ -163,7 +163,7 @@ try {
   const agentCwd = mkdtempSync(join(tmpdir(), "cotal-detach-cwd-"));
   const spawnOut = await capture(() =>
     run("spawn", [
-      "poet", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "bard",
+      "poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "bard",
       "--prompt", "compose", "--subscribe", "ops,ops.x", "--allow-subscribe", "ops,ops.>",
       "--allow-publish", "ops", "--model", "fancy", "--variant", "high", "--opt", "temperature=0.2", "--opt", "seed=7",
       "--cwd", agentCwd, "--share-tools", "alpha",
@@ -217,7 +217,7 @@ try {
   // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
   // continuation must not repeat it now that provenance lives in the identity row.
   writeFileSync(join(workspaceRoot, ".cotal", "agents", "lutist.md"), "---\nname: lutist\nrole: writer\nvariant: high\n---\nYou play.\n");
-  await capture(() => run("spawn", ["lutist", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "lutist"]));
+  await capture(() => run("spawn", ["lutist", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "lutist"]));
   let lutWide = "";
   for (let i = 0; i < 40 && !/lutist/.test(lutWide); i++) {
     lutWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
@@ -304,7 +304,7 @@ try {
     process.env.COTAL_DEFAULT_PERSONA = "poet";
     try {
       lastOpts = undefined as LaunchOpts | undefined; // the connector reassigns it from a callback
-      const envOut = await capture(() => run("spawn", ["--detach", "--agent", "e2e", "--space", SPACE, "--name", "envbard"]));
+      const envOut = await capture(() => run("spawn", ["--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "envbard"]));
       ok("COTAL_DEFAULT_PERSONA bare detached spawn reached the connector", lastOpts !== undefined);
       ok(
         "COTAL_DEFAULT_PERSONA picked poet while --name set identity",

@@ -124,6 +124,8 @@ For people changing how Cotal is built or shipped (not needed to use it).
 | [Release](release.md) | How we version and publish. |
 | [Substrate stability](stability.md) | What can I build a product on, and what will the v0.4 cut break? |
 | [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
+| [Signer isolation](design/signer-isolation.md) | How the account signing seed moves off the manager uid (design, not shipped). |
+| [Tasks endpoint](design/tasks-endpoint.md) | How a tasks provider joins a space as an ordinary endpoint (design, not shipped). |
 
 Each runnable example documents itself in its own `examples/*/README.md`. Working
 build-plans and research live in the private `.internal/` submodule, not here.

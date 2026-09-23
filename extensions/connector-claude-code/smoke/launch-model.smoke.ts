@@ -39,7 +39,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const launch = (extra: Record<string, unknown>) =>
-  claudeConnector.buildLaunch({ space: "s", name: "seat", ...extra } as never);
+  claudeConnector.buildLaunch({ space: "s", name: "seat", events: false, ...extra } as never);
 
 /** The refusal must be the MODEL refusal, not any error the launch happens to throw. */
 const refusalFor = (extra: Record<string, unknown>): string | null => {

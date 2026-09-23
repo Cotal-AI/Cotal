@@ -288,10 +288,13 @@ try {
     const argv = bearerArgv().filter((v, i, a) => v !== "--exchange-url" && a[i - 1] !== "--exchange-url"); argv.push("--dir", clientDir);
     const result = await execBearer(argv); assert.notEqual(result.code, 0); assert.match(result.stderr, /auth service.*not running/i);
   });
-  cell("plain HTTP is refused for attacker names AND genuine loopback literals — there is no exception", async () => {
-    for (const base of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com",
-      "http://127.0.0.1:9", "http://0177.0.0.1:9", "http://2130706433:9", "http://[::ffff:127.0.0.1]:9"]) {
+  cell("plain HTTP is refused for attacker names and accepted only for loopback literals", async () => {
+    for (const base of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com", "http://localhost:9"]) {
       const result = await execBearer(bearerArgv(base)); assert.notEqual(result.code, 0); assert.match(result.stderr, /must be https/i);
+    }
+    for (const base of ["http://127.0.0.1:9", "http://0177.0.0.1:9", "http://2130706433:9", "http://[::ffff:127.0.0.1]:9"]) {
+      const result = await execBearer(bearerArgv(base)); assert.notEqual(result.code, 0);
+      assert.doesNotMatch(result.stderr, /must be https/i); assert.match(result.stderr, /did not answer|fetch failed|ECONNREFUSED/i);
     }
   });
 

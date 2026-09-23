@@ -1,5 +1,41 @@
 # @cotal-ai/connector-jcode
 
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- cca2020: Keep the Jcode tool relay socket out of the shared temp directory, and contain self-test cleanups
+
+  The Jcode connector placed its control socket at the top level of `/tmp`. Anything that empties
+  that directory, a distribution's periodic cleaner or a self-test whose recursive cleanup escaped
+  its own root, unlinked the control path of every live seat at once. The hosts kept listening on
+  the now-nameless inodes, so every `cotal_*` call from those sessions failed with `connect ENOENT`,
+  and the only recovery was a respawn, which discards the session's context.
+
+  The socket now lives in a per-launch owner-only directory the host creates and removes with the
+  launch, so a top-level sweep does not reach it. A host whose socket path disappears anyway
+  re-binds at the same path within a poll interval and records it in the seat's private log, so a
+  deletion costs a reconnect instead of a respawn.
+
+  The escape that triggered it is closed at its own end too. A self-test's recursive cleanup may now
+  only remove the exact path its `mkdtemp` returned, and only where that path resolves strictly
+  beneath the base it was created in. A cleanup handed anything else refuses and exits 2 rather than
+  deleting, so a mutant that makes a directory helper return a parent can no longer reach another
+  process's files. That rule lives in `scripts/mutation-command-safety.mjs`, next to the existing rule
+  bounding what a mutation config may execute: both bound what a config taken from disk can reach.
+
+### Patch Changes
+
+- 7875182: A Jcode seat whose soft interrupts time out now keeps consuming its queue, and stops reporting itself healthy while it is not.
+
+  Peer messages that arrive while a Jcode session is busy are handed to it mid-turn. When that handoff got no reply, nothing else ever looked at the queue: it was served only by a new message arriving or the session going idle, and on a busy seat neither has to happen. Messages piled up behind a seat that was working normally and answering direct questions, and the seat was indistinguishable from a wedged one. Measured on a live seat: 27 messages held for 13.8 hours.
+
+  A seat now serves its own queue on a schedule rather than waiting for an event. If the mid-turn handoff stops answering, the queued messages are delivered as an ordinary turn instead, which needs no reply from it, so they arrive late rather than never. Nothing is dropped and nothing is delivered twice.
+
+  `cotal_connection_status` also stops calling such a seat `ready`. A bound session with a live transport whose queued messages have made no progress for ten minutes now reports `stalled`, alongside how long the queue has gone without committing anything, and `cotal_reconnect` says plainly when rebuilding the connection did not deliver them, instead of answering with a bare success over an untouched queue.
+
 ## 0.49.0
 
 ### Minor Changes

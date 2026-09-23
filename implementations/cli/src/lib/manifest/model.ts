@@ -57,6 +57,8 @@ export interface ResolvedAgent {
   instructions?: string;
   /** Kickoff prompt auto-submitted at session start (manifest-only; personas carry none). */
   prompt?: string;
+  /** Explicit event-plane choice. Absent means the connector default (on where supported). */
+  events?: boolean;
   /** Manifest capabilities — win over the persona's when present. */
   capabilities?: string[];
   /** Effective policy for THIS agent: per-agent override ?? top-level ?? "reject". */

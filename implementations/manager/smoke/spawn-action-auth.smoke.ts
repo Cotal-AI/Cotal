@@ -143,7 +143,7 @@ try {
 
   // ── FENCE (a): a SUPERSEDED incarnation is currency-refused its own terminal commit ─────────
   {
-    const r = await callSpawn({ name: "fence", agent: "stuck" }); // accepts, never joins → stays inside the window
+    const r = await callSpawn({ name: "fence", agent: "stuck", events: false }); // accepts, never joins → stays inside the window
     check("FENCE the fence spawn was accepted", r.reply.ok === true, r.reply);
     const goalId = (r.reply.data as { goalId?: string }).goalId!;
     const ref = { endpoint: MANAGER_ENDPOINT, caller, goalId };

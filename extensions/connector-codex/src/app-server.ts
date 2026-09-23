@@ -39,6 +39,8 @@ import { randomBytes } from "node:crypto";
 import { closeSync, constants as fsConstants, openSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
+import type { PresenceCondition } from "@cotal-ai/core";
+import { codexCondition } from "./agui-map.js";
 
 /** A thread item as the notifications carry it — only the fields the host reads. */
 export interface ThreadItem {
@@ -201,7 +203,7 @@ export class AppServerDriver extends EventEmitter {
   /** Terminals held back by that ambiguity, in arrival order, each carrying whether its turn was
    *  ever seen live. Drained the moment no `turn/start` is outstanding, so each one is finally
    *  classified against a settled ownership set by the same rule the live path uses. */
-  private buffered: { turnId: string; status: TurnStatus; wasLive: boolean }[] = [];
+  private buffered: { turnId: string; status: TurnStatus; condition?: PresenceCondition; wasLive: boolean }[] = [];
   /** Turns whose terminal this incarnation has already seen. `turn/started`, `turn/completed`,
    *  and the `turn/start` response are independently ordered, so a start can arrive AFTER its own
    *  terminal — and a turn re-added to {@link liveTurns} then has no terminal left to remove it,
@@ -734,7 +736,11 @@ export class AppServerDriver extends EventEmitter {
     // never grant authority the policy didn't, and an unanswered request would hang the turn
     // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know
     // (item/permissions/requestApproval wants {permissions, scope}, not a decision).
-    this.emit("waiting", method);
+    const approval = method === "execCommandApproval"
+      || method === "applyPatchApproval"
+      || method === "item/commandExecution/requestApproval"
+      || method === "item/fileChange/requestApproval";
+    this.emit("waiting", method, approval ? ({ code: "approval", source: method, since: Date.now() } satisfies PresenceCondition) : undefined);
     if (method === "execCommandApproval" || method === "applyPatchApproval")
       return void this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
@@ -775,7 +781,7 @@ export class AppServerDriver extends EventEmitter {
         this.log(`ignoring turn/completed for ${t.turnId} (neither live nor ours)`);
         continue;
       }
-      this.emit("turnCompleted", { turnId: t.turnId, status: t.status, owned });
+      this.emit("turnCompleted", { turnId: t.turnId, status: t.status, condition: t.condition, owned });
     }
   }
 
@@ -824,7 +830,7 @@ export class AppServerDriver extends EventEmitter {
         // `owned` is the load-bearing part once a UI is attached. A turn a human started in the
         // TUI reaches this host too, and its completion says nothing about the batch WE surfaced
         // into OUR turn — acking on it would drop peer messages nobody ever saw.
-        const turn = params.turn as { id?: string; status?: TurnStatus } | undefined;
+        const turn = params.turn as { id?: string; status?: TurnStatus; error?: unknown } | undefined;
         if (!turn?.id) {
           this.log("ignoring turn/completed with no turn id");
           return;
@@ -839,6 +845,7 @@ export class AppServerDriver extends EventEmitter {
           turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted"
             ? turn.status
             : "interrupted";
+        const condition = status === "failed" ? codexCondition(turn.error) : undefined;
         // HOLD FIRST, decide later. While one of our `turn/start` requests is outstanding, an
         // unclaimed terminal is undecidable: it may belong to the turn that request is about to
         // name. `turn/started` and `turn/completed` may each overtake the response independently,
@@ -848,7 +855,7 @@ export class AppServerDriver extends EventEmitter {
         // while the late response claimed an already-dead id. `wasLive` rides along so the
         // decision, once it can be made, is the same one this code would have made now.
         if (!wasOwned && this.pendingStarts.size > 0) {
-          this.buffered.push({ turnId: turn.id, status, wasLive });
+          this.buffered.push({ turnId: turn.id, status, condition, wasLive });
           return;
         }
         // A turn is closable if we ever SAW it start or if we CLAIMED it. Requiring both would
@@ -860,7 +867,7 @@ export class AppServerDriver extends EventEmitter {
           return;
         }
         const owned = this.ownedTurns.delete(turn.id);
-        this.emit("turnCompleted", { turnId: turn.id, status, owned });
+        this.emit("turnCompleted", { turnId: turn.id, status, condition, owned });
         return;
       }
       default:

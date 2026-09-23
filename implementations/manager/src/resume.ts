@@ -86,6 +86,10 @@ const agent = z.strictObject({
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     sessionId: z.string().min(1).max(4096).optional(),
+    // The connector's session pointer file. Optional because a seat whose connector declares no
+    // continuation has none, and because an inventory written before this field existed must still
+    // resume rather than be refused by a stricter reader.
+    sessionStatePath: path.optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
   }),
   dependencies: z.array(path).max(16),

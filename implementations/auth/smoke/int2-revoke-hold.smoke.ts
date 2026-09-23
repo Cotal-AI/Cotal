@@ -403,7 +403,7 @@ try {
   console.log("B) user-mode spawn of the predecessor");
   manager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const r1: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("predecessor spawn ok", r1.ok === true, r1);
   const fp1 = await footprint();
   check("predecessor footprint exists (row + dm + dlv + acl)",
@@ -481,7 +481,7 @@ try {
   // alias — a refusal that quietly kept a replacement, or an ABA hold swap, would both read as ok here
   // without these checks.
   const heldUidBeforeRespawn = mAny.retiring.get(AGENT)?.lifecycleUid;
-  const respawn = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+  const respawn = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("GREEN: a same-name spawn is REFUSED while the mint authority stands (alias not reassigned)",
     respawn.ok === false, respawn);
   check("GREEN: no successor managed record took the alias (the manager lists no live agent under the held name)",
@@ -523,7 +523,7 @@ try {
   const cleared = await (async (ms = 25000) => {
     const end = Date.now() + ms;
     while (Date.now() < end) {
-      await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER }); // public nudge (refused while held)
+      await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false }); // public nudge (refused while held)
       nudges++;
       if (mAny.retiring.get(AGENT) === undefined) return true;
       await wait(500);
@@ -552,7 +552,7 @@ try {
   const aliasDeadline = Date.now() + 30_000;
   while (!psList(manager!).some((a) => a.name === AGENT) && Date.now() < aliasDeadline) {
     const before = listNames();
-    await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+    await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
     if (psList(manager!).some((a) => a.name === AGENT)) break;
     // Stop anything the attempt DID create under another name, the way the freeslot suite does.
     // On this tree the numbered attempt is refused outright and leaves nothing behind, so this

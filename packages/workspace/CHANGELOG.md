@@ -1,5 +1,75 @@
 # @cotal-ai/workspace
 
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- ba91ad5: Attach on an open-mode mesh, which never has a local seed
+
+  `cotal attach` refused every seat on a mesh started with `cotal up --open`, saying it needed this
+  space's local seed to redeem the session grant. An open-mode mesh has no seed by design, so the
+  refusal fired on exactly the configuration attach exists to serve, and its remedy pointed at
+  re-registering a root the mesh had already resolved correctly.
+
+  How a session grant is redeemed is now the recorded mesh contract, carried as a value rather than
+  inferred from whether a credential happens to be present. An open mesh redeems over the same bare
+  connection the control round trip already used, and nothing is minted or synthesised for it. A
+  static-auth mesh still mints a session-scoped credential from the seed at the root the mesh
+  resolved to, and a static-auth mesh whose seed is missing still refuses, now naming
+  restore-at-checkout rather than a re-registration that would change nothing. A user-auth mesh still
+  refuses loud: two-step user-mode redemption is not wired.
+
+- 44cdcc2: Make the delivery daemon own its liveness record
+
+  `delivery.<space>.pid` was written only by the CLI launcher, so a daemon started by any other route,
+  a container entrypoint, systemd, or an operator running `cotal deliver --space <space>`, left
+  whatever was on disk untouched and every reader believed it. On a reporting mesh the record named a
+  pid that had been dead for four days while the daemon ran under a different one.
+
+  That is not only an under-report. `cotal down` decides what to stop from the same record, and
+  `mayBeRunning` is the guard that must fail closed so `cotal down nats` cannot take the broker away
+  from a live dependant. A record naming a dead pid satisfies that guard: it supplies the
+  proof-of-death the guard asks for, so a live delivery daemon reads as clear and the broker goes out
+  from under it.
+
+  The daemon now writes its own record and removes it, with the identity pin, when it exits. The write
+  happens once the single-flight shard lease is held, and not before: a daemon that loses that lease
+  refuses to bind and exits, so writing on entry would let a loser overwrite the live holder's record
+  on its way out. It is written before the Plane-3 bind so an operator can still stop a daemon whose
+  bind hangs; readiness is a separate fact the lease's own flag already carries.
+
+  Readers no longer believe a pid merely because it is alive. The delivery record's liveness gains the
+  `foreign` state the manager's already had, for the same reason: a record that outlived its daemon is
+  eventually re-pointed at an unrelated process by pid reuse, and `kill(pid, 0)` alone reports that
+  stranger as a healthy daemon forever. A live pid is trusted only once its command line has been read
+  and names the daemon, and `cotal down` never signals a live process that is provably not one.
+  Attribution only downgrades on proof, so a platform with no argv source, an unreadable process, or
+  one that exits during the read all behave exactly as before.
+
+### Patch Changes
+
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+  - @cotal-ai/core@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes

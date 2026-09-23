@@ -281,6 +281,15 @@ try {
   await sleep(300);
   await dm("FAIL this");
   await waitFor("FAIL turn", () => turnStarts().find((t) => t.includes("FAIL this")));
+  const failedCondition = await waitFor("failed-turn presence condition", () => {
+    const condition = operator.getRoster().find((p) => p.card.name === PEER)?.condition;
+    return condition?.source === "rateLimitExceeded" ? condition : undefined;
+  });
+  check(
+    "failed turn relays Codex's native error as a rate-limit condition",
+    failedCondition.code === "rate_limit" && failedCondition.message === "fake rate limit",
+    failedCondition,
+  );
   const retried = await waitFor("failed-turn retry", () =>
     turnStarts().filter((t) => t.includes("FAIL this")).length >= 2 ? true : undefined,
   );
@@ -288,6 +297,10 @@ try {
   await dm("after-fail");
   const t6 = await waitFor("post-fail turn", () => turnStarts().find((t) => t.includes("after-fail")));
   check("loop released after the failed batch settled", !t6.includes("FAIL this"), t6);
+  check(
+    "a later normal turn clears the prior condition",
+    await waitFor("condition clear", () => operator.getRoster().find((p) => p.card.name === PEER)?.condition === undefined ? true : undefined),
+  );
 
   // (7) the cotal_* MCP surface: the app-server calls it ITSELF over loopback HTTP, which is why
   // it works identically on a mesh-driven turn and one typed into the attached TUI.
@@ -300,6 +313,14 @@ try {
   check("MCP tools/call round-trips (roster shows the operator)", replyText.includes("operator"), replyText);
   const noAuth = await waitFor("unauthenticated tool call", () => logEntries().find((e) => e.ev === "toolReplyNoAuth"));
   check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
+
+  await dm("APPROVAL probe");
+  await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "item/commandExecution/requestApproval"));
+  const approvalCondition = await waitFor("approval presence condition", () => {
+    const condition = operator.getRoster().find((p) => p.card.name === PEER)?.condition;
+    return condition?.source === "item/commandExecution/requestApproval" ? condition : undefined;
+  });
+  check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
 
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A

@@ -1,5 +1,101 @@
 # cotal-ai
 
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/runtime@0.50.1
+  - @cotal-ai/connector-core@0.50.1
+  - @cotal-ai/auth@0.50.1
+  - @cotal-ai/cli@0.50.1
+  - @cotal-ai/delivery@0.50.1
+  - @cotal-ai/manager@0.50.1
+  - @cotal-ai/workspace@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 840e641: Stop the delivery daemon from removing itself when the host is busy. The daemon is coupled to the broker and exits when the broker is gone, but it decided that from elapsed wall-clock time alone, and a clock cannot tell "the broker is gone" from "this process did not get scheduled". Under local CPU starvation the two are indistinguishable: the poll's interval does not fire, so the window ages with no probe having failed; and when a probe does run, a process that cannot get scheduled cannot complete a handshake, so a live server reads as a dead one. Plane-3 therefore went away exactly when load was highest, which is when messages queue up and operators are coordinating.
+
+  The exit predicate now depends only on evidence the daemon actually gathered. It measures the gap between consecutive firings of its own timer and credits the excess back as local scheduler lag rather than counting it against the broker; it counts probes that ran to completion and refused within the time the server was actually given, instead of time that merely passed; it reads its own still-open connection to that broker as positive evidence WITHIN the hard backstop, since a fresh handshake that cannot complete to an address it is currently connected to says nothing about the server, but that socket is cached client state that can stay open for minutes after a broker dies silently, so it defers nothing once the bound is reached; and a probe that rejects is recorded as an unanswered question rather than swallowed. On a starvation diagnosis the daemon reports degraded, keeps serving, and clears the state when the broker answers again.
+
+  Judging a probe needed two rules, because starvation reaches a probe in two shapes. The loud one is an answer so far past its own deadline that the deadline plainly was not enforced against the server, which is what the incident captured directly: a refusal at 2554ms against a 1000ms budget, with the broker answering immediately either side of it. The quiet one is the shape a busy host actually produces most of the time, and it is invisible to a clock: the process issues a connect, is taken off the CPU, and its deadline timer fires the instant it is scheduled again, so the elapsed time looks like an ordinary prompt timeout while the server was given a fraction of its second. Each probe therefore watches a short timer's own lateness for its duration and subtracts the time this process spent off the runqueue before the refusal is judged, because a refusal is only evidence about the server if the server had the time the deadline promised it.
+
+  That subtraction is bounded so it cannot become a blanket excuse. A dead port answers in about a millisecond, so it never reaches its budget at all and stays a plain negative however starved the host is. The two readings differ only in whether the answer beat the budget, which is what keeps "this host is busy" from turning into "no refusal counts".
+
+  The guarantees that made the exit worth having are unchanged. A genuinely dead broker still ends the daemon on the same window and just as fast, because a dead port refuses immediately and the daemon's own connection to it closes. The starvation credit is bounded by a hard backstop that is consulted first and cannot be deferred by any other signal, so the repair can never become a daemon that outlives its broker.
+
+  A failed lease renewal is likewise a question rather than a verdict now. The daemon re-reads the key: another daemon's row means it exits, a missing row is repaired by an atomic create that arbitrates on its own terms, and its own row means it carries on. What it does NOT do is keep serving while it works that out. Whether the process should live and whether it may serve are separate questions with different answers, and conflating them would replace an availability bug with a worse one: a compare-and-swap keeps one lease row, not one server, so a daemon still consuming the fan-out durable and answering `ctl.delivery` across that arbitration can share both with the replacement that just won the shard. It therefore unbinds fan-out, the inbox reader and both control responders BEFORE asking, withdraws its readiness claim while it is quiet, and re-arms only on proof, its own row on a re-read, or a won create. A broker that cannot be asked leaves it alive and silent, because not being able to ask is not permission to keep acting. Those quiet periods are recoverable under the daemon's own power: the evidence that ends them is the same evidence that proves they were unnecessary.
+
+  Two smaller defects were found while grading that path rather than by reading it. A re-acquired lease was never flipped back to ready, so a daemon that had recovered served correctly while every readiness waiter in the space timed out against a permanently not-ready row. And the ownership re-read reported the daemon's cached revision rather than the broker's, under a comment asserting the record carries none; it does, and a renew whose write landed with only its reply lost left that token permanently one behind, refusing every later compare-and-swap over a sequence the daemon had moved itself.
+
+  A daemon could not prove its own lease row was its own. The ownership test compared the row against the bare connection key while the endpoint rewrites the card id to its principal dot-form and stamps THAT, so the "this row is mine" answer was unreachable: a daemon re-reading after a failed renew did not recognise its own record, exited naming itself as the thief, and since that path drops the revision the release freed nothing. Comparing principals instead is also wrong, and the suite caught it where reading did not: the daemon's cred is a file every restart re-reads, so a replacement presents the SAME principal as the process it replaced, and a displaced daemon would read its successor's row as its own, keep serving a shard it had lost, and release the live holder's row on the way out. A row is now proven ours by holder AND a per-run incarnation, so a successor's row is never adopted.
+
+  An ordinary stop could strand the shard, with no starvation and no broker fault involved. The daemon creates its lease row early in start-up and used to register its signal handlers only after binding Plane-3, flipping the row ready, and awaiting the membership feed and timer writer. A stop signal in between took the default action: immediate death, no release, the row claiming the shard with no process behind it until the bucket TTL expired, after which the next `cotal up` was refused outright and the shard was unservable by anyone. This was previously masked by a readiness wait that did not name whose readiness it was waiting for; correcting that wait made `cotal up` return the instant the row appears, and exposed it. Handlers are now armed the statement after the shard becomes the daemon's, a start-up fault in the same window releases the shard while still reporting the error and a non-zero exit, and shutdown releases against the broker's revision rather than the token the process happened to be holding, which a readiness write is enough to leave one step behind.
+
+  `smoke:delivery-broker-coupling` was carried as untriaged debt and was grading nothing. It spawned the daemon without a `$SYS` observer cred and from a working directory whose root walk climbed out of the repo, so the daemon refused during startup, and that refusal satisfied the suite's own "exits when the broker is gone" assertion. It is now provisioned, pinned to a scratch workspace, required to name the reason it exited rather than merely to exit, and gated in CI.
+
+### Patch Changes
+
+- 1112755: Give fresh setup defaults the run capability alongside spawn. Document workflow tool setup, credential refresh for existing personas, and supported authentication modes.
+- cd9c8dd: Grade the frozen-body egress guard against the predicate it actually replaced, instead of a pinned historical floor. The differential resolved its base as a fixed sha, so a guard could become stricter than that floor, be weakened back toward it, and still report zero weaker rows. The base is now resolved from history: the newest ancestor whose `agui.ts` differs from the source under test and still carries a classifier role, with the working tree as the head so an uncommitted weakening is graded, and an on-demand deepen so the pair exists in a depth-1 CI checkout. `COTAL_EGRESS_DIFF_BASE` adds a pair against an explicit PR base and never replaces one. Two holes the resolved run exposed are closed with it: the loader folded an unrecognised verdict into a throw, which would have read a new publishing verdict as withheld, and the closed-schema branch had no row naming it.
+- c59d96d: Stop a parked step from dying on one slow pause-plane reply. A workflow `ask` that waited long enough settled `failed` with `{code: "L4000", kind: "handler-fault", message: "timeout"}` while most of its deadline was still unspent, the seat was alive, and nothing in the program threw. Measured on the reporting run: the two asks under 4.5 minutes settled `ok` and the two over 7.5 minutes failed with that exact record, with 11 minutes of deadline left.
+
+  The cause is how long a parked step reads for. While a pause is parked the run host polls the plane for the life of the step, once for the settle fact and once for the broker's fire, each read riding a NATS API request with its own 5s client-side deadline. A reply that arrives after that deadline raises the client's bare `TimeoutError: timeout`, and the interpreter records any non-`EffectError` throw as `L4000 handler-fault` verbatim. So the step issued roughly one unretried request per second for its whole duration and one late reply ended it, which is why the exposure grew with how long the step waited rather than with anything about the program.
+
+  A late reply is a fact about that one request and not about the pause behind it. The pause is a durable record on the plane, its timer is armed, and it is still answerable, so the read is now re-issued rather than raised, and the step settles on the answer it was waiting for. Re-reading is safe for the same reason the starvation repair's re-entry is: the plane's operations are idempotent by construction, and reading a one-use settle fact again observes the same world.
+
+  It is the second half of a distinction the host already drew for #1508 and it reuses that machinery rather than adding its own. A client deadline has two causes that produce the identical error, and the host can tell them apart by measuring whether its own event loop ran: off the CPU is the host's own starvation (`L4025`), and on it is a plane that answered late. The case that moves is only the second, which the classifier previously answered "fault" and handed to the program as its own failure.
+
+  Neither retry is unbounded and neither is merged into the other. A run that cannot be served must fail rather than hang, so the two conditions carry separate counts that are never reset, which bounds the call however they interleave; a host that stays starved still fails under `L4025`, and a plane that never answers now fails under the new `L4026` naming the measurement rather than the effect. The two are kept apart because the remedies differ: one says give this host capacity, the other says the broker is behind. Every failure that is not a client deadline is still raised on the first attempt, unretried and unwrapped, and still recorded as `L4000`.
+
+  A recorded handler fault also carries the stack of the value that was thrown, in a new optional `error.stack` on the journal entry. A handler fault is the one failure class whose cause is in neither the program nor the language, so `message` alone ("timeout") is the symptom with no origin, and the durable entry is usually the only look anyone gets at it. The field is written only when the thrown value carried a non-empty string `stack`: a handler may throw a primitive, and a recorder that trusted the field would replace the handler's failure with its own.
+
+- Updated dependencies [58f0e2d]
+- Updated dependencies [0a52594]
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [1112755]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [840e641]
+- Updated dependencies [504e78f]
+- Updated dependencies [87dda9f]
+- Updated dependencies [cd9c8dd]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [b7e5942]
+- Updated dependencies [7875182]
+- Updated dependencies [aaedc42]
+- Updated dependencies [43a4281]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [c59d96d]
+- Updated dependencies [83ab007]
+- Updated dependencies [f4ddd02]
+- Updated dependencies [438c629]
+- Updated dependencies [5a34b2b]
+- Updated dependencies [a211c52]
+- Updated dependencies [254f5da]
+- Updated dependencies [56afdaf]
+- Updated dependencies [baed5d1]
+- Updated dependencies [da119c6]
+- Updated dependencies [0fdca5b]
+  - @cotal-ai/manager@0.50.0
+  - @cotal-ai/connector-core@0.50.0
+  - @cotal-ai/cli@0.50.0
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+  - @cotal-ai/runtime@0.50.0
+  - @cotal-ai/delivery@0.50.0
+  - @cotal-ai/auth@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes

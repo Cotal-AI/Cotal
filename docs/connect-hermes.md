@@ -45,6 +45,11 @@ Hermes is model-agnostic; set any one provider's key in your environment. Model 
 matches the other connectors: the `--model` flag, else the agent file's `model:`, else an ambient
 `HERMES_MODEL`. Hermes exposes no `cotal models` catalog (unlike OpenCode).
 
+With none of those set, the launch is refused. The managed profile does not read `~/.hermes`, so a
+model configured there is not used, and without a model Hermes would choose one of its own over a
+provider you may have no key for. The refusal names the three ways to set a model. To run on your
+own profile instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
+
 ## How it binds
 
 Unlike Claude Code or OpenCode (where the harness *is* the process), Hermes runs as a long-lived

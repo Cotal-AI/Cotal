@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -40,6 +40,10 @@ import {
 } from "./queue-fallback.js";
 import {
   MeshAgent,
+  AguiEmitter,
+  AguiEmitterHolder,
+  EventWal,
+  FileSubjectFrontier,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
@@ -51,10 +55,16 @@ import {
   scrubLaunchMaterial,
   startControlServer,
   cotalToolSpecs,
+  ensureEventWalDir,
+  resolveEventsStateRoot,
   type AgentConfig,
   type InboxItem,
+  type PrincipalLock,
   type ToolResult,
 } from "@cotal-ai/connector-core";
+import { principalKey } from "@cotal-ai/core";
+import { createJcodeMapper, type JcodeMapper, type PositionedJcodeJournalRecord } from "./agui-map.js";
+import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 const RELAY_TIMEOUT_MS = 30_000;
@@ -373,6 +383,8 @@ export async function runJcodeHost(): Promise<void> {
   // the sole reader of Cotal material and every COTAL_ key is deleted from the environment before
   // the private instance is launched, so a value read at launch time would always be absent.
   const requestTimeoutMs = requestTimeoutOverrideMs();
+  const eventsArmed = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "");
+  const eventsWorkspaceRoot = eventsArmed ? resolveEventsStateRoot(process.env) : undefined;
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
@@ -413,6 +425,69 @@ export async function runJcodeHost(): Promise<void> {
   const agent = new MeshAgent(config);
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
+
+  let eventLock: PrincipalLock | undefined;
+  let mapper: JcodeMapper | undefined;
+  const events = eventsArmed
+    ? new AguiEmitterHolder<PositionedJcodeJournalRecord>(
+        async (journalPath: string) => {
+          const workspaceRoot = eventsWorkspaceRoot!;
+          if (!sessionId) throw new Error("jcode connector: cannot start AG-UI without a Harness session id");
+          const threadId = sessionId;
+          const expectedPath = jcodeJournalPath(socketHome.jcodeHome, threadId);
+          if (resolve(journalPath) !== resolve(expectedPath))
+            throw new Error(`jcode connector: event source ${journalPath} does not belong to session ${threadId}`);
+          const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+          const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+          eventLock = lock;
+          const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
+          const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+          // Persist the pre-public boundary before start returns. drive() waits for this factory, so
+          // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
+          // wins over the current journal end and replays everything appended after that cursor.
+          await initializeJcodeEventBoundary(journalPath, wal);
+          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
+          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+          return AguiEmitter.start<PositionedJcodeJournalRecord>({
+            endpoint: agent.ep,
+            wal,
+            subjectFrontier,
+            source: positionedJcodeJournalSource(new JcodeJournalSource(journalPath)),
+            map: mapper.map,
+          });
+        },
+        (error: Error) => {
+          writeJcodeDiagnostic(`[cotal-jcode] AG-UI emitter stopped: ${error.message}\n`);
+          if (!stopping) void shutdown(1);
+        },
+        (runId: string) => mapper?.forgetOpenRun(runId),
+      )
+    : undefined;
+  let eventJournal: string | undefined;
+
+  const closeEventRun = (error?: Error): void => {
+    if (!events?.running || !eventJournal) return;
+    events.flush(eventJournal);
+    events.closeRun(Date.now(), error ? { message: error.message, code: error.name } : undefined);
+  };
+
+  const ensureEventsBound = async (): Promise<void> => {
+    if (!events || !eventJournal || events.running) return;
+    events.adopt(eventJournal);
+    await events.settled();
+    if (events.failure) throw events.failure;
+  };
+
+  const releaseEventLock = async (): Promise<void> => {
+    const lock = eventLock;
+    eventLock = undefined;
+    if (!lock) return;
+    try {
+      await lock.release();
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] event WAL lock release failed: ${(error as Error).message}\n`);
+    }
+  };
 
   let instance: LaunchedInstance | undefined;
   let launchIdentity: ProcessIdentity | undefined;
@@ -724,6 +799,15 @@ export async function runJcodeHost(): Promise<void> {
     await retireRelay(relayServer, relay);
     let exit = code;
     try {
+      closeEventRun();
+      await events?.settled();
+      await events?.close();
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] AG-UI shutdown failed: ${(error as Error).message}\n`);
+      exit = 1;
+    }
+    await releaseEventLock();
+    try {
       await stopPrivateJcode();
     } catch (error) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
@@ -818,6 +902,14 @@ export async function runJcodeHost(): Promise<void> {
 
   const drive = async (): Promise<void> => {
     if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
+    if (events) {
+      await ensureEventsBound();
+      await events.settled();
+      if (events.failure) {
+        writeJcodeDiagnostic(`[cotal-jcode] refusing a new turn because the AG-UI event plane stopped: ${events.failure.message}\n`);
+        return;
+      }
+    }
     driving = true;
     if (pendingKickoff !== undefined && steering)
       writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
@@ -936,6 +1028,8 @@ export async function runJcodeHost(): Promise<void> {
         return { dispatched };
       });
       await runTurn;
+      closeEventRun();
+      await events?.settled();
       // The SDK's event iterator returns normally when its socket closes. That is not a successful
       // turn: the model may never have received the injection, so preserving the inbox batch is the
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
@@ -956,6 +1050,8 @@ export async function runJcodeHost(): Promise<void> {
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
     } catch (error) {
+      closeEventRun(error as Error);
+      await events?.settled();
       surfacedIds = [];
       consecutiveFailures++;
       writeJcodeDiagnostic(
@@ -1516,6 +1612,24 @@ export async function runJcodeHost(): Promise<void> {
 
   const watchClient = (connected: JcodeClient): void => {
     connected.on("close", () => void recoverBridge(connected));
+    const flushNativeEvent = (event: ApiEvent): void => {
+      if (!events?.running || !eventJournal || !("session_id" in event) || event.session_id !== sessionId) return;
+      events?.flush(eventJournal);
+    };
+    // The live API is only a wake signal. The holder serializes every flush and the source rereads
+    // the append-only journal from its durable cursor, so several deltas may enqueue redundant
+    // empty reads but can neither reorder nor duplicate a record.
+    for (const kind of [
+      "text_delta",
+      "reasoning_delta",
+      "reasoning_done",
+      "tool_start",
+      "tool_input_delta",
+      "tool_exec",
+      "tool_done",
+      "token_usage",
+    ] as const)
+      connected.on(kind, flushNativeEvent);
     connected.on("session_status", (event: ApiEvent) => {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
       // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
@@ -1526,6 +1640,7 @@ export async function runJcodeHost(): Promise<void> {
     });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {
+        closeEventRun();
         turnActive = false;
         void finishHostIdleTurn();
       }
@@ -1636,6 +1751,9 @@ export async function runJcodeHost(): Promise<void> {
     const resumed = prior !== undefined;
     sessionId = session.session_id;
     agent.setContextId(sessionId);
+    if (events) {
+      eventJournal = jcodeJournalPath(socketHome.jcodeHome, sessionId);
+    }
     // A `provider/model` specifier was forwarded verbatim to an endpoint that wants a bare id, and
     // the refusal came back as `model_not_found` naming neither the connector nor the prefix as the
     // cause. Refuse it here, where the accepted form can actually be named (#785).
@@ -1834,6 +1952,10 @@ export async function runJcodeHost(): Promise<void> {
     watchClient(client);
     turnActive = readinessTurnOpen;
     await agent.start();
+    // A readiness proof may join on tool_done while its native turn is still open. Binding there
+    // would publish the pre-join orientation tool records and merge the next requested turn into the
+    // same AG-UI run. A completed proof can bind now; an open one binds in drive() after turn_done.
+    if (!readinessTurnOpen) await ensureEventsBound();
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).

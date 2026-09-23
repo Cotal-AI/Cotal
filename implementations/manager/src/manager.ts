@@ -320,6 +320,8 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
+  /** The selected registration requires every launched connector session to publish events. */
+  eventsRequired?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** P2 item 6: the broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -498,6 +500,11 @@ export interface ManagerResumeAgent {
     forkSource?: string;
     /** Exact current host session reported by a continuation-capable connector. */
     sessionId?: string;
+    /** The connector's session pointer file on THIS host, when it declares one. Non-secret like
+     *  every other reference this document carries: a path, never the session bytes. A preservation
+     *  cut captures it so the destination can reopen the same session; without it the checkpoint
+     *  carries no pointer and the continuity class is capped below what the connector declares. */
+    sessionStatePath?: string;
     /** Values are deliberately not persisted: connector launch options are opaque and may be secrets. */
     unresolvedLaunchOptionKeys?: string[];
   };
@@ -586,8 +593,7 @@ export interface StartAgentOpts {
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
-   *  off; `true` (the `--events` flag) opts in. It is the only structured view of what a session
-   *  did: the prose mirror this replaced is gone. */
+   *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
@@ -619,6 +625,9 @@ export interface StartAgentOpts {
   cwd?: string;
   /** Internal resolved-manifest provenance used by the preservation inventory. */
   launchRef?: { runId: string; requested: string; hash: string };
+  /** The §13.2 rail this spawn rode. Class-rail harness refusals name `--on`; instance-pinned
+   *  refusals stay local. Direct `startAgent` (roster / `--spawn`) is not a class request. */
+  route?: "one" | "all" | "inst";
 }
 
 interface ManagedLaunch {
@@ -927,6 +936,7 @@ export class Manager {
   private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
+  private readonly eventsRequired: boolean;
   /** P2 item 6: the operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
@@ -1180,6 +1190,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
@@ -2117,6 +2128,9 @@ export class Manager {
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         sessionId: a.restart?.armed ? this.readManagedSession(a) : a.launch.sessionId,
+        // Additive and only when the connector supplied one. A seat with no pointer records no
+        // field, which is what keeps an older inventory and a fresh one the same document shape.
+        ...(a.restart?.sessionStatePath ? { sessionStatePath: a.restart.sessionStatePath } : {}),
         unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
       },
       dependencies,
@@ -2751,7 +2765,7 @@ export class Manager {
       }),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
-      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h))),
+      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h, ctx.subject.route))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -2811,7 +2825,7 @@ export class Manager {
       // P2 item 2 (ruling 3): manifest `launch` is an ACTION through the SAME chokepoint as spawn -
       // the manifest resolve + owner-equality authz run in opLaunch's accept path, then the goal
       // drives progress + terminal. The acceptance floor is the allocated identity + goal coords.
-      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h))),
+      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),
       resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
       commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
       finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
@@ -3825,7 +3839,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
     // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
     // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
@@ -3890,6 +3904,7 @@ export class Manager {
         allowPublish,
         shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
         ...(supervise !== undefined ? { supervise } : {}),
+        route,
       },
       caller,
       hooks,
@@ -3928,6 +3943,7 @@ export class Manager {
         const reason = (error as Error).message;
         console.error(`! manager boot: connector inventory unavailable - ${reason}`);
         this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
+        console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
         return;
       }
     } else {
@@ -3951,6 +3967,29 @@ export class Manager {
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
+    if (!this.classSpawnEnabled())
+      console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
+  }
+
+  /** True when at least one declared connector is available. Empty inventory (or a failed
+   *  inventory load) skips the class `one` subscribe for spawn/launch so this member cannot
+   *  consume an unpinned request a sibling could serve. */
+  private classSpawnEnabled(): boolean {
+    return this.connectorStatuses.some((row) => row.state === "available");
+  }
+
+  private omitClassCommands(): readonly string[] | undefined {
+    return this.classSpawnEnabled() ? undefined : ["spawn", "launch"];
+  }
+
+  /** Named harness-unavailable refusal. On the class rail a partial inventory must not look
+   *  like the space cannot launch: name `--on` so the caller can pin a sibling. The standing
+   *  serve credential cannot enumerate sibling `svc.*.status` inventories, so the residual
+   *  is the flag, not a list of capable instance ids. Instance-pinned calls keep the local
+   *  reason only. */
+  private harnessUnavailableError(reason: string, route: "one" | "all" | "inst"): string {
+    if (route !== "one") return reason;
+    return `${reason}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
   }
 
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
@@ -4039,7 +4078,7 @@ export class Manager {
    *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
    *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
    *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
-  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks): Promise<ControlReply> {
+  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
     const runId = String(args.runId ?? "").trim();
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
@@ -4084,7 +4123,7 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    const reply = await this.startAgent(launchAgentToStartOpts(la, configPath, spec.owner, runId), caller, hooks);
+    const reply = await this.startAgent({ ...launchAgentToStartOpts(la, configPath, spec.owner, runId), route }, caller, hooks);
     if (reply.ok)
       // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
       // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
@@ -4187,13 +4226,14 @@ export class Manager {
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
     const bootStatus = this.connectorStatuses.find((row) => row.agent === agent);
-    if (bootStatus?.state === "unavailable") return { ok: false, error: bootStatus.reason };
+    const route = opts.route ?? "inst";
+    if (bootStatus?.state === "unavailable") return { ok: false, error: this.harnessUnavailableError(bootStatus.reason ?? `${agent} harness is unavailable`, route) };
     // A connector registered after boot has no inventory row. Keep the existing pre-mint backstop
     // for that dynamic library-composition case; ordinary installed connectors were checked at boot.
     if (!bootStatus) {
       const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
       if (missing.length)
-        return { ok: false, error: `${agent} harness needs ${missing.join(", ")} on PATH - not found` };
+        return { ok: false, error: this.harnessUnavailableError(`${agent} harness needs ${missing.join(", ")} on PATH - not found`, route) };
     }
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
@@ -4347,19 +4387,25 @@ export class Manager {
       name = this.uniqueName(identityName);
     }
     this.reserved.add(name);
-    // The AG-UI event plane (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1). Refused HERE, before
+    // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
     // anything is minted: a connector that cannot
     // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
     // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
     // the principal's owner is resolved further down, so deriving it from anything in scope here
     // would mean guessing at the identity the child will actually connect as. It is added at the
     // accept seam below, where the allocated triple exists.
-    const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
+    if (this.eventsRequired && opts.events === false) {
+      this.reserved.delete(name);
+      return { ok: false, error: `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed` };
+    }
+    const events = this.eventsRequired || opts.events !== false;
     if (events && !connector.eventChannel) {
       // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
       // the next spawn of this persona its un-suffixed name and nothing reports why.
       this.reserved.delete(name);
-      return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane, but events was requested` };
+      return { ok: false, error: this.eventsRequired
+        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
@@ -4589,6 +4635,7 @@ export class Manager {
         allowPublish,
         capabilities,
         events,
+        eventsRequired: this.eventsRequired,
         mcpServers,
         envAllow,
         resolvedBinaries: bootStatus?.binaries,
@@ -5620,6 +5667,7 @@ export class Manager {
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+      classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
     };
   }
@@ -5731,6 +5779,7 @@ export class Manager {
             for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
             return undefined;
           },
+          ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
         });
       } catch (e) {
         await nc.drain().catch(() => nc.close());
@@ -5961,6 +6010,7 @@ export class Manager {
           for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
           return undefined;
         },
+        ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
       });
     } catch (e) {
       await nc.drain().catch(() => nc.close());

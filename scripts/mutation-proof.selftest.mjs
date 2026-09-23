@@ -922,9 +922,18 @@ const child = spawn(process.execPath, [TOOL,
   "--file", "src/impl.js", "--find", "if (n > 10)", "--replace", "if (false)",
   "--expect-red", "oversized values are refused",
 ], { cwd: root, stdio: "ignore" });
+// Wait for the REPLACEMENT TEXT, not for a dirty tree. `git status --porcelain` is non-empty from
+// the moment the tool writes its own lock at `.cotal/mutation-proof.lock`, which it does at startup,
+// about 500ms in and roughly 3.7s before the mutation is applied (measured: dirty at 500ms, mutated
+// at 4250ms, with a 4s baseline in between). Gating on dirt therefore fired during the BASELINE run
+// and the kill landed while nothing was mutated at all, so this control asserted the one thing it
+// was written to rule out. The tree then came back clean either way, because releasing the lock
+// leaves `.cotal/` empty and git does not report empty directories, so the byte-identical check
+// below passed and only the exit-status check saw anything wrong (#1701).
+const mutantPath = join(root, "src", "impl.js");
 let observedApplied = false;
 for (let i = 0; i < 600 && !observedApplied; i++) {
-  observedApplied = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() !== "";
+  observedApplied = readFileSync(mutantPath, "utf8").includes("if (false)");
   if (!observedApplied) await new Promise((done) => setTimeout(done, 50));
 }
 check("the kill lands while a mutation is really applied (the control that would otherwise lie)", observedApplied);

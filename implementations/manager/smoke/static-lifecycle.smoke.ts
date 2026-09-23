@@ -301,7 +301,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   // ── 1. Activation: durable identity + bounded ledgered credential ─────────
-  const spawnA = await mgr.startAgent({ name: "worker", agent: "smoke-sl" });
+  const spawnA = await mgr.startAgent({ name: "worker", agent: "smoke-sl", events: false });
   check("spawn A succeeds", spawnA.ok === true, spawnA);
   const uidA = spawnA.ok ? (spawnA.data as { lifecycleUid: string }).lifecycleUid : "";
   const managedA = M.agents.get("worker")!;
@@ -367,7 +367,7 @@ try {
       brokerA?.kicked === 2 && brokerA.remaining === 0 && brokerA.scanComplete === true && brokerA.verifiedGone === true, auditA);
 
   // ── 5. Same-name respawn over the retired slot ─────────────────────────────
-  const spawnB = await mgr.startAgent({ name: "worker", agent: "smoke-sl" });
+  const spawnB = await mgr.startAgent({ name: "worker", agent: "smoke-sl", events: false });
   check("same-name respawn AFTER the terminal succeeds", spawnB.ok === true, spawnB);
   const uidB = spawnB.ok ? (spawnB.data as { lifecycleUid: string }).lifecycleUid : "";
   const idB = M.agents.get("worker")!.id;
@@ -379,7 +379,7 @@ try {
 
   // ── 6. F3 rollback: a crash AFTER activation drives the exact-op terminal ──
   crashLaunch = true;
-  const spawnC = await mgr.startAgent({ name: "crashy", agent: "smoke-sl" });
+  const spawnC = await mgr.startAgent({ name: "crashy", agent: "smoke-sl", events: false });
   crashLaunch = false;
   check("a spawn that throws at buildLaunch fails WITH the injected crash (not an earlier refusal)", spawnC.ok === false && /injected buildLaunch crash/.test(spawnC.error ?? ""), spawnC);
   const cSettled = await until(async () => (await readSlotOnly("crashy"))?.phase === "retired", 30_000, "the crashed spawn's rollback terminal");
@@ -464,7 +464,7 @@ try {
     { calls: plainResume.cleanupCalls, slot: plainResume.slot });
 
   // ── 8. F2: endpointCapabilities refusal ────────────────────────────────────
-  const spawnEp = await mgr.startAgent({ name: "epcap", agent: "smoke-sl", ...({ endpointCapabilities: [{ endpoint: "x", verb: "call" }] } as Record<string, unknown>) });
+  const spawnEp = await mgr.startAgent({ name: "epcap", agent: "smoke-sl", events: false, ...({ endpointCapabilities: [{ endpoint: "x", verb: "call" }] } as Record<string, unknown>) });
   check("a static spawn carrying endpointCapabilities is REFUSED (F2, fail-closed in code)", spawnEp.ok === false && /endpointCapabilities/.test(spawnEp.error ?? ""), spawnEp);
 } finally {
   await (mgr as unknown as { stop?: () => Promise<void> }).stop?.().catch(() => {});

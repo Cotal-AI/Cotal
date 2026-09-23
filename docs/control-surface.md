@@ -168,7 +168,22 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run. `ps` and
+not run.
+
+A manager whose boot inventory marked every declared connector unavailable does not subscribe
+`spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
+instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a
+caller that pins this instance with `--on` still gets a named harness refusal. `describe`
+still lists the commands: the instance rail serves them, and `describe` itself stays on the
+class rail (SPEC 13.7). An unpinned `spawn` can therefore bind-fence: `describe` may land on
+the skip member while `spawn` lands on a sibling, the command was not run, and the caller
+re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
+A manager that can launch some connectors keeps the class rail. If the queue hands it a
+harness its inventory marked unavailable, the refusal names `--on` because the standing serve
+credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
+prints it).
+
+`ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled as registered

@@ -466,6 +466,31 @@ try {
   write("bin/smoke/local-packer.smoke.ts",
     'function execFileSync(_c, _a) { return ""; }\n' +
     'execFileSync("npm", ["pack", join(ROOT, "packages", "seat")]);\n');
+  // #1434, the pack cell: the declared root is the flag VALUE of `--pack-destination`, so the
+  // tarball is WRITTEN into it and the tree packed is the positional that follows. Reading every
+  // non-literal element credits the suite with observing an artifact built from a package it only
+  // wrote a file into. `real-packer` above is the accept control for the same call shape.
+  write("bin/smoke/pack-destination.smoke.ts",
+    'import { execFileSync } from "node:child_process";\n' +
+    'execFileSync("npm", ["pack", "--pack-destination", join(ROOT, "packages", "seat"), join(ROOT, "packages", "other")]);\n');
+  // #1434, the copy cell: `cpSync` copies whatever its SOURCE expression evaluates to. Here that is
+  // the return of a helper, and the declared root sits inside an ARGUMENT of that helper, naming
+  // nothing that is copied. `assembling` above is the accept control.
+  write("bin/smoke/copy-argument-root.smoke.ts",
+    'import { cpSync } from "node:fs";\n' +
+    'const elsewhere = (p) => join(ROOT, "packages", "other");\n' +
+    'cpSync(elsewhere(join(ROOT, "packages", "seat")), join(ROOT, "clone"), { recursive: true });\n');
+  // #1434, the worker-entry cell: the same dist URL under an `entry:` key on an object that is
+  // bound and then only printed. `worker-entry.smoke.ts` is the accept control, and
+  // `worker-entry-unused.smoke.ts` pins the unbound-URL half of the same fact.
+  write("bin/smoke/entry-object-unused.smoke.ts",
+    'const options = { entry: new URL("../../packages/seat/dist/index.js", import.meta.url) };\n' +
+    'console.log(options);\n');
+  // The same object handed to a LOCAL function spelled like the real helper. Nothing is imported,
+  // so no thread starts, and the only thing vouching for the launch would be the spelling.
+  write("bin/smoke/entry-local-helper.smoke.ts",
+    'function runInWorker(_input, _options) { return { done: null }; }\n' +
+    'runInWorker({ run: 1 }, { entry: new URL("../../packages/seat/dist/index.js", import.meta.url) });\n');
   // The reader analogue of `foreign-launcher`, and the cell that pins the EMPTY seed specifically.
   // The callee carries the canonical spelling and is genuinely imported, so no shadowing
   // declaration exists to catch it; the only thing wrong is the module it comes from. Seeding the
@@ -888,6 +913,12 @@ try {
   result = run("local-copier");
   check("a local function spelled like a copier does not witness a copy", result.status !== 0 && /REFUSED local-copier/.test(result.stderr), report(result));
 
+  // #1434: the copier's SOURCE argument is evaluated, not scanned. A root sitting inside an
+  // argument of the expression that produces the source names nothing the call copies.
+  config("copy-argument-root", { suite: ["bin/smoke/copy-argument-root.smoke.ts"], command: tally, assembles: ["packages/seat"], mutations: [mutation("packages/seat/package.json")] });
+  result = run("copy-argument-root");
+  check("a root mentioned inside the copy source's own argument is not a copy", result.status !== 0 && /REFUSED copy-argument-root/.test(result.stderr), report(result));
+
   // The empty-seed cell. `local-reader` above is caught by either half of the rule, so it cannot
   // speak for the seed on its own; this one can, because the callee is imported and unshadowed and
   // the only fault is its module.
@@ -1266,6 +1297,19 @@ try {
   result = run("worker-entry-unused");
   check("a dist URL that is only logged never starts a thread", result.status !== 0 && /REFUSED worker-entry-unused/.test(result.stderr), report(result));
 
+  // #1434, the route `worker-entry-unused` does not reach: the URL IS under an `entry:` key, so
+  // the property is present exactly as in the accept control, and the object carrying it is only
+  // printed. Writing the key is not handing it to anything that runs it.
+  config("entry-object-unused", { suite: ["bin/smoke/entry-object-unused.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("entry-object-unused");
+  check("an entry object that is only logged never starts a thread", result.status !== 0 && /REFUSED entry-object-unused/.test(result.stderr), report(result));
+
+  // And the provenance half, matching the launcher, reader and copier rules: the receiver has to be
+  // an imported binding. A local function spelled like the helper starts nothing.
+  config("entry-local-helper", { suite: ["bin/smoke/entry-local-helper.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("entry-local-helper");
+  check("an entry handed to a local function spelled like the worker helper is refused", result.status !== 0 && /REFUSED entry-local-helper/.test(result.stderr), report(result));
+
   // `build:emit` is a real build: the package declares it and it runs a compiler.
   config("build-variant", { suite: ["bin/smoke/dist-import.smoke.ts"], command: `pnpm --filter @cotal-ai/seat build:emit && ${tally}`, mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("build-variant");
@@ -1521,6 +1565,12 @@ try {
   config("local-packer", { suite: ["bin/smoke/local-packer.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("local-packer");
   check("a local function spelled like a launcher does not pack anything", refusedForReach("local-packer", result), report(result));
+
+  // #1434: the packed tree is the positional after `pack`, not every non-literal element. A root
+  // the call only writes the tarball INTO is a mention in the slot one to the left of the work.
+  config("pack-destination", { suite: ["bin/smoke/pack-destination.smoke.ts"], command: seatBuild, mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("pack-destination");
+  check("a root named as the pack DESTINATION is not a packed root", refusedForReach("pack-destination", result), report(result));
 
   // B5 reachability: a launch runs only if control reaches it.
   config("called-entry", { suite: ["bin/smoke/called-entry.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
@@ -1788,7 +1838,7 @@ try {
  * smaller first number that nothing compares against. The count is the only thing that notices, so
  * it is asserted rather than reported. Raise it in the same change that adds a cell.
  */
-const EXPECTED_CELLS = 170;
+const EXPECTED_CELLS = 174;
 // `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
 // report-all mode, where the run continues, and the exit status follows it rather than the literal.
 console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, ${failed} failed`);

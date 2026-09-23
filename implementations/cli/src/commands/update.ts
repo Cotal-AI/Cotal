@@ -18,6 +18,7 @@ import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
+import { ConnectRefusal, isWorkspaceTargetError, type ControlTarget } from "@cotal-ai/workspace";
 import { legacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
@@ -225,12 +226,31 @@ async function reconcileCurrent(
   }
 }
 
+/** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
+ *  down with none selected. Either way no manager is running. A mesh selected with `--space` or
+ *  from inside its project, a named space, a broken record, or a dead broker each still names a
+ *  manager this command was asked about. */
+function isNoMeshRefusal(e: unknown): boolean {
+  return e instanceof ConnectRefusal && isWorkspaceTargetError(e.cause) && e.cause.code === "no-meshes";
+}
+
 async function reportRunningManager(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
-  const target = await resolveControlTarget({
-    ...(typeof flags.space === "string" ? { space: flags.space } : {}),
-    ...(typeof flags.server === "string" ? { server: flags.server } : {}),
-    ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
-  }, "control-caller-admin");
+  let target: ControlTarget;
+  try {
+    target = await resolveControlTarget({
+      ...(typeof flags.space === "string" ? { space: flags.space } : {}),
+      ...(typeof flags.server === "string" ? { server: flags.server } : {}),
+      ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
+    }, "control-caller-admin", undefined, { onRefusal: "throw" });
+  } catch (e) {
+    // No running manager means no custody to preserve and nothing this update could interrupt. Only
+    // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
+    // with none selected. A selected mesh that is down, a named space that is not running, a broken
+    // record, or a dead broker each still names a manager this command was asked about, and stays a
+    // refusal.
+    if (isNoMeshRefusal(e)) return "none";
+    throw e;
+  }
   const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
   if (!status.ok) {
     // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
