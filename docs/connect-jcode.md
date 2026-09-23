@@ -231,6 +231,14 @@ Jcode rejected that bare id, and `model_mismatch` means a requested variant coul
 active provider route for the selected model. `private_state` names a different step: the seat's
 private home, its credential mirror, or its short socket alias could not be prepared.
 
+Stored sessions have their own refusals. `sessions_enumeration_failed` means listing the home's
+prior sessions killed the harness. `sessions_unwritable` means the home's `sessions/` directory
+exists but will not take a write: the harness would accept the seat and die only while persisting
+its first session, so the connector refuses before that launch and names the directory and the
+errno. Fix the directory's permissions on the seat's private state and start again; the connector
+never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
+alone.
+
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
 and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
