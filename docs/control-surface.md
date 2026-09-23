@@ -202,12 +202,14 @@ unreachable, still surfaced, and the scatter is still not complete.
 
 The probe is supplied by the **caller**, not invented by the scatter. Asking about an instance is
 a publish on that instance's rail, and a credential that holds no row for it is refused by the
-broker asynchronously, while the publish itself returns normally. A refused probe is therefore
-silent, and silence is what a live but slow instance looks like. Only the layer that
+broker asynchronously, while the publish itself returns normally. The probe verb watches for that
+refusal and raises it as `permission-denied` naming the rail, so it is never mistaken for a quiet
+instance, and it never burns the probe budget waiting out a refusal. Only the layer that
 minted the credential knows which ids it may ask about, so that layer asks about those and no
-others, and prints any refusal the broker raises anyway rather than letting it expire into a
-timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
-to the frozen ids, and scatters on a second.
+others. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
+to the frozen ids, and scatters on a second; a refusal the broker raises anyway is printed and
+the instance's row says the probe was refused, which is a fact about the credential, not about
+the instance.
 
 This does not help against an instance that is **connected but not answering**. A hung manager
 holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full

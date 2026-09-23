@@ -1878,7 +1878,11 @@ facts.
 - **cast**, the same subjects and grants (`replyExpected: false`): fire-and-forget,
   at-most-once, the responder MUST NOT reply and the caller never reads the rail (the nonce
   is present but unused). A cast to a journaled command is `class-mismatch`; journaled work
-  goes through submissions.
+  goes through submissions. In the NATS binding a publish violation is asynchronous — the
+  publish call returns normally while the broker refuses — so a caller-side cast
+  implementation MUST watch the connection status for a violation on the cast's own subject
+  and raise `permission-denied` naming that subject, exactly as a call does; a cast
+  implementation MUST NOT resolve as though a refused publish had been cast.
 - **watch**; observe a record (KV watch; fell-behind ⇒ re-read, §13.4) or an event topic
   (live subscription within the read grant plus filtered replay from the event stream).
   Per-key and per-goal subjects carry read containment; a watch grant names the exact subtree.
@@ -1934,7 +1938,12 @@ facts.
   all-expected-replied or deadline, in which case the result is explicitly partial with
   `missing` / `churn` / `unexpected` / `duplicate` / `late` classifications (a churned slot
   reports as `churn`, not `missing`). An empty or unreadable registry is
-  `failed-precondition`, not an empty success. Deadline mandatory.
+  `failed-precondition`, not an empty success. Deadline mandatory. A per-instance liveness
+  probe that asks the broker about an instance's own rail is such a cast, and a refused
+  probe publish MUST surface as that same `permission-denied` refusal naming the refused
+  subject, never as a liveness verdict: only the broker's no-responders answer is a
+  liveness fact, and a refusal licenses nothing (a caller that swallowed it into `unknown`
+  would read a permission problem as "no verdict" and pay the full budget for it).
 
 ### 13.6 Composites
 
