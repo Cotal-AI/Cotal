@@ -45,6 +45,9 @@ export interface AuthProvider extends Extension {
    * trust bundle.
    */
   prepareServer(input: AuthPrepareInput): Promise<AuthPrepared>;
+  /** Read this space's already-provisioned operator-signed accounts for a whole-broker render.
+   *  A missing or invalid account on an enabled space must refuse the render, not shrink it. */
+  preloadAccounts(opts: { store: SecretStore; space: string }): Promise<Array<{ pub: string; jwt: string }>>;
   /**
    * CLIENT side: produce the connect material for a user-mode space from THIS machine's session
    * state (the login cache + the provider's space-scoped state — secrets in `store`, the rest

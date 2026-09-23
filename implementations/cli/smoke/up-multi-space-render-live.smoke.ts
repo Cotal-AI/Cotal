@@ -55,6 +55,8 @@ process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
 const { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
+const { userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { ensureCalloutAuth, ensurePinnedIdp } = await import("@cotal-ai/auth");
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -134,6 +136,14 @@ try {
   for (const acct of [alpha, beta]) saveSpaceAccountAuth(authDir(root), acct);
   const betaCreds = await mintCreds(composeSpaceAuth(broker, beta), newIdentity(), "provisioner");
   const alphaCreds = await mintCreds(composeSpaceAuth(broker, alpha), newIdentity(), "provisioner");
+  const siblingCallouts = [];
+  for (const acct of [beta, await createSpaceAccountAuth(broker, "gamma")]) {
+    if (acct.space === "gamma") saveSpaceAccountAuth(authDir(root), acct);
+    ensurePinnedIdp(userAuthStateDir(root, acct.space), "http://127.0.0.1:12345/api/auth");
+    siblingCallouts.push(await ensureCalloutAuth(workspaceSecretStore(root), {
+      space: acct.space, operatorSeed: broker.operator.seed, accountPub: acct.account.pub,
+    }));
+  }
 
   console.log("1) `cotal up --space alpha` renders every tenant the auth dir holds");
   const port = await freePort();
@@ -149,6 +159,8 @@ try {
   ok("server.conf preloads the BOOTED tenant's account", conf.includes(alpha.account.pub));
   ok("server.conf preloads the SIBLING tenant's account (not evicted by a boot that never named it)",
     conf.includes(beta.account.pub), conf.split("resolver_preload")[1]?.slice(0, 400));
+  ok("the first render preloads EVERY sibling callout account",
+    siblingCallouts.every(({ account }) => conf.includes(`${account.pub}: ${account.jwt}`)));
 
   console.log("\n2) the sibling is trusted by the RUNNING broker, not merely present in the file");
   ok("a cred minted under beta connects to the broker alpha's `up` started", await connects(port, betaCreds));
@@ -158,7 +170,21 @@ try {
   for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
   ok("the first broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
 
-  console.log("\n3) an unreadable account record REFUSES the boot (never a silently narrowed resolver)");
+  console.log("\n3) a second boot keeps every persisted sibling callout account");
+  const second = startUp(port, "alpha");
+  for (let i = 0; i < 200 && !(await connects(port, alphaCreds)); i++) {
+    if (second.exitCode !== null) break;
+    await sleep(150);
+  }
+  ok("the second broker answers", await connects(port, alphaCreds), logOf(second).slice(-1500));
+  const secondConf = readFileSync(confPath, "utf8");
+  ok("the second render preloads EVERY sibling callout account",
+    siblingCallouts.every(({ account }) => secondConf.includes(`${account.pub}: ${account.jwt}`)));
+  await stopBoot(second);
+  for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
+  ok("the second broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
+
+  console.log("\n4) an unreadable account record REFUSES the boot (never a silently narrowed resolver)");
   writeFileSync(spaceAccountPath(authDir(root), "gamma"), JSON.stringify({ space: "gamma" })); // no account material
   const before = readFileSync(confPath, "utf8");
   const port2 = await freePort();
