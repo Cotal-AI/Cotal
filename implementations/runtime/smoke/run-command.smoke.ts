@@ -499,6 +499,17 @@ let P = "";
 // walk accounts for everything, admissible), and one whose decision the edit DROPS (the L5004
 // orphan the table exists to refuse).
 {
+  // THE SENTINEL FIRST, so a refusal that ends the process is graded rather than taken: every
+  // gate in this command rides `process.exit(1)`, and without the swap the suite dies at the
+  // first one instead of failing the cell (the dispatch mutation's red was a silent exit until
+  // this swap existed). The swap stays armed for the whole block and is restored after it.
+  class Exited extends Error { constructor(readonly code: number | string | null | undefined) { super(`exit ${code}`); } }
+  const origExit = process.exit;
+  const origError = console.error;
+  process.exit = (((code?: number | string | null) => { throw new Exited(code); }) as typeof process.exit);
+  console.error = (...a: unknown[]) => { ERRS.push(a.map(String).join(" ")); };
+  let exitSentinel: Exited | undefined;
+  try {
   // The admissible case first. `holdAtCheckpoint` + an answer leaves a run whose journal holds one
   // recorded decision; the edit is the recorded source verbatim, so every step survives it.
   reset();
@@ -538,22 +549,16 @@ let P = "";
   const filed2 = await asOperator(rid2, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid2)).catch(() => undefined);
   c("...and the refused check filed nothing either", filed2 !== undefined && filed2.length === 0, filed2);
 
-  // A commit-side override is refused BY NAME, before any read of the run. The refusal rides
-  // `process.exit(1)` like every other gate in this command, so the exit is converted to a thrown
-  // sentinel the way the usage suite does, and the sentence is graded off stderr.
+  // A commit-side override is refused BY NAME, before any read of the run; the sentinel from the
+  // head of this block converts the gate's exit into the value graded here.
   reset();
-  class Exited extends Error { constructor(readonly code: number | string | null | undefined) { super(`exit ${code}`); } }
-  const origExit = process.exit;
-  const origError = console.error;
-  process.exit = (((code?: number | string | null) => { throw new Exited(code); }) as typeof process.exit);
-  console.error = (...a: unknown[]) => { ERRS.push(a.map(String).join(" ")); };
   let override: Exited | Error | undefined;
   try { await wf(["migrate", rid2], { file: DROP, "discard-approvals": true }); }
   catch (e) { override = e as Exited; }
-  finally { process.exit = origExit; console.error = origError; }
   c("a commit-side override is refused by name",
     override instanceof Exited && ERRS.some((l) => l.includes("--discard-approvals") && l.includes("only checks")),
     override instanceof Error ? override.message.slice(0, 160) : ERRS);
+  } finally { process.exit = origExit; console.error = origError; void exitSentinel; }
 }
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
