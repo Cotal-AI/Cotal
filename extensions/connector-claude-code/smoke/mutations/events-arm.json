@@ -27,10 +27,10 @@
     {
       "name": "A1 read the grant as an instruction, the confusion the suite is named for",
       "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "if (opts.events === true) {",
-      "replace": "if (opts.events === true || (opts.allowPublish ?? []).some((c) => c.startsWith(\"events.\"))) {",
-      "expectRed": "a hand-written event-channel grant does NOT arm the emitter",
-      "cell": "a hand-written event-channel grant does NOT arm the emitter",
+      "find": "if (opts.events !== false) {",
+      "replace": "if (opts.events !== false || (opts.allowPublish ?? []).some((c) => c.startsWith(\"events.\"))) {",
+      "expectRed": "a hand-written event-channel grant does NOT override an explicit opt-out",
+      "cell": "a hand-written event-channel grant does NOT override an explicit opt-out",
       "note": "Written the way it would plausibly be written: it looks like the connector helpfully noticing what it is allowed to do."
     },
     {
