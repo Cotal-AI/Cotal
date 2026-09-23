@@ -446,6 +446,38 @@ console.log("C2) advertised space catalog cache");
   check("a fetched candidate is committed as not applied before the consumer's first write and as applied after its last",
     observing[0]?.state === "updated" && duringApply?.applied === false && duringApply?.etag === '"v1"' && cachedAccount().applied === true,
     { result: observing[0]?.state, duringApply, after: cachedAccount() });
+  // A selection naming a space the snapshot no longer carries is cleared BEFORE the first registry
+  // write. The consumer's first write here is the removal itself, so the cell reads the selection
+  // from inside the shipped registry removal: a death right after that removal would otherwise
+  // leave the selection pointing at nothing, and a later application could no longer tell the
+  // name had been this account's.
+  const workspaceMod = await import("@cotal-ai/workspace");
+  const stalePrior = JSON.parse(readFileSync(cacheFile, "utf8"));
+  const staleAccount = Object.values(stalePrior.accounts as Record<string, { snapshot: { spaces: { slug: string }[] } }>)[0];
+  process.env.COTAL_HOME = catalogDir;
+  workspaceMod.recordMesh({ ...workspaceMod.findMesh("space_1")!, space: "vanishing", catalogSlug: "vanishing", root: join(catalogDir, "catalog", "vanishing") });
+  workspaceMod.setCurrent("vanishing");
+  let selectionAtRemoval: string | undefined = "unread";
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const originalRm = fs.rmSync;
+  const meshesPrefix = join(catalogDir, "meshes") + "/";
+  fs.rmSync = ((target: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+    if (selectionAtRemoval === "unread" && String(target).startsWith(meshesPrefix)) selectionAtRemoval = workspaceMod.getCurrent();
+    return originalRm(target, options);
+  }) as typeof fs.rmSync;
+  syncBuiltinESMExports();
+  try {
+    await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
+  } finally {
+    fs.rmSync = originalRm;
+    syncBuiltinESMExports();
+  }
+  check("a selection the snapshot no longer carries is cleared before the first registry write",
+    selectionAtRemoval === undefined && workspaceMod.getCurrent() === undefined && workspaceMod.findMesh("vanishing") === undefined,
+    { selectionAtRemoval, current: workspaceMod.getCurrent(), staleSnapshot: staleAccount.snapshot.spaces.length });
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
   makeStale();
   failCatalog = true;
   const failed = await prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply });

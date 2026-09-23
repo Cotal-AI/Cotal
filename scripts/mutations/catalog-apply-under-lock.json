@@ -9,7 +9,8 @@
   "why": [
     "The provider committed a fetched snapshot to its cache and released the catalog lock before the CLI wrote the registry one entry at a time. Measured at b260c3776 with the built components in real child processes: a sync killed after the first registry rename left the registry with one of three discovered spaces while the cache reported the whole snapshot as current; every later command inside the freshness window used that registry with zero requests, and after the window a conditional 304 confirmed it. Only an explicit sync repaired it. A second process could also list the half-written set while the first was still writing.",
     "The suite drives the shipped prepareIdpSpaceCatalogs with the consumer's apply and reads the cache file between calls. It does not kill a process: the cells plant the cache state a death leaves behind (applied false), because that state is the contract the recovery rests on, and one cell observes the commit order from inside apply, which is the only vantage a paused process has.",
-    "Three mutations, each on the boundary and not on a message: skipping the pre-write commit makes the observed-order cell red because the cache inside apply still names the previous ETag; dropping the re-application makes the zero-request repair cell red because the provider answers fresh with nothing handed to the consumer; never recording applied makes the settled cell red because the consumer is handed an updated result on every warm call and the count check catches the second application."
+    "Three mutations, each on the boundary and not on a message: skipping the pre-write commit makes the observed-order cell red because the cache inside apply still names the previous ETag; dropping the re-application makes the zero-request repair cell red because the provider answers fresh with nothing handed to the consumer; never recording applied is caught first by the pre-existing warm cell (a snapshot younger than five seconds makes zero requests), because the second preparation finds the snapshot unapplied, applies it again and reports updated instead of fresh. That earlier red is the one named here; the settled cell added with this change goes red too, later in the same run.",
+    "The fourth mutation is on the consumer: a selection naming a space the snapshot dropped is cleared before the first registry write, because a death after the removal leaves a selection pointing at nothing and a later application can no longer tell the name was this account's. Measured on the first fixed head with a real killed child: the registry recovered to all three new spaces and the selection stayed on the removed one. The cell reads the selection from inside the shipped removal, so it can only pass if the clearing happened first."
   ],
   "mutations": [
     {
@@ -33,8 +34,16 @@
       "file": "implementations/auth/src/login.ts",
       "find": "        opts.apply(result);\n        state = { ...state, applied: true };\n        file.accounts[key] = state;\n        changed = true;\n        results.push(result);\n",
       "replace": "        opts.apply(result);\n        results.push(result);\n",
-      "expectRed": "an applied snapshot inside the window is reported fresh and handed to the consumer no more",
-      "cell": "an applied snapshot inside the window is reported fresh and handed to the consumer no more"
+      "expectRed": "a snapshot younger than five seconds makes zero requests",
+      "cell": "a snapshot younger than five seconds makes zero requests"
+    },
+    {
+      "name": "a selection the snapshot no longer carries is not cleared before the first registry write",
+      "file": "implementations/cli/src/commands/sync.ts",
+      "find": "  if (current && priorByName.has(current) && !nextSlugs.has(current)) {\n",
+      "replace": "  if (false) {\n",
+      "expectRed": "a selection the snapshot no longer carries is cleared before the first registry write",
+      "cell": "a selection the snapshot no longer carries is cleared before the first registry write"
     }
   ]
 }

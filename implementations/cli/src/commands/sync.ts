@@ -230,6 +230,14 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
   validateCatalogSnapshot(result.snapshot, result.account);
   const snapshot = result.snapshot;
   const nextSlugs = new Set(snapshot.spaces.map((s) => s.slug));
+  // Invalidate the selection BEFORE the first registry write. Once an entry is removed, a later
+  // application (after a death here) can no longer tell that the selected name belonged to this
+  // account, and the selection would outlive its entry.
+  const current = getCurrent();
+  if (current && priorByName.has(current) && !nextSlugs.has(current)) {
+    clearCurrent();
+    diff.selectionInvalidated = current;
+  }
   for (const old of before) {
     if (nextSlugs.has(old.space)) continue;
     removeMesh(old.space);
@@ -248,11 +256,6 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     if (!prior) diff.added.push(row.slug);
     else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
     else diff.changed.push(row.slug);
-  }
-  const current = getCurrent();
-  if (current && diff.removed.includes(current)) {
-    clearCurrent();
-    diff.selectionInvalidated = current;
   }
   for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions]) list.sort();
   return diff;
