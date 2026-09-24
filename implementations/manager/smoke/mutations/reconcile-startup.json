@@ -192,6 +192,26 @@
       "cell": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
       "note": "#1694 half 2. With absence read straight off the rail again, the no-responder pass in the cell reads absent, the manager takes the renewal lease, and both the log-line refusal and daemonRenewalOwner===false go.",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "the lease reader folds an unparseable row into absent (the parse throw dropped)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }\n    catch (err) { throw new Error(`delivery lease row \"${leaseKey(shardIndex)}\" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }",
+      "replace": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }",
+      "expectRed": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
+      "cell": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
+      "note": "Round 2, blocker 1. With the parse throw folded back into undefined, the corrupt-row cell reads no-row -> absent -> the manager takes/keeps the renewal lease, and both the refusal text and daemonRenewalOwner===false go.",
+      "afterRestore": "pnpm --filter @cotal-ai/core... build && pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "a refused pass keeps the held renewal lease (the catch-path release dropped)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    } catch (e) {\n      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});\n      this.daemonRenewalOwner = false;\n      throw e;\n    }",
+      "replace": "    } catch (e) {\n      this.daemonRenewalOwner = false;\n      this.daemonRenewalOwner = true;\n      throw e;\n    }",
+      "expectRed": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
+      "cell": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
+      "note": "Round 2, blocker 2. The cell now stages a HELD lease first (the holder answers the manager's store, a pass takes the lease), then drives the no-responder refusal. Reverting the release on the throw path leaves the lease held behind the heartbeat, so daemonRenewalOwner===false fails even though the refusal text is logged. The release call is deleted and the flag restored, keeping the mutant type-valid and behaviour-equivalent to the pre-fix code.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
     }
   ]
 }

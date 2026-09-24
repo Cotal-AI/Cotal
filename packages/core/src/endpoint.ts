@@ -3808,11 +3808,20 @@ export class CotalEndpoint extends EventEmitter {
    *  needs the BROKER's sequence, not the one it last cached: a renew can fail with its write
    *  already applied (a lost reply, a reconnect mid-request), which leaves the cached revision one
    *  behind forever and every subsequent CAS refused over a sequence this process itself moved ,
-   *  read as somebody else's takeover, which is the #1318 misreading in a second costume. */
+   *  read as somebody else's takeover, which is the #1318 misreading in a second costume.
+   *
+   *  ABSENT and UNREADABLE are different facts and this method keeps them apart (#1694): `undefined`
+   *  means NO row is live (no key, or DEL/PURGE), while a key that EXISTS but does not parse as a
+   *  {@link DeliveryLeaseInfo} THROWS. Folding the parse failure into `undefined` made a live-but-
+   *  corrupt row read as "nothing there", and the store-identity challenge's absence settlement
+   *  then certified a remint over a row it could not read. A caller that wants the old swallow
+   *  (an owner testing "is this provably MINE") still gets its safe answer: an unparseable row is
+   *  not provably anyone's, and catching here reads as `false` exactly as before. */
   async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
     const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
     if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }
+    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }
+    catch (err) { throw new Error(`delivery lease row "${leaseKey(shardIndex)}" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }
   }
 
   /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):

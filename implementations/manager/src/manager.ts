@@ -1584,13 +1584,11 @@ export class Manager {
    *  The rail is queue-grouped, so "no responder answered" is itself something the rail reports,
    *  and a responder that answers in a shape the client turns into that error makes the pass read
    *  "absent" while a holder is live on the row — certifying every later remint with no proof at
-   *  all. So a no-responder outcome is decided by `deliveryLeaseHolder`: a row that names a
-   *  holder makes the pass refuse (undetermined — a live daemon went unanswered, which must not
-   *  read as "no daemon"), and only a row that is absent or unreadable settles "absent", the
-   *  state start() treats as not-yet-bound. An unreadable row is a genuine unknown and refuses
-   *  fail-closed, like a hung rail; `deliveryLeaseHolder` folds "no row" and "row unparseable"
-   *  into the same undefined, which is the absent-or-unknown this method has to separate from a
-   *  NAMED holder. */
+   *  all. So a no-responder outcome is decided by the row: a row that names a holder makes the
+   *  pass refuse (undetermined — a live daemon went unanswered, which must not read as "no
+   *  daemon"), and only a row that is absent or holderless settles "absent", the state start()
+   *  treats as not-yet-bound. An unreadable row (a failed read, or a key that exists but does not
+   *  parse) is a genuine unknown and refuses fail-closed, like a hung rail. */
   private async daemonStoreRelation(): Promise<"shared" | "absent" | "divergent"> {
     let reply: ControlReply;
     try {
@@ -1654,10 +1652,12 @@ export class Manager {
    *     unanswered. That is undetermined, not "no daemon" — treating it as absent would let this
    *     manager remint with no proof while a reloading daemon runs, which is exactly what the
    *     challenge exists to prevent. Refuse.
-   *  2. The row is unreadable — the read itself fails (a denied or erroring bucket): undetermined,
-   *     and it refuses the same fail-closed way a hung rail does. Never a silent "absent".
-   *  3. The row is absent or holderless (no key, a deleted key, or a row that names no holder):
-   *     today's "absent", the state start() treats as a daemon that is not bound yet.
+   *  2. The row is unreadable — a read that fails (a denied or erroring bucket) OR a key that
+   *     exists but does not parse as a lease record (`readDeliveryLeaseEntry` throws for both):
+   *     undetermined, and it refuses the same fail-closed way a hung rail does. Never a silent
+   *     "absent" over a row the manager could not read.
+   *  3. The row is absent or holderless (no key, a DEL/PURGE tombstone, or a row that names no
+   *     holder): today's "absent", the state start() treats as a daemon that is not bound yet.
    *
    *  `deliveryLeaseHolder` swallows its read failures into `undefined`, which would fold case 2
    *  into case 3 — so this reads the entry directly and lets the read's own failure refuse. */
@@ -1711,7 +1711,21 @@ export class Manager {
    *
    *  A manager failing either test serves the space normally and skips only the daemon remint. */
   private async claimDaemonRenewalOwnership(): Promise<void> {
-    if ((await this.daemonStoreRelation()) === "divergent") {
+    // EVERY refusal outcome drops a held lease, not only "divergent". The refusal paths THROW
+    // (#1694: a non-holder answer, an unbindable answerer, an unreadable or holder-naming row on a
+    // no-responder rail), and a thrown refusal caught by renewDaemonCreds would otherwise leave a
+    // manager that once owned the renewal still holding the lease behind its own heartbeat — the
+    // pass refuses, the log says so, and the space keeps a renewal owner that must not remint.
+    // Deciding here, inside the claim, is what keeps the release on the refusal path itself.
+    let relation: "shared" | "absent" | "divergent";
+    try {
+      relation = await this.daemonStoreRelation();
+    } catch (e) {
+      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});
+      this.daemonRenewalOwner = false;
+      throw e;
+    }
+    if (relation === "divergent") {
       // Not our daemon's store: drop any lease we hold rather than sit on it, so the manager that
       // CAN remint is not blocked behind us.
       if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease();
