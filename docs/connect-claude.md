@@ -237,10 +237,12 @@ The connector wires a small subset of Claude Code hooks to presence states; pres
 coarse, and "what it is doing" rides on activity updates. Presence is **advisory**: a presence
 publish that fails (the endpoint mid-reconnect, say) is swallowed and never prevents the same hook
 from delivering messages or flushing held ones.
+A `SessionStart` during an open turn, including compaction, preserves the current `working` or
+`waiting` status until `Stop`, `StopFailure`, or `SessionEnd` closes the turn.
 
 | Hook | → state |
 |---|---|
-| `SessionStart` | `idle` (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
+| `SessionStart` | `idle` only when no turn is open (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
 | `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
 | `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |

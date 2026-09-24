@@ -13,7 +13,10 @@
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PresenceStatus } from "@cotal-ai/core";
+import type { MeshAgent } from "@cotal-ai/connector-core";
 import { createClaudeTranscriptSource, readStartupTranscriptWhenReady } from "../src/agui-source.js";
+import { createClaudeHandle } from "../src/hooks.js";
 
 const line = (id: number): string => `${JSON.stringify({ id })}\n`;
 
@@ -202,7 +205,60 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 17, { ran: pass + fail, expected: 17 });
+  // Exercise the shipped hook handler; only the presence/inbox collaborator is replaced.
+  const published: PresenceStatus[] = [];
+  const recordStatus = async (status: PresenceStatus): Promise<void> => { published.push(status); };
+  const agent = {
+    setStatus: recordStatus,
+    resetStatus: recordStatus,
+    setAttention: async () => {},
+    setCondition: async () => {},
+    channelBriefing: () => "",
+    peekInbox: () => [],
+    peekPendingTurns: () => undefined,
+    pendingWake: () => 0,
+  } as unknown as MeshAgent;
+  const { handle } = createClaudeHandle();
+  await handle(agent, { hook_event_name: "SessionStart", source: "startup" });
+  check("presence:a-session-with-no-open-turn-starts-idle", published.join(",") === "idle");
+  await handle(agent, { hook_event_name: "UserPromptSubmit" });
+  const beforeCompact = published.length;
+  await handle(agent, { hook_event_name: "SessionStart", source: "compact" });
+  check(
+    "presence:compact-during-an-open-turn-keeps-working-without-a-status-write",
+    published.at(-1) === "working" && published.length === beforeCompact,
+    published,
+  );
+  await handle(agent, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "README.md" } });
+  await handle(agent, { hook_event_name: "Notification", notification_type: "permission_prompt", message: "Approval needed" });
+  const beforeWaitingCompact = published.length;
+  await handle(agent, { hook_event_name: "SessionStart", source: "compact" });
+  check(
+    "presence:compact-during-a-permission-wait-keeps-waiting-without-a-status-write",
+    published.at(-1) === "waiting" && published.length === beforeWaitingCompact,
+    published,
+  );
+  await handle(agent, { hook_event_name: "SessionStart", source: "future-mode" });
+  check(
+    "presence:an-unknown-source-does-not-reset-an-open-turn",
+    published.at(-1) === "waiting" && published.length === beforeWaitingCompact,
+    published,
+  );
+  for (const terminal of ["Stop", "StopFailure", "SessionEnd"] as const) {
+    await handle(agent, { hook_event_name: "UserPromptSubmit" });
+    await handle(agent, { hook_event_name: terminal });
+    const terminalStatus = published.at(-1);
+    const beforeRestart = published.length;
+    await handle(agent, { hook_event_name: "SessionStart", source: "resume" });
+    check(
+      `presence:${terminal}-closes-the-turn-and-the-next-session-start-resets-idle`,
+      terminalStatus === (terminal === "SessionEnd" ? "offline" : "idle") &&
+        published.at(-1) === "idle" && published.length === beforeRestart + 1,
+      published,
+    );
+  }
+
+  check("every cell ran", pass + fail === 24, { ran: pass + fail, expected: 24 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {
