@@ -76,6 +76,7 @@ const PURE = 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n';
 const CHECKPOINT = 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n';
 const BROKEN = 'log("unclosed"\n';
 const COMPUTED_PLACEMENT = 'const id = "abcdefghijklmnopqrstuvwxyz"; await spawn("a", { placement: { endpoint: "manager", instanceId: id } });\n';
+const TRAILING_SPREAD_PLACEMENT = 'const extra = { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; await spawn("a", { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" }, ...extra });\n';
 
 const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
@@ -150,6 +151,15 @@ try {
     const ps = await call("run-ps");
     c("the computed placement recorded no run",
       ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+
+    const spread = await call("run-start", { source: TRAILING_SPREAD_PLACEMENT, file: "trailing-spread-placement.cotal.js" });
+    const spreadDetails = ((spread.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+    c("run-start refuses a trailing option spread that can replace literal placement before hosted credential minting",
+      spread.ok === false && spread.error?.code === "bad-request"
+        && spreadDetails.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("spreads its option bag")), spread.error);
+    const spreadPs = await call("run-ps");
+    c("the trailing option spread recorded no run",
+      spreadPs.ok === true && (spreadPs.data as RunListRowT[]).length === 0, spreadPs.data);
   }
 
   console.log("A1b. a legacy-rail caller holding the same capability is refused run-start by name");
@@ -512,7 +522,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 53;
+const EXPECTED_CELLS = 55;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

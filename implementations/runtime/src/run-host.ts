@@ -145,7 +145,9 @@ export const cotalLangRunHost: RunHost = {
             const instanceId = literal("instanceId");
             const optionsSpread = properties?.find((item) => (item as Record<string, unknown>).type === "SpreadElement") as Record<string, unknown> | undefined;
             const placementSpread = fields?.find((item) => (item as Record<string, unknown>).type === "SpreadElement") as Record<string, unknown> | undefined;
-            if (placement === undefined && optionsSpread !== undefined)
+            // Reject every option-bag spread instead of simulating property order. The spread's
+            // value is not statically visible, so it can hide or replace the placement authority.
+            if (optionsSpread !== undefined)
               problem(optionsSpread, "this hosted spawn spreads its option bag, so placement authority may be hidden in a value the manager cannot inspect before credential minting");
             else if (placement !== undefined && (placementValue?.type !== "ObjectExpression" || endpoint === undefined || instanceId === undefined || endpoint.length === 0 || instanceId.length === 0 || placementSpread !== undefined))
               problem(placement, "this hosted spawn computes or spreads its placement target, but the manager must mint the exact instance rail before the program starts");

@@ -26,6 +26,15 @@
       "cell": "run-start refuses a computed placement before hosted credential minting"
     },
     {
+      "name": "a trailing option spread can replace placement after hosted credential minting",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "            if (optionsSpread !== undefined)",
+      "replace": "            if (optionsSpread !== undefined && properties?.length === 0)",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "run-start refuses a trailing option spread that can replace literal placement before hosted credential minting",
+      "cell": "run-start refuses a trailing option spread that can replace literal placement before hosted credential minting"
+    },
+    {
       "name": "run-start skips validation",
       "file": "implementations/manager/src/run-hosting.ts",
       "find": "    if (!verdict.ok) {",

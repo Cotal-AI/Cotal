@@ -158,6 +158,7 @@ export class RunHosting {
     this.assertReconciled();
     const host = this.host();
     const verdict = host.validate(args.source, args.file);
+    const placements = verdict.ok ? verdict.placements ?? [] : [];
     if (!verdict.ok) {
       // The refusal carries every problem, as the runtime's own records, so a caller (a person at
       // the CLI, an agent at the tool) can fix the program without a second round-trip. The
@@ -169,7 +170,7 @@ export class RunHosting {
         verdict.errors.map((e) => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })),
       );
     }
-    if ((verdict.placements?.length ?? 0) > 1)
+    if (placements.length > 1)
       throw new EpEnvelopeError("unimplemented", "this manager hosts a run with placed spawns on one manager instance only; split the program or drive it locally rather than widening one run credential across hosts");
     // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
     // 128 bits, the width the spec's other minted identifiers carry.
@@ -184,7 +185,7 @@ export class RunHosting {
       fencingToken: 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
       admission,
-      placements: verdict.placements ?? [],
+      placements,
     });
     return { runId };
   }
