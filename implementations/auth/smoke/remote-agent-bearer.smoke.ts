@@ -190,8 +190,13 @@ try {
   // (serverDir — cwd serverRoot, so findCotalRoot resolves there), its pid alive, and /health on
   // the recorded URL answering 200. That is the provider's shipped readiness contract, polled at
   // its own cadence; an exhausted budget throws naming the auth service and the last observed
-  // reason, so the proxy below is never built over a port nothing is listening on.
-  await prepared.service.ready({ dir: serverDir, timeoutMs: AUTH_SERVICE_READY_TIMEOUT_MS });
+  // reason, so the proxy below is never built over a port nothing is listening on. The cell below
+  // drives THIS wait (against a state dir no service writes to) so the mutation fixture can prove
+  // a silently-swallowed budget reddens it.
+  const waitForAuthService = async (dir: string, timeoutMs: number): Promise<void> => {
+    await prepared.service.ready({ dir, timeoutMs });
+  };
+  await waitForAuthService(serverDir, AUTH_SERVICE_READY_TIMEOUT_MS);
 
   proxy = createHttpsServer({ cert: readFileSync(join(pki, "leaf.pem")), key: readFileSync(join(pki, "leaf.key")) }, (req, res) => {
     const chunks: Buffer[] = [];
@@ -235,7 +240,7 @@ try {
     // last observed reason, never fall through into a misattributed 502 at the exchange cell.
     const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "never-ready-"));
     await assert.rejects(
-      () => prepared.service.ready({ dir: dirNoServiceWritesTo, timeoutMs: 1_000 }),
+      () => waitForAuthService(dirNoServiceWritesTo, 1_000),
       /auth service not ready after 1000ms .*the auth service has not written its discovery file yet/,
     );
   });

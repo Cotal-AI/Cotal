@@ -19,8 +19,8 @@
     {
       "name": "the exhausted readiness budget silently returns instead of throwing, as before the fix",
       "file": "implementations/auth/smoke/remote-agent-bearer.smoke.ts",
-      "find": "  await prepared.service.ready({ dir: serverDir, timeoutMs: AUTH_SERVICE_READY_TIMEOUT_MS });",
-      "replace": "  await prepared.service.ready({ dir: serverDir, timeoutMs: AUTH_SERVICE_READY_TIMEOUT_MS }).catch(() => {});",
+      "find": "    await prepared.service.ready({ dir, timeoutMs });",
+      "replace": "    await prepared.service.ready({ dir, timeoutMs }).catch(() => {});",
       "expectRed": "a service that never becomes ready fails the wait loudly, naming the auth service",
       "cell": "a service that never becomes ready fails the wait loudly, naming the auth service"
     }
