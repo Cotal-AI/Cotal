@@ -37,7 +37,7 @@
     "smoke:mutation-cell-witness": "node scripts/mutation-cell-witness.selftest.mjs",
     "smoke:mutation-command-safety": "tsx bin/smoke/mutation-command-safety.smoke.ts",
     "smoke:entrypoint-guard": "node scripts/entrypoint-guard.selftest.mjs",
-    "check:docsbundle": "pnpm check:docs-voice && pnpm gen:tooldocs && pnpm gen:docsbundle && git diff --exit-code -- docs/mcp-tools.md extensions/connector-core/src/docs-bundle.generated.ts",
+    "check:docsbundle": "pnpm check:docs-voice && pnpm gen:tooldocs && git diff --exit-code -- docs/mcp-tools.md && node scripts/check-docs-bundle.mjs",
     "check:shard-stability": "tsx bin/smoke/shard-stability.ts",
     "pr-head-gate": "node scripts/pr-head-gate.mjs",
     "test": "pnpm -r --if-present test",
