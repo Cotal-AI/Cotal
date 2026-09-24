@@ -73,6 +73,12 @@ import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
+import {
+  listManagerSeatsForSpare,
+  printLegacyManagerSpareUncertainty,
+  printSparedAgents,
+  type SpareSeatRow,
+} from "../lib/teardown-spare.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -196,7 +202,7 @@ export async function down(args: ParsedArgs): Promise<void> {
 
   const managerComponent = selected.find((component) => component.name === "manager");
   const managerContext = managerComponent ? contextFor(managerComponent) : undefined;
-  let spared: DownSeatRow[] | undefined;
+  let spared: SpareSeatRow[] | undefined;
   let legacyManagerSpareUnverified = false;
   if (!values["with-agents"] && managerComponent && managerContext && processRecorded(managerComponent, managerContext)) {
     const managerPidPath = localProcessPath(managerComponent.pidFile, managerContext);
@@ -297,57 +303,6 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
 // stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
 export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
-
-type DownSeatRow = {
-  name: string;
-  mode?: string;
-  pid?: number;
-  agent?: string;
-  cwd?: string;
-  status?: string;
-};
-
-/** Best-effort inventory for the operator-facing spare report. Detach safety is independently
- * established by the exact-process capability marker, so a down broker cannot make the local
- * manager unstoppable. */
-async function listManagerSeatsForSpare(context: LocalProcessContext): Promise<DownSeatRow[] | undefined> {
-  const mesh = loadMeshes().find((candidate) => candidate.root === context.root && candidate.space === context.space);
-  if (!mesh) {
-    console.error(c.dim("could not list managed agents (this root has no recorded mesh); agents will still be spared"));
-    return undefined;
-  }
-  let target;
-  try {
-    target = await resolveControlTarget(
-      { space: mesh.space, server: mesh.server },
-      "control-caller-privileged",
-      undefined,
-      { onRefusal: "throw" },
-    );
-  } catch (e) {
-    console.error(c.dim(`could not list managed agents (${(e as Error).message}); agents will still be spared`));
-    return undefined;
-  }
-  const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
-  if (!reply.ok || !Array.isArray(reply.data)) {
-    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"}); agents will still be spared`));
-    return undefined;
-  }
-  return reply.data as DownSeatRow[];
-}
-
-function printSparedAgents(rows: DownSeatRow[]): void {
-  console.log(c.dim(`left ${rows.length} managed agent${rows.length === 1 ? "" : "s"} running (no longer managed):`));
-  for (const row of rows) {
-    const facts = [row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, row.status].filter(Boolean);
-    console.log(`  ${facts.join("  ·  ")}`);
-  }
-  console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
-}
-
-function printLegacyManagerSpareUncertainty(): void {
-  console.log(c.dim("manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents"));
-}
 
 /** Registered brokers for this root that answer and have no nats pidfile. Never a kill list. */
 async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{ space: string; server: string }>> {

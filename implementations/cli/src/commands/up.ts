@@ -106,6 +106,10 @@ import {
   writeBrokerPolicy,
   removeIdentityPin,
   writeIdentityPin,
+  localProcessPath,
+  MANAGER_PIDFILE,
+  assertManagerCanSpare,
+  verifyIdentityPin,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -119,6 +123,7 @@ import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-pr
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
+import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "../lib/teardown-spare.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -1151,15 +1156,52 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // stopDelivery is async (its creds delete goes through the secret store); the rest of the teardown
   // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
   // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
+  // The manager stop is the SPARING one `cotal down` performs (#1307): the seat snapshot is taken
+  // while the manager still answers, the spare capability of the exact recorded process is asserted
+  // before any signal, and the seats left behind are reported with the reap route. Teardown is
+  // AWAITED before the broker is signalled — the same order the broker-exit handler below uses — so
+  // manager teardown never races a broker that is already going away.
+  let stopping = false;
   const stop = () => {
-    void stopDelivery(undefined, undefined, space)
-      .catch((e: Error) => console.error(`! delivery teardown: ${e.message}`))
-      .then(() => {
-        void stopManager(undefined, undefined, undefined, space)
-          .then(() => stopAuthService(space))
-          .catch((e: Error) => console.error(`! teardown: ${e.message}`));
-        child.kill("SIGTERM");
-      });
+    if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
+    stopping = true;
+    void (async () => {
+      const managerContext = { root: cotalRoot(), space };
+      let spared: SpareSeatRow[] | undefined;
+      let legacyManagerSpareUnverified = false;
+      const managerPidPath = localProcessPath(MANAGER_PIDFILE, managerContext);
+      if (existsSync(managerPidPath)) {
+        const pin = verifyIdentityPin(managerPidPath);
+        if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
+        else if (pin.kind === "match") {
+          spared = await listManagerSeatsForSpare(managerContext);
+          try {
+            assertManagerCanSpare(managerContext, undefined, pin.record);
+          } catch (e) {
+            // THE CAPABILITY ASSERT IS THE SIGNAL GATE, the same rule bare `down` enforces inside
+            // its beforeSignal hook: a throw there signals nothing. Signal NOTHING here either — no
+            // manager, no delivery, no auth, no broker — print the refusal with the reap route, and
+            // release the latch so the stack keeps running in the foreground; the operator ends it
+            // with `cotal down --with-agents` from another terminal, and the broker-exit handler
+            // below already ends `up` when the broker goes.
+            console.error(c.red(`! teardown: ${(e as Error).message}`));
+            console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
+            stopping = false;
+            return;
+          }
+        }
+      }
+      await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
+      try {
+        await stopManager(undefined, undefined, undefined, space);
+        if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
+        else if (spared) printSparedAgents(spared);
+      } catch (e) {
+        console.error(`! manager teardown: ${(e as Error).message}`);
+      }
+      await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
+      child.kill("SIGTERM");
+    })();
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

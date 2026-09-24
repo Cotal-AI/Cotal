@@ -199,7 +199,11 @@ than keeping or stopping it: `cotal down manager` first. For a split topology wi
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. The `-f` form is a [manifest deploy](#manifest-deploys).
+only what actually started. Ctrl-C on a foreground `up` spares managed agents and reports them
+under the same rule as bare `cotal down` (see [`down`](#down)): when the manager cannot prove it can
+spare, Ctrl-C refuses the teardown, prints the refusal with the reap route, and leaves the stack
+running. The `-f` form is a
+[manifest deploy](#manifest-deploys).
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
@@ -300,7 +304,10 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running.
 Before signalling the manager it verifies that the exact recorded manager supports releasing its
 local custody, and it reports the agents left behind plus `cotal down --with-agents` as the explicit
-reap. `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
+reap. Ctrl-C on a foreground `cotal up` follows the same rule: it verifies the spare capability,
+spares the agents, and prints the same report. When the capability cannot be verified, Ctrl-C
+refuses the teardown and leaves the stack running; end it with `cotal down --with-agents`.
+`--with-agents` is a one-shot destructive policy bound to the exact verified manager process
 and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
 cannot turn a later bare shutdown destructive. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
