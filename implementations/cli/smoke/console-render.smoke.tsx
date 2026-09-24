@@ -179,7 +179,13 @@ console.log("4. every send waits for the same participant start, and a refusal r
   const app = render(
     <App ep={ep as unknown as CotalEndpoint} canWrite canControl={false}
       makeParticipant={() => (++starts === 1 ? new RefusedParticipant() : new StartedParticipant()) as unknown as CotalEndpoint} />,
-    { stdin, stdout, patchConsole: false, exitOnCtrlC: false },
+    // `debug` is what makes the frames below observable, and it is required rather than convenient.
+    // Ink freezes `isInCi` at import time from `is-in-ci`, and in CI mode its onRender stores the
+    // frame on `lastOutput` and RETURNS without writing, flushing only at unmount. So under any CI
+    // env this collector saw zero frames and the two refusal cells graded an empty string, on every
+    // platform and not only on Windows. Ink checks `debug` before `isInCi`, so this writes each
+    // frame straight to the stream in both modes and the suite grades the same thing either way.
+    { stdin, stdout, patchConsole: false, exitOnCtrlC: false, debug: true },
   );
   await wait(250);
   stdin.write("c");
