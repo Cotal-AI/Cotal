@@ -88,17 +88,6 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
    - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm
      build`, and `pnpm publish`es each changed package to npm with provenance.
 
-## Manual publish (escape hatch)
-
-If the workflow is broken, you can run the same steps locally with a classic npm token:
-
-```bash
-pnpm ci:version
-pnpm ci:publish
-```
-
-Set `NPM_TOKEN` in your environment first. **Do not** commit the token.
-
 ## Publication workflow
 
 `ci:publish` in the root `package.json` is:
@@ -114,6 +103,9 @@ The census prints every package, version, OIDC result, and direct-publish result
 If every exact version already exists, the preflight reports a no-op and exits successfully before
 credential checks. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only
 package exits before `pnpm publish`.
+
+The publish job refuses an npm access token in its environment and publishes through OIDC only.
+This prevents pnpm from falling back to a classic token when an OIDC exchange fails.
 
 HTTP 201 from the OIDC exchange is identity only. npm's trusted-publisher Allowed actions always
 permit `npm stage publish`; configurations created after 2026-09-03 default to stage and may omit
@@ -139,9 +131,8 @@ node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemb
   and refuses unless THIS repository's `changesets.yml` publisher lists a direct-publish Allowed
   action. npm documents that identity on GET `/-/package/<name>/trust` as `claims.repository` and
   `claims.workflow_ref.file` with a `permissions` array. Other GitHub publishers on the same package
-  are not proof that this job can publish.
-  A manual run
-  with `NPM_TOKEN` still gets the registry and closure census; npm verifies that token on publish.
+  are not proof that this job can publish. It refuses npm access-token environment variables before
+  the census or OIDC exchange, so `ci:publish` cannot be used with a classic token.
 - `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
   when a partial retry publishes only the packages still missing.
 - `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.

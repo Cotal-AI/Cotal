@@ -159,7 +159,10 @@ async function scenario({
 }
 
 type RegistryState = "all-present" | "mixed" | "all-absent";
-async function repositoryEntrypoint(registryState: RegistryState = "all-absent") {
+async function repositoryEntrypoint(
+  registryState: RegistryState = "all-absent",
+  credentialEnv: NodeJS.ProcessEnv = {},
+) {
   const seen: Seen[] = [];
   const server = createServer((req, res) => {
     seen.push({ method: req.method ?? "", url: req.url ?? "" });
@@ -191,6 +194,7 @@ async function repositoryEntrypoint(registryState: RegistryState = "all-absent")
       ...env,
       npm_config_registry: base,
       ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/oidc`,
+      ...credentialEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -335,7 +339,7 @@ check(
 
 const zeroPresent = await repositoryEntrypoint("all-absent");
 check(
-  "zero-present repository entrypoint reaches the publish authorization stage",
+  "accept control: a token-free repository entrypoint reaches the publish authorization stage",
   zeroPresent.code === 0
     && zeroPresent.seen.some((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")),
   zeroPresent.output,
@@ -386,39 +390,25 @@ check(
   clean.result,
 );
 
-// This call is deliberately wrapped. An unguarded refusal here aborts the whole file, and every
-// cell below it then reports nothing at all rather than reporting red. Green by not running and
-// green by passing are indistinguishable to a reader counting failures, so a refusal is captured
-// and named here instead of being allowed to silence the rest of the suite.
-const manualRun = await (async () => {
-  try {
-    return {
-      result: await preflightNpmPublish({
-        fixedPackages: fixed,
-        workspacePackages: workspace,
-        registryBase: "https://fake.registry",
-        env: { NPM_TOKEN: "test-only" },
-        fetchImpl: (async () => ({ status: 404 })) as unknown as typeof fetch,
-        log: () => {},
-      }),
-      error: undefined,
-    };
-  } catch (error) {
-    return { result: undefined, error };
-  }
-})();
-check(
-  "the manual token census completes rather than aborting the remaining cells",
-  manualRun.error === undefined,
-  manualRun.error,
-);
-const manual = manualRun.result;
-check(
-  "manual token escape hatch keeps the fixed-group census without requiring GitHub OIDC",
-  manual?.state === "ready"
-    && manual.rows.every((row) => row.oidc === "not-available:classic-token" && row.direct === "not-available:classic-token"),
-  manualRun.error ?? manual,
-);
+const npmAccessTokenVariables = [
+  "NPM_TOKEN",
+  "NODE_AUTH_TOKEN",
+  "npm_config__authToken",
+  "pnpm_config__auth",
+  "PNPM_CONFIG__AUTH",
+  "npm_config_//registry.npmjs.org/:_authToken",
+  "pnpm_config_//registry.npmjs.org/:_authToken",
+];
+for (const variable of npmAccessTokenVariables) {
+  const tokenRefusal = await repositoryEntrypoint("all-absent", { [variable]: "test-only" });
+  check(
+    `${variable} refuses before the spawned repository entrypoint requests OIDC`,
+    tokenRefusal.code !== 0
+      && tokenRefusal.output.includes(`publish preflight refused: ${variable} is set; release publishes through OIDC only`)
+      && tokenRefusal.seen.length === 0,
+    { code: tokenRefusal.code, output: tokenRefusal.output, seen: tokenRefusal.seen },
+  );
+}
 
 const partial = await scenario({ present: new Set(["@cotal-ai/seat"]) });
 check(
@@ -487,7 +477,7 @@ const transportFailure = await (async () => {
       fixedPackages: fixed,
       workspacePackages: workspace,
       registryBase: "https://fake.registry",
-      env: { NPM_TOKEN: "test-only" },
+      env: {},
       fetchImpl: (async (url: unknown) => {
         attempted.push(String(url));
         throw new Error("ECONNREFUSED 127.0.0.1:443");
@@ -1969,6 +1959,15 @@ check(
   "stage-only refusal prints the complete census including the stage-only row",
   stageOnly.logs.some((line) => line.includes("@cotal-ai/seat\t9.9.9\tabsent\texchanged\tstage-only")),
   stageOnly.logs,
+);
+check(
+  "the three post-census refusals do not retain the removed unproven guard",
+  !readFileSync(join(ROOT, "scripts", "preflight-npm-publish.mjs"), "utf8").includes("direct-publish authorization was not proven")
+    && oidcRefused.error instanceof Error
+    && !oidcRefused.error.message.includes("not proven")
+    && stageOnly.error instanceof Error
+    && !stageOnly.error.message.includes("not proven"),
+  { oidc: oidcRefused.error, stageOnly: stageOnly.error },
 );
 
 const mixedPublisher = await scenario({
