@@ -109,6 +109,7 @@ import {
   writeIdentityPin,
   localProcessPath,
   MANAGER_PIDFILE,
+  armManagerShutdownIntent,
   assertManagerCanSpare,
   verifyIdentityPin,
 } from "@cotal-ai/workspace";
