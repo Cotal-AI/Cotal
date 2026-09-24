@@ -60,7 +60,7 @@ async function paint(el: React.ReactElement, cols = 200): Promise<string> {
 }
 
 const status = {
-  connected: true, space: "netcup", error: undefined, warning: undefined, dmVisible: true,
+  connected: true, space: "fixture-space", error: undefined, warning: undefined, dmVisible: true,
 } as unknown as Parameters<typeof StatusBar>[0]["status"];
 const ratesWith = (activity: number[]): Parameters<typeof StatusBar>[0]["rates"] =>
   ({ msgsPerSec: 0, activity }) as unknown as Parameters<typeof StatusBar>[0]["rates"];
