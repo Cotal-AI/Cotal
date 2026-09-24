@@ -5,7 +5,7 @@
     "packages/workspace/smoke/manager-shutdown.smoke.ts"
   ],
   "guard": "both cotal down policy branches signal a live pre-pin manager after the documented legacy warning, bare down never reports a historical destructive handler's reaped agent as spared, and a pinned manager without spare-capability evidence receives only a working route without being signalled",
-  "command": "pnpm build > /dev/null && pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts && pnpm smoke:down-target",
+  "command": "pnpm build > /dev/null && pnpm smoke:down-target && pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-legacy-manager.json",
   "why": [
     "A manager launched before identity pins existed, or on a platform whose injected start-token reader returns undefined, has no token for the full identity-pinned handoff. The documented upgrade contract still signals that live record after warning. Bare down cannot verify which SIGTERM handler the running binary carries, so it prints only uncertainty and never reports the pre-signal inventory as confirmed spared; --with-agents publishes the reduced-guarantee pid-and-reservation-inode handoff so an intent-aware manager selects destructive teardown.",
