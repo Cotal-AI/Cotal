@@ -417,7 +417,13 @@ const stoppableSleep = (ms: number) =>
 
 const frozen = await withGuard(verifyClosure("9.9.9", {
   packages: ["a", "b", "c", "d"],
-  opts: { ...DEFAULTS, pollIntervalMs: 10, stableWindowMs: 100, deadlineMs: 300 },
+  opts: {
+    ...DEFAULTS,
+    pollIntervalMs: 10,
+    stableWindowMs: 100,
+    deadlineMs: 300,
+    maxConsecutiveErrorPolls: 0,
+  },
   fetchImpl: neverAnswers,
   sleep: stoppableSleep,
   now: () => 0,
