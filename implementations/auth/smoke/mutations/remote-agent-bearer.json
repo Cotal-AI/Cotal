@@ -50,6 +50,7 @@
       "replace": "    if (remoteLive.length > 1) return remoteLive[0];",
       "expectRed": "two live remote managers refuse and name the count",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+      "completionMarker": "remote-exchange smoke:",
       "note": "The absent selector must never choose by enumeration order when several owner-bound managers are live."
     },
     {
@@ -59,6 +60,7 @@
       "replace": "    if (remoteInstances.length > 0 && localCandidate === undefined)\n      throw new Error(`the remote manager for owner ${owner} is unavailable`);",
       "expectRed": "an unavailable owner remote manager refuses with the explicit-selector remedy instead of falling through local",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+      "completionMarker": "remote-exchange smoke:",
       "note": "Any owner-specific remote gate establishes precedence even when it is frozen, retired, or deregistered."
     }
   ]
