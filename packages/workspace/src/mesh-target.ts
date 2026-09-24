@@ -104,6 +104,12 @@ export interface MeshTargetErrorDetails {
   root?: string;
   /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
   available?: string[];
+  /** The same running meshes by SPACE NAME, in `available`'s order — set only where the ambiguity is
+   *  a set of meshes that are recorded AND running, so a caller that must act on each (rather than
+   *  print them) can select one by name. Absent for every other ambiguity: several tenants on one
+   *  root's disk, or an unreadable account record, name no running manager to act on, and there the
+   *  refusal stands. */
+  spaces?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
   /** For `stale-auth-root`: the space the on-disk auth now claims, diverging from the record. */
@@ -441,7 +447,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   if (running.length === 1) return targetFromEntry(running[0], running[0].server, "registry");
 
   const names = running.map((m) => `${m.space} (${m.root})`);
+  // `spaces` rides alongside the display strings: this is the one ambiguity whose members are each a
+  // running mesh a caller can select by name, so a caller that must visit every one of them (`update`,
+  // which replaces the single binary they all share) gets the names without parsing `available`.
   throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
     available: names,
+    spaces: running.map((m) => m.space),
   });
 }
