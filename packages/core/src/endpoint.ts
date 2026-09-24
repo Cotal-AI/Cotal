@@ -2233,6 +2233,19 @@ export class CotalEndpoint extends EventEmitter {
     return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
 
+  /** Follow this caller's goal on its standing connection, subscribing before submission.
+   *  A submitter may use a separate short-lived control credential for the same caller triple;
+   *  the accepted action's readiness budget can outlive that credential. This endpoint retains
+   *  its existing credential renewal and caller-scoped progress grants. */
+  async followServiceGoal(
+    endpoint: string,
+    submit: () => Promise<EpAttributedReply>,
+    deadlineMs = 10_000,
+  ): Promise<EpAttributedReply> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    return submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit);
+  }
+
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The

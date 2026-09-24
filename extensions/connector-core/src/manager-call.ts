@@ -6,7 +6,6 @@ import {
   replyRefusedBeforeEffect,
   resolveService,
   standaloneConnectOpts,
-  submitAndFollowGoal,
   type EpAttributedReply,
   type EpCaller,
   type EpVerbTarget,
@@ -47,7 +46,7 @@ export async function invokeUserManager(
   bearer: string,
   command: string,
   args: Record<string, unknown> | undefined,
-  opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+  opts: { target?: EpVerbTarget; deadlineMs?: number } = {},
 ): Promise<EpAttributedReply> {
   const { caller, instanceId } = managerCallerBinding(bearer, config);
   const nc = await dialerFor(config.servers)({
@@ -67,9 +66,7 @@ export async function invokeUserManager(
       }
       return result;
     };
-    return opts.follow
-      ? await submitAndFollowGoal(nc, config.space, endpoint, caller, opts.deadlineMs ?? 10_000, invoke)
-      : await invoke();
+    return await invoke();
   } finally {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

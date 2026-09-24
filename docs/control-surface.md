@@ -154,7 +154,9 @@ ambiguous or unauthorized selection refuses before the command is sent.
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them. Existing unbound sessions can use the exchange's unique authorized selection without
 replacing their actor or conversation. The connector uses a separate control connection; the
-standing message connection and its credential source are unchanged. A caller still checks the
+standing message connection and its credential source are unchanged. Accepted spawn goals are
+followed on that renewing connection, using its existing caller-scoped progress grant, so a long
+readiness budget does not depend on the short-lived control credential. A caller still checks the
 resolved instance and epoch, and never retries an ambiguous mutation outcome.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the

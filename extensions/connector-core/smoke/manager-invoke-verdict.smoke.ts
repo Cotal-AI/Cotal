@@ -128,7 +128,25 @@ let malformedRefused = false;
 try { managerCallerBinding("not-a-bearer", managerConfig); } catch { malformedRefused = true; }
 check("manager control refuses an unparseable bearer", malformedRefused);
 
-const EXPECTED_CELLS = 20;
+// This constructed endpoint grades dispatch only, not renewal or broker delivery. It deliberately
+// does not execute the submission: the bearer helper must not run before the follower owns it.
+const spawning = new MeshAgent(managerConfig);
+let followedOnMain = false;
+const standing = {
+  principal: { owner, actor: "caller" },
+  followServiceGoal: async (endpoint: string, submit: unknown, deadlineMs: number) => {
+    followedOnMain = endpoint === "manager" && typeof submit === "function" && deadlineMs >= 40_000;
+    return { reply: { ok: true, data: { name: "followed" } } };
+  },
+};
+(spawning as unknown as { ep: unknown }).ep = standing;
+(spawning as unknown as { _connected: boolean })._connected = true;
+const spawned = await spawning.spawn("reviewer");
+check("user spawn delegates follow to its standing endpoint before executing the bearer helper",
+  followedOnMain && spawned.ok && (spawned.data as { name?: string })?.name === "followed" &&
+  (spawning as unknown as { ep: unknown }).ep === standing);
+
+const EXPECTED_CELLS = 21;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

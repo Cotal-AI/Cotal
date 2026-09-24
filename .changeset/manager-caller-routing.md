@@ -1,4 +1,5 @@
 ---
+"@cotal-ai/core": patch
 "@cotal-ai/connector-core": patch
 "@cotal-ai/workspace": patch
 "@cotal-ai/cli": patch

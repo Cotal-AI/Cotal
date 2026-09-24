@@ -1504,12 +1504,19 @@ export class MeshAgent extends EventEmitter {
     try {
       const input = clean && Object.keys(clean).length ? clean : undefined;
       if (this.config.userAuth) {
-        const bearer = await execBearerCmd([
-          ...this.config.userAuth.bearerCmd,
-          "--manager-call",
-          ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
-        ]);
-        r = await invokeUserManager(this.config, bearer, command, input, opts);
+        const submit = async () => {
+          const bearer = await execBearerCmd([
+            ...this.config.userAuth!.bearerCmd,
+            "--manager-call",
+            ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
+          ]);
+          return invokeUserManager(this.config, bearer, command, input, opts);
+        };
+        // Subscribe before submission on the renewing main connection. A long accepted launch
+        // must not inherit the short-lived control credential's expiry.
+        r = opts.follow
+          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs)
+          : await submit();
       } else {
         r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
       }
