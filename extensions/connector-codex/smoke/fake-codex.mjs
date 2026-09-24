@@ -288,6 +288,7 @@ let turnSeq = Number(process.env.FAKE_CODEX_TURN_SEQ_START ?? "0");
 let activeTurn;
 let interruptWaiter;
 let hangUsed = false; // HANG is one-shot: its REDELIVERED batch must complete normally
+let unknownStatusUsed = false; // UNKNOWNSTATUS is one-shot: its REDELIVERED batch must complete normally
 let failUsed = false; // FAIL is one-shot: its RETRIED batch must complete normally
 let rejectStartUsed = false; // REJECTSTART rejects the first matching turn/start RPC, once
 let activeTurnIsRace = false; // RACE: answer a steer and complete the turn in ONE write
@@ -375,8 +376,10 @@ async function runTurn(text) {
     // The discriminator: the FOREIGN turn completes successfully while OUR turn is still open,
     // and our turn then ends INTERRUPTED. A host that treats any terminal as its own boundary
     // acks the batch on the foreign `completed` and the message is lost forever; a host that
-    // only finalizes turns it started leaves it un-acked, so it redelivers. One-shot, so the
-    // redelivery completes normally.
+    // only finalizes turns it OWNS never mistakes the foreign completion for its own boundary.
+    // Our own turn's later `interrupted` IS our boundary, though — an interrupt this host did
+    // not issue dismisses the batch, same as an operator's Escape. One-shot, so a second FOREIGN
+    // has no special case to fall back on.
     foreignUsed = true;
     const foreign = `turn_tui_${turnSeq}`;
     notify("turn/started", { threadId: THREAD, turn: { id: foreign, status: "inProgress" } });
@@ -397,6 +400,15 @@ async function runTurn(text) {
     interruptWaiter = undefined;
     activeTurn = undefined;
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
+    return;
+  }
+  if (text.includes("UNKNOWNSTATUS") && !unknownStatusUsed) {
+    // A terminal with no recognizable `status` at all — not one of "completed" / "failed" /
+    // "interrupted". One-shot, following HANG's shape, so its REDELIVERED batch completes
+    // normally on the next turn.
+    unknownStatusUsed = true;
+    activeTurn = undefined;
+    notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "confused" } });
     return;
   }
   if (text.includes("DIE") && !existsSync(DIED_MARK)) {

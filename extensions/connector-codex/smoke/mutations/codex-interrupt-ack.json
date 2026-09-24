@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "extensions/connector-codex/smoke/codex-host.smoke.ts"
+  ],
+  "guard": "an operator interrupt dismisses the surfaced batch instead of redelivering it, and an unknown terminal status stays un-acked rather than being folded into interrupted",
+  "command": "pnpm --filter @cotal-ai/connector-codex... build && pnpm smoke:codex-host",
+  "mutations": [
+    {
+      "name": "M1 restores the un-acked outcome for an operator interrupt, redelivering the dismissed batch",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      const dismissed = status === \"completed\" || (status === \"interrupted\" && !shuttingDown);",
+      "replace": "      const dismissed = status === \"completed\";",
+      "expectRed": "interrupted turn's batch is dismissed, not redelivered",
+      "cell": "interrupted turn's batch is dismissed, not redelivered"
+    },
+    {
+      "name": "M2 folds an unknown terminal status back into interrupted",
+      "file": "extensions/connector-codex/src/app-server.ts",
+      "find": "        const status: TurnStatus =\n          turn.status === \"completed\" || turn.status === \"failed\" || turn.status === \"interrupted\"\n            ? turn.status\n            : \"unknown\";",
+      "replace": "        const status: TurnStatus =\n          turn.status === \"completed\" || turn.status === \"failed\" || turn.status === \"interrupted\"\n            ? turn.status\n            : \"interrupted\";",
+      "expectRed": "unknown terminal status leaves the batch un-acked",
+      "cell": "unknown terminal status leaves the batch un-acked"
+    }
+  ]
+}

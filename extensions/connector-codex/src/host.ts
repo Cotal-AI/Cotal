@@ -12,12 +12,16 @@
  *    client, they work on a turn someone typed into the attached TUI just as well as on a
  *    mesh-driven one;
  *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxDeliveries-acked
- *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
- *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn leaves them
- *    for redelivery — matching the OpenCode connector's semantics — and an app-server CRASH
- *    restarts the child in place (same mesh lifecycle) and re-drives them. Attention modes
- *    hold: ambient drives only in `open`; dnd/focus hold it; a focus @mention wakes a pull
- *    turn (latched until a turn accepts it); quiet stays pull-only.
+ *    when the turn reaches `completed`, and also when an OPERATOR interrupts it (Escape in the
+ *    attached TUI) — that dismisses the batch rather than redelivering it, matching the OpenCode
+ *    connector's explicit-Stop semantics. A `failed` turn (transient model/upstream error) leaves
+ *    them un-acked and retries with bounded backoff; an `unknown` terminal (a missing or
+ *    unrecognized status) leaves them un-acked too, without backoff. The ONE `interrupted` this
+ *    host itself issues — `shutdown()`'s own `driver.interrupt()` — keeps today's un-acked
+ *    outcome: that is a retirement, not a restart, and redelivery to a later same-name spawn is
+ *    not promised. An app-server CRASH restarts the child in place (same mesh lifecycle) and
+ *    re-drives them. Attention modes hold: ambient drives only in `open`; dnd/focus hold it; a
+ *    focus @mention wakes a pull turn (latched until a turn accepts it); quiet stays pull-only.
  *  • presence falls out of the app-server event stream (turn → working, approval → waiting,
  *    item detail → activity), never self-guessed;
  *  • the per-agent CODEX_HOME (under `<workspaceRoot>/.cotal/codex/<name>`) isolates the
@@ -645,11 +649,19 @@ export async function runCodexHost(): Promise<void> {
     }
   }
 
-  /** The single turn-boundary site. Ack ONLY a `completed` turn's surfaced ids (exact-id drain:
-   *  an overflow-evicted id is reported missing, never mis-acked positionally). `failed` (a
-   *  transient model/upstream error) and `interrupted` (an operator/shutdown cancel) both leave
-   *  the ids un-acked so the batch redelivers — failed with backoff, so a permanently failing
-   *  batch can't hot-loop. Waits for any in-flight steer RPC first, so the ack set is settled. */
+  /** The single turn-boundary site. Ack a `completed` turn's surfaced ids, and an `interrupted`
+   *  one too UNLESS this host is the one that issued the interrupt (exact-id drain: an
+   *  overflow-evicted id is reported missing, never mis-acked positionally). An operator's Escape
+   *  in the attached TUI ends the turn `interrupted` with `shuttingDown` still false — that batch
+   *  is DISMISSED, not redelivered, the same way OpenCode acks an explicit user Stop. The only
+   *  `interrupted` this host itself asks for is `shutdown()`'s own `driver.interrupt()`, which
+   *  sets `shuttingDown` first; that one keeps the un-acked outcome, because it is a retirement,
+   *  not a restart (see the shutdown note below on what that does and does not promise). `failed`
+   *  (a transient model/upstream error) leaves the ids un-acked so the batch redelivers with
+   *  backoff, so a permanently failing batch can't hot-loop; `unknown` (a missing or unrecognized
+   *  terminal status) also leaves them un-acked, without backoff — the protocol surprise gets no
+   *  benefit of the doubt, but it isn't punished as a failure either. Waits for any in-flight
+   *  steer RPC first, so the ack set is settled. */
   let boundaryGen = 0; // bumped per turn boundary: a boundary's ASYNC tail (flush/status/pump)
   // must no-op once a newer boundary exists, or T1's stale tail would overwrite T2's presence
   // and pump T2's failed batch past its backoff.
@@ -680,7 +692,11 @@ export async function runCodexHost(): Promise<void> {
       awaitingTurnEnd = false;
       const ids = surfaced;
       surfaced = [];
-      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxDeliveries(ids); // the sole ack site
+      // An interrupt THIS host issued (shutdown()'s driver.interrupt()) sets `shuttingDown` before
+      // the RPC even goes out, so by the time this terminal arrives that latch already reads true
+      // — the sole discriminator between an operator's dismiss and a retirement's redeliver.
+      const dismissed = status === "completed" || (status === "interrupted" && !shuttingDown);
+      if (wasOpen && ids.length > 0 && dismissed) agent.drainInboxDeliveries(ids); // the sole ack site
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {

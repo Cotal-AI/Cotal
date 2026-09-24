@@ -10,7 +10,9 @@
  *   2. wake: a DM drives a real turn carrying the rendered batch;
  *   3. ack-on-completion: a completed turn's batch never redelivers;
  *   4. steer: a directed message arriving mid-turn is steered INTO the live turn;
- *   5. interrupt: an interrupted turn's batch is NOT acked and redelivers immediately;
+ *   5. interrupt: an interrupted turn's batch is DISMISSED (acked), not redelivered, unless the
+ *      interrupt is one this host itself issued for its own retirement; a turn whose terminal
+ *      status is missing or unrecognized ("unknown") leaves the batch un-acked instead;
  *   6. failed: a failed turn's batch is NOT acked — it retries with backoff, and the loop
  *      is released afterwards;
  *   7. tools: a model-initiated MCP tools/call round-trips into the shared cotal_* surface,
@@ -264,17 +266,30 @@ try {
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
 
-  // (5) interrupt: the batch is NOT acked, so the boundary drive redelivers it immediately —
-  // a SECOND turn carrying "HANG now" (the fake's HANG is one-shot, so the redelivery completes).
+  // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
+  // the turn open until it is interrupted (the fake's self-interrupt fallback after ~1s stands in
+  // for an operator's Escape in the attached TUI, since this host never calls driver.interrupt()
+  // itself outside shutdown()); the batch must NOT reappear in the later turn.
   await sleep(300);
   await dm("HANG now");
   await waitFor("HANG turn", () => turnStarts().find((t) => t.includes("HANG now")));
-  const redelivered = await waitFor("redelivery turn", () =>
-    turnStarts().filter((t) => t.includes("HANG now")).length >= 2 ? true : undefined,
-  );
-  check("interrupted turn's batch redelivers", redelivered === true);
+  await sleep(1500); // let the self-interrupt fallback fire and the boundary settle
   await dm("after-hang");
-  await waitFor("after-hang turn", () => turnStarts().find((t) => t.includes("after-hang")));
+  const afterHang = await waitFor("after-hang turn", () => turnStarts().find((t) => t.includes("after-hang")));
+  check("interrupted turn's batch is dismissed, not redelivered", !afterHang.includes("HANG now"), afterHang);
+
+  // (5b) an unknown terminal status (missing/unrecognized `status`) is neither a real interrupt
+  // nor a completion — the batch stays un-acked, same as today, so it redelivers into the next
+  // turn (the fake's marker is one-shot, so that redelivery completes normally).
+  await sleep(300);
+  await dm("UNKNOWNSTATUS now");
+  await waitFor("unknown-status turn", () => turnStarts().find((t) => t.includes("UNKNOWNSTATUS now")));
+  const unknownRedelivered = await waitFor("unknown-status redelivery", () =>
+    turnStarts().filter((t) => t.includes("UNKNOWNSTATUS now")).length >= 2 ? true : undefined,
+  );
+  check("unknown terminal status leaves the batch un-acked", unknownRedelivered === true);
+  await dm("after-unknown");
+  await waitFor("after-unknown turn", () => turnStarts().find((t) => t.includes("after-unknown")));
 
   // (6) failed: the batch is NOT acked — the backoff timer retries it (the fake's FAIL is
   // one-shot, so the retry completes and acks), and the loop is not wedged afterwards.
@@ -325,14 +340,20 @@ try {
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
   // foreign turn's `completed` must never finalize the host's own batch: the batch was never
-  // carried by it, so acking there loses the message outright.
+  // carried by it, so acking there loses the message outright. Our OWN turn then ends
+  // `interrupted` (the human's typing stole the terminal) — an interrupt this host did not
+  // issue, so it dismisses the batch exactly like an operator's Escape would.
   await sleep(300);
   await dm("FOREIGN turn steals the terminal");
   await waitFor("FOREIGN turn", () => turnStarts().find((t) => t.includes("FOREIGN turn steals")));
-  const redeliveredForeign = await waitFor("FOREIGN batch redelivery", () =>
-    turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length >= 2 ? true : undefined,
+  await sleep(500); // let the foreign turn complete and our own turn end interrupted
+  await dm("after-foreign");
+  const afterForeign = await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
+  check(
+    "a foreign (TUI-owned) turn's completion never acks the host's batch, but our own interrupted turn dismisses it",
+    !afterForeign.includes("FOREIGN turn steals"),
+    afterForeign,
   );
-  check("a foreign (TUI-owned) turn never acks the host's batch", redeliveredForeign === true);
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
   // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
