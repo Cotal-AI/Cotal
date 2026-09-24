@@ -3036,6 +3036,12 @@ set additionally includes a **maximum-command serve credential** (a 12-command e
 per-command rows, below); the §13.12 operator assertion uses the largest encoded CONNECT
 line in the set.
 
+The agent baseline includes the self-targeted manager command `run-answer`. Its grant is only the
+`self` request form. The manager MUST authorize a baseline managed seat only when an open `ask` or
+escalated checkpoint is named by a pending relay addressed to that exact caller incarnation, and
+MUST refuse every other run or pause. A caller holding the explicit `run` capability may use the
+same self-targeted form for ordinary run answers. The request never carries the answerer's name.
+
 **Serve grants.** Serving is granted authority, dual to calling. On the **subscribe side**
 an instance's credential binds its registered service name, stable instance id, and
 **registered command set**, one queue-qualified subscribe row per registered command
@@ -3891,7 +3897,9 @@ characters**, which is an id token by construction. The reference implementation
   `{ token, by, value: value ?? null, artifact: artifact ?? null }`, so a retry of the same answer
   lands on the same key with the same bytes and two different answers race on the settle, which is
   what the settle is for. `by` is the answerer as the run's own authorization knows them, never the
-  presenting principal (the driver, for every answer).
+  presenting principal (the driver, for every answer) and never a field in the answer request. A
+  baseline managed seat reaches the answer door only through the self-targeted row above, after the
+  manager has matched its exact caller incarnation to the pending relay for this open pause.
 - **`notice`**, `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, split: spec `{ v: 1, run,
   step, addressee, fact, at }` (create-only; `fact` is the language's bounded decision record and
   is checked against its bound BEFORE any record is written), status `{ v: 1, consumedAt, by,
@@ -4056,7 +4064,8 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
 - endpoint request forms per minted capability (§13.9): every agent gets the baseline set
   (`describe` on all endpoints; the delivery endpoint's durable join/leave/list commands;
-  self-targeted lifecycle commands with authz-mode `self`); the `spawn` capability adds the
+  self-targeted manager commands with authz-mode `self`, including `run-answer`, which the manager
+  narrows to an ask or escalation pending on that exact seat incarnation); the `spawn` capability adds the
   manager endpoint's lifecycle commands with authz-mode `owner`; `child`/`ledger` forms and
   wider target patterns only per explicitly minted capability. The caller triple
   `<owner>.<actor>.<uid>` is pinned in every granted form

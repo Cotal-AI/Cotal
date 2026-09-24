@@ -676,7 +676,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeCommand(nc, t.space, service, command, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
+    const r = await invokeCommand(nc, t.space, service, command, args, {
+      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+    });
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       console.error(`run ${command.slice(4)}: ${renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err)}`);

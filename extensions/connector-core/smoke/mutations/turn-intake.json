@@ -26,6 +26,22 @@
       "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 24 passed, 3 failed Named cell red: the ask is rendered after the context: the step, every field with its kind, and the attempt count"
     },
     {
+      "name": "the ask renderer prints the hosted-forbidden caller-chosen answerer",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;",
+      "replace": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by seat --value '<json record>'`;",
+      "expectRed": "the answer command is the hosted form the manager accepts: run, step, value, and no caller-chosen `--by`",
+      "cell": "the answer command is the hosted form the manager accepts: run, step, value, and no caller-chosen `--by`"
+    },
+    {
+      "name": "the escalation renderer prints the hosted-forbidden caller-chosen answerer",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;",
+      "replace": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by seat --value '<json>'`;",
+      "expectRed": "the escalation answer command is the hosted form too, with no caller-chosen `--by`",
+      "cell": "the escalation answer command is the hosted form too, with no caller-chosen `--by`"
+    },
+    {
       "name": "a lifecycle idle is routed through the turn boundary",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.requireConnected();\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      this._status = status;\n    }\n  }",

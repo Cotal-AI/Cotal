@@ -147,7 +147,8 @@ export function epCallerGrantRows(
 // command NAMES map the served v0.3 ops 1:1: ctl.delivery durableJoin/durableLeave/listMemberships
 // → delivery `join`/`leave`/`list` (untargeted: they act on the caller's own memberships, carried
 // by the pinned caller triple, no target block); the self-service control tier serves exactly
-// no-name self `stop` → manager `stop` with mode `self`; the privileged tier's spawn/stop/despawn/
+// no-name self `stop` → manager `stop` with mode `self`; caller-bound `run-answer` also rides self
+// mode so a baseline seat can answer only through the manager's addressed-pause check; the privileged tier's spawn/stop/despawn/
 // attach → the owner-mode spawn set. These names become the served v0.4 endpoint surfaces when the
 // daemons register them; minting them ahead of serving is default-deny-safe (an unserved request
 // form is a no-responder, never authority).
@@ -159,15 +160,16 @@ export function epCallerGrantRows(
  *  minted agent grant (the afa715b identity-vs-integrity class, executed repro). */
 export const BASELINE_DELIVERY_ENDPOINT = "delivery";
 export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"] as const);
-/** The manager endpoint's self-lifecycle baseline and the spawn-capability owner-mode lifecycle
+/** The manager endpoint's self baseline and the spawn-capability owner-mode lifecycle
  *  set. Self mode reaches the caller's OWN incarnation and nothing else: the no-name self stop
- *  (the v0.3 self-service tier's only op) and the two halves of the run-turn relay, a seat
- *  pulling the turns addressed to it and yielding them back. Both are in the baseline because
+ *  (the v0.3 self-service tier's only op), the two halves of the run-turn relay, and `run-answer`.
+ *  The answer handler narrows a baseline seat to the open pause named by its own pending relay.
+ *  The relay commands are in the baseline because
  *  the manager pushes nothing into a seat: without the pull row, a seat on an auth mesh is
  *  broker-denied at its first `turn-pending` and the relay is silently dead for every spawned
  *  agent (measured: the connector reads the denial as "no manager here" and stays quiet). */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield"] as const);
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield", "run-answer"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
@@ -220,7 +222,8 @@ export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"
  *  block names it, and the manager scopes what a caller may see by the run's own record.
  *  A program can `spawn`, so the `run` capability implies the spawn set as well
  *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
-export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-answer"] as const);
+export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume"] as const);
+export const RUN_ANSWER_COMMAND = "run-answer" as const;
 export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
@@ -350,6 +353,7 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
 export function runCallerCapabilities(callerOwner: string): EpCapability[] {
   return [
     ...RUN_WRITE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: RUN_ANSWER_COMMAND, target: { mode: "self" } as const },
     ...RUN_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     ...spawnCallerCapabilities(callerOwner),
   ];
@@ -388,6 +392,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // creation authority and what a program's own spawns already need.
     ...RUN_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     ...RUN_WRITE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: RUN_ANSWER_COMMAND, target: { mode: "self" } as const },
   ];
   if (tier === "admin") {
     caps.push(
