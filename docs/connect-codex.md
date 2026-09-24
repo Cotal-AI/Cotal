@@ -82,13 +82,16 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   after the app-server, MCP surface, and mesh endpoint are all live (including the initial
   presence publish). If the broker cannot be reached, startup fails within 15 seconds with the
   broker address and latest connection error; it never opens an offline-looking TUI.
-- **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
-  turn completes. A failed turn retries with backoff, and an interrupted turn leaves the batch to
-  redeliver. If the Codex app-server itself dies, the host restarts it in place (same mesh
-  identity, credential, and durable) and re-drives the un-acked batch into the new thread; a
-  crash *loop* (more than 3 in 2 minutes) is fatal rather than an endless respawn. (The shared
-  bounded-inbox overflow rule applies: under extreme bursts an evicted in-flight id cannot
-  redeliver.)
+- **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) when the turn
+  completes, and also when the operator interrupts it (Escape in the attached TUI): that dismisses
+  the batch rather than redelivering it. A failed turn retries with backoff, and an unknown terminal
+  outcome (a missing or unrecognized status) leaves the batch un-acked with no retry of its own. If
+  the Codex app-server itself dies, the host restarts it in place (same mesh identity, credential,
+  and durable) and re-drives the un-acked batch into the new thread; a crash *loop* (more than 3 in
+  2 minutes) is fatal rather than an endless respawn. A retirement (the host shutting itself down)
+  interrupts any live turn too, but that batch stays un-acked and redelivery to it is not promised:
+  a later same-name spawn is a successor with its own delivery frontier. (The shared bounded-inbox
+  overflow rule applies: under extreme bursts an evicted in-flight id cannot redeliver.)
 - **Isolated, never written.** Each agent gets a private `CODEX_HOME` (one hashed directory
   per space+name under `.cotal/codex/`, rooted at the manager's workspace): your `~/.codex`
   config.toml, hooks, and MCP servers never load into a managed agent, and Codex's per-project
@@ -129,7 +132,9 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
   approval requests relay an `approval` condition. A failed turn maps its native
   `codexErrorInfo` into the closed condition vocabulary and preserves that value in
-  `condition.source`. The model id is reported from the started thread.
+  `condition.source`. Presence writes leave the host in the order the events arrived, so a
+  turn that fails or asks for approval in the tick it started keeps its condition until the
+  next turn starts. The model id is reported from the started thread.
 
   `contextWindowExceeded` maps to `context`; `sessionBudgetExceeded` to `budget`;
   `usageLimitExceeded` to `billing`; `rateLimitExceeded` to `rate_limit`;
