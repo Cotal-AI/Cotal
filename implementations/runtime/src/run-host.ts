@@ -98,8 +98,45 @@ export const cotalLangRunHost: RunHost = {
 
   validate(source: string, file?: string): RunValidation {
     try {
-      validate(source, file);
-      return { ok: true };
+      const { ast } = validate(source, file);
+      const placements = new Map<string, { endpoint: string; instanceId: string }>();
+      const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          for (const child of value) visit(child);
+          return;
+        }
+        if (value === null || typeof value !== "object") return;
+        const node = value as Record<string, unknown>;
+        if (node.type === "CallExpression") {
+          const callee = node.callee as Record<string, unknown> | undefined;
+          const args = node.arguments as unknown[] | undefined;
+          if (callee?.type === "Identifier" && callee.name === "spawn" && Array.isArray(args)) {
+            const options = args[1] as Record<string, unknown> | undefined;
+            const properties = options?.type === "ObjectExpression" ? options.properties as unknown[] | undefined : undefined;
+            const named = (list: unknown[] | undefined, name: string): Record<string, unknown> | undefined =>
+              list?.find((item) => {
+                const property = item as Record<string, unknown>;
+                const key = property.key as Record<string, unknown> | undefined;
+                return property.type === "Property"
+                  && ((key?.type === "Identifier" && key.name === name) || (key?.type === "Literal" && key.value === name));
+              }) as Record<string, unknown> | undefined;
+            const placement = named(properties, "placement");
+            const placementValue = placement?.value as Record<string, unknown> | undefined;
+            const fields = placementValue?.type === "ObjectExpression" ? placementValue.properties as unknown[] | undefined : undefined;
+            const literal = (name: string): string | undefined => {
+              const valueNode = named(fields, name)?.value as Record<string, unknown> | undefined;
+              return valueNode?.type === "Literal" && typeof valueNode.value === "string" ? valueNode.value : undefined;
+            };
+            const endpoint = literal("endpoint");
+            const instanceId = literal("instanceId");
+            if (endpoint !== undefined && instanceId !== undefined)
+              placements.set(`${endpoint}\u0000${instanceId}`, { endpoint, instanceId });
+          }
+        }
+        for (const child of Object.values(node)) visit(child);
+      };
+      visit(ast);
+      return { ok: true, ...(placements.size > 0 ? { placements: [...placements.values()] } : {}) };
     } catch (e) {
       if (e instanceof LangErrors) return { ok: false, errors: e.toJSON() as unknown as Record<string, unknown>[] };
       throw e;

@@ -405,7 +405,10 @@ not resolve against, and that instance refuses ahead of any effect. The run drop
 handle, re-describes and re-issues, for a bounded number of attempts; after them the refusal
 surfaces as the effect's own failure and still states that nothing ran. A spawn that names a
 `placement` addresses one instance by name, so a refusal from it is that incarnation answering
-about itself and is never re-issued. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+about itself and is never re-issued. When the spawn also names `cwd`, that manager resolves the
+existing absolute directory to its canonical host path before accepting the spawn. A missing,
+relative or non-directory path refuses with no seat and never falls back to the manager workspace.
+A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on. The

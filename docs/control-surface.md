@@ -52,6 +52,10 @@ does not need the manager-wide `ps` enumeration grant. Every built-in manager co
 same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
+The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
+absolute path on that manager's host and returns its canonical directory plus the host name. It
+refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
+
 ### Inspecting a managed name
 
 Manager `inspect` keeps its successful response as the live managed-agent row. A live hit does

@@ -298,6 +298,18 @@ const SPAWN_OUTPUT_SCHEMA = {
   },
 } as const;
 
+/** Resolve a host-local spawn directory on the manager that will launch the seat. The runtime
+ * already consumes this exact closed shape; keeping it in the manager command table makes the
+ * registered contract and the served validator one source. */
+const RESOLVE_CWD_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["cwd"],
+  properties: { cwd: { type: "string", minLength: 1 } },
+} as const;
+const RESOLVE_CWD_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["cwd", "host"],
+  properties: { cwd: { type: "string" }, host: { type: "string" } },
+} as const;
+
 const GRACEFUL_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: { graceful: { type: "boolean" } },
@@ -677,6 +689,7 @@ const ROWS: CommandRow[] = [
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
+  { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
   // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
   // instrument's cross-agent reach (rev 3, the 1c admin-reach decision): the any-mode subject row
@@ -851,7 +864,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 15,
+    revision: 16,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -911,6 +924,7 @@ export interface ManagerServiceHandlers {
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
+  resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;
   despawn(ctx: EpServeContext): unknown | Promise<unknown>;
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
