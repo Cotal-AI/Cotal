@@ -34,7 +34,7 @@ const { CotalEndpoint, chatSubject, createSpaceAuth, isReachable, mintCreds, min
   newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts } = await import("@cotal-ai/core");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, grantActor, grantManagedActor, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
+const { cotalAuthProvider, grantActor, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
 const { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } = await import("jose");
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -42,6 +42,12 @@ type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type Delivery = import("@cotal-ai/core").Delivery;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Readiness budget for the fixture's own auth-service child. #1534 measured a contended CI runner
+// where the child outlived the old fixed wait (100 fetches x 100ms = 10s) and the loop fell through
+// silently into a misattributed 502; the provider's own readiness contract budgets 15s
+// (READY_TIMEOUT_MS in src/provider.ts), which covers that observed worst case. One budget, both
+// surfaces; no environment override.
+const AUTH_SERVICE_READY_TIMEOUT_MS = 15_000;
 const until = async (fn: () => boolean, ms = 8_000) => {
   const end = Date.now() + ms;
   while (!fn() && Date.now() < end) await wait(50);
@@ -180,10 +186,17 @@ try {
   authService = spawn(process.execPath, [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER,
     "--exchange-public-port", String(publicPort), "--exchange-public-url", exchangeBase],
   { cwd: serverRoot, env: cleanEnv, stdio: "ignore" });
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(`http://127.0.0.1:${publicPort}/health`)).ok) break; } catch { /* wait */ }
-    await wait(100);
-  }
+  // Wait on the signal the service itself emits: the discovery file in the child's state dir
+  // (serverDir — cwd serverRoot, so findCotalRoot resolves there), its pid alive, and /health on
+  // the recorded URL answering 200. That is the provider's shipped readiness contract, polled at
+  // its own cadence; an exhausted budget throws naming the auth service and the last observed
+  // reason, so the proxy below is never built over a port nothing is listening on. The cell below
+  // drives THIS wait (against a state dir no service writes to) so the mutation fixture can prove
+  // a silently-swallowed budget reddens it.
+  const waitForAuthService = async (dir: string, timeoutMs: number): Promise<void> => {
+    await prepared.service.ready({ dir, timeoutMs });
+  };
+  await waitForAuthService(serverDir, AUTH_SERVICE_READY_TIMEOUT_MS);
 
   proxy = createHttpsServer({ cert: readFileSync(join(pki, "leaf.pem")), key: readFileSync(join(pki, "leaf.key")) }, (req, res) => {
     const chunks: Buffer[] = [];
@@ -211,6 +224,26 @@ try {
   witness.on("error", () => {}); await witness.start();
 
   cell("the real user-auth broker is reachable", async () => assert.equal(await isReachable(SERVER), true));
+  cell("the fixture waits on the discovery file the service writes only when every plane is bound", () => {
+    // The accept control: the wait above returned against serverDir, so the file exists NOW, its pid
+    // is the spawned child, and /health answers 200 on the recorded URL (the provider checked all
+    // three before returning — these cells read back what it observed, pinning the signal itself).
+    const info = loadAuthServiceInfo(serverDir);
+    assert.ok(info, "no discovery file in the service state dir after ready() returned");
+    assert.equal(info.pid, authService!.pid);
+    assert.equal(info.publicUrl, exchangeBase);
+  });
+  cell("a service that never becomes ready fails the wait loudly, naming the auth service", async () => {
+    // Same input class as the #1534 reproduction (a child that never binds — here an empty state
+    // dir no service writes to), with a short budget passed explicitly to THIS call so the cell
+    // fails in ~1s on any runner. The exhausted budget must THROW naming the auth service and the
+    // last observed reason, never fall through into a misattributed 502 at the exchange cell.
+    const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "never-ready-"));
+    await assert.rejects(
+      () => waitForAuthService(dirNoServiceWritesTo, 1_000),
+      /auth service not ready after 1000ms .*the auth service has not written its discovery file yet/,
+    );
+  });
   cell("the real public exchange is ready behind verified HTTPS", async () => assert.equal((await tlsGet(exchangeBase, "health")).status, 200));
   cell("the managed actor row uses the already-issued actorToken and lifecycle", () => {
     assert.equal(statSync(tokenPath).mode & 0o777, 0o600); assert.equal(readFileSync(tokenPath, "utf8"), secret.actorToken);

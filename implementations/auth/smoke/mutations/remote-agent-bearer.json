@@ -1,0 +1,28 @@
+{
+  "suite": [
+    "implementations/auth/smoke/remote-agent-bearer.smoke.ts"
+  ],
+  "guard": "the fixture waits on the auth service's own readiness signal (discovery file, pid alive, /health on the recorded URL) and an exhausted budget throws naming the auth service instead of falling through into a misattributed 502",
+  "command": "pnpm smoke:remote-agent-bearer:live",
+  "completionMarker": "remote-agent-bearer smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/remote-agent-bearer.json",
+  "why": [
+    "#1534: the readiness loop was one hundred fetches one hundred milliseconds apart with no",
+    "assertion on exhaustion. A contended runner whose child outlived that budget got a silent",
+    "fall-through, the TLS proxy was built over a port nothing was listening on, and the first",
+    "exchange cell reported 502 !== 200 as an apparent exchange misconfiguration. The service",
+    "already had a readiness contract (the discovery file is written only after every plane is",
+    "bound); the fixture now drives it through the provider's shipped ready() with the provider's",
+    "own fifteen-second budget, and a never-ready service is a thrown error naming the service."
+  ],
+  "mutations": [
+    {
+      "name": "the exhausted readiness budget silently returns instead of throwing, as before the fix",
+      "file": "implementations/auth/smoke/remote-agent-bearer.smoke.ts",
+      "find": "    await prepared.service.ready({ dir, timeoutMs });",
+      "replace": "    await prepared.service.ready({ dir, timeoutMs }).catch(() => {});",
+      "expectRed": "a service that never becomes ready fails the wait loudly, naming the auth service",
+      "cell": "a service that never becomes ready fails the wait loudly, naming the auth service"
+    }
+  ]
+}
