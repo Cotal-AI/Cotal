@@ -3774,6 +3774,12 @@ program from part of a run's history is a **fork**, and a fork is a new run unde
 record names its parent (§14.3). A run has exactly one **authoritative appender** at a time; §14.4
 is what makes that true.
 
+A user-auth run's durable actions MUST use the owner established by its authenticated admission.
+The trusted host derives the run-stable actor and lifecycle uid from the run id and retains that
+owner on resume. Grant construction and effect dispatch MUST use the same triple. A supplied
+owner token is not admission evidence. The existing static/local path retains its `local` owner.
+These identity rules do not authorize exporting host mediator or operator credentials to a driver.
+
 ### 14.2 The language and its version
 
 Programs, values, primitives, the step key grammar, the input hash, the request id and the entry
