@@ -437,6 +437,15 @@
       "cell": "a use before its declaration cannot witness an entrypoint launch"
     },
     {
+      "name": "the same guard is what terminates a cyclic binding, graded on that cell alone",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);",
+      "replace": "          record(node.initializer === undefined || usePos === undefined ? OPAQUE : node.initializer);",
+      "expectRed": "a cyclic binding is refused rather than crashing the resolver",
+      "cell": "a cyclic binding is refused rather than crashing the resolver",
+      "note": "Before #1909 this same removal reddened `use-before-decl` first, on the same fixture-file position basis, so whether `cyclic-binding` would redden on its own was masked. Since #1909 every cell runs and is graded independently, so this row proves this guard's removal reddens the cyclic-binding cell by itself, not by riding the earlier cell's failure."
+    },
+    {
       "name": "a parameter is not a binding",
       "file": "scripts/mutation-coverage.mjs",
       "find": "      if (!hoistedOnly && ts.isParameter(node) && bindsName(node.name, name)) record(OPAQUE);",
