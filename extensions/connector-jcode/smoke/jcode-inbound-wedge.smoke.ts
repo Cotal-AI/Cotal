@@ -400,12 +400,58 @@ try {
       check("CONTROL: the #1868 seat armed its event plane and settled it before the outage", Boolean(settled), settled);
 
       // Kill the broker, let the endpoint enter its rebuild window, then complete the held turn
-      // DURING the outage: the turn_done drives closeEventRun -> flush -> (held) -> pump.
+      // WHILE THE BROKER IS ABSENT. The fake talks to the host over a local socket, so the host
+      // sees turn_done without a mesh connection; turn_done drives closeEventRun -> flush +
+      // closeRun, which is the step that died at base. Only after the flush is provably queued
+      // inside the outage does the broker come back.
+      const readFrontier = (): { seq: number; pending: boolean } => {
+        const wal = findWal(join(em1Root, ".cotal/events"));
+        const doc = JSON.parse(readFileSync(wal!, "utf8")) as { pending: unknown; frontier: { seq: number } };
+        return { seq: doc.frontier.seq, pending: doc.pending !== null && doc.pending !== undefined };
+      };
+      const beforeOutage = readFrontier();
       await killAndAwaitExit(em1Nats, "SIGKILL", 5_000);
+      const killedAt = Date.now();
       await sleep(6_000); // nats.js exhausts its own reconnects; the endpoint is mid-rebuild
+      const releasedAt = Date.now();
+      writeFileSync(holdRelease, "go");
+      await waitFor("the held turn completes while the broker is down", () =>
+        entries().find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes(holdMarker)) ? true : undefined,
+      );
+      // Give the host the time the base seat needed to die on this flush (base repro: 2 s).
+      await sleep(3_000);
+      const atRestart = readFrontier();
+      const portDownAtRestart = !(await portReachable(em1Port));
+      const seatLogAtRestart = readSeatLog(root, "jcodeem1");
+      // The kickoff turn journaled its record before it was held, so the source has a record past
+      // the WAL frontier: the flush has something to publish and has not published it.
+      const unpublishedRecords = readFileSync(seatJournal, "utf8").split("\n").filter((line) => line.includes("append_messages")).length;
+      check(
+        "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
+        portDownAtRestart &&
+          child.exitCode === null &&
+          !seatLogAtRestart.includes("AG-UI emitter stopped") &&
+          atRestart.seq === beforeOutage.seq &&
+          !atRestart.pending &&
+          atRestart.seq < 2 &&
+          unpublishedRecords >= 1,
+        {
+          portDownAtRestart,
+          exitCode: child.exitCode,
+          beforeOutage,
+          atRestart,
+          unpublishedRecords,
+          outageMsBeforeRelease: releasedAt - killedAt,
+          msQueuedBeforeRestart: Date.now() - releasedAt,
+          seatLog: seatLogAtRestart.slice(-400),
+        },
+      );
+      const restartedAt = Date.now();
+      console.log(
+        `    #1868 timing: broker killed, release at +${releasedAt - killedAt} ms, restart at +${restartedAt - killedAt} ms; frontier before=${JSON.stringify(beforeOutage)} at-restart=${JSON.stringify(atRestart)}`,
+      );
       em1Nats = spawn("nats-server", ["-js", "-p", String(em1Port), "-sd", join(root, "js-em1")], { stdio: "ignore" });
       teardownOnSignal(em1Nats, join(root, "js-em1"));
-      writeFileSync(holdRelease, "go");
       for (let i = 0; i < 100 && !(await portReachable(em1Port)); i++) await sleep(50);
 
       // The seat must SURVIVE the window and land the queued flush once the endpoint is live.
@@ -424,6 +470,7 @@ try {
       const walDoc = findWal(join(em1Root, ".cotal/events"));
       const walState = walDoc ? readFileSync(walDoc, "utf8").slice(0, 300) : "(no wal)";
       const fakeTail = entries().slice(-6);
+      console.log(`    #1868 timing: frontier seq ${String(frameLanded)} landed ${Date.now() - restartedAt} ms after the restart (upper bound)`);
       check(
         "the seat survives a transient rebuild window during an event flush (#1868)",
         child.exitCode === null && frameLanded !== undefined && !seatLog.includes("AG-UI emitter stopped"),

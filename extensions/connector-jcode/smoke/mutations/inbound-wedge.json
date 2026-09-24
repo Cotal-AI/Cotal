@@ -17,7 +17,7 @@
     "M3 keeps delivery but clears the presence activity string, so the queue is invisible from outside.",
     "M4 restores the initial drive's bare working status, so its first uncommitted batch is invisible.",
     "",
-    "M5 removes the host's live wait for the event holder (#1868), which restores the base behavior: a flush in a",
+    "M5 removes the host's live wait for the event holder (#1868), which restores the base behavior: a flush queued in a",
     "mesh rebuild window reads max_payload off a missing connection and the seat exits 1.",
     "M6 keeps the wait but drops the shutdown abort, so a stop during a standing outage never exits."
   ],
@@ -61,9 +61,9 @@
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "        () =>\n          new Promise<void>((resolve, reject) => {\n            const live = (): boolean => agent.connected && agent.transportConnected;",
       "replace": "        undefined,\n        () =>\n          new Promise<void>((resolve, reject) => {\n            const live = (): boolean => agent.connected && agent.transportConnected;",
-      "expectRed": "the seat survives a transient rebuild window during an event flush (#1868)",
-      "cell": "the seat survives a transient rebuild window during an event flush (#1868)",
-      "note": "The inserted `undefined` fills the waitLive slot, so the wait becomes an unused extra argument and the holder takes its pre-fix path."
+      "expectRed": "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
+      "cell": "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
+      "note": "The inserted `undefined` fills the waitLive slot, so the holder takes its pre-fix path. The named cell is the outage-flush assertion: the held turn completes while the broker is down, and without the wait the flush reads max_payload off the missing connection and the seat exits 1 before the broker is restarted."
     },
     {
       "name": "M6 shutdown does not end a pending live wait",
