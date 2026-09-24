@@ -10,20 +10,24 @@
  *  2b. a refresh whose delivery launch LOSES the single-flight lease exits non-zero and says so,
  *     instead of reporting a healthy control plane over a child that is already dead (#837).
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
+ *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
+ *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
+ *     survives the SIGINT, the manager and broker are gone, the spared block is printed with the
+ *     reap route, and the process exits within a bounded time.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
  * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-stack:live
  */
-import { spawnSync } from "node:child_process";
+import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { createConnection, createServer, type AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_SPACE } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -253,6 +257,100 @@ try {
   }
   ok("broker-only down stops broker + delivery daemon", boDead, { boDeliveryPid });
   ok("broker-only down leaves no manager pidfile behind", !existsSync(record(MANAGER_PIDFILE)));
+
+  // 4) #1307: Ctrl-C on a FOREGROUND up spares and reports the managed seat, exactly like bare
+  //    down. The seat is a shim `claude` first on PATH (the manager resolves requires:["claude"]
+  //    at boot): a real core-dist endpoint that joins presence under the manager-minted creds, so
+  //    the detached spawn resolves readiness and ps lists it. Its env names ride the documented
+  //    spawn.env allow-list (the seat env is otherwise stripped to the fixed OS boundary).
+  const fgPort = await freePort();
+  const fgServer = `nats://127.0.0.1:${fgPort}`;
+  const fgBin = mkdtempSync(join(tmpdir(), "cotal-upstack-fgbin-"));
+  const fgOut = mkdtempSync(join(tmpdir(), "cotal-upstack-fgout-"));
+  const fgRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-fgroot-"));
+  anchors.set(fgRoot, recordSmokeSandbox({ root: fgRoot, cotalHome: home, xdgConfigHome: configDir }));
+  const fgSeatPidFile = join(fgOut, "seat.pid");
+  const coreDist = resolve(WT, "packages", "core", "dist", "index.js");
+  const shimBody = join(fgOut, "claude-shim-body.js");
+  // A REAL mesh endpoint as the seat: presence join is what makes the detached spawn's readiness
+  // resolve (a bare keepalive rides the 30s backstop into an uncertain non-success).
+  writeFileSync(shimBody, [
+    "const fs=require('node:fs');const {pathToFileURL}=require('node:url');",
+    "const p=process.env.COTAL_LAUNCH_MATERIAL;",
+    "let m={};try{m=JSON.parse(fs.readFileSync(p,'utf8'))}catch{}",
+    "fs.writeFileSync(process.env.PIDFILE,String(process.pid));",
+    "import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
+    "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:m.servers,",
+    "creds:m.creds?fs.readFileSync(m.creds,'utf8'):undefined,",
+    "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,",
+    "registerPresence:true,watchPresence:false,",
+    "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+    "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
+  ].join(""));
+  writeFileSync(join(fgBin, "claude"), "#!/usr/bin/env node\nrequire(process.env.SHIM_BODY);\n");
+  chmodSync(join(fgBin, "claude"), 0o755);
+  mkdirSync(join(fgRoot, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(fgRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\nsubscribe: []\nallowPublish: []\n---\nA supervised seat that exists to be spared.\n");
+  writeFileSync(join(fgRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["CORE_DIST", "PIDFILE", "SHIM_BODY"] } }));
+  const fgEnv = {
+    ...env, PATH: `${fgBin}:${process.env.PATH ?? ""}`,
+    CORE_DIST: coreDist, PIDFILE: fgSeatPidFile, SHIM_BODY: shimBody,
+  };
+  let fgUp: ChildProcess | undefined;
+  let fgSeatPid: number | undefined;
+  let fgManagerPid: number | undefined;
+  try {
+    // The manager's spawn rail needs a connector inventory: seed the built-ins into this sandbox
+    // config (the documented checkout opt-in), or boot reports "no connector available" and the
+    // detached spawn finds no responder on the class rail.
+    cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    fgUp = spawnProc(TSX, [CLI, "up", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let fgOutText = "";
+    fgUp.stdout?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
+    fgUp.stderr?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
+    const fgRecord = (template: string) => canonicalLocalProcessPath(template, { root: fgRoot, space: DEFAULT_SPACE });
+    let managerUpSeen = false;
+    for (let i = 0; i < 60 && !managerUpSeen; i++) {
+      await sleep(1000);
+      try { managerUpSeen = /✓ manager up/.test(readFileSync(fgRecord(MANAGER_LOGFILE), "utf8")); } catch { /* not yet */ }
+    }
+    ok("foreground up reached manager up (manager log)", managerUpSeen);
+    fgManagerPid = Number(readFileSync(fgRecord(MANAGER_PIDFILE), "utf8").trim());
+    ok("foreground manager is a live process", Number.isFinite(fgManagerPid) && alive(fgManagerPid), fgManagerPid);
+    const spawnSeat = cliInEnv(fgRoot, fgEnv, "spawn", "seat", "--detach", "--no-events", "--name", "bard");
+    ok("detached spawn of the shim seat succeeds", spawnSeat.status === 0 && /spawned .*bard/.test(plain(spawnSeat.stdout)), spawnSeat.stdout + spawnSeat.stderr);
+    for (let i = 0; i < 50 && fgSeatPid === undefined; i++) {
+      try { fgSeatPid = Number(readFileSync(fgSeatPidFile, "utf8").trim()) || undefined; } catch { /* not yet */ }
+      if (fgSeatPid === undefined) await sleep(200);
+    }
+    ok("the seat is a live OS process", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
+    const fgPs = cliInEnv(fgRoot, fgEnv, "ps");
+    ok("cotal ps lists the managed seat", /bard/.test(plain(fgPs.stdout)), fgPs.stdout + fgPs.stderr);
+
+    // Ctrl-C. Bounded wait: the handler must finish its awaited teardown and end the process.
+    fgUp.kill("SIGINT");
+    const fgExited = await new Promise<boolean>((res) => {
+      const timer = setTimeout(() => res(false), 45_000);
+      fgUp?.once("exit", () => { clearTimeout(timer); res(true); });
+    });
+    ok("foreground up exits within a bounded time after SIGINT", fgExited);
+    for (let i = 0; i < 20 && alive(fgManagerPid); i++) await sleep(500);
+    ok("the manager is gone after Ctrl-C", !alive(fgManagerPid), fgManagerPid);
+    ok("the broker is gone after Ctrl-C", !(await portOpenAt(fgPort)));
+    ok("the seat SURVIVES the Ctrl-C teardown", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
+    ok("the spared report names the seat and the reap route",
+      /left 1 managed agent running \(no longer managed\):/.test(plain(fgOutText)) &&
+      /bard/.test(plain(fgOutText)) &&
+      /to stop managed agents with the stack: cotal down --with-agents/.test(plain(fgOutText)),
+      fgOutText);
+  } finally {
+    if (fgUp && alive(fgUp.pid ?? 0)) { try { fgUp.kill("SIGKILL"); } catch { /* gone */ } }
+    if (fgSeatPid !== undefined && alive(fgSeatPid)) { try { process.kill(fgSeatPid, "SIGKILL"); } catch { /* gone */ } }
+    cliIn(fgRoot, "down", "--with-agents");
+    rmSync(fgBin, { recursive: true, force: true });
+    rmSync(fgOut, { recursive: true, force: true });
+    rmSync(fgRoot, { recursive: true, force: true });
+  }
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {

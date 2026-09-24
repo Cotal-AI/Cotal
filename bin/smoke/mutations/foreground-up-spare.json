@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "bin/smoke/up-stack-live.smoke.ts"
+  ],
+  "guard": "Ctrl-C on a foreground `cotal up` follows the same sparing rule as bare `cotal down` (#1307): the seat snapshot is taken while the manager still answers, the exact recorded manager's spare capability is asserted before any signal, the teardown is awaited before the broker is signalled, and the seats left behind are reported with the reap route. The handler is idempotent under a second Ctrl-C.",
+  "command": "pnpm smoke:up-stack:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/foreground-up-spare.json",
+  "why": [
+    "The suite drives the shipped foreground `up` as a real subprocess with a real managed seat (a shim",
+    "`claude` on PATH resolving to a real core-dist mesh endpoint), so a mutant that arms the destructive",
+    "intent in the handler is observed as a DEAD SEAT PROCESS and a missing spared block, not inferred",
+    "from a source string.",
+    "M1 (arm the intent) is the destructive regression this guard exists for: with the intent armed, the",
+    "manager's own signal handler consumes it and reaps every managed seat. The first cells that can",
+    "notice are the seat-survives cell and then the spared-report cell on the same cause.",
+    "M2 (remove the spared report) restores the pre-fix silence: the stack still tears down and the seat",
+    "still survives, but the operator is told nothing. Only the spared-report cell can notice, which is",
+    "why it is the named assertion.",
+    "Both mutations run the CLI as a subprocess, so they mutate a module only `dist/` delivers to it:",
+    "every mutation builds first and rebuilds in `afterRestore` (dist/ is gitignored; git cannot be the",
+    "recovery for a build compiled from the mutant)."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the handler arms the destructive shutdown intent, so the manager reaps every managed seat on Ctrl-C",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "          try {\n            assertManagerCanSpare(managerContext, undefined, pin.record);",
+      "replace": "          try {\n            armManagerShutdownIntent(managerContext, {\n              target: pin.record,\n              stopper: { pid: process.pid, marker: `${localProcessPath(MANAGER_PIDFILE, managerContext)}.stopping` },\n            });\n            void parseCommandArgs;",
+      "expectRed": "the seat SURVIVES the Ctrl-C teardown",
+      "cell": "the seat SURVIVES the Ctrl-C teardown",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The exact destructive shape #1307 guards against: the foreground handler publishing the one-shot with-agents intent before signalling the manager. The manager's signal handler consumes it and `mgr.stop({ withAgents: true })` reaps the seat, so the first cell that can notice is the seat-survives cell; the spared-report cell would also red on the empty snapshot but the throw aborts the section first. Writing the intent without holding stopLocalProcess's reservation is exactly what makes this mutant maximally destructive rather than refused."
+    },
+    {
+      "name": "M2 the handler stops reporting the seats it left behind",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "        if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();\n        else if (spared) printSparedAgents(spared);",
+      "replace": "        if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();",
+      "expectRed": "the spared report names the seat and the reap route",
+      "cell": "the spared report names the seat and the reap route",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The pre-fix silence: teardown still works and the seat still survives, but the operator is told nothing about live work while bare `down` reports it. Only the spared-report cell can notice, so it is the named assertion; the snapshot is still taken, so no earlier cell moves."
+    }
+  ]
+}

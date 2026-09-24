@@ -11,7 +11,8 @@ operator-only maintenance verbs. Every command's full flag set is in the
 
 `cotal up` brings up the whole local stack and bare `cotal down` stops it. Managed
 agents stay running as unmanaged OS processes; pass `--with-agents` to take them
-with the stack. A current manager proves that it can detach local PTY custody before
+with the stack. Ctrl-C on a foreground `up` follows the same sparing rule and
+prints the same report as bare down. A current manager proves that it can detach local PTY custody before
 bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
 warning and is signalled according to the documented upgrade contract. Its running binary
 may still carry the older destructive SIGTERM handler, so the CLI does not claim its
