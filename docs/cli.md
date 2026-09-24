@@ -712,10 +712,14 @@ Remove the file or restore the record; nothing repairs or invents a field for yo
 
 An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
 adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds
-is used without a request. After that, commands that select a discovered space require one successful
-conditional refresh before target resolution. A failed refresh refuses the operation. `cotal sync`
-bypasses freshness and reports added, changed, removed, unchanged, and name collisions. `--idp`
-limits it to one signed-in account. It never connects to a broker.
+is used without a request. After that, commands that resolve a mesh target conditionally refresh the
+saved catalogs. An operation targeting a discovered space refreshes only that space's account and
+refuses if that account fails. Operations targeting local or manually registered meshes refresh every
+account, print one warning for each failure, and continue. `cotal status` refreshes every account,
+never refuses on a refresh failure, and lists each account as `fresh`, `updated`, `not-modified`,
+`no-catalog`, or `failed` with its error. `cotal sync` bypasses freshness and reports added, changed,
+removed, unchanged, and name collisions. `--idp` limits it to one signed-in account. It never connects
+to a broker.
 
 The registry is updated under the same lock that guards the catalog cache, so a command never lists
 a discovered space set that another command is still writing. The cache records a fetched snapshot
