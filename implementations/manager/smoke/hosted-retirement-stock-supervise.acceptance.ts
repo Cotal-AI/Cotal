@@ -311,6 +311,7 @@ let authOutput = "";
 let deliveryOutput = "";
 let prepareRequests = 0;
 let activateRequests = 0;
+let renewRequests = 0;
 let validationRequests = 0;
 let adminAuthorizationRequests = 0;
 let retirementRequests = 0;
@@ -423,6 +424,7 @@ try {
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
       const body = Buffer.concat(chunks);
+      let rejectScheduledRenewal = false;
       if (req.url?.endsWith("/manager-service-authority")) {
         try {
           const parsed = JSON.parse(body.toString("utf8")) as { request?: { kind?: string; operation?: string } };
@@ -431,8 +433,17 @@ try {
           else if (parsed.request?.kind === "manager-service-maintenance") maintenanceRequests++;
           else if (parsed.request?.operation === "prepare") prepareRequests++;
           else if (parsed.request?.operation === "activate") activateRequests++;
+          else if (parsed.request?.operation === "renew") {
+            renewRequests++;
+            rejectScheduledRenewal = renewRequests <= 2;
+          }
           else if (parsed.request?.operation === "retire") retirementRequests++;
         } catch { /* the upstream owns malformed-request reporting */ }
+      }
+      if (rejectScheduledRenewal) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "fixture refuses scheduled executor renewal so clean stop must refresh it" }));
+        return;
       }
       const upstreamUrl = new URL(service!.publicUrl!);
       const upstreamPath = req.url?.startsWith("/register/") ? "/register" : req.url;
@@ -720,10 +731,11 @@ registry.register({
   const cleanRegistration = await observeRegistration();
   const cleanDeregistered = cleanRegistration === null || cleanRegistration.operation === "DEL";
   check("stock clean stop refreshes the executor and deregisters after its retained credential expires",
-    cleanStopped && cleanDeregistered && supervisorOutput.includes("✓ deregistered manager instance"),
+    cleanStopped && cleanDeregistered && renewRequests === 3 && supervisorOutput.includes("✓ deregistered manager instance"),
     {
       stopped: cleanStopped,
       registrationOperation: cleanRegistration?.operation ?? null,
+      renewRequests,
       maintenanceRequestsBefore: beforeMaintenance,
       maintenanceRequestsAfter: maintenanceRequests,
       output: supervisorOutput.slice(-1200),
@@ -733,6 +745,7 @@ registry.register({
     serviceRegistrationOperation: cleanRegistration?.operation ?? null,
     maintenanceRequestsBefore: beforeMaintenance,
     maintenanceRequestsAfter: maintenanceRequests,
+    renewRequests,
     deregistered: supervisorOutput.includes("✓ deregistered manager instance"),
   }));
 

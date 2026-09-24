@@ -82,6 +82,7 @@ const { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, probeConnect,
   await import("@cotal-ai/core");
 const { authDir, recordMesh, saveSpaceAuth } = await import("@cotal-ai/workspace");
 const { MANAGER_ENDPOINT } = await import("../../implementations/manager/src/manager-service-contract.js");
+const { makeManagerEndpointEvictor } = await import("../../implementations/manager/src/endpoint-evict.js");
 const { registerRemoteManagerAuthority } = await import("../../implementations/manager/src/remote-register.js");
 const { superviseTarget } = await import("../../implementations/manager/src/commands.js");
 const { runWorkflow } = await import("../../implementations/runtime/src/run-command.js");
@@ -116,6 +117,7 @@ const drive = async (target: { server: string; tlsRequired: boolean }): Promise<
       serveActor: remoteManagerActors(instanceId).serve,
       prepareCreds,
       tlsRequired: target.tlsRequired,
+      evict: makeManagerEndpointEvictor({ space, servers: target.server, auth, log: () => {} }),
     });
     return `registered epoch=${registered.processEpoch} revision=${registered.registrationRevision}`;
   } catch (error) {
