@@ -1487,6 +1487,19 @@ try {
   result = run("call-before-decl");
   check("a launcher called before the declaration cannot witness an entrypoint launch", refusedForReach("call-before-decl", result), report(result));
 
+  // `earliestCall` finds a NAMED CALL. Handing the function to something that invokes it without
+  // ever writing that call is a real launch `evaluated()` still credits (a scan for an INVOCATION
+  // proxy, not a literal call expression), but `earliestCall`'s scan for `name(` finds nothing, so
+  // the enclosing function's position can never be established. Refusing here is a refusal this
+  // tool can back, not a guess at where the call landed.
+  write("bin/smoke/unlocatable-invocation.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'queueMicrotask(run);\n');
+  config("unlocatable-invocation", { suite: ["bin/smoke/unlocatable-invocation.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("unlocatable-invocation");
+  check("a launcher reached with no locatable call site cannot witness an entrypoint launch", refusedForReach("unlocatable-invocation", result), report(result));
+
   // `const A = B` beside `const B = A` is a program. A resolver without a visited set answers it
   // with a stack overflow, which is a crash rather than a verdict.
   write("bin/smoke/cyclic-binding.smoke.ts",
@@ -1858,7 +1871,7 @@ try {
  * smaller first number that nothing compares against. The count is the only thing that notices, so
  * it is asserted rather than reported. Raise it in the same change that adds a cell.
  */
-const EXPECTED_CELLS = 174;
+const EXPECTED_CELLS = 175;
 // This is the run's completion marker (see mutation-proof.mjs's `completionMarker`): the one line
 // every run prints, whether it passed or failed, because every cell above always ran to here. A run
 // that never reaches this line did not finish, and nothing about it should be graded.

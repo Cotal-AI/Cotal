@@ -471,6 +471,14 @@
       "cell": "a launcher called after the declaration witnesses the launch it makes"
     },
     {
+      "name": "an enclosing function whose call cannot be located falls back to the identifier's own position",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const call = earliestCall(name, scope);\n      if (call === undefined) return undefined;\n      pos = call;",
+      "replace": "      const call = earliestCall(name, scope);\n      pos = call ?? pos;",
+      "expectRed": "a launcher reached with no locatable call site cannot witness an entrypoint launch",
+      "cell": "a launcher reached with no locatable call site cannot witness an entrypoint launch"
+    },
+    {
       "name": "a destructuring pattern is not a binding",
       "file": "scripts/mutation-coverage.mjs",
       "find": "    if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {\n      return nameNode.elements.some((element) => ts.isBindingElement(element) && bindsName(element.name, name));\n    }",
