@@ -200,8 +200,9 @@
       "replace": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }",
       "expectRed": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
       "cell": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
-      "note": "Round 2, blocker 1. With the parse throw folded back into undefined, the corrupt-row cell reads no-row -> absent -> the manager takes/keeps the renewal lease, and both the refusal text and daemonRenewalOwner===false go.",
-      "afterRestore": "pnpm --filter @cotal-ai/core... build && pnpm --filter @cotal-ai/manager... build"
+      "note": "Round 2, blocker 1. @cotal-ai/core resolves to dist/ for this suite, so the command builds core+manager from the mutated source before running (the rig's documented pattern for a core-src mutant under implementations/*). With the parse throw folded back into undefined, the corrupt-row cell reads no-row -> absent -> the manager takes/keeps the renewal lease, and both the refusal text and daemonRenewalOwner===false go.",
+      "afterRestore": "pnpm --filter @cotal-ai/core... build && pnpm --filter @cotal-ai/manager... build",
+      "command": "pnpm --filter @cotal-ai/core... build && pnpm --filter @cotal-ai/manager... build && pnpm smoke:manager-reconcile-startup"
     },
     {
       "name": "a refused pass keeps the held renewal lease (the catch-path release dropped)",
