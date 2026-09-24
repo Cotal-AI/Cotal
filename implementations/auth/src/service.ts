@@ -57,7 +57,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsFromJwt, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, newIdentity, rawDigest, reconcileEndpointGate, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintCreds, mintPublicUserJwt, newIdentity, rawDigest, reconcileEndpointGate, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -629,20 +629,19 @@ export async function openAuthAuthorityPlane(opts: {
       }
       const principalOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount, log });
       const executorIdentity = newIdentity();
-      const executorJwt = await mintPublicUserJwt(
-        { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
-        executorIdentity.id,
-        "endpoint-serve-executor",
-        {
-          principal: { owner, actor: remoteManagerActors(request.instanceId).executor },
-          lifecycleUid: request.managerLifecycleUid,
-          endpointServeExecutor: { endpoint: "manager", instanceId: authorized.targetInstanceId },
-          expiresInSeconds: 60,
-        },
-      );
+      const hostAuth: SpaceAuth = {
+        space,
+        operator: { seed: "", jwt: "" },
+        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+        sys: { pub: "", jwt: "" },
+      };
+      const executorCreds = await mintCreds(hostAuth, executorIdentity, "endpoint-serve-executor", {
+        endpointServeExecutor: { endpoint: "manager", instanceId: authorized.targetInstanceId },
+        expiresInSeconds: 60,
+      });
       const maintenanceNc = await connect({
         servers: server,
-        ...standaloneConnectOpts({ creds: credsFromJwt(executorJwt.jwt, executorIdentity), tls: false }),
+        ...standaloneConnectOpts({ creds: executorCreds, tls: false }),
         maxReconnectAttempts: 0,
       });
       let report;
