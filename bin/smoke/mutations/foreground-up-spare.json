@@ -7,12 +7,15 @@
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/foreground-up-spare.json",
   "why": [
     "The suite drives the shipped foreground `up` as a real subprocess with a real managed seat (a shim",
-    "`claude` on PATH resolving to a real core-dist mesh endpoint), so a mutant that arms the destructive",
-    "intent in the handler is observed as a DEAD SEAT PROCESS and a missing spared block, not inferred",
-    "from a source string.",
-    "M1 (arm the intent) is the destructive regression this guard exists for: with the intent armed, the",
-    "manager's own signal handler consumes it and reaps every managed seat. The first cells that can",
-    "notice are the seat-survives cell and then the spared-report cell on the same cause.",
+    "`claude` on PATH resolving to a real core-dist mesh endpoint), so a mutant that drops the spare",
+    "capability assertion or the spared report is observed through the teardown's real output and the",
+    "seat's real liveness, not inferred from a source string.",
+    "M1 (drop the spare-capability assertion) is the destructive regression this guard exists for: the",
+    "handler signals whatever the pidfile names without proving that exact manager can release custody.",
+    "An armed-intent mutant was tried first and is REFUSED by the shipped arm gate (it requires the",
+    "stop reservation only down's stopLocalProcess holds), which grades WRONG-RED: the design blocks",
+    "the armed shape, so the mutation that can actually reach operators is the missing assertion. With",
+    "it gone the snapshot drops with the same error path and the report cell is the first to notice.",
     "M2 (remove the spared report) restores the pre-fix silence: the stack still tears down and the seat",
     "still survives, but the operator is told nothing. Only the spared-report cell can notice, which is",
     "why it is the named assertion.",
@@ -22,15 +25,15 @@
   ],
   "mutations": [
     {
-      "name": "M1 the handler arms the destructive shutdown intent, so the manager reaps every managed seat on Ctrl-C",
+      "name": "M1 the handler stops asserting the spare capability, so an unverifiable manager is signalled blindly",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "          try {\n            assertManagerCanSpare(managerContext, undefined, pin.record);",
-      "replace": "          try {\n            armManagerShutdownIntent(managerContext, {\n              target: pin.record,\n              stopper: { pid: process.pid, marker: `${localProcessPath(MANAGER_PIDFILE, managerContext)}.stopping` },\n            });\n            void parseCommandArgs;",
-      "expectRed": "the seat SURVIVES the Ctrl-C teardown",
-      "cell": "the seat SURVIVES the Ctrl-C teardown",
+      "find": "          try {\n            assertManagerCanSpare(managerContext, undefined, pin.record);\n          } catch (e) {",
+      "replace": "          try {\n            void armManagerShutdownIntent;\n          } catch (e) {",
+      "expectRed": "the spared report names the seat and the reap route",
+      "cell": "the spared report names the seat and the reap route",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "The exact destructive shape #1307 guards against: the foreground handler publishing the one-shot with-agents intent before signalling the manager. The manager's signal handler consumes it and `mgr.stop({ withAgents: true })` reaps the seat, so the first cell that can notice is the seat-survives cell; the spared-report cell would also red on the empty snapshot but the throw aborts the section first. Writing the intent without holding stopLocalProcess's reservation is exactly what makes this mutant maximally destructive rather than refused."
+      "note": "The destructive regression this guard exists for: the handler skipping the exact-process spare assertion and signalling whatever the pidfile names. Without the assertion the capability file is never consulted, `spared` stays undefined (the snapshot is dropped with it on the same error path), and the operator is told nothing about live work while an unverifiable manager may have reaped it. The first cell that can notice is the spared-report cell. `void armManagerShutdownIntent` keeps the sibling import referenced so the healthy tree compiles identically with the assertion present or absent."
     },
     {
       "name": "M2 the handler stops reporting the seats it left behind",
