@@ -51,16 +51,6 @@
       "reason": "macOS home path mutation fixture"
     }
   },
-  "extensions/connector-core/src/docs-bundle.generated.ts": {
-    "home-path": {
-      "count": 2,
-      "reason": "generated documentation mirror; count moves with the generator"
-    },
-    "shared-ipv4": {
-      "count": 2,
-      "reason": "generated user-facing address examples"
-    }
-  },
   "implementations/cli/smoke/install.smoke.ts": {
     "home-path": {
       "count": 2,

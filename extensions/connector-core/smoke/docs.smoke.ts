@@ -5,7 +5,9 @@
  * The opt-in remote refresh is not exercised here (it touches the network). Run: `pnpm smoke:docs`.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runDocs, searchDocs, renderDocsIndex, DOCS_VERSION } from "@cotal-ai/connector-core";
@@ -139,4 +141,113 @@ console.log("✓ 4 — an unknown page fails loud and lists what is available");
 }
 console.log("✓ 5 — BM25 section search");
 
-console.log("docs.smoke: OK — 5 sections");
+// 6 — THE BUNDLE IS A BUILD ARTIFACT NOW, so the thing worth asserting moved. It used to be a
+// committed file a reviewer could read, and `check:docsbundle` proved the tree matched the
+// sources by diffing it. There is no tracked artifact to diff any more: the generator runs from
+// this package's own `build` and `typecheck`. What has to stay true is that the BUILT module an
+// agent actually calls serves EVERY page in `docs/`, at the version the release ships. A
+// generator that silently dropped pages would leave `cotal_docs` answering "no such page" for
+// docs that exist, and nothing else in this suite counts the corpus.
+//
+// The expectation is read from the filesystem rather than pinned to a number, so adding a page
+// does not redden this the way a hardcoded count would; the claim is coverage, not size.
+{
+  const docsDir = join(repoRoot, "docs");
+  // README.md is the human index; cotal_docs renders its own, so the generator excludes it.
+  const expected = readdirSync(docsDir)
+    .filter((f) => f.endsWith(".md") && f !== "README.md")
+    .map((f) => f.slice(0, -3).toLowerCase())
+    .sort();
+  assert.ok(expected.length > 0, "the docs directory has pages to serve");
+
+  const missing: string[] = [];
+  for (const slug of expected) {
+    const res = await runDocs({ page: slug });
+    if (res.isError) missing.push(slug);
+  }
+  assert.deepEqual(missing, [], "the built docs module serves every page in docs/");
+
+  // …and the three normative sources, which are not pages in `docs/` and so are not covered above.
+  for (const alias of ["spec", "lang", "schema"]) {
+    const res = await runDocs({ page: alias });
+    assert.equal(res.isError, undefined, `the built docs module serves ${alias}`);
+  }
+
+  const shipped = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")).version;
+  assert.equal(DOCS_VERSION, shipped, "the built module is stamped with the shipped version");
+}
+console.log("✓ 6 — the built docs module serves every page in docs/ at the shipped version");
+
+// 7 — FAIL LOUD ON A HOLLOW SOURCE, which is the property the generator documents and the only
+// thing standing between an empty page and a release that ships docs answering nothing. This
+// mattered less when the artifact was committed, because a human saw the diff; now the generator
+// runs unattended inside every build, so its refusal is the check.
+//
+// Driven through the REAL generator. The sources it reads are copied into a temp dir and the
+// generator is invoked against that copy, so the repository's own docs are never modified and
+// `--out` keeps the connector's artifact untouched.
+{
+  const gen = join(repoRoot, "scripts", "generate-docs-bundle.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "docs-smoke-gen-"));
+  try {
+    const out = join(dir, "out.ts");
+
+    // ACCEPT CONTROL FIRST. Without it, a generator broken in some unrelated way would throw for
+    // the wrong reason and the refuse legs below would pass while measuring nothing.
+    execFileSync("node", [gen, "--out", out], { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] });
+    assert.match(readFileSync(out, "utf8"), /export const DOCS_BUNDLE/, "the generator writes a bundle from the real sources");
+
+    // The generator resolves its sources relative to its own file, so a copy of the four source
+    // locations plus the script reproduces a real run against a damaged tree.
+    const tree = join(dir, "tree");
+    mkdirSync(join(tree, "scripts"), { recursive: true });
+    cpSync(join(repoRoot, "docs"), join(tree, "docs"), { recursive: true });
+    cpSync(join(repoRoot, "spec"), join(tree, "spec"), { recursive: true });
+    cpSync(join(repoRoot, "SPEC.md"), join(tree, "SPEC.md"));
+    mkdirSync(join(tree, "bin"), { recursive: true });
+    cpSync(join(repoRoot, "bin", "package.json"), join(tree, "bin", "package.json"));
+    cpSync(gen, join(tree, "scripts", "generate-docs-bundle.mjs"));
+    const copied = join(tree, "scripts", "generate-docs-bundle.mjs");
+
+    // ACCEPT CONTROL FOR THE COPY. The refuse legs below are only evidence if the copy itself is
+    // a working tree the generator succeeds on; otherwise they would pass on a broken fixture.
+    execFileSync("node", [copied, "--out", join(dir, "copy.ts")], { stdio: ["ignore", "pipe", "pipe"] });
+
+    // WHICH GUARD REFUSED, not merely that something threw. Measured while proving these cells:
+    // with the emptiness guard removed, an empty page STILL throws — one line later, from the H1
+    // title check — so a bare `assert.throws` is green either way and grades nothing. Both
+    // mutations survived on exactly that. The message is therefore the assertion: it names the
+    // source that is hollow and the reason, which is what a build failing unattended has to say.
+    const refusal = (path: string): string => {
+      try {
+        execFileSync("node", [copied, "--out", path], { stdio: ["ignore", "pipe", "pipe"] });
+      } catch (error) {
+        return String((error as { stderr?: Buffer }).stderr ?? "");
+      }
+      throw new assert.AssertionError({ message: "the generator emitted a bundle from a hollow source" });
+    };
+
+    // REFUSE LEG: an empty page.
+    writeFileSync(join(tree, "docs", "architecture.md"), "");
+    assert.match(
+      refusal(join(dir, "hollow.ts")),
+      /gen:docsbundle: docs\/architecture\.md is empty/,
+      "an empty source page makes the generator throw rather than emit hollow docs",
+    );
+
+    // REFUSE LEG: an empty normative source. A hollow SPEC.md is a different failure from an
+    // empty page, and a generator that only guarded pages would ship a bundle with no spec.
+    cpSync(join(repoRoot, "docs", "architecture.md"), join(tree, "docs", "architecture.md"));
+    writeFileSync(join(tree, "SPEC.md"), "");
+    assert.match(
+      refusal(join(dir, "nospec.ts")),
+      /gen:docsbundle: SPEC\.md is empty/,
+      "an empty normative source makes the generator throw",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+console.log("✓ 7 — the generator refuses a hollow source, naming which one");
+
+console.log("docs.smoke: OK — 7 sections");

@@ -23,8 +23,9 @@
   },
   "scripts": {
     "test": "tsx smoke/spawn-args.smoke.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json",
+    "gen:docsbundle": "node ../../scripts/generate-docs-bundle.mjs",
+    "typecheck": "pnpm run gen:docsbundle && tsc -p tsconfig.json --noEmit",
+    "build": "pnpm run gen:docsbundle && tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
