@@ -13,8 +13,8 @@
     "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
     "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment.",
     "",
-    "M2 restores revision 14 after classSpawn is a SECOND output change on top of",
-    "static reconciliation. Both surface changes ship, so 14 would name only one of them. The",
+    "M2 restores revision 15 after self-targeted run-answer is the next shipped command change. The",
+    "new command mode and grant ship together, so 15 would name the preceding surface. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
     "actual shipped document.",
     "",
@@ -34,12 +34,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 14 after classSpawn is added on top of static reconciliation",
+      "name": "M2 keep revision 15 after self-targeted run-answer is added",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 15,",
-      "replace": "    revision: 14,",
-      "expectRed": "classSpawn status advances the manager cluster revision",
-      "cell": "classSpawn status advances the manager cluster revision"
+      "find": "    revision: 16,",
+      "replace": "    revision: 15,",
+      "expectRed": "self-targeted run-answer advances the manager cluster revision",
+      "cell": "self-targeted run-answer advances the manager cluster revision"
     },
     {
       "name": "M3 compile every contract pair at module scope again",
