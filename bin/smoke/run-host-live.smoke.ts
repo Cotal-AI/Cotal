@@ -75,6 +75,7 @@ const until = async <T>(read: () => Promise<T | undefined>, ms: number): Promise
 const PURE = 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n';
 const CHECKPOINT = 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n';
 const BROKEN = 'log("unclosed"\n';
+const COMPUTED_PLACEMENT = 'const id = "abcdefghijklmnopqrstuvwxyz"; await spawn("a", { placement: { endpoint: "manager", instanceId: id } });\n';
 
 const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
@@ -137,6 +138,18 @@ try {
       wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+  }
+
+  console.log("A1a. hosted placement authority must be literal before credential minting");
+  {
+    const computed = await call("run-start", { source: COMPUTED_PLACEMENT, file: "computed-placement.cotal.js" });
+    const details = ((computed.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+    c("run-start refuses a computed placement before hosted credential minting",
+      computed.ok === false && computed.error?.code === "bad-request"
+        && details.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("manager must mint")), computed.error);
+    const ps = await call("run-ps");
+    c("the computed placement recorded no run",
+      ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
   }
 
   console.log("A1b. a legacy-rail caller holding the same capability is refused run-start by name");
@@ -499,7 +512,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 51;
+const EXPECTED_CELLS = 53;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

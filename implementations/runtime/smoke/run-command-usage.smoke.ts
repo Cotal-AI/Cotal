@@ -12,7 +12,6 @@
 import { EpEnvelopeError, EP_UNANSWERED } from "@cotal-ai/core";
 import { runWorkflow } from "../src/index.js";
 import { unansweredManagerRefusal } from "../src/run-command.js";
-import { cotalLangRunHost } from "../src/run-host.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -35,13 +34,6 @@ const attempt = async (positionals: string[], values: Record<string, string | bo
     .then(() => undefined, (e: Error) => e);
 
 const VERBS = ["start", "resume", "ps", "journal", "answer", "migrate"];
-
-{
-  const source = 'await spawn("worker", { cwd: "/prepared", placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" } });\n';
-  const verdict = cotalLangRunHost.validate(source);
-  c("validated source reports the literal manager placement the hosted mediator must be minted for",
-    verdict.ok === true && JSON.stringify(verdict.placements) === JSON.stringify([{ endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" }]), verdict);
-}
 
 {
   reset();

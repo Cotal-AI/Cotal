@@ -28,7 +28,7 @@ import {
   type RunStatusView,
   type RunValidation,
 } from "@cotal-ai/core";
-import { validate, LangErrors, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
@@ -100,6 +100,20 @@ export const cotalLangRunHost: RunHost = {
     try {
       const { ast } = validate(source, file);
       const placements = new Map<string, { endpoint: string; instanceId: string }>();
+      const problems: Record<string, unknown>[] = [];
+      const problem = (node: Record<string, unknown>, cause: string): void => {
+        const loc = node.loc as { start?: { line?: unknown; column?: unknown } } | undefined;
+        const line = typeof loc?.start?.line === "number" ? loc.start.line : 1;
+        const column = typeof loc?.start?.column === "number" ? loc.start.column + 1 : 1;
+        problems.push({
+          code: "L3048",
+          title: CATALOG.L3048,
+          where: { file: file ?? "program.cotal.js", line, column, frame: codeFrame(source, { file: file ?? "program.cotal.js", line, column }) },
+          cause,
+          fix: "write placement as { endpoint: \"manager\", instanceId: \"<literal instance id>\" }; a hosted run must know the exact target before it mints its credential",
+          callee: primitiveDoc("spawn"),
+        });
+      };
       const visit = (value: unknown): void => {
         if (Array.isArray(value)) {
           for (const child of value) visit(child);
@@ -129,13 +143,20 @@ export const cotalLangRunHost: RunHost = {
             };
             const endpoint = literal("endpoint");
             const instanceId = literal("instanceId");
-            if (endpoint !== undefined && instanceId !== undefined)
+            const optionsSpread = properties?.find((item) => (item as Record<string, unknown>).type === "SpreadElement") as Record<string, unknown> | undefined;
+            const placementSpread = fields?.find((item) => (item as Record<string, unknown>).type === "SpreadElement") as Record<string, unknown> | undefined;
+            if (placement === undefined && optionsSpread !== undefined)
+              problem(optionsSpread, "this hosted spawn spreads its option bag, so placement authority may be hidden in a value the manager cannot inspect before credential minting");
+            else if (placement !== undefined && (placementValue?.type !== "ObjectExpression" || endpoint === undefined || instanceId === undefined || endpoint.length === 0 || instanceId.length === 0 || placementSpread !== undefined))
+              problem(placement, "this hosted spawn computes or spreads its placement target, but the manager must mint the exact instance rail before the program starts");
+            else if (endpoint !== undefined && instanceId !== undefined)
               placements.set(`${endpoint}\u0000${instanceId}`, { endpoint, instanceId });
           }
         }
         for (const child of Object.values(node)) visit(child);
       };
       visit(ast);
+      if (problems.length > 0) return { ok: false, errors: problems };
       return { ok: true, ...(placements.size > 0 ? { placements: [...placements.values()] } : {}) };
     } catch (e) {
       if (e instanceof LangErrors) return { ok: false, errors: e.toJSON() as unknown as Record<string, unknown>[] };

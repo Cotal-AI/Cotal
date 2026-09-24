@@ -409,7 +409,9 @@ about itself and is never re-issued. When the spawn also names `cwd`, that manag
 existing absolute directory to its canonical host path before accepting the spawn. A missing,
 relative or non-directory path refuses with no seat and never falls back to the manager workspace.
 One hosted run may name one placement instance; a program naming several is refused instead of
-widening one run credential across hosts.
+widening one run credential across hosts. A hosted placement writes `endpoint` and `instanceId`
+as string literals so the manager can mint that instance's rows before the program starts. A
+computed or spread placement refuses at `run-start` rather than running with an unplaced credential.
 A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a

@@ -17,6 +17,15 @@
   ],
   "mutations": [
     {
+      "name": "computed placement is allowed past hosted credential minting",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "      if (problems.length > 0) return { ok: false, errors: problems };",
+      "replace": "      if (problems.length < 0) return { ok: false, errors: problems };",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "run-start refuses a computed placement before hosted credential minting",
+      "cell": "run-start refuses a computed placement before hosted credential minting"
+    },
+    {
       "name": "run-start skips validation",
       "file": "implementations/manager/src/run-hosting.ts",
       "find": "    if (!verdict.ok) {",
