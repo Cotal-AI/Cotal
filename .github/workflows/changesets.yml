@@ -202,9 +202,9 @@ jobs:
   # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
   # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
   # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
-  # #1502). It validates the SHAPE of cotal-ai's packed artifact (structure, binary presence,
-  # startup) and each runtime sibling's own tarball entry points. The binary still runs against
-  # workspace-resolved siblings, and the probe does not cover registry propagation or native assets.
+  # #1502). It validates the SHAPE of cotal-ai's OWN packed artifact (structure, binary presence,
+  # startup). It does not pack the sibling workspace packages, so their packaging is not exercised,
+  # and it does not cover registry-side propagation or native-asset loading.
   install-probe:
     if: github.event_name == 'push' || inputs.snapshot == ''
     needs: [version]
