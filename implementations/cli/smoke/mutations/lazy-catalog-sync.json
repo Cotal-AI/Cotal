@@ -23,7 +23,7 @@
       "name": "drop the selected catalog account scope",
       "file": "implementations/cli/src/commands/sync.ts",
       "find": "    ...(targetCatalog?.userAuth?.idp.url ? { idpUrl: targetCatalog.userAuth.idp.url } : {}),",
-      "replace": "    ...(false && targetCatalog?.userAuth?.idp.url ? { idpUrl: targetCatalog.userAuth.idp.url } : {}),",
+      "replace": "    ...(false ? { idpUrl: targetCatalog!.userAuth!.idp.url } : {}),",
       "expectRed": "catalog selection scopes refresh to its account and ignores a dead sibling",
       "cell": "catalog selection scopes refresh to its account and ignores a dead sibling"
     },
