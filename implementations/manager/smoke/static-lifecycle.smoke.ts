@@ -164,7 +164,7 @@ const M = mgr as unknown as {
   agents: Map<string, { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string }; seed?: string }>;
   retiring: Map<string, { lifecycleUid: string }>;
   retiredPrincipals: Set<string>;
-  freeSlot: (a: unknown, floor: boolean) => void;
+  freeSlot: (a: unknown, floor: boolean, cause?: import("../src/manager.js").FreeSlotCause) => void;
   deprovision: (a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }) => Promise<void>;
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
@@ -347,7 +347,7 @@ try {
   managedA.terminalizing = false;
 
   // ── 4. Terminal (F1) ───────────────────────────────────────────────────────
-  M.freeSlot(managedA, false);
+  M.freeSlot(managedA, false, "process-exit");
   check("the name is HELD pending the static retirement (freeSlot -> retiring hold)", M.retiring.has("worker"));
   await M.deprovision({ id: idA, name: "worker", lifecycleUid: uidA, secretPaths: managedA.secretPaths });
   const settled = await until(async () => !M.retiring.has("worker"), 30_000, "the static terminal to clear the hold");
