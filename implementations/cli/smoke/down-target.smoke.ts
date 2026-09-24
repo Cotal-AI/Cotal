@@ -110,8 +110,9 @@ type LegacyManagerStop = {
 /** Drive the public bare-down manager branch with a live planted process record. */
 async function stopPlantedManager(
   withAgents: boolean,
-  pin: "legacy" | "mismatch",
+  pin: "legacy" | "match" | "mismatch",
   handler: "intent-aware" | "historical-destructive" = "intent-aware",
+  target: "stack" | "manager" = "stack",
 ): Promise<LegacyManagerStop> {
   const root = mkdtempSync(join(tmpdir(), `cotal-${pin}-manager-${withAgents ? "reap" : "spare"}-`));
   mkdirSync(join(root, ".cotal"), { recursive: true });
@@ -162,6 +163,7 @@ async function stopPlantedManager(
   writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
   const pinPath = `${pidPath}.identity`;
   if (pin === "mismatch") writeFileSync(pinPath, `${child.pid} 1`, { mode: 0o600 });
+  else if (pin === "match") writeIdentityPin(pidPath, child.pid);
   else writeIdentityPin(pidPath, child.pid, () => undefined); // Windows/ps-less host: honest no-pin shape
 
   let warning = "";
@@ -176,7 +178,7 @@ async function stopPlantedManager(
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
     console.log = (...args: unknown[]) => { output += `${args.join(" ")}\n`; };
     await sleep(100); // the child must install its SIGTERM handler before down can signal it
-    try { await run([], withAgents ? { "with-agents": true } : {}); }
+    try { await run(target === "manager" ? ["manager"] : [], withAgents ? { "with-agents": true } : {}); }
     catch (error) { warning += `${(error as Error).message}\n`; }
   } finally {
     console.error = originalError;
@@ -192,7 +194,7 @@ async function stopPlantedManager(
     managerAlive: alive(child.pid),
     agentAlive: alive(agent.pid),
     pidfilePreserved: existsSync(pidPath),
-    pinPreserved: pin === "mismatch" ? existsSync(pinPath) : undefined,
+    pinPreserved: pin === "legacy" ? undefined : existsSync(pinPath),
     managerDecision: existsSync(decisionPath) ? readFileSync(decisionPath, "utf8") : undefined,
     warning,
     output,
@@ -325,6 +327,17 @@ try {
       !/left \d+ managed agents? running/.test(historicalBare.output) &&
       !/agents will still be spared/.test(`${historicalBare.warning}\n${historicalBare.output}`),
     historicalBare,
+  );
+  const pinnedNoCapability = await stopPlantedManager(false, "match", "intent-aware", "manager");
+  check(
+    "a pinned manager without a capability prints the legacy-safe route and is not signalled",
+    pinnedNoCapability.managerAlive && pinnedNoCapability.agentAlive && pinnedNoCapability.pidfilePreserved &&
+      pinnedNoCapability.pinPreserved === true &&
+      /cannot tell whether the manager predates spare-capability reporting or reported that it cannot detach agents/.test(pinnedNoCapability.warning) &&
+      /stop its managed agents explicitly, then run `cotal down --with-agents` from this mesh root/.test(pinnedNoCapability.warning) &&
+      /older manager may not honor its agent-reap request/.test(pinnedNoCapability.warning) &&
+      !/use --with-agents or stop the agents explicitly/.test(pinnedNoCapability.warning),
+    pinnedNoCapability,
   );
   const mismatched = await stopPlantedManager(false, "mismatch");
   check(

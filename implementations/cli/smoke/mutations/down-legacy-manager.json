@@ -4,12 +4,12 @@
     "implementations/cli/smoke/down-target.smoke.ts",
     "packages/workspace/smoke/manager-shutdown.smoke.ts"
   ],
-  "guard": "both cotal down policy branches signal a live pre-pin manager after the documented legacy warning, bare down never reports a historical destructive handler's reaped agent as spared, and pinned manager policy remains identity-bound",
-  "command": "pnpm build > /dev/null && pnpm smoke:down-target",
+  "guard": "both cotal down policy branches signal a live pre-pin manager after the documented legacy warning, bare down never reports a historical destructive handler's reaped agent as spared, and a pinned manager without spare-capability evidence receives only a working route without being signalled",
+  "command": "pnpm build > /dev/null && pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts && pnpm smoke:down-target",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-legacy-manager.json",
   "why": [
     "A manager launched before identity pins existed, or on a platform whose injected start-token reader returns undefined, has no token for the full identity-pinned handoff. The documented upgrade contract still signals that live record after warning. Bare down cannot verify which SIGTERM handler the running binary carries, so it prints only uncertainty and never reports the pre-signal inventory as confirmed spared; --with-agents publishes the reduced-guarantee pid-and-reservation-inode handoff so an intent-aware manager selects destructive teardown.",
-    "The mutations restore each tokenless refusal that shipped at the blocked head plus its false affirmative spare report. The smoke plants real unpinned manager records and drives both real down policy branches. Its historical handler actually kills a real child on SIGTERM and the named cell rejects every confirmed-spared rendering. The same public suite observes pinned mismatch refusal, while bin/smoke/mutations/pid-identity.json remains its dedicated mechanical guard."
+    "The mutations restore each tokenless refusal that shipped at the blocked head plus its false affirmative spare report. The smoke plants real unpinned manager records and drives both real down policy branches. Its historical handler actually kills a real child on SIGTERM and the named cell rejects every confirmed-spared rendering. The new mutations restore the misleading missing-capability text and bypass its pre-signal assertion; named workspace and public-command cells reject both. The same public suite observes pinned mismatch refusal, while bin/smoke/mutations/pid-identity.json remains its dedicated mechanical guard."
   ],
   "mutations": [
     {
@@ -40,6 +40,26 @@
       "expectRed": "bare down never reports a historical destructive manager's reaped agent as spared",
       "cell": "bare down never reports a historical destructive manager's reaped agent as spared",
       "note": "Restores the false affirmative output from the blocked head. The fixture's historical SIGTERM handler actually kills its agent, so rendering even an empty confirmed-spared inventory is a named red rather than a prose-only check.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M4 restore the dead routes in the missing-capability refusal",
+      "file": "packages/workspace/src/manager-shutdown.ts",
+      "find": "    throw new Error(\n      `refusing bare manager stop: ${path} does not contain a usable capability, so this CLI cannot ` +\n      \"tell whether the manager predates spare-capability reporting or reported that it cannot detach agents. \" +\n      \"To stop it, stop its managed agents explicitly, then run `cotal down --with-agents` from this mesh root; \" +\n      \"that command stops the whole stack, and an older manager may not honor its agent-reap request\",\n    );",
+      "replace": "    throw new Error(`refusing bare manager stop: ${path} does not prove this manager can detach its agents; use --with-agents or stop the agents explicitly`);",
+      "expectRed": "a missing capability names the one legacy-safe stop route and none of the dead routes",
+      "cell": "a missing capability names the one legacy-safe stop route and none of the dead routes",
+      "note": "Restores the exact old refusal. The named workspace cell requires the combined explicit-agent-stop plus whole-stack route and rejects both ambiguous old remedies.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M5 signal a pinned manager without spare-capability evidence",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);",
+      "replace": "              else if (attempt.target.token !== undefined) { /* mutant: signal without spare-capability evidence */ }",
+      "expectRed": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
+      "cell": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
+      "note": "Bypasses the fail-closed assertion on the shipped down path. The planted pinned manager then receives SIGTERM and loses its pidfile, so the named integration cell goes red.",
       "afterRestore": "pnpm build > /dev/null"
     }
   ]

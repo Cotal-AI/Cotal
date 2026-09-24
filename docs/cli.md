@@ -312,6 +312,12 @@ it works from any directory; the other components always stop under the folder y
 and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
 registered daemon is still live; include those components or use bare `cotal down`.
 
+A pinned manager with no spare-capability record is not signalled by bare `cotal down` or `cotal
+down manager`. The missing record can mean either that the manager predates capability reporting or
+that a current manager cannot detach its agents. Stop each managed agent explicitly, then run `cotal
+down --with-agents` from the mesh root to stop the whole stack. An older manager does not understand
+the reap request, which is why the agents must already be stopped.
+
 Bare `cotal down` inventories by pidfile. When this folder's registered broker answers and no
 `nats.pid` records it, the command does not say nothing is running. It names the space and the
 broker address, says no pidfile records that process, says it will not stop a process it did not
