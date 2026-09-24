@@ -269,14 +269,19 @@ try {
   // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
   // the turn open until it is interrupted (the fake's self-interrupt fallback after ~1s stands in
   // for an operator's Escape in the attached TUI, since this host never calls driver.interrupt()
-  // itself outside shutdown()); the batch must NOT reappear in the later turn.
+  // itself outside shutdown()). Dismissed means the marker appears in exactly ONE turn/start ever
+  // (the boundary never re-drives it); a mutant that leaves it un-acked instead redrives it into a
+  // SECOND turn immediately, before "after-hang" is even sent — so the count, not the last turn's
+  // content, is what actually distinguishes dismissed from redelivered.
   await sleep(300);
   await dm("HANG now");
   await waitFor("HANG turn", () => turnStarts().find((t) => t.includes("HANG now")));
-  await sleep(1500); // let the self-interrupt fallback fire and the boundary settle
+  await sleep(1500); // let the self-interrupt fallback fire and the boundary settle (and, on a
+  // mutant, let the redelivery it triggers run to completion too)
+  const hangOccurrences = turnStarts().filter((t) => t.includes("HANG now")).length;
+  check("interrupted turn's batch is dismissed, not redelivered", hangOccurrences === 1, hangOccurrences);
   await dm("after-hang");
-  const afterHang = await waitFor("after-hang turn", () => turnStarts().find((t) => t.includes("after-hang")));
-  check("interrupted turn's batch is dismissed, not redelivered", !afterHang.includes("HANG now"), afterHang);
+  await waitFor("after-hang turn", () => turnStarts().find((t) => t.includes("after-hang")));
 
   // (5b) an unknown terminal status (missing/unrecognized `status`) is neither a real interrupt
   // nor a completion — the batch stays un-acked, same as today, so the boundary immediately
@@ -344,18 +349,21 @@ try {
   // foreign turn's `completed` must never finalize the host's own batch: the batch was never
   // carried by it, so acking there loses the message outright. Our OWN turn then ends
   // `interrupted` (the human's typing stole the terminal) — an interrupt this host did not
-  // issue, so it dismisses the batch exactly like an operator's Escape would.
+  // issue, so it dismisses the batch exactly like an operator's Escape would (one occurrence
+  // ever, the same counting shape as (5): a mutant that leaves it un-acked redrives it into a
+  // second turn immediately, before any later DM is even sent).
   await sleep(300);
   await dm("FOREIGN turn steals the terminal");
   await waitFor("FOREIGN turn", () => turnStarts().find((t) => t.includes("FOREIGN turn steals")));
   await sleep(500); // let the foreign turn complete and our own turn end interrupted
-  await dm("after-foreign");
-  const afterForeign = await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
+  const foreignOccurrences = turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length;
   check(
     "a foreign (TUI-owned) turn's completion never acks the host's batch, but our own interrupted turn dismisses it",
-    !afterForeign.includes("FOREIGN turn steals"),
-    afterForeign,
+    foreignOccurrences === 1,
+    foreignOccurrences,
   );
+  await dm("after-foreign");
+  await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
   // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
