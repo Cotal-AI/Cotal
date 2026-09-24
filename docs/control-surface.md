@@ -138,12 +138,24 @@ state, not reporting a missing one.
 
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
-specific manager without caring which process currently serves it. An untargeted spawn
-rides class anycast (any manager may accept, and the acceptance records which one did);
+specific manager without caring which process currently serves it. On a static or open mesh,
+an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did);
 `cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
 foreground spawn has no manager to pin and refuses the flag). There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because `--on` takes nothing else.
+
+On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
+exchange. It authorizes one concrete manager instance using the caller's current actor grant and
+the host's registered service records. Discovery and invocation both use that instance's `inst`
+route. This view grants no registry scan, class queue, or additional command capability. An absent,
+ambiguous or unauthorized selection refuses before the command is sent.
+
+Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
+them. Existing unbound sessions can use the exchange's unique authorized selection without
+replacing their actor or conversation. The connector uses a separate control connection; the
+standing message connection and its credential source are unchanged. A caller still checks the
+resolved instance and epoch, and never retries an ambiguous mutation outcome.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a

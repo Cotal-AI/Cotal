@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -27,6 +27,8 @@ export interface AgentConfig {
   /** The accepted-row token of a static credential's issuance (SPEC 13.15, `COTAL_ACCEPTED_TOKEN`):
    *  the endpoint reads the issuer-bound generation under it and pins its caller rails. */
   acceptedToken?: string;
+  /** Manager selected by the launcher. User-mode control calls request authority for this instance. */
+  managerInstanceId?: string;
   /** USER-MODE launch (a spawned agent on a user-auth mesh): the agent's owner+actor principal,
    *  the sentinel creds content it presents alongside its bearers, and the argv it EXECS for a
    *  fresh bearer (initial connect + every refresh — the exchange protocol stays behind that
@@ -331,6 +333,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // Open mode stays uid-less here (the endpoint self-mints its per-session identity).
   const lifecycleUid = env.COTAL_LIFECYCLE_UID?.trim() || undefined;
   const acceptedToken = env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
+  const managerInstanceId = env.COTAL_MANAGER_INSTANCE?.trim() || undefined;
+  if (managerInstanceId !== undefined) assertLifecycleToken(managerInstanceId, "COTAL_MANAGER_INSTANCE");
   if (acceptedToken && !credsPath)
     throw new Error("COTAL config: COTAL_ACCEPTED_TOKEN names a static issuance and needs COTAL_CREDS beside it (a broken launcher, not a mode)");
   if ((credsPath || userSet === 4) && !lifecycleUid)
@@ -375,6 +379,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     id: credsId ?? declaredId,
     lifecycleUid,
     acceptedToken,
+    managerInstanceId,
     creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
     userAuth,
     name,

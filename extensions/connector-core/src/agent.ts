@@ -30,6 +30,7 @@ import {
   type CotalMessage,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
+import { invokeUserManager } from "./manager-call.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -1501,7 +1502,17 @@ export class MeshAgent extends EventEmitter {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     try {
-      r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
+      const input = clean && Object.keys(clean).length ? clean : undefined;
+      if (this.config.userAuth) {
+        const bearer = await execBearerCmd([
+          ...this.config.userAuth.bearerCmd,
+          "--manager-call",
+          ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
+        ]);
+        r = await invokeUserManager(this.config, bearer, command, input, opts);
+      } else {
+        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
+      }
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
       // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
