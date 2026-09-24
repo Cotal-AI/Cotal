@@ -67,6 +67,38 @@ export function journalOutcomeOf(e: JournalEntry): string {
   return `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
 }
 
+type StepJournalRow = Extract<RunJournalRow, { readonly kind: "step" }>;
+
+/** Build the one step-row view used by both hosted status reads and the local journal command. */
+export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
+  const outcome = journalOutcomeOf(e);
+  const external = e.state === "pending" ? (e.external as { asks?: unknown; addressee?: unknown } | undefined) : undefined;
+  const result = e.state === "settled" && e.result !== null && typeof e.result === "object"
+    ? e.result as { outcome?: unknown; value?: unknown; by?: unknown; artifact?: unknown; at?: unknown; answerId?: unknown }
+    : undefined;
+  const answeredPause = (e.kind === "checkpoint" || e.kind === "ask")
+    && result?.outcome === "resolved"
+    && typeof result.answerId === "string"
+    ? {
+        answerId: result.answerId,
+        ...(result.value !== undefined ? { value: result.value } : {}),
+        ...(typeof result.by === "string" ? { by: result.by } : {}),
+        ...(typeof result.artifact === "string" ? { artifact: result.artifact } : {}),
+        ...(typeof result.at === "number" ? { at: result.at } : {}),
+      }
+    : undefined;
+  return {
+    n,
+    kind: "step",
+    step: journalEntryKeyString(e),
+    state: e.state,
+    outcome,
+    ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
+    ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
+    ...(answeredPause !== undefined ? { answer: answeredPause } : {}),
+  };
+}
+
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
  *  the journal itself keys with, so it is the key `answer` takes back. */
 function journalRows(records: Awaited<ReturnType<typeof replayRunJournal>>["records"]): RunJournalRow[] {
@@ -76,18 +108,7 @@ function journalRows(records: Awaited<ReturnType<typeof replayRunJournal>>["reco
       rows.push({ n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo });
       continue;
     }
-    const e = record.entry as JournalEntry;
-    const outcome = journalOutcomeOf(e);
-    const external = e.state === "pending" ? (e.external as { asks?: unknown; addressee?: unknown } | undefined) : undefined;
-    rows.push({
-      n: record.n,
-      kind: "step",
-      step: journalEntryKeyString(e),
-      state: e.state,
-      outcome,
-      ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
-      ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
-    });
+    rows.push(journalStepRow(record.n, record.entry as JournalEntry));
   }
   return rows;
 }

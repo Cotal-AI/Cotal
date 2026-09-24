@@ -646,6 +646,16 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           outcome: { type: "string" },
           asks: { type: "string" },
           addressee: { type: "string" },
+          answer: {
+            type: "object", additionalProperties: false, required: ["answerId"],
+            properties: {
+              answerId: { type: "string" },
+              value: {},
+              by: { type: "string" },
+              artifact: { type: "string" },
+              at: { type: "number" },
+            },
+          },
         },
       },
     },

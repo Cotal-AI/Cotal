@@ -28,13 +28,43 @@
     },
     {
       "name": "the journal render drops an open pause's question",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    const asks = e.state === \"pending\" ? (e.external as { asks?: unknown } | undefined)?.asks : undefined;",
-      "replace": "    const asks = undefined as unknown;",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "    ...(typeof external?.asks === \"string\" ? { asks: external.asks } : {}),",
+      "replace": "    ...(typeof external?.asks === \"string\" ? {} : {}),",
       "expectRed": "the journal render shows an open pause's question under the step an answer is addressed by",
       "completionMarker": "run-command:",
       "cell": "the journal render shows an open pause's question under the step an answer is addressed by",
       "note": "An open checkpoint is answered by step key, and the only place a person can read WHAT it asks is this render. Without it the journal shows a pending row and no question, and the answerer has to guess what they are approving."
+    },
+    {
+      "name": "the journal render drops a settled pause's accepted value",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "        ...(Object.hasOwn(r.answer, \"value\") ? [`value=${JSON.stringify(r.answer.value)}`] : []),",
+      "replace": "        ...(Object.hasOwn(r.answer, \"value\") ? [] : []),",
+      "expectRed": "the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
+      "completionMarker": "run-command:",
+      "cell": "the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
+      "note": "The outcome column remains `resolved`; only the accepted value disappears, so the end-to-end render cell must name that loss."
+    },
+    {
+      "name": "an expired pause is exposed as answered",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "    && result?.outcome === \"resolved\"",
+      "replace": "    && result !== undefined",
+      "expectRed": "an expired pause row carries no answer",
+      "completionMarker": "run-command:",
+      "cell": "an expired pause row carries no answer",
+      "note": "An expiry has no accepted answer. Even a malformed expired result carrying answer-shaped fields must not become an answer row."
+    },
+    {
+      "name": "an ordinary step is exposed as an answered pause",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "  const answeredPause = (e.kind === \"checkpoint\" || e.kind === \"ask\")",
+      "replace": "  const answeredPause = true",
+      "expectRed": "a non-pause step cannot expose answer-shaped result fields",
+      "completionMarker": "run-command:",
+      "cell": "a non-pause step cannot expose answer-shaped result fields",
+      "note": "Only checkpoint and ask results are pause answers. A different effect may legitimately return a record with the same field names."
     },
     {
       "name": "a local holder contains a forbidden owner-token separator",
