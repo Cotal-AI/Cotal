@@ -29,7 +29,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -207,7 +207,7 @@ async function plantRetiredSlot(alias: string): Promise<{ actor: string; lifecyc
 
 /** A caller instrument: mint an agent cred with the given ep capabilities (+ ctl privileged via
  *  the spawn capability), connect, and return the epCall/ctl helpers bound to its triple. */
-async function instrument(caps: Array<{ command: string; owner?: true }>) {
+async function instrument(caps: Array<{ command: string; owner?: true; instanceId?: string }>) {
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
@@ -216,6 +216,7 @@ async function instrument(caps: Array<{ command: string; owner?: true }>) {
     capabilities: ["spawn"],
     endpointCapabilities: caps.map((c) => ({
       endpoint: MANAGER_ENDPOINT, command: c.command,
+      ...(c.instanceId ? { routes: [], instanceId: c.instanceId } : {}),
       ...(c.owner ? { target: { mode: "owner" as const, tOwner: DEV_OWNER } } : {}),
     })),
   });
@@ -245,6 +246,12 @@ try {
     { command: "prepare-preservation" }, { command: "commit-preservation" }, { command: "abort-preservation" },
   ]);
   const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }]);
+  const P = await instrument([
+    { command: "describe", instanceId: M.managerInstanceId },
+    { command: "resolve-cwd", instanceId: M.managerInstanceId },
+    { command: "spawn", instanceId: M.managerInstanceId },
+    { command: "ps" },
+  ]);
 
   console.log("1. describe: the rev-2 document serves the full fan-out");
   let clusterDigest: string | undefined;
@@ -317,6 +324,29 @@ try {
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
   const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false });
+
+  console.log("3a. placed spawn: manager canonicalizes cwd and the child starts there");
+  {
+    const prepared = join(dir, "prepared checkout");
+    const alias = join(dir, "prepared-alias");
+    const missing = join(dir, "missing-checkout");
+    mkdirSync(prepared);
+    symlinkSync(prepared, alias, "dir");
+    const service = await resolveService(P.nc, space, MANAGER_ENDPOINT, P.caller, { deadlineMs: 10_000, instanceId: M.managerInstanceId });
+    const resolved = await invokeCommand(P.nc, space, service, "resolve-cwd", { cwd: alias }, { deadlineMs: 10_000 });
+    const canonical = (resolved.reply.data as { cwd?: string; host?: string } | undefined)?.cwd;
+    check("resolve-cwd answers one canonical directory for a symlink and its target",
+      resolved.reply.ok === true && canonical === realpathSync(prepared) && typeof (resolved.reply.data as { host?: unknown }).host === "string", resolved.reply);
+    const refused = await invokeCommand(P.nc, space, service, "resolve-cwd", { cwd: missing }, { deadlineMs: 10_000 });
+    check("resolve-cwd refuses a missing directory by name with failed-precondition",
+      refused.reply.ok === false && refused.reply.error?.code === "failed-precondition" && refused.reply.error.message.includes(missing), refused.reply);
+    rmSync(join(dir, "child-cwd.txt"), { force: true });
+    const placed = await invokeCommand(P.nc, space, service, "spawn", { name: "wp2", agent: "cwd-stub", cwd: canonical, events: false }, { deadlineMs: 30_000, id: `placed-${Date.now()}` });
+    for (let i = 0; i < 80 && !existsSync(join(dir, "child-cwd.txt")); i++) await wait(250);
+    const observed = existsSync(join(dir, "child-cwd.txt")) ? readFileSync(join(dir, "child-cwd.txt"), "utf8") : undefined;
+    check("a placed spawn's seat starts in the directory resolve-cwd answered",
+      placed.reply.ok === true && observed === canonical, { reply: placed.reply, observed, canonical });
+  }
   check("ep spawn accepts (acceptance floor) + the agent joins the mesh",
     acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerInstanceId && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
   {
@@ -827,6 +857,7 @@ try {
 
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
+  await P.nc.drain().catch(() => P.nc.close());
   await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");

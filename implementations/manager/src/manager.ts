@@ -2,8 +2,8 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { isAbsolute, join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -2823,6 +2823,7 @@ export class Manager {
         const data = unwrap(await this.opModels(args(ctx)));
         return { catalogs: Array.isArray(data) ? data : [data] };
       }),
+      resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
       spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h, ctx.subject.route))),
@@ -3975,6 +3976,29 @@ export class Manager {
       caller,
       hooks,
     );
+  }
+
+  /** Resolve a placed spawn directory on this manager's host. The manager serves any existing
+   * absolute directory it can resolve. It creates nothing and never substitutes the workspace root. */
+  private resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
+    const asked = typeof value === "string" ? value : String(value ?? "");
+    const refuse = (reason: string): never => {
+      throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${reason})`);
+    };
+    if (!isAbsolute(asked)) refuse("expected an absolute path");
+    let cwd = asked;
+    try {
+      cwd = realpathSync(asked);
+    } catch (error) {
+      refuse(`path cannot be resolved: ${(error as Error).message}`);
+    }
+    try {
+      if (!statSync(cwd).isDirectory()) refuse("path is not a directory");
+    } catch (error) {
+      if (error instanceof EpEnvelopeError) throw error;
+      refuse((error as Error).message);
+    }
+    return { cwd, host: hostname() };
   }
 
   /** Resolve a connector by agent type. Library composition (installedExtensions off) → a registry

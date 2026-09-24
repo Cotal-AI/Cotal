@@ -1,0 +1,44 @@
+{
+  "suite": [
+    "implementations/manager/smoke/manager-service-ops.smoke.ts"
+  ],
+  "guard": "the manager canonicalizes placed spawn directories, refuses missing paths, and forwards the answered cwd to the real seat",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:manager-service-ops",
+  "progressPattern": "✓",
+  "minTicks": 3,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/resolve-cwd.json",
+  "why": [
+    "Issue #1616 requires the serving manager to answer the canonical host path and launch the seat there.",
+    "The suite invokes the registered commands through a real authenticated broker and reads process.cwd() from the real child.",
+    "A manager row alone could repeat the requested path while the runtime starts elsewhere."
+  ],
+  "mutations": [
+    {
+      "name": "M1 return the alias spelling instead of the canonical path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      cwd = realpathSync(asked);",
+      "replace": "      cwd = asked;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "resolve-cwd answers one canonical directory for a symlink and its target",
+      "cell": "resolve-cwd answers one canonical directory for a symlink and its target"
+    },
+    {
+      "name": "M2 fall back to the workspace root for a missing directory",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      refuse(`path cannot be resolved: ${(error as Error).message}`);",
+      "replace": "      cwd = this.workspaceRoot;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "resolve-cwd refuses a missing directory by name with failed-precondition",
+      "cell": "resolve-cwd refuses a missing directory by name with failed-precondition"
+    },
+    {
+      "name": "M3 drop the answered cwd before spawning the real seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        cwd: args.cwd ? String(args.cwd) : undefined,",
+      "replace": "        cwd: undefined,",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "a placed spawn's seat starts in the directory resolve-cwd answered",
+      "cell": "a placed spawn's seat starts in the directory resolve-cwd answered"
+    }
+  ]
+}

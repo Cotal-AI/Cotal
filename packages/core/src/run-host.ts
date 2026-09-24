@@ -159,7 +159,12 @@ export interface RunStatusView {
 }
 
 export type RunValidation =
-  | { readonly ok: true }
+  | {
+      readonly ok: true;
+      /** Explicit manager instances a validated program may place a spawn on. The host uses this
+       * only to mint the existing per-instance placement rows before the program starts. */
+      readonly placements?: readonly { readonly endpoint: string; readonly instanceId: string }[];
+    }
   /** The runtime's own error records, one per problem, opaque here and handed on verbatim. */
   | { readonly ok: false; readonly errors: readonly Record<string, unknown>[] };
 
