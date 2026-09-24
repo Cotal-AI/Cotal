@@ -507,7 +507,6 @@ try {
   // AT ONCE with the exited reason, long before either clock. The hold gives the launched pid a
   // window to be claimed and bound to; the KILL makes that pid exit inside the hold.
   await killAuthDaemon();
-  const beforeDeadPid = readSvcPid();
   const deadStarted = Date.now();
   const deadChild = spawn(TSX, [BIN, "up", "--user-auth", "--idp", base, "--server", SERVER, "--space", SPACE], {
     cwd: root,
@@ -516,17 +515,23 @@ try {
   let deadOut = "";
   deadChild.stdout!.on("data", (d: Buffer) => { deadOut += d.toString(); });
   deadChild.stderr!.on("data", (d: Buffer) => { deadOut += d.toString(); });
-  // SIGKILL the daemon the moment its pid appears: the pidfile transitions LAUNCHER pid (the
-  // `up` process's own claim pre-population) -> DAEMON child pid, so the timer must kill only a
-  // pid that is neither the previous daemon's nor the `up` child's own (killing the launcher pid
-  // kills `up` itself before it can report anything — observed as a red cell with no refusal).
+  // Kill ONLY the daemon, identified by what it IS, not by pid arithmetic: the daemon is the one
+  // pid whose /proc cmdline names "auth-service". The pidfile first names the LAUNCHER (the `up`
+  // process pre-populates its own pid into the claim; `deadChild.pid` is only the tsx wrapper
+  // around it, so a pid-inequality guard cannot protect it), and SIGKILLing the launcher
+  // mid-wait kills the reporter before any refusal line while the detached held daemon
+  // orphans (observed live: the cell dies with bare output and the orphan later steals the
+  // authority plane, cascading red through the suite's later legs). A dead or yet-unborn pid
+  // has no readable cmdline: keep polling.
   const killTimer = setInterval(() => {
-    if (!existsSync(pidPath)) return;
-    const pid = Number(readFileSync(pidPath, "utf8").trim());
-    if (pid > 0 && pid !== beforeDeadPid && pid !== deadChild.pid) {
-      try { process.kill(pid, "SIGKILL"); } catch { /* raced its own exit */ }
-      clearInterval(killTimer);
-    }
+    let pid = 0;
+    try { pid = Number(readFileSync(pidPath, "utf8").trim()); } catch { return; }
+    if (!(pid > 0)) return;
+    try {
+      if (!readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("auth-service")) return;
+    } catch { return; }
+    try { process.kill(pid, "SIGKILL"); } catch { /* raced its own exit */ }
+    clearInterval(killTimer);
   }, 20);
   const deadStatus = await new Promise<number | null>((r) => deadChild.once("close", (c) => r(c)));
   clearInterval(killTimer);
