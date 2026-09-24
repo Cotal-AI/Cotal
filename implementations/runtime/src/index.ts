@@ -60,7 +60,7 @@ export {
   type ForkCommitResult,
 } from "./fork.js";
 export { runWorkflow } from "./run-command.js";
-export { cotalLangRunHost, journalOutcomeOf } from "./run-host.js";
+export { cotalLangRunHost, journalOutcomeOf, journalStepRow } from "./run-host.js";
 
 // Self-register `cotal run` — the workflow-run operator surface — and the `run-host` the manager
 // drives runs through (SPEC 14.3). Importing this package from a composition root (bin/run.ts) is

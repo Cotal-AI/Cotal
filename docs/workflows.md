@@ -167,6 +167,11 @@ names a run the manager recorded and is refused while the manager is already dri
 `journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
+`journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
+accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
+cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
+answer line.
+
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
@@ -352,7 +357,10 @@ answerer to read, exhausted attempts (default one) are the catchable L4006, and 
 absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
 `checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
-asked reading the source to find out what "approve" meant. An `escalate` addressed to an agent this
+asked reading the source to find out what "approve" meant. After a checkpoint or `ask` accepts an
+answer, the journal prints that accepted answer's recorded value and attribution under the settled
+step. It never substitutes another filed answer or invents fields the frozen result does not hold.
+An `escalate` addressed to an agent this
 run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
 and the token to answer under; a `to` naming anyone else is a person, and their pause stays the
 one anybody can answer, with the addressee recorded and rendered beside the question.

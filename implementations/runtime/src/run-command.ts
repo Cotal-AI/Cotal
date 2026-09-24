@@ -64,11 +64,11 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { journalEntryKeyString, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { agentLifecycleSecretFilePaths, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveMeshTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
-import { journalOutcomeOf } from "./run-host.js";
+import { journalStepRow } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
@@ -493,28 +493,9 @@ async function journal(planes: Planes, runId: string | undefined, takeoverId: st
     console.log(`run ${runId}: no journal records (never started, or retired)`);
     return;
   }
-  for (const { record } of replay.records) {
-    if (record.kind === "activation") {
-      console.log(`#${record.n}  activation  holder=${record.holder} epoch=${record.epoch} replayedTo=${record.replayedTo}`);
-      continue;
-    }
-    const e = record.entry as JournalEntry;
-    // The key the operator sees is the key `answer <stepKey>` takes back, so it is rendered by
-    // the same export the journal itself keys with, never a second hand-rolled copy of the rule.
-    const step = journalEntryKeyString(e);
-    const outcome = journalOutcomeOf(e);
-    console.log(`#${record.n}  step        ${step}  ${outcome}`);
-    // WHAT AN OPEN PAUSE ASKS, under the step an answer is addressed by. `answer <run> <stepKey>`
-    // is the whole interface to a checkpoint, and without this the operator on the other end of it
-    // had the address and not the question: everything durable held the input HASH, so learning
-    // what "approve" meant took a trip back to the source. Only while it is open, because a
-    // settled pause is answered and the render is a worklist rather than a transcript.
-    const asks = e.state === "pending" ? (e.external as { asks?: unknown } | undefined)?.asks : undefined;
-    if (typeof asks === "string") {
-      const addressee = (e.external as { addressee?: unknown } | undefined)?.addressee;
-      console.log(`            asks        ${asks}${typeof addressee === "string" ? `  (escalates to ${addressee})` : ""}`);
-    }
-  }
+  printJournal(runId, replay.records.map(({ record }): RunJournalRow => record.kind === "activation"
+    ? { n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo }
+    : journalStepRow(record.n, record.entry as JournalEntry)));
 }
 
 /** `answer --local`: the pause is found under the READ credential this call was opened on, then
@@ -760,6 +741,16 @@ function printJournal(runId: string, rows: readonly RunJournalRow[]): void {
     }
     console.log(`#${r.n}  step        ${r.step}  ${r.outcome}`);
     if (r.asks !== undefined) console.log(`            asks        ${r.asks}${r.addressee !== undefined ? `  (escalates to ${r.addressee})` : ""}`);
+    if (r.answer !== undefined) {
+      const facts = [
+        ...(Object.hasOwn(r.answer, "value") ? [`value=${JSON.stringify(r.answer.value)}`] : []),
+        ...(r.answer.by !== undefined ? [`by=${JSON.stringify(r.answer.by)}`] : []),
+        ...(r.answer.artifact !== undefined ? [`artifact=${JSON.stringify(r.answer.artifact)}`] : []),
+        ...(r.answer.at !== undefined ? [`at=${JSON.stringify(r.answer.at)}`] : []),
+        `answerId=${JSON.stringify(r.answer.answerId)}`,
+      ];
+      console.log(`            answered    ${facts.join("  ")}`);
+    }
   }
 }
 

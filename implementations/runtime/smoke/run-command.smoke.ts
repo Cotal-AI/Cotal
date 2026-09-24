@@ -29,7 +29,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
-import { runWorkflow, journalOutcomeOf } from "../src/index.js";
+import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -220,6 +220,19 @@ let P = "";
   c("a failed step keeps its status and error code",
     journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }) === "failed (L4000)",
     journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }));
+  const answered = journalStepRow(1, { ...base, result: { outcome: "resolved", value: 42, by: "operator", artifact: "artifact://proof", answerId: "answer-1", at: 123 } });
+  c("a resolved pause row carries only the accepted answer facts the journal holds",
+    answered.answer?.value === 42 && answered.answer.by === "operator" && answered.answer.artifact === "artifact://proof"
+      && answered.answer.answerId === "answer-1" && answered.answer.at === 123,
+    answered.answer);
+  const expired = journalStepRow(2, { ...base, result: { outcome: "expired", at: 456 } });
+  c("an expired pause row carries no answer",
+    expired.outcome === "expired" && expired.answer === undefined,
+    expired);
+  const ordinary = journalStepRow(3, { ...base, kind: "notify", result: { outcome: "resolved", value: 99, by: "not-an-answer", answerId: "answer-2", at: 789 } });
+  c("a non-pause step cannot expose answer-shaped result fields",
+    ordinary.answer === undefined,
+    ordinary);
 }
 
 // ── 4) resume: a completed run replays to the same completion ────────────────────────────────
@@ -263,7 +276,7 @@ let P = "";
     captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("asks")).join(" | "));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
-  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' })
+  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"', artifact: "artifact://run-command" })
     .then(() => true, (e: Error) => e);
   c("answer presents as the arming holder and is accepted", answered === true, answered);
   c("and reports the resumed settle", captured().includes('"settle": "resumed"'), captured());
@@ -279,6 +292,10 @@ let P = "";
   c("the answered checkpoint renders resolved, not the settled status ok",
     captured().includes("/checkpoint:approve#0  resolved"),
     captured().split("\n").filter((l) => l.includes("checkpoint")).join(" | "));
+  c("the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
+    captured().includes('answered    value="yes"') && captured().includes('by="smoke"')
+      && captured().includes('artifact="artifact://run-command"') && captured().includes('answerId=') && captured().includes('at='),
+    captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("answered")).join(" | "));
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -559,7 +576,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 55;
+const DECLARED = 59;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
