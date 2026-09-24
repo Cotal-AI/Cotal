@@ -516,12 +516,14 @@ try {
   let deadOut = "";
   deadChild.stdout!.on("data", (d: Buffer) => { deadOut += d.toString(); });
   deadChild.stderr!.on("data", (d: Buffer) => { deadOut += d.toString(); });
-  // SIGKILL the daemon the moment the pidfile names a NEW pid: an unclean death, so a stale
-  // discovery (if any) cannot mask the pid observation the refusal must report.
+  // SIGKILL the daemon the moment its pid appears: the pidfile transitions LAUNCHER pid (the
+  // `up` process's own claim pre-population) -> DAEMON child pid, so the timer must kill only a
+  // pid that is neither the previous daemon's nor the `up` child's own (killing the launcher pid
+  // kills `up` itself before it can report anything — observed as a red cell with no refusal).
   const killTimer = setInterval(() => {
     if (!existsSync(pidPath)) return;
     const pid = Number(readFileSync(pidPath, "utf8").trim());
-    if (pid > 0 && pid !== beforeDeadPid) {
+    if (pid > 0 && pid !== beforeDeadPid && pid !== deadChild.pid) {
       try { process.kill(pid, "SIGKILL"); } catch { /* raced its own exit */ }
       clearInterval(killTimer);
     }

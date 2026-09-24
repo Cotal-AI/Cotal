@@ -30,7 +30,8 @@
       "find": "          const deadline = Date.now() + (daemonPid === undefined ? timeoutMs : Math.max(timeoutMs, maxWaitMs));",
       "replace": "          const deadline = Date.now() + timeoutMs;",
       "expectRed": "the wait bound to a live pid that never binds refuses at the BOUND, not the base clock, naming the pid",
-      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-agent-bearer:live"
     },
     {
       "name": "the pid-bound wait never checks the bound pid's exit, so a dead daemon is waited on to the clock",
@@ -38,7 +39,8 @@
       "find": "            if (daemonPid !== undefined && probeLiveness(daemonPid) === \"dead\")\n              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);",
       "replace": "            if (daemonPid !== undefined && false)\n              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);",
       "expectRed": "the wait bound to a pid that EXITS ends at once with the exited reason",
-      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-agent-bearer:live"
     }
   ]
 }
