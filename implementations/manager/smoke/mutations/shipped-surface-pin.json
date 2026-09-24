@@ -34,12 +34,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 14 after classSpawn is added on top of static reconciliation",
+      "name": "M2 keep revision 15 after resolve-cwd is added",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 15,",
-      "replace": "    revision: 14,",
-      "expectRed": "classSpawn status advances the manager cluster revision",
-      "cell": "classSpawn status advances the manager cluster revision"
+      "find": "    revision: 16,",
+      "replace": "    revision: 15,",
+      "expectRed": "resolve-cwd advances the manager cluster revision",
+      "cell": "resolve-cwd advances the manager cluster revision"
     },
     {
       "name": "M3 compile every contract pair at module scope again",
