@@ -21,8 +21,9 @@
  * FAILURE is the hard direction, because a partial publish and ordinary registry propagation produce
  * the identical reading. Silence for a calibrated interval is not evidence that a package will never
  * appear: 0.49.0 held one clean 404 for 12m13s after the package was written. PARTIAL therefore needs
- * positive evidence: one package is the only unresolved sibling for the whole deadline, or the
- * registry repeatedly answers that one package with a non-404 failure while every sibling is live.
+ * positive evidence: the registry repeatedly answers one package with a non-404 failure while every
+ * sibling is live. Even one clean 404 held for the whole deadline stays UNSETTLED, because that is
+ * exactly what the 12m13s propagation lag at 0.49.0 looked like.
  *
  * Measured on this repo, polling the per-version endpoint after the publish job reported success:
  *   0.41.2  17/21 -> 17/21 -> 19/21 -> 21/21   (60s apart; reads 1 and 2 IDENTICAL, still pure lag)
@@ -165,8 +166,6 @@ export function classify({
   failed = [],
   confirmedErrored = [],
   confirmedFailed = [],
-  missingFromStart = false,
-  uninterrupted = true,
   total,
   unchangedForMs,
   elapsedMs,
@@ -187,12 +186,6 @@ export function classify({
   // package at all, which is ordinary and must stay the harmless skip it has always been.
   if (missing.length === total && unchangedForMs >= opts.stableWindowMs) return { state: "none", missing };
   if (elapsedMs >= opts.deadlineMs) {
-    // One 404 observed continuously from the first census while every sibling serves the version is
-    // positive evidence at the deadline. Two missing siblings remain ambiguous: both can still be
-    // propagation lag, so the gate reports cannot-tell instead.
-    if (missing.length === 1 && total > 1 && missingFromStart && uninterrupted) {
-      return { state: "partial", missing, why: "deadline-evidence" };
-    }
     return { state: "unsettled", missing, why: "deadline" };
   }
   return { state: "polling", missing };
@@ -308,20 +301,15 @@ export async function verifyClosure(version, {
     + opts.pollIntervalMs * opts.maxConsecutiveErrorPolls;
   let previous = null;
   let unchangedSince = started;
-  const missingFromStart = new Set(packages);
-  let interrupted = false;
   const consecutiveErrors = new Map(packages.map((pkg) => [pkg, 0]));
   const reads = [];
 
   for (;;) {
     const { missing, errored, failed } = await readClosure(packages, version, opts, fetchImpl, budgetEndsAt);
-    const missingSet = new Set(missing);
     const erroredSet = new Set(errored);
-    if (errored.length > 0) interrupted = true;
     for (const pkg of packages) {
       if (erroredSet.has(pkg)) consecutiveErrors.set(pkg, (consecutiveErrors.get(pkg) ?? 0) + 1);
       else consecutiveErrors.set(pkg, 0);
-      if (!missingSet.has(pkg) && !erroredSet.has(pkg)) missingFromStart.delete(pkg);
     }
     const confirmedErrored = errored.filter(
       (pkg) => (consecutiveErrors.get(pkg) ?? 0) > opts.maxConsecutiveErrorPolls,
@@ -348,8 +336,6 @@ export async function verifyClosure(version, {
       failed,
       confirmedErrored,
       confirmedFailed,
-      missingFromStart: missing.length === 1 && missingFromStart.has(missing[0]),
-      uninterrupted: !interrupted,
       total: packages.length,
       unchangedForMs,
       elapsedMs,

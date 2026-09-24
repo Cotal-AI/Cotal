@@ -110,8 +110,8 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "    if (status === 404) missing.push(pkg);",
       "replace": "    if (status === 410) missing.push(pkg);",
-      "expectRed": "a genuine held 404 on one package is PARTIAL only after the deadline supplies evidence",
-      "cell": "a genuine held 404 on one package is PARTIAL only after the deadline supplies evidence"
+      "expectRed": "a genuine held 404 on one package remains UNSETTLED because a clean 404 is not failure evidence",
+      "cell": "a genuine held 404 on one package remains UNSETTLED because a clean 404 is not failure evidence"
     },
     {
       "name": "redirects are followed again, so a 302 onto a generic 200 reads as a published package",
@@ -186,12 +186,12 @@
       "cell": "the configured error bound tolerates exactly n consecutive registry failures"
     },
     {
-      "name": "the deadline evidence arm returns UNSETTLED for a true one-package partial",
+      "name": "the old deadline arm treats one clean 404 as positive PARTIAL evidence again",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "      return { state: \"partial\", missing, why: \"deadline-evidence\" };",
-      "replace": "      return { state: \"unsettled\", missing, why: \"deadline-evidence\" };",
-      "expectRed": "one 404 held for the whole deadline with every sibling present is PARTIAL evidence",
-      "cell": "one 404 held for the whole deadline with every sibling present is PARTIAL evidence"
+      "find": "  if (elapsedMs >= opts.deadlineMs) {\n    return { state: \"unsettled\", missing, why: \"deadline\" };\n  }",
+      "replace": "  if (elapsedMs >= opts.deadlineMs) {\n    if (missing.length === 1 && total > 1) return { state: \"partial\", missing, why: \"deadline-evidence\" };\n    return { state: \"unsettled\", missing, why: \"deadline\" };\n  }",
+      "expectRed": "0.49.0 shape: one clean 404 at the 600s deadline is UNSETTLED, not PARTIAL",
+      "cell": "0.49.0 shape: one clean 404 at the 600s deadline is UNSETTLED, not PARTIAL"
     },
     {
       "name": "the re-check flag stops selecting its short read-only defaults",

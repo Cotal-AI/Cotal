@@ -87,11 +87,11 @@ check(
   classify({ missing: ["a", "b"], total: 2, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }),
 );
 check(
-  "one 404 held for the whole deadline with every sibling present is PARTIAL",
+  "one clean 404 held for the whole deadline stays UNSETTLED because slow propagation looks identical",
   classify({
     missing: ["a"], total: 4, unchangedForMs: DEFAULTS.deadlineMs,
-    elapsedMs: DEFAULTS.deadlineMs, missingFromStart: true,
-  }).state === "partial",
+    elapsedMs: DEFAULTS.deadlineMs,
+  }).state === "unsettled",
 );
 check(
   "reaching the deadline while still missing reports UNSETTLED, never PARTIAL",
@@ -154,10 +154,16 @@ check(
   slowPastWindow.state === "published",
   slowPastWindow,
 );
+const slow049 = await scenario((pkg, _scan, elapsedMs) => pkg === "d" && elapsedMs < 733_000 ? 404 : 200);
+check(
+  "0.49.0 shape: one clean 404 at the 600s deadline is UNSETTLED, not PARTIAL",
+  slow049.state === "unsettled" && slow049.why === "deadline",
+  slow049,
+);
 const neverPublished = await scenario((pkg) => pkg === "d" ? 404 : 200);
 check(
-  "one 404 held for the whole deadline with every sibling present is PARTIAL evidence",
-  neverPublished.state === "partial" && neverPublished.why === "deadline-evidence",
+  "a never-published package with only clean 404 evidence is also UNSETTLED",
+  neverPublished.state === "unsettled" && neverPublished.why === "deadline",
   neverPublished,
 );
 const twoMissingAtDeadline = await scenario((pkg) => ["c", "d"].includes(pkg) ? 404 : 200);
@@ -214,7 +220,7 @@ const partial = await verifyClosure("9.9.9", {
   fetchImpl: scriptedFetch([["d"]]),
   ...partialClock,
 });
-check("a missing set that never shrinks supplies PARTIAL evidence at the deadline", partial.state === "partial", partial);
+check("a missing set that never shrinks stays UNSETTLED without non-404 evidence", partial.state === "unsettled", partial);
 check("the PARTIAL verdict names which packages are missing", partial.missing?.join() === "d", partial.missing);
 
 const stallClock = fastClock();
@@ -321,8 +327,8 @@ check(
 // REGRESSION GUARDS: widening "not evidence" must not have broken real absence detection.
 const real404 = await run(statusFetch((pkg) => (pkg === "d" ? 404 : 200)));
 check(
-  "a genuine held 404 on one package is PARTIAL only after the deadline supplies evidence",
-  real404.state === "partial" && real404.missing?.join() === "d" && real404.why === "deadline-evidence",
+  "a genuine held 404 on one package remains UNSETTLED because a clean 404 is not failure evidence",
+  real404.state === "unsettled" && real404.missing?.join() === "d",
   real404,
 );
 const all404 = await run(statusFetch(() => 404));
@@ -476,8 +482,8 @@ check(
 const fast = ["--poll-interval-ms=20", "--stable-window-ms=100", "--deadline-ms=200"];
 const oneGone = shipped([closure[0]], fast);
 check(
-  "the shipped command exits 1 on a package that never appears, and names it",
-  oneGone.status === 1 && oneGone.stdout.includes("PARTIAL PUBLISH") && oneGone.stdout.includes(closure[0]),
+  "the shipped command exits 2 on a package that never appears, and names it",
+  oneGone.status === 2 && oneGone.stdout.includes("UNSETTLED") && oneGone.stdout.includes(closure[0]),
   `${oneGone.stdout}${oneGone.stderr}`,
 );
 check(
@@ -491,7 +497,7 @@ check(
 const siblingGone = shipped([closure.find((n) => n !== "cotal-ai")!], fast);
 check(
   "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)",
-  siblingGone.status === 1 && siblingGone.stdout.includes("PARTIAL PUBLISH"),
+  siblingGone.status === 2 && siblingGone.stdout.includes("UNSETTLED"),
   `${siblingGone.stdout}${siblingGone.stderr}`,
 );
 
@@ -631,7 +637,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 66;
+const EXPECTED = 67;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
