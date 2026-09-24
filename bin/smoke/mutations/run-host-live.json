@@ -181,13 +181,22 @@
       "cell": "a baseline seat is refused an unrelayed checkpoint on another run"
     },
     {
+      "name": "the hosted run command mints an operator instrument inside a managed seat",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  const t = await resolveRunControlTarget(values);",
+      "replace": "  const t = await resolveControlTarget(values, \"control-caller-privileged\");",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path",
+      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path"
+    },
+    {
       "name": "the hosted run command sends run-answer without its required self target",
       "file": "implementations/runtime/src/run-command.ts",
       "find": "      ...(command === \"run-answer\" ? { target: { mode: \"self\" as const } } : {}),",
       "replace": "",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "expectRed": "the rendered command form is accepted verbatim by the hosted path",
-      "cell": "the rendered command form is accepted verbatim by the hosted path"
+      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path",
+      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path"
     }
   ]
 }

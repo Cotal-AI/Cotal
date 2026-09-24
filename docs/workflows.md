@@ -337,7 +337,9 @@ conclave cancelled on a losing branch is released by the same cancellation sweep
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
 token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
-seat's connector renders as the record wanted and the hosted command that answers it. The command
+seat's connector renders as the record wanted and the hosted command that answers it. When that
+literal command is run inside the managed seat, the CLI reuses the seat's lifecycle credential and
+issued caller identity rather than minting an operator instrument. The command
 does not take `--by`: the manager records the authenticated caller as the answerer. A spawned seat's
 baseline credential carries only the self-targeted `run-answer` row, and the manager accepts it only
 for the open ask or escalation relayed to that exact incarnation. It cannot answer another seat's

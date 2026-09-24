@@ -14,7 +14,8 @@
  *
  * Needs nats-server on PATH. Run: pnpm smoke:run-host-live
  */
-import { spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { execFile as execFileProc, spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -48,12 +49,14 @@ const { agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const { Manager, RunHosting } = await import("@cotal-ai/manager");
 // Importing the runtime is what registers the `cotal-lang` run host the manager resolves.
 const { runWorkflow } = await import("@cotal-ai/runtime");
+const { MeshAgent } = await import("@cotal-ai/connector-core");
 const { bootBroker } = await import("../../implementations/manager/smoke/_boot-broker.js");
 // The delivery daemon: the liveness oracle a manager restart on an auth mesh verify-evicts through
 // (SPEC 13.1), and the timer writer a checkpoint's deadline schedule is armed by.
 const { bootDeliveryDaemon } = await import("../../implementations/manager/smoke/_boot-delivery.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const execFile = promisify(execFileProc);
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
     const s = createServer();
@@ -272,7 +275,7 @@ try {
       return pendingStep(v, "/ask:size#0") ? v : undefined;
     }, 30_000);
     c("the ask parks after both baseline seats are spawned", pendingStep(parked, "/ask:size#0") !== undefined, parked?.journal);
-    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string } }> };
+    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string } }> };
     const seatCall = async (name: string, command: string, args?: Record<string, unknown>, self = true) => {
       const a = managed.agents.get(name)!;
       const creds = readFileSync(agentLifecycleSecretFilePaths(wsA, spaceA, name, a.lifecycleUid).creds, "utf8");
@@ -296,21 +299,49 @@ try {
     await until(async () => { const v = await status(cpRun); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     const unrelated = await seatCall("asked", "run-answer", { runId: cpRun, stepKey: "/checkpoint:approve#0", value: "no" });
     c("a baseline seat is refused an unrelayed checkpoint on another run", unrelated.ok === false && unrelated.error?.code === "permission-denied" && String(unrelated.error.message).includes("is not that pause"), unrelated.error);
-    const realExit = process.exit;
-    let renderedForm: true | string;
-    process.exit = ((code?: number) => { throw new Error(`exit ${code}`); }) as never;
+    const asked = managed.agents.get("asked")!;
+    const askedCredsPath = agentLifecycleSecretFilePaths(wsA, spaceA, "asked", asked.lifecycleUid).creds;
+    const askedCreds = readFileSync(askedCredsPath, "utf8");
+    const seat = new MeshAgent({
+      space: spaceA, servers: brokerA.servers, name: "asked", id: asked.id, lifecycleUid: asked.lifecycleUid,
+      acceptedToken: asked.issued?.acceptedToken, creds: askedCreds, subscribe: [], allowSubscribe: [],
+      allowPublish: [], capabilities: [], kind: "agent", tls: false,
+    });
+    let renderedForm: true | string = "the seat rendered no pending ask";
     try {
-      renderedForm = await runWorkflow({
-        values: { server: brokerA.servers, space: spaceA, value: '"cleanup"' },
-        positionals: ["answer", cpRun, "/checkpoint:approve#0"], raw: [],
-      }).then(() => true, (e: unknown) => String((e as Error).message));
+      await seat.start();
+      await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
+      const surfaced = await until(async () => seat.peekPendingTurns(), 10_000);
+      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: "))?.slice("Answer with: ".length);
+      const command = line?.replace("'<json record>'", "'{\"estimate\":4}'");
+      if (command !== undefined) {
+        const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];
+        const [binary, ...args] = parts;
+        if (binary === "cotal") {
+          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args], {
+            cwd: wsA,
+            env: {
+              ...process.env,
+              COTAL_HOME: home,
+              COTAL_SKIP_CONNECTOR_SEED: "1",
+              COTAL_NAME: "asked",
+              COTAL_ID: asked.id,
+              COTAL_LIFECYCLE_UID: asked.lifecycleUid,
+              COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
+            },
+          }).then(() => true, (e: unknown) => String((e as Error).message));
+        } else renderedForm = `unexpected rendered command ${String(command)}`;
+      }
     } finally {
-      process.exit = realExit;
-      process.exitCode = undefined;
+      await seat.stop();
     }
-    c("the rendered command form is accepted verbatim by the hosted path", renderedForm === true, renderedForm);
-    const answered = await seatCall("asked", "run-answer", { runId, stepKey: "/ask:size#0", value: { estimate: 4 } });
-    c("the addressed baseline seat answers through self-targeted run-answer", answered.ok === true, answered);
+    c("the addressed baseline seat's exact rendered command is accepted through the shipped CLI path", renderedForm === true, renderedForm);
+    const answered = await until(async () => {
+      const v = await status(runId);
+      return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;
+    }, 15_000);
+    c("the addressed baseline seat answers through self-targeted run-answer", answered?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state !== "pending") === true, answered?.journal);
+    await call("run-answer", { runId: cpRun, stepKey: "/checkpoint:approve#0", value: "cleanup" });
     const done = await until(async () => { const v = await status(runId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("the ask settles on the checkpoint plane and the hosted run completes", stateOf(done) === "completed", done?.status);
   }
