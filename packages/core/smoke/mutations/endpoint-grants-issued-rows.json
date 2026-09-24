@@ -1,5 +1,7 @@
 {
-  "suite": ["packages/core/smoke/endpoint-grants.smoke.ts"],
+  "suite": [
+    "packages/core/smoke/endpoint-grants.smoke.ts"
+  ],
   "guard": "an issued caller's journal and per-goal progress rows carry the plain triple, the subject the endpoint publishes progress on and the client submits journal work on",
   "command": "pnpm smoke:ep-grants",
   "completionMarker": "ENDPOINT GRANTS SMOKE",
@@ -25,6 +27,14 @@
       "find": "  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerTriple(caller)}`;",
       "replace": "  return `${spacePrefix(space)}.epj.${endpointToken(cap.endpoint)}.${assertCommandToken(cap.command)}${mid}.${callerBlock(caller)}`;",
       "expectRed": "issued journal row is the plain triple"
+    },
+    {
+      "name": "instance-only emission also includes the default class one row",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "  const rows = cap.instanceOnly ? [] : (cap.routes ?? [\"one\"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);",
+      "replace": "  const rows = (cap.routes?.length ? cap.routes : [\"one\"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);",
+      "expectRed": "request row: instance-only omits every class/scatter row",
+      "note": "The view is useful only if every manager request is confined to the selected instance."
     }
   ]
 }
