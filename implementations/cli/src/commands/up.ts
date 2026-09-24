@@ -108,7 +108,6 @@ import {
   writeIdentityPin,
   localProcessPath,
   MANAGER_PIDFILE,
-  armManagerShutdownIntent,
   assertManagerCanSpare,
   verifyIdentityPin,
 } from "@cotal-ai/workspace";
@@ -1179,10 +1178,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           try {
             assertManagerCanSpare(managerContext, undefined, pin.record);
           } catch (e) {
-            // Say it and do NOT claim the seats were spared: without the exact-process capability
-            // marker the manager's own sparing default is unverifiable from here (#1307).
+            // THE CAPABILITY ASSERT IS THE SIGNAL GATE, the same rule bare `down` enforces inside
+            // its beforeSignal hook: a throw there signals nothing. Signal NOTHING here either — no
+            // manager, no delivery, no auth, no broker — print the refusal with the reap route, and
+            // release the latch so the stack keeps running in the foreground; the operator ends it
+            // with `cotal down --with-agents` from another terminal, and the broker-exit handler
+            // below already ends `up` when the broker goes.
             console.error(c.red(`! teardown: ${(e as Error).message}`));
-            spared = undefined;
+            console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
+            stopping = false;
+            return;
           }
         }
       }

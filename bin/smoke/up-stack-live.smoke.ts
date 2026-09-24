@@ -27,7 +27,7 @@ import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_SPACE } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const freePort = (): Promise<number> =>
@@ -350,6 +350,65 @@ try {
     rmSync(fgBin, { recursive: true, force: true });
     rmSync(fgOut, { recursive: true, force: true });
     rmSync(fgRoot, { recursive: true, force: true });
+  }
+
+  // 4b) #1307 round 2: the spare-capability assert is the SIGNAL GATE. With the capability file
+  //     removed (the shape of a manager that cannot prove it can detach), Ctrl-C must print the
+  //     bare-stop refusal with the reap route, signal NOTHING (manager and broker stay alive, no
+  //     spared report), release the latch, and leave the stack running; `cotal down --with-agents`
+  //     from "another terminal" ends the run. The broker-exit handler then ends the up process.
+  const rgPort = await freePort();
+  const rgBin = mkdtempSync(join(tmpdir(), "cotal-upstack-rgbin-"));
+  const rgOut = mkdtempSync(join(tmpdir(), "cotal-upstack-rgout-"));
+  const rgRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-rgroot-"));
+  anchors.set(rgRoot, recordSmokeSandbox({ root: rgRoot, cotalHome: home, xdgConfigHome: configDir }));
+  const rgEnv = {
+    ...env, PATH: `${rgBin}:${process.env.PATH ?? ""}`,
+    CORE_DIST: coreDist, PIDFILE: join(rgOut, "seat.pid"), SHIM_BODY: shimBody,
+  };
+  let rgUp: ChildProcess | undefined;
+  try {
+    cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
+    rgUp = spawnProc(TSX, [CLI, "up", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let rgOutText = "";
+    rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
+    rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
+    const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: DEFAULT_SPACE });
+    let rgManagerUp = false;
+    for (let i = 0; i < 60 && !rgManagerUp; i++) {
+      await sleep(1000);
+      try { rgManagerUp = /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")); } catch { /* not yet */ }
+    }
+    ok("refusal rig: foreground up reached manager up", rgManagerUp);
+    const rgManagerPid = Number(readFileSync(rgRecord(MANAGER_PIDFILE), "utf8").trim());
+    // The shape under test: a pinned manager whose spare capability is NOT proven.
+    rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
+    rgUp.kill("SIGINT");
+    // The refusal path must return quickly; give the would-be teardown a moment to betray itself.
+    await sleep(3000);
+    ok("the refusal gate leaves the manager and broker running",
+      alive(rgManagerPid) && (await portOpenAt(rgPort)) && rgUp !== undefined && alive(rgUp.pid ?? 0),
+      { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
+    ok("the refusal names the bare-stop rule and the reap route",
+      /refusing bare manager stop/.test(plain(rgOutText)) &&
+      /cotal down --with-agents/.test(plain(rgOutText)),
+      rgOutText);
+    ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
+    // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
+    cliInEnv(rgRoot, rgEnv, "down", "--with-agents");
+    const rgExited = await new Promise<boolean>((res) => {
+      const timer = setTimeout(() => res(false), 45_000);
+      rgUp?.once("exit", () => { clearTimeout(timer); res(true); });
+    });
+    ok("up exits after the operator's cotal down --with-agents", rgExited);
+    for (let i = 0; i < 20 && alive(rgManagerPid); i++) await sleep(500);
+    ok("the refusal rig's manager is gone after down --with-agents", !alive(rgManagerPid), rgManagerPid);
+  } finally {
+    if (rgUp && alive(rgUp.pid ?? 0)) { try { rgUp.kill("SIGKILL"); } catch { /* gone */ } }
+    cliIn(rgRoot, "down", "--with-agents");
+    rmSync(rgBin, { recursive: true, force: true });
+    rmSync(rgOut, { recursive: true, force: true });
+    rmSync(rgRoot, { recursive: true, force: true });
   }
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
