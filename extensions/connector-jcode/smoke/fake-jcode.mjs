@@ -128,6 +128,17 @@ const writeJournal = (sessionId) => {
     `${JSON.stringify({ meta: { model: sessionModel, session_id: sessionId ?? "fake-session" } })}\n`,
   );
 };
+// Opt-in (#1868): append one durable `append_messages` record per EXECUTED turn, the shape the
+// real harness journals and the AG-UI emitter reads. The default journal stays meta-only so no
+// existing suite changes; with the knob, each turn_run leaves a durable record at the exact
+// cursor boundary the emitter resumes from.
+const appendTurnRecord = process.env.FAKE_JCODE_APPEND_RECORDS === "1"
+  ? (frame) => {
+      if (!journalPath) return;
+      const rec = { append_messages: [{ role: "assistant", content: [{ type: "text", text: `turn output ${String(frame.content ?? "").slice(0, 40)}` }], timestamp: new Date().toISOString() }] };
+      writeFileSync(journalPath, (existsSync(journalPath) ? readFileSync(journalPath, "utf8") : "") + `${JSON.stringify(rec)}\n`);
+    }
+  : undefined;
 const storedSession = () => {
   if (sessionStatePath && existsSync(sessionStatePath)) return JSON.parse(readFileSync(sessionStatePath, "utf8"));
   if (!createdFresh && !attachedExisting) return undefined;
@@ -173,6 +184,7 @@ function runTurn(frame, socket) {
   // was handed this and dropped it" — which is exactly the distinction between a late delivery and a
   // lost one. Carries the content so a fixture can ask whether ITS message ever ran.
   log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? "") });
+  appendTurnRecord?.(frame);
   // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
   // point, fails to persist the session close state, and the session dies under the turn. Ordered
   // after turn_run deliberately: the real seat does execute the turn before the persistence of its

@@ -197,6 +197,13 @@ journal under the seat's private home. The journal supplies a durable byte curso
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
+When the seat's mesh connection drops and the endpoint is rebuilding it, event publishing waits
+until the connection is live again and then publishes the queued records in order. The seat stays up
+through the outage. If the seat is stopped before the connection returns, the wait ends and the
+connector log records `AG-UI emitter stopped`. The unpublished records stay in the journal
+behind the stored cursor, and the next start publishes them. Any other emitter failure still stops
+the seat with exit code 1.
+
 The journal records settled message blocks rather than live deltas. Text and reasoning therefore
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
 blocks. User prompt text is not republished onto the event channel. The launcher sets
