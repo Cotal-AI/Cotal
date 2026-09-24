@@ -28,7 +28,7 @@ async function until(fn: () => boolean) {
 const enc = (s: string) => new TextEncoder().encode(s);
 const space = "issuedcensus";
 let fixtures!: ProfileFixture[];
-await check("profile and view producers cover their declared sets", async () => { fixtures = profileFixtures(space); });
+await check("profile and view producers cover their declared sets", async () => { fixtures = await profileFixtures(space); });
 const auth = await createSpaceAuth(space);
 const port = await pickFreePort(), server = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

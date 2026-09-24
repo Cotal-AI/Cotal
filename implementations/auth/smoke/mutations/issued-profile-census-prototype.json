@@ -66,8 +66,8 @@
     {
       "name": "a profile with a known overlap is treated as peer-held",
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
-      "find": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\"])",
-      "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"run-mediator\"])",
+      "find": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"manager-caller\"])",
+      "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"manager-caller\", \"run-mediator\"])",
       "expectRed": "no peer-held profile can both write and raw-read one stream",
       "cell": "no peer-held profile can both write and raw-read one stream"
     },
