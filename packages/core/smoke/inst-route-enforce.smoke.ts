@@ -41,7 +41,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, mintLifecycleUid, permissionsFor,
-  standaloneConnectOpts, setupSpaceStreams, isReachable, DEV_OWNER, BASELINE_LIFECYCLE_ENDPOINT,
+  resolveService, standaloneConnectOpts, setupSpaceStreams, isReachable, DEV_OWNER, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -100,6 +100,28 @@ try {
   // The instance a `--on` invocation resolved. C pins exactly this one at mint.
   const TARGET_IID = mintLifecycleUid();
   const pin: EpCapability[] = [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "ps", instanceId: TARGET_IID }];
+
+  // Reproduction control: an ordinary agent has only the class describe row, so a real pinned
+  // resolve is refused by the broker before contract-store resolution. This remains after the fix
+  // as the proof that only the manager-caller view gains the instance rail.
+  {
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid });
+    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    const caller = { owner: DEV_OWNER, actor: id.id, uid };
+    const describeSubject = `${space}.ep.inst.${BASELINE_LIFECYCLE_ENDPOINT}.${TARGET_IID}.describe`;
+    let refusal = "";
+    try {
+      await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { instanceId: TARGET_IID, deadlineMs: 2_000 });
+    } catch (e) {
+      refusal = `${(e as { code?: string }).code ?? ""}: ${(e as Error).message}`;
+    } finally {
+      await nc.drain().catch(() => { /* already gone */ });
+    }
+    check("an ordinary agent's pinned resolve is permission-denied on the exact inst describe subject",
+      refusal.includes("permission-denied") && refusal.includes(describeSubject), refusal);
+  }
 
   for (const arm of [{ name: "PINNED (what `--on` mints under C)", caps: pin, wantInst: "allowed" },
                      { name: "UNPINNED (the same profile, same run, one mint input removed)", caps: undefined, wantInst: "denied" }] as const) {

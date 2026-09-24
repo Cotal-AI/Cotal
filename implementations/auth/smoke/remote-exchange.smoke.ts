@@ -286,6 +286,13 @@ try {
   });
   const agentBody = { owner: OWNER, actor: AGENT, actorToken: secret.actorToken };
 
+  // Reproduction control: managed-agent secrets cannot request any existing view. This stays after
+  // manager-caller lands to prove the one narrow exception did not widen the other view names.
+  const agentView = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "channel-writer" });
+  check("a managed-agent secret asking for a non-manager view is refused 400 with the existing text",
+    agentView.status === 400 && agentView.body.error === "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange",
+    agentView);
+
   // ---------- C. the matched pair: capless public 200 vs capless loopback 401 ----------
   console.log("C) the SAME capless request: public mints, loopback still 401s");
   const capless = await post(`${PUBLIC}/exchange`, agentBody);
@@ -491,7 +498,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 54;
+const EXPECTED = 55;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
