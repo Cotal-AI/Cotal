@@ -3960,7 +3960,7 @@ export class Manager {
     try {
       cwd = realpathSync(asked);
     } catch (error) {
-      refuse((error as Error).message);
+      refuse(`path cannot be resolved: ${(error as Error).message}`);
     }
     try {
       if (!statSync(cwd).isDirectory()) refuse("path is not a directory");
