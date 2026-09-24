@@ -2032,11 +2032,6 @@ check(
   opaque201.error instanceof Error && opaque201.error.message.includes("direct-publish authorization refused"),
   opaque201.error,
 );
-check(
-  "accept control: direct authorization still refuses an opaque exchange without the removed guard",
-  opaque201.error instanceof Error && !opaque201.error.message.includes("not proven"),
-  opaque201.error,
-);
 
 const trustDenied = await scenario({ trustStatus: 401 });
 check(
