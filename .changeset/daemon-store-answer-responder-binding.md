@@ -26,3 +26,10 @@ fact the challenge reads.
 A manager newer than its delivery daemon receives the old reply shape. That is refused with a
 message naming the mismatch rather than silently accepted, and each daemon's own renewal timer
 remains the adoption backstop.
+
+A rail that reports no responder is no longer read as an absent daemon on its own. The manager
+settles that outcome from the lease row too: a row naming a holder while the rail answers
+nothing is undetermined and refuses (a live daemon went unanswered, which must not certify a
+remint), a row the manager cannot read refuses the same fail-closed way, and only an absent or
+holderless row reads absent, the state that lets a manager without a bound daemon still take
+renewal ownership.

@@ -62,7 +62,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -1578,14 +1578,26 @@ export class Manager {
    *  remint still proceed (tests, delayed delivery), writing this manager's store. The
    *  challenge runs again before every remint, so a later daemon on a foreign store is
    *  refused then rather than certified by an earlier absence. A request timeout is not
-   *  absence: a hung rail would skip the proof, so it fails closed. */
+   *  absence: a hung rail would skip the proof, so it fails closed.
+   *
+   *  ABSENCE IS READ OFF THE LEASE ROW, never off the rail's no-responder shape alone (#1694).
+   *  The rail is queue-grouped, so "no responder answered" is itself something the rail reports,
+   *  and a responder that answers in a shape the client turns into that error makes the pass read
+   *  "absent" while a holder is live on the row — certifying every later remint with no proof at
+   *  all. So a no-responder outcome is decided by `deliveryLeaseHolder`: a row that names a
+   *  holder makes the pass refuse (undetermined — a live daemon went unanswered, which must not
+   *  read as "no daemon"), and only a row that is absent or unreadable settles "absent", the
+   *  state start() treats as not-yet-bound. An unreadable row is a genuine unknown and refuses
+   *  fail-closed, like a hung rail; `deliveryLeaseHolder` folds "no row" and "row unparseable"
+   *  into the same undefined, which is the absent-or-unknown this method has to separate from a
+   *  NAMED holder. */
   private async daemonStoreRelation(): Promise<"shared" | "absent" | "divergent"> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
       const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return "absent";
+      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
     }
     if (!reply.ok)
@@ -1633,6 +1645,39 @@ export class Manager {
       return "divergent";
     }
     return "shared";
+  }
+
+  /** Settle a no-responder challenge outcome from the lease row, never from the rail's own
+   *  reporting shape (#1694). The three cases:
+   *
+   *  1. The row READS but names a holder: a live daemon holds the shard and the rail went
+   *     unanswered. That is undetermined, not "no daemon" — treating it as absent would let this
+   *     manager remint with no proof while a reloading daemon runs, which is exactly what the
+   *     challenge exists to prevent. Refuse.
+   *  2. The row is unreadable — the read itself fails (a denied or erroring bucket): undetermined,
+   *     and it refuses the same fail-closed way a hung rail does. Never a silent "absent".
+   *  3. The row is absent or holderless (no key, a deleted key, or a row that names no holder):
+   *     today's "absent", the state start() treats as a daemon that is not bound yet.
+   *
+   *  `deliveryLeaseHolder` swallows its read failures into `undefined`, which would fold case 2
+   *  into case 3 — so this reads the entry directly and lets the read's own failure refuse. */
+  private async absentByLeaseRow(): Promise<"absent"> {
+    let entry: { info: DeliveryLeaseInfo } | undefined;
+    try {
+      entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
+    } catch (e) {
+      throw new Error(
+        `could not read the delivery lease row to settle whether the delivery daemon is absent ` +
+          `(${(e as Error).message}) - absence is undetermined, nothing reminted`,
+      );
+    }
+    const holder = entry?.info.holder;
+    if (holder !== undefined && holder !== "")
+      throw new Error(
+        `the delivery-admin rail reported no responder while the delivery lease names a holder ` +
+          `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`,
+      );
+    return "absent";
   }
 
   /** Keep this manager's renewal lease alive between credential passes (#1634). The manager bucket

@@ -673,7 +673,7 @@ try {
     holder.on("error", () => {});
     await holder.start();
     let holderAnswers = 0;
-    holder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+    const holderSub = holder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
       if (req.op === "reloadStoreIdentity") {
         holderAnswers++;
         // The reply carries the #1694 binding: the answerer's wire identity and its LIVE lease
@@ -717,12 +717,13 @@ try {
     nonHolder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
       if (req.op === "reloadStoreIdentity") {
         nonHolderAnswers++;
-        // An HONEST non-holder: the row names the other responder, so the live claim is false.
-        const own = await nonHolder.readDeliveryLeaseEntry(0);
-        const holds = own !== undefined && nonHolder.ownsDeliveryLease(own.info);
+        // A DISHONEST non-holder — the attack #1694 actually files: the row names the other
+        // responder, and a responder that does not hold the lease can assert that it does. The
+        // claim alone must never carry the pass; the binding test (row holder != answerer) is
+        // what refuses this answer.
         return {
           ok: true,
-          data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: CARD(nonHolderId.id), holdsDeliveryLease: holds },
+          data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: CARD(nonHolderId.id), holdsDeliveryLease: true },
         };
       }
       return evict(req);
@@ -735,9 +736,50 @@ try {
       doors.daemonRenewalOwner === false,
       { daemonRenewalOwner: doors.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
 
-    await sr1.stop().catch(() => {});
+    // ── the absence half of #1694: a no-responder rail outcome is settled from the lease row ──
+    //
+    // The rail's own "no responder" is not evidence of absence: it is reachable while a live holder
+    // owns the shard (the responder unbound, or an answer in a shape the client reads as that
+    // error). Case 1: BOTH responder subscriptions come off the rail while the holder still owns
+    // lease.0, so requestDeliveryAdmin throws the no-responder shape with a holder on record. The
+    // FIRST manager (which started cleanly) drives the same public path on its next pass.
     await nonHolder.stop().catch(() => {});
+    try { holderSub.unsubscribe(); } catch { /* already closed */ }
+    let refusal = "";
+    const holderRow = await (sr1 as unknown as {
+      ep: { readDeliveryLeaseEntry(s: number): Promise<{ info: { holder: string } } | undefined> };
+    }).ep.readDeliveryLeaseEntry(0);
+    check("the row still names the holder while the rail has no responder (the ambiguous state)",
+      holderRow !== undefined && typeof holderRow.info.holder === "string" && holderRow.info.holder.length > 0,
+      holderRow);
+    // The refusal is LOUD and RECORDED, never fatal (each daemon's own timer is the backstop), so
+    // it surfaces on the renewal pass's own error channel — capture that channel, not a rethrow.
+    const said: string[] = [];
+    const origSay = console.error;
+    console.error = (...a: unknown[]) => { said.push(a.map(String).join(" ")); };
+    try { await doors.renewDaemonCreds(); }
+    catch (e) { refusal = (e as Error).message; }
+    finally { console.error = origSay; }
+    const passLog = said.join("\n");
+    check("a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
+      (refusal.includes("names a holder") || passLog.includes("names a holder")) && doors.daemonRenewalOwner === false,
+      { refusal, passLog, daemonRenewalOwner: doors.daemonRenewalOwner });
+
+    // Case 3: the row is released (the shipped release path, at the broker's current revision) and
+    // the rail still reports no responder — the delayed-delivery / test shape. Today's "absent" must
+    // survive: the same manager's next pass may take the renewal lease.
+    await (holder as unknown as {
+      releaseDeliveryLease(s: number, rev?: number): Promise<void>;
+    }).releaseDeliveryLease(0, (await holder.readDeliveryLeaseEntry(0))?.revision);
     await holder.stop().catch(() => {});
+    let absentRefusal = "";
+    try { await doors.renewDaemonCreds(); }
+    catch (e) { absentRefusal = (e as Error).message; }
+    check("an absent lease row with no responder reads ABSENT: the manager may take the renewal lease (the daemon is not bound yet)",
+      absentRefusal === "" && doors.daemonRenewalOwner === true,
+      { absentRefusal, daemonRenewalOwner: doors.daemonRenewalOwner });
+
+    await sr1.stop().catch(() => {});
   }
 
 
@@ -749,7 +791,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 27;
+const EXPECTED_CELLS = 30;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

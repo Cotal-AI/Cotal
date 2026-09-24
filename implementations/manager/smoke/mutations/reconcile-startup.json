@@ -172,6 +172,26 @@
       "expectRed": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
       "cell": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
       "note": "#1262. After commitTurnDeadline deletes pending (the latch, before the terminal CAS) the only in-memory answer a late yield could find was turnAcceptances.settled. When that field was not yet written, or a concurrent sweep dropped it, the yield heard not-found for a deny the run already has. The durable terminal is the answer; the index drop is not the cause (the yield path never consults it)."
+    },
+    {
+      "name": "the manager trusts the answerer's lease claim (the row-holder comparison dropped)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);\n    if (holder === undefined)\n      throw new Error(\n        \"this manager could not read the delivery lease row, so it cannot verify that the answering \" +\n          \"responder is the process that reloads the standing credentials - nothing reminted\",\n      );\n    if (holder !== answer.responder)\n      throw new Error(\n        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of ` +\n          `this space's delivery lease (${holder}), so its SecretStore is not the store the daemon ` +\n          `reloads from - nothing reminted`,\n      );",
+      "replace": "    void this.ep;",
+      "expectRed": "a NON-HOLDER answer with the manager's own store is REFUSED: the manager does not take the renewal lease (#1694)",
+      "cell": "a NON-HOLDER answer with the manager's own store is REFUSED: the manager does not take the renewal lease (#1694)",
+      "note": "#1694 half 1, the binding test. The cell's non-holder DISHONESTLY claims holdsDeliveryLease:true (the issue's actual attack: a responder that does not hold the lease can assert that it does), so the claim check passes and only the row-holder comparison can refuse. Dropping the comparison lets the pass read shared off the non-holder's matching store and take the renewal lease.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "a no-responder rail reads absent again (the row read dropped)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();",
+      "replace": "      if (isAbsentDeliveryAdmin(msg)) return \"absent\";",
+      "expectRed": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
+      "cell": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
+      "note": "#1694 half 2. With absence read straight off the rail again, the no-responder pass in the cell reads absent, the manager takes the renewal lease, and both the log-line refusal and daemonRenewalOwner===false go.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
     }
   ]
 }
