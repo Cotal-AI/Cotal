@@ -296,10 +296,18 @@ try {
     await until(async () => { const v = await status(cpRun); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     const unrelated = await seatCall("asked", "run-answer", { runId: cpRun, stepKey: "/checkpoint:approve#0", value: "no" });
     c("a baseline seat is refused an unrelayed checkpoint on another run", unrelated.ok === false && unrelated.error?.code === "permission-denied" && String(unrelated.error.message).includes("is not that pause"), unrelated.error);
-    const renderedForm = await runWorkflow({
-      values: { server: brokerA.servers, space: spaceA, value: '"cleanup"' },
-      positionals: ["answer", cpRun, "/checkpoint:approve#0"], raw: [],
-    }).then(() => true, (e: unknown) => e);
+    const realExit = process.exit;
+    let renderedForm: true | string;
+    process.exit = ((code?: number) => { throw new Error(`exit ${code}`); }) as never;
+    try {
+      renderedForm = await runWorkflow({
+        values: { server: brokerA.servers, space: spaceA, value: '"cleanup"' },
+        positionals: ["answer", cpRun, "/checkpoint:approve#0"], raw: [],
+      }).then(() => true, (e: unknown) => String((e as Error).message));
+    } finally {
+      process.exit = realExit;
+      process.exitCode = undefined;
+    }
     c("the rendered command form is accepted verbatim by the hosted path", renderedForm === true, renderedForm);
     const answered = await seatCall("asked", "run-answer", { runId, stepKey: "/ask:size#0", value: { estimate: 4 } });
     c("the addressed baseline seat answers through self-targeted run-answer", answered.ok === true, answered);
