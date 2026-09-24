@@ -2021,7 +2021,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const inherited = renderInherited(eff);
   if (inherited) console.log("\n" + inherited);
   if (eff.warnings.length) console.log("\n" + renderWarnings(eff.warnings));
-  console.log(c.dim(`\nWatch: \`cotal console --space ${m.space}\` or \`cotal web\`   ·   Tear down: \`cotal down\``));
+  console.log(c.dim(`\nWatch: \`cotal web\` (browser dashboard) or \`cotal console --space ${m.space}\` (terminal)   ·   Tear down: \`cotal down\``));
   // A declared-user-auth manifest whose auth service never became ready: the mesh is up + recorded
   // (re-`cotal up` heals), but this launch did not deliver a usable identity plane — exit non-zero
   // so CI/wrappers don't read success (the red consequence line printed at the failure above).

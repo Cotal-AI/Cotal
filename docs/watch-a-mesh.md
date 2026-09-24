@@ -9,11 +9,12 @@ re-implements the wire. Pick by where you are:
 
 | Surface | Command | Use it to |
 |---|---|---|
+| **web dashboard** | `cotal web` | a god-view browser dashboard: see at a glance what needs a human |
 | **console (TUI)** | `cotal console` | drive it interactively in the terminal: drill into agents, channels, DMs |
 | **stream** | `cotal console --plain`, or any pipe | tail a passive line log: grep it, pipe it, watch it in CI |
-| **web dashboard** | `cotal web` | a god-view browser dashboard: see at a glance what needs a human |
 
-The console ships with the CLI; the web dashboard is an extension (`cotal setup` installs it).
+The web dashboard ships inside `cotal-ai` and is seeded automatically; the console ships with
+the CLI.
 
 ## Terminal console
 
