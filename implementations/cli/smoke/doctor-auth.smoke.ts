@@ -12,7 +12,7 @@
  * Run: pnpm smoke:doctor-auth
  */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -62,7 +62,11 @@ check("unbounded when the JWT has no exp", inspectCredHealth(unbounded, now).sta
 check("unreadable on garbage (reported, not thrown)", inspectCredHealth("not a creds file", now).state === "unreadable");
 
 // ── 2. the doctor against a staged folder ────────────────────────────────────────────────────────
-const root = mkdtempSync(join(tmpdir(), "cotal-doctor-"));
+// realpath'd: the doctor derives its root from `process.cwd()` after this smoke `chdir`s into it,
+// and the OS resolves any symlink in the path (e.g. a symlinked TMPDIR) on that walk. Comparing
+// the raw `mkdtempSync` return value against the doctor's printed (resolved) paths then fails on
+// any host where a temp dir sits behind a symlink, even though the doctor read the right file.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-doctor-")));
 mkdirSync(join(root, ".cotal", "auth", "creds"), { recursive: true });
 saveSpaceAuth(join(root, ".cotal", "auth"), auth);
 
@@ -144,12 +148,12 @@ try {
   check("`doctor` without `auth` is a loud usage error", wrongSub.code === 1 && wrongSub.out.includes("doctor auth"), wrongSub);
 
   // The signer line must name the record that actually holds the signer — the split account file
-  // on a split root, never the removed monolith path.
-  check(
-    "signer line names the split account file, not auth.json",
-    first.out.includes(spaceAccountPath(join(root, ".cotal", "auth"), "doctor-smoke")) && !first.out.includes("auth.json"),
-    first.out,
-  );
+  // on a split root, never the removed monolith path. Split into two named checks (rather than one
+  // conjunction) so a future failure says WHICH measurement was wrong instead of dumping the whole
+  // captured output for the reader to diff by eye.
+  const signerAcctPath = spaceAccountPath(join(root, ".cotal", "auth"), "doctor-smoke");
+  check("signer line names the split account file", first.out.includes(signerAcctPath), { expected: signerAcctPath, out: first.out });
+  check("signer line does not name the legacy auth.json", !first.out.includes("auth.json"), first.out);
   // An explicitly named tenant diagnoses exactly like the sole-space default (healthy here,
   // since --fix already repaired the staged problems by this point).
   const explicitSpace = await runDoctor({ space: "doctor-smoke" });

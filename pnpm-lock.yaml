@@ -207,6 +207,16 @@ importers:
         specifier: ^4.22.4
         version: 4.23.0
 
+  examples/07-issue-orchestrator:
+    dependencies:
+      '@cotal-ai/lang':
+        specifier: workspace:*
+        version: link:../../packages/lang
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/cmux:
     devDependencies:
       '@cotal-ai/core':

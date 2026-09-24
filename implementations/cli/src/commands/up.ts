@@ -149,6 +149,8 @@ interface PendingOrdinaryResume {
   mode: "open" | "auth" | "user";
   server: string;
   storeDir: string;
+  /** The JetStream file storage cap the preserved launch recorded, re-rendered on resume. */
+  maxFileStore?: number;
   runtime?: string;
   detached: boolean;
   inventory: JsonValue;
@@ -167,6 +169,7 @@ export const upFlags: FlagSpec[] = [
   { name: "host", type: "string", value: "<host>", description: "bind host override (an IP/hostname, not a URL; the URL is --server)" },
   { name: "space", type: "string", value: "<s>", description: "space name (default: the folder's)" },
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
+  { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start; recorded and kept across `down --preserve-state`" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
   { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
   { name: "tls-key", type: "string", value: "<file>", description: "the private key for --tls-cert" },
@@ -223,7 +226,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock): Pro
 
 async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void): Promise<void> {
   const values = args.values as {
-    server?: string; "store-dir"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
+    server?: string; "store-dir"?: string; "max-file-store"?: string; space?: string; open?: boolean; "user-auth"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean;
@@ -341,7 +344,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       } else if (journal?.state === "ready") {
         const resume = readMaintenanceResumeDocument(root, journal.resume);
         const attemptId = `resume-${randomUUID()}`;
-        const launch = resume.launch as { server?: unknown; storeDir?: unknown };
+        const launch = resume.launch as { server?: unknown; storeDir?: unknown; maxFileStore?: unknown };
         const agents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
         const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
         if (runtimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${runtimes.join(", ")}`);
@@ -354,6 +357,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // Journal the CANONICAL identity-checked path, never the caller's spelling: a relative or
         // symlinked spelling re-resolved later (other cwd, retargeted link) could open another store.
         const resumeStore = journal.source.path;
+        // The cap is part of the preserved launch, like the store: a resume re-renders it, and a
+        // different --max-file-store is refused rather than silently resizing the preserved broker.
+        const resumeMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
+        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)
+          throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${resumeMaxFileStore ?? "unset"}); ordinary up resumes exactly the preserved cap - omit --max-file-store`);
         if (values.runtime && runtimes[0] && values.runtime !== runtimes[0])
           throw new Error(`--runtime ${values.runtime} contradicts the preserved agent runtime ${runtimes[0]}; omit it to resume the same principals`);
         const resumeRuntime = values.runtime ?? runtimes[0] ?? "pty";
@@ -368,6 +377,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           launch: {
             server: resumeServer,
             storeDir: resumeStore,
+            ...(resumeMaxFileStore !== undefined ? { maxFileStore: resumeMaxFileStore } : {}),
             runtime: resumeRuntime,
             detached: Boolean(values.detach),
             serverName,
@@ -387,6 +397,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           mode: journal.mode,
           server: resumeServer,
           storeDir: resumeStore,
+          ...(resumeMaxFileStore !== undefined ? { maxFileStore: resumeMaxFileStore } : {}),
           runtime: resumeRuntime,
           detached: Boolean(values.detach),
           inventory: resume.inventory,
@@ -398,10 +409,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       } else if (journal && (journal.state === "resume-intent" || journal.state === "resume-active" || journal.state === "resume-committed" || journal.state === "resume-degraded")) {
         const resume = readMaintenanceResumeDocument(root, journal.resume);
         const launch = journal.ordinaryResume.launch as {
-          server?: unknown; storeDir?: unknown; runtime?: unknown; detached?: unknown;
+          server?: unknown; storeDir?: unknown; maxFileStore?: unknown; runtime?: unknown; detached?: unknown;
           serverName?: unknown; serverNonce?: unknown;
         };
         const attemptId = journal.ordinaryResume.attemptId;
+        const recoveredMaxFileStore = journaledMaxFileStore(launch.maxFileStore);
+        const requestedMaxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+        if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== recoveredMaxFileStore)
+          throw new Error(`--max-file-store ${requestedMaxFileStore} is not the preserved launch cap (${recoveredMaxFileStore ?? "unset"}); resume attempt ${attemptId} re-renders exactly the preserved cap - omit --max-file-store`);
         // Recovery re-asserts the source identity rather than trusting the journaled spelling.
         assertStoreIdentity(journal.source);
         // The bound listener decides re-entry: a live exact listener is ADOPTED, a provably dead
@@ -444,6 +459,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           mode: journal.mode,
           server: typeof launch.server === "string" ? launch.server : DEFAULT_SERVER,
           storeDir: journal.source.path,
+          ...(recoveredMaxFileStore !== undefined ? { maxFileStore: recoveredMaxFileStore } : {}),
           runtime: typeof launch.runtime === "string" ? launch.runtime : "pty",
           detached: launch.detached === true,
           inventory: resume.inventory,
@@ -499,6 +515,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
               space: pending.space,
               server: pending.server,
               "store-dir": pending.storeDir,
+              "max-file-store": pending.maxFileStore === undefined ? undefined : String(pending.maxFileStore),
               runtime: pending.runtime,
               detach: pending.detached,
               open: pending.mode === "open",
@@ -536,6 +553,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     throw new Error("--no-manager cannot be combined with --max-sessions - no manager starts, so there is no session ceiling to set; drop --max-sessions, or drop --no-manager");
   const publicExchange = publicExchangeArgs(values, wantUser);
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
+  const maxFileStore = parsePositiveIntegerFlag("--max-file-store", values["max-file-store"]);
+  // The manifest path renders its broker from the manifest, which has no store fields, so the flag
+  // would be accepted and never rendered. Refuse it rather than drop it.
+  if (maxFileStore !== undefined && values.file)
+    throw new Error("--max-file-store cannot be combined with --file/-f - a manifest launch does not render a store cap; drop --max-file-store, or start the mesh without -f");
   // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
   // rotate; the request is a misunderstanding to name, never a silent no-op that reports success.
   if (values["rotate-sys"] && values.open) {
@@ -789,6 +811,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      // The store cap is fixed when nats-server reads its config, and nats-server refuses a reload
+      // from its dynamic cap to an explicit one. This branch starts nothing, so a different cap can
+      // only be refused; the same cap is a no-op.
+      if (maxFileStore !== undefined && maxFileStore !== held.maxFileStore) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --max-file-store (it is fixed at start); \`cotal down\` it first, then \`cotal up --max-file-store ${maxFileStore}\``,
+          ),
+        );
+        process.exit(1);
+      }
       // `--max-sessions` is fixed when the manager starts. A refresh reuses a live manager as-is
       // (`ensureManager` returns immediately), then used to persist the requested ceiling anyway.
       // That printed `✓ already running` over an unchanged plane and left MeshEntry lying about it.
@@ -951,7 +984,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // no transport decision to record — and `recordOurMesh` writes the entry whole, so omitting
       // the field here would erase the requirement on every bare refresh, exactly the way dropping
       // `attachHost` would silently demote the mesh to loopback.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ...(heldMaxSessions !== undefined ? { maxSessions: heldMaxSessions } : {}), ts: new Date().toISOString() }, "refresh");
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ...(heldMaxSessions !== undefined ? { maxSessions: heldMaxSessions } : {}), ...(held.maxFileStore !== undefined ? { maxFileStore: held.maxFileStore } : {}), ts: new Date().toISOString() }, "refresh");
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -989,6 +1022,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       transport,
       server,
       storeDir: values["store-dir"],
+      maxFileStore,
       space: values.space,
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
@@ -1062,14 +1096,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"]) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore) : undefined;
   const port = Number(new URL(server).port) || 4222;
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore });
   const natsArgs = [
     "-c", confPath,
     ...(restored ? ["--name", restored.serverName]
@@ -1195,6 +1229,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // though the operator had chosen it.
       ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
       ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
+      ...(maxFileStore !== undefined ? { maxFileStore } : {}),
       ts: new Date().toISOString(),
     }, "started");
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
@@ -1553,6 +1588,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, held
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
     ...(adoptMaxSessions !== undefined ? { maxSessions: adoptMaxSessions } : {}),
+    ...(pending.maxFileStore !== undefined ? { maxFileStore: pending.maxFileStore } : {}),
     ts: new Date().toISOString(),
   }, "started");
   const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
@@ -2021,7 +2057,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const inherited = renderInherited(eff);
   if (inherited) console.log("\n" + inherited);
   if (eff.warnings.length) console.log("\n" + renderWarnings(eff.warnings));
-  console.log(c.dim(`\nWatch: \`cotal console --space ${m.space}\` or \`cotal web\`   ·   Tear down: \`cotal down\``));
+  console.log(c.dim(`\nWatch: \`cotal web\` (browser dashboard) or \`cotal console --space ${m.space}\` (terminal)   ·   Tear down: \`cotal down\``));
   // A declared-user-auth manifest whose auth service never became ready: the mesh is up + recorded
   // (re-`cotal up` heals), but this launch did not deliver a usable identity plane — exit non-zero
   // so CI/wrappers don't read success (the red consequence line printed at the failure above).
@@ -2151,6 +2187,8 @@ export interface DetachOpts {
   transport: BrokerTransport;
   server?: string;
   storeDir?: string;
+  /** JetStream file storage cap in bytes (`--max-file-store`), rendered and recorded by this boot. */
+  maxFileStore?: number;
   space?: string;
   open?: boolean;
   /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
@@ -2224,11 +2262,11 @@ export async function startMeshDetached(
   // effective server is finally known — a manifest may name a different host than the flags did, and
   // a certificate that is valid for one is not thereby valid for the other.
   const transport = assertServesDialHost(opts.transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore) : undefined;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore: opts.maxFileStore });
   const args = [
     "-c", confPath,
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
@@ -2312,6 +2350,7 @@ export async function startMeshDetached(
     // Persist only a real decision — declared now, or carried forward — never the loopback default.
     ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
     ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
+    ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}),
     ts: new Date().toISOString(),
   }, "started");
   // Commit policy BEFORE delivery launch (S9). Listener is proved; refuse paths never reach here.
@@ -2448,6 +2487,15 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
  */
 export function maxSessionsFor(space: string, explicit?: number): number | undefined {
   return explicit ?? findMesh(space)?.maxSessions;
+}
+
+/** The store cap a preserved launch recorded: absent, or a positive integer byte count. Anything
+ *  else is a damaged journal, refused rather than rendered as the dynamic default. */
+function journaledMaxFileStore(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    throw new Error(`the preserved launch records an invalid maxFileStore (${JSON.stringify(value)}); refusing to guess the broker's store cap`);
+  return value;
 }
 
 /** Record this mesh in the registry, and set it as the `current` default when there's no usable one
@@ -2872,11 +2920,11 @@ function validateRecorded(
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: string; transport: BrokerTransport }): string {
+function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number }): string {
   const confPath = resolve(storeDir, "..", "server-open.conf");
   writeFileSync(
     confPath,
-    openServerConfig({ port: opts.port, host: opts.host, storeDir, transport: opts.transport }),
+    openServerConfig({ port: opts.port, host: opts.host, storeDir, maxFileStore: opts.maxFileStore, transport: opts.transport }),
   );
   return confPath;
 }
@@ -2894,6 +2942,7 @@ async function authSetup(
   // the one that does not is the one that must not compile.
   transport: BrokerTransport,
   rotateSys = false,
+  maxFileStore?: number,
 ): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
@@ -3004,7 +3053,7 @@ async function authSetup(
       : await resolveAuthProvider().preloadAccounts({ store, space: enabledSpace });
     extraAccounts.push(...accounts);
   }
-  writeFileSync(confPath, serverConfig(auth, spaces, { transport, port, storeDir, host, wsPort, wsHost: host, extraAccounts }));
+  writeFileSync(confPath, serverConfig(auth, spaces, { transport, port, storeDir, maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

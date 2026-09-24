@@ -91,19 +91,21 @@ time, it walks you through:
    `npm i -g cotal-ai` so you can just type `cotal`.
 
 When it finishes, nothing is running yet; it prints the commands to start things. The
-whole loop is three commands:
+whole loop is four commands:
 
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
 cotal spawn                # launch your agent here and talk to it (Ctrl-C to leave)
+cotal web                  # watch the mesh in the browser dashboard
 cotal down                 # stop everything
 ```
 
-Open the browser dashboard with `cotal web` (it ships with `cotal-ai`, seeded automatically). Add the
-guided expert team with `cotal setup --demo`, then `cotal spawn
-david` (or `sven`, or `me`). Watch the mesh in this terminal anytime with `cotal console`:
+The dashboard ships with `cotal-ai` and is seeded automatically, so `cotal web` works out of
+the box. Prefer a terminal? `cotal console` is the same live view as a TUI in this terminal.
+Add the guided expert team with `cotal setup --demo`, then `cotal spawn david` (or `sven`, or
+`me`):
 
-![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI](../assets/quickstart.gif)
+![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI, the terminal alternative to the browser dashboard](../assets/quickstart.gif)
 
 `cotal up` is JWT-authed by default (sender authenticity plus per-agent ACLs), starts the
 server-side [delivery daemon](delivery-daemon.md) as the durable backstop, and starts a
@@ -123,7 +125,7 @@ failure context. Type `/exit` to return, and it retries.
 
 ## The primitives
 
-The vocabulary behind those three commands, which every other page builds on:
+The vocabulary behind those four commands, which every other page builds on:
 
 | Primitive | What it is |
 |---|---|
@@ -171,8 +173,8 @@ cotal up --detach                    # start the mesh + delivery daemon + manage
 cotal status                         # detailed setup, process, registry, and live mesh status
 cotal spawn                          # your agent (edit .cotal/agents/default.md)
 cotal spawn david                    # a guided expert, needs `cotal setup --demo` first (also sven, me)
-cotal console --space main           # live mesh view in the terminal (TUI)
 cotal web --space main               # open the browser dashboard
+cotal console --space main           # the same live view as a TUI in the terminal
 cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 

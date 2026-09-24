@@ -54,6 +54,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
       "rotate-sys:boolean",
+      // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
+      "max-file-store:string",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,

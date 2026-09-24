@@ -6,8 +6,8 @@
     {
       "name": "a failed reconciliation state overrides a reachable manager service holding its lease",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return { name: \"manager\", verdict: lease ? \"serving\" : \"not-serving\", facts };",
-      "replace": "const reconcileFailed = reconcile?.state === \"failed\";\n    return { name: \"manager\", verdict: lease && !reconcileFailed ? \"serving\" : \"not-serving\", facts };",
+      "find": "return { name: \"manager\", verdict: lease || credential.kind === \"user\" ? \"serving\" : \"not-serving\", facts };",
+      "replace": "const reconcileFailed = reconcile?.state === \"failed\";\n    return { name: \"manager\", verdict: (lease || credential.kind === \"user\") && !reconcileFailed ? \"serving\" : \"not-serving\", facts };",
       "expectRed": "benign foreign-owned reconciliation stays serving with exact failure facts",
       "cell": "benign foreign-owned reconciliation stays serving with exact failure facts",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
