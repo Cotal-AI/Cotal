@@ -85,6 +85,22 @@
       "replace": "  } catch {\n    return;\n  }",
       "expectRed": "re-grant with a dead auth service is refused before changing the row",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R10 the readiness wait ignores the launched pid's exit and waits the full base clock",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "            if (daemonPid !== undefined && probeLiveness(daemonPid) === \"dead\")\n              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);",
+      "replace": "            if (false)\n              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);",
+      "expectRed": "a daemon that exits before ready ends the wait at once with the exited reason",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R11 the readiness wait ignores the upper bound and follows a live daemon past it",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "          const deadline = Date.now() + (daemonPid === undefined ? timeoutMs : Math.max(timeoutMs, maxWaitMs));",
+      "replace": "          const deadline = Date.now() + (daemonPid === undefined ? timeoutMs : Math.max(timeoutMs, 24 * 60 * 60 * 1000));",
+      "expectRed": "a daemon alive past the bound is refused loudly as alive-and-still-starting",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
     }
   ]
 }

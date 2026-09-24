@@ -213,7 +213,11 @@ persistence error instead of trusting the value returned by stream info.
 `--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
 auth callout plus its capability-gated local exchange, and optionally the closed public exchange
 face configured by the three `--exchange-*` flags above. The service is torn down with `cotal down`,
-and a re-run of `cotal up` heals a dead service on a running broker. `--user-auth` and `--open`
+and a re-run of `cotal up` heals a dead service on a running broker. `up` waits for the service to
+finish binding: while the daemon it launched (or found running) stays alive, the wait extends past
+the base 15s up to 60s; a daemon that exits is refused at once with "exited before becoming ready",
+and one alive past 60s is refused as "alive and still starting" (wedged), naming the pid record and
+the service log. `--user-auth` and `--open`
 contradict each other and are refused loudly; a running broker cannot change auth mode
 without a `cotal down` first. See [identity & auth](identity-and-auth.md).
 

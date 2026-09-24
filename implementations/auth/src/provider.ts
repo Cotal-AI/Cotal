@@ -40,6 +40,15 @@ import {
 } from "./store.js";
 
 const READY_TIMEOUT_MS = 15_000;
+/** The pid-bound extension of the readiness wait (#1931): while the daemon the caller LAUNCHED
+ *  (or found live) is provably alive, the wait continues past READY_TIMEOUT_MS up to this bound.
+ *  The daemon's startup is bounded work (a plane open that resolves, two listener binds, one
+ *  discovery write), so a start still unfinished here is a wedge (an open that never returns),
+ *  and the wait must end in a loud refusal rather than following the daemon forever. A full
+ *  minute is 4x the base budget with no daemon startup step anywhere near it on a healthy
+ *  machine; the pre-2.0 era when 15s also served as the sole budget keeps its role for callers
+ *  that pass no pid. */
+const READY_MAX_WAIT_MS = 60_000;
 
 /** Present only if PROVEN present. `probeLiveness` resolves EPERM (another user's process) to
  *  `alive`, which is the defect this fixes: the old two-state probe called that dead. `unknown`
@@ -97,11 +106,25 @@ export const cotalAuthProvider: AuthProvider = {
       service: {
         command: "auth-service",
         // Readiness = the daemon wrote its discovery file (which it does only after the callout SUB
-        // is flushed AND the HTTP listener is bound) and /health answers. Poll until timeoutMs, then
-        // THROW with the reason — the caller (`up`) surfaces it loudly (U5), never records a usable
-        // user mesh on a half-started service.
-        async ready({ dir: stateDir, timeoutMs = READY_TIMEOUT_MS }) {
-          const deadline = Date.now() + timeoutMs;
+        // is flushed AND the HTTP listener is bound) and /health answers. Poll until timeoutMs,
+        // then THROW with the reason — the caller (`up`) surfaces it loudly (U5), never records a
+        // usable user mesh on a half-started service. With `pid`, the wait is bound to the daemon
+        // PROCESS (#1931): the clock alone misreported a same-root refresh's live, still-binding
+        // daemon as dead at a fixed 15s. Past timeoutMs the wait continues while THAT pid is
+        // provably alive, up to maxWaitMs (a wedged daemon still ends in a loud refusal); the
+        // moment the pid is provably gone the wait ends at once with the exit, so a dead daemon
+        // is never waited on.
+        async ready({ dir: stateDir, timeoutMs = READY_TIMEOUT_MS, pid, maxWaitMs = READY_MAX_WAIT_MS }) {
+          // `pid` is the daemon process the CALLER launched (or found live): 0/absent means the
+          // caller cannot name one (a yielded slot, a spawn failure) and the wait is clock-only.
+          // A value that claims to name a process but cannot be one is a caller bug; polling the
+          // discovery file to the bound would silently disable the process binding it exists for.
+          if (pid !== undefined && pid !== 0 && !(Number.isSafeInteger(pid) && pid > 0))
+            throw new Error(`auth service readiness was given a pid that cannot name a process (${pid})`);
+          const daemonPid = pid === undefined || pid === 0 ? undefined : pid;
+          // Process-bound: the base clock is the floor, the bound the ceiling — a live daemon
+          // extends the wait past the old fixed 15s, and nothing extends it past the bound.
+          const deadline = Date.now() + (daemonPid === undefined ? timeoutMs : Math.max(timeoutMs, maxWaitMs));
           let lastReason = "the auth service has not written its discovery file yet";
           while (Date.now() < deadline) {
             try {
@@ -126,8 +149,20 @@ export const cotalAuthProvider: AuthProvider = {
             } catch (e) {
               lastReason = e instanceof Error ? e.message : String(e);
             }
+            // The process-bound half of the contract: a daemon that EXITED can never become
+            // ready, so the wait ends AT ONCE (not at the clock) and the refusal says so.
+            if (daemonPid !== undefined && probeLiveness(daemonPid) === "dead")
+              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);
             await new Promise((r) => setTimeout(r, 200));
           }
+          if (daemonPid !== undefined && probeLiveness(daemonPid) === "alive")
+            // The bound, and the daemon is STILL alive: name both facts. The daemon did not die,
+            // it never finished starting — a plane open that never returns is the wedge case, and
+            // this is where the wait stops following it. The pidfile and the service log (which
+            // the caller's wrapper appends) are where the operator looks next.
+            throw new Error(
+              `auth service not ready after ${maxWaitMs}ms - the process (pid ${daemonPid}) is alive and still starting (${lastReason}); a start this slow is wedged, not slow - stop it with \`cotal down\` and check the service log`,
+            );
           // No log-path guess here — the CALLER owns the daemon's log location and appends it.
           throw new Error(`auth service not ready after ${timeoutMs}ms (${lastReason})`);
         },

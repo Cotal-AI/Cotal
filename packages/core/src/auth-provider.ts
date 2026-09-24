@@ -388,6 +388,13 @@ export interface AuthServiceSpec {
   command: string;
   /** Wait until the running service is READY (every plane bound — e.g. broker subscription AND
    *  local endpoints). Resolves with the service's runtime, non-secret endpoint metadata for the
-   *  mesh registry; THROWS (with the reason) on timeout — the caller surfaces it, loudly. */
-  ready(opts: { dir: string; timeoutMs?: number }): Promise<Record<string, unknown>>;
+   *  mesh registry; THROWS (with the reason) on timeout — the caller surfaces it, loudly.
+   *
+   *  The wait may be bound to the DAEMON PROCESS, not a clock alone: pass the pid the caller
+   *  launched (or found live) and the provider waits past `timeoutMs` up to `maxWaitMs` while
+   *  that pid is provably alive, ends the wait AT ONCE when the pid is provably gone (refusing
+   *  with the exit), and still refuses at `maxWaitMs` — so a slow-but-healthy start is not
+   *  misreported dead, a dead daemon is refused immediately, and a wedged daemon can never hold
+   *  the caller open indefinitely. Either way the caller never invents ad-hoc readiness sleeps. */
+  ready(opts: { dir: string; timeoutMs?: number; pid?: number; maxWaitMs?: number }): Promise<Record<string, unknown>>;
 }
