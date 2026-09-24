@@ -159,6 +159,7 @@ import {
   rawDigest,
   recordsBucket,
   remoteManagerActors,
+  type RemoteManagerMaintenanceResult,
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
@@ -205,6 +206,8 @@ import {
   currentRegistrationProof,
   loadOrCreateRemoteManagerIdentity,
   materialCredential,
+  remoteManagerMaintenanceRequest,
+  remoteManagerMaintenanceResult,
   remoteManagerAuthorityRequest,
   remoteRetainedAgentValidationRequest,
   retainedAgentAuthority,
@@ -745,11 +748,21 @@ try {
   const prepareRequest = remoteManagerAuthorityRequest(state, "cli", "prepare");
   const prepare = await cotalAuthProvider.managerServiceAuthority!({ store: participantStore, dir: participantDir, request: prepareRequest });
   const actors = remoteManagerActors(state.instanceId);
+  const artifacts = managerClusterArtifacts();
+  const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principal?: string) => {
+    const request = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principal);
+    return remoteManagerMaintenanceResult(
+      await cotalAuthProvider.maintainRemoteManager!({ store: participantStore, dir: participantDir, request }),
+      request,
+      owner,
+    );
+  };
   const registered = await registerRemoteManagerAuthority({
     space, server, owner, instanceId: state.instanceId, serveActor: actors.serve,
     prepareCreds: materialCredential(prepare, "executor", state.identities.executor), tlsRequired: false,
+    evict: async (principal) => (await maintain("evict-family-principal", state.instanceId, principal)).eviction!.verifiedGone,
+    reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
   });
-  const artifacts = managerClusterArtifacts();
   // The activation door is intentionally bounded to 64 canonical values. Registration publishes the
   // complete schema closure through registerRemoteManagerAuthority; activation needs the canonical
   // manager cluster document and its closure manifest to reconstruct the scoped serve surface.
@@ -789,6 +802,14 @@ try {
     owner, actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
     supervisorCreds: materialCredential(prepare, "supervisor", state.identities.supervisor),
     executorCreds: materialCredential(prepare, "executor", state.identities.executor),
+    renewExecutor: async () => {
+      const renew = await cotalAuthProvider.managerServiceAuthority!({
+        store: participantStore,
+        dir: participantDir,
+        request: remoteManagerAuthorityRequest(state, "cli", "renew", retainedRegistrationProof),
+      });
+      return materialCredential(renew, "executor", state.identities.executor);
+    },
     serveCreds: materialCredential(activate, "serve", state.identities.serve),
     goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
     sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),

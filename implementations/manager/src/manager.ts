@@ -385,6 +385,7 @@ export interface ManagerOptions {
     };
     supervisorCreds: string;
     executorCreds: string;
+    renewExecutor: () => Promise<string>;
     serveCreds: string;
     goalWriterCreds: string;
     sessionLedgerCreds: string;
@@ -1201,6 +1202,7 @@ export class Manager {
   private resumeDurableCommitToken?: string;
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
+  private remoteExecutorCreds?: string;
 
   /** Every broker dial this manager makes, through ONE transport decision.
    *
@@ -1222,6 +1224,7 @@ export class Manager {
     this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
+    this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.secretStoreIdentity = opts.secretStore
@@ -1509,6 +1512,10 @@ export class Manager {
       await this.renewDaemonCreds();
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
+    } else if (this.remoteAuthority) {
+      await this.renewRemoteExecutor();
+      this.credRenewTimer = setInterval(() => { void this.renewRemoteExecutor(); }, credRenewIntervalMs(5 * 60));
+      this.credRenewTimer.unref?.();
     }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
     // terminal drains, start() and stop() resume from the same await boundary; start must observe
@@ -1781,6 +1788,20 @@ export class Manager {
       console.error(`! credential renewal pass failed: ${(e as Error).message}`);
     } finally {
       release();
+    }
+  }
+
+  /** Renew the remote registration executor through the typed host protocol. A healthy credential
+   * is retained; near-expiry and expired credentials are replaced for the same nkey. */
+  private async renewRemoteExecutor(force = false): Promise<void> {
+    if (!this.remoteAuthority) return;
+    const current = this.remoteExecutorCreds;
+    if (!force && current && inspectCredHealth(current).state === "healthy") return;
+    try {
+      this.remoteExecutorCreds = await this.remoteAuthority.renewExecutor();
+    } catch (e) {
+      console.error(`! remote manager executor renewal: ${(e as Error).message} - registration maintenance and clean deregistration remain unavailable until renewal succeeds`);
+      if (force) throw e;
     }
   }
 
@@ -5725,7 +5746,9 @@ export class Manager {
    *  This is NEVER the manager's standing seed/supervisor connection. */
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    const creds = this.remoteAuthority?.executorCreds ?? (this.auth
+    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy"))
+      await this.renewRemoteExecutor(true);
+    const creds = this.remoteExecutorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
           ...(this.endpointServeExecutorExpiresInSeconds !== undefined

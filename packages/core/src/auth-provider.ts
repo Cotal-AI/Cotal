@@ -7,6 +7,8 @@ import type {
   RemoteManagerAuthorityRequest,
   RemoteManagerGoalIndexScanRequest,
   RemoteManagerGoalIndexScanResult,
+  RemoteManagerMaintenanceRequest,
+  RemoteManagerMaintenanceResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
 } from "./remote-manager-authority.js";
@@ -105,6 +107,13 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** Host-owned registration maintenance for a remote manager. The provider must scope eviction to
+   * the caller instance's credential family and guard reconciliation with affirmative liveness. */
+  maintainRemoteManager?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerMaintenanceRequest;
+  }): Promise<RemoteManagerMaintenanceResult>;
   /** Host-owned manager boot scan. The provider authenticates the human and returns only parsed,
    * owner-scoped manager goal-index entries. No raw records or consumer authority crosses. */
   scanRemoteManagerGoalIndex?(opts: {

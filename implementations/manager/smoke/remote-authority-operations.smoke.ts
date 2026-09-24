@@ -3,7 +3,7 @@ import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid, newIdentity, remoteManagerActors } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
-import { remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerGoalIndexEntries } from "../src/remote-authority.js";
+import { remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult } from "../src/remote-authority.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -23,7 +23,7 @@ const manager = new Manager({
     instanceId,
     lifecycleUid: mintLifecycleUid(),
     identities,
-    supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
+    supervisorCreds: "", executorCreds: "", renewExecutor: async () => "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
     serveGrant: {} as never,
     agentBearerExchangeUrl: "https://auth.example.test",
     mintSessionServing: async () => "",
@@ -74,7 +74,7 @@ const guarded = new Manager({
   remoteAuthority: {
     owner: `u_${"a".repeat(26)}`, actors: remoteManagerActors(instanceId), instanceId,
     lifecycleUid: mintLifecycleUid(), identities,
-    supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
+    supervisorCreds: "", executorCreds: "", renewExecutor: async () => "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
     serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
     mintSessionServing: async () => "", mintRetirementRequester: async () => "",
     prepareAgentRetirement: async () => {}, validateRetainedAgent: async () => { throw new Error("not used"); },
@@ -117,13 +117,23 @@ assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, caller: { ...
 assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, owner: `u_${"b".repeat(26)}` }, adminRequest, owner), /different lifecycle/);
 assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, authorized: "yes" } as never, adminRequest, owner), /different lifecycle/);
 
+const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", instanceId, `${owner}.manager_goal_${instanceId}`);
+const maintenanceResult = {
+  ...maintenanceRequest,
+  owner,
+  eviction: { principal: maintenanceRequest.principal!, kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true },
+};
+assert.deepEqual(remoteManagerMaintenanceResult(maintenanceResult, maintenanceRequest, owner).eviction, maintenanceResult.eviction);
+assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra: true } as never, maintenanceRequest, owner), /different lifecycle|closed matching/);
+assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, eviction: { ...maintenanceResult.eviction, verifiedGone: true, remaining: 1 } }, maintenanceRequest, owner), /contradictory/);
+
 let remoteChecks = 0;
 let adminDecision: true | Error = true;
 const remoteOnly = new Manager({
   space: "demo", runtime: "pty",
   remoteAuthority: {
     owner, actors: remoteManagerActors(instanceId), instanceId, lifecycleUid: request.managerLifecycleUid, identities,
-    supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
+    supervisorCreds: "", executorCreds: "", renewExecutor: async () => "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
     serveGrant: {} as never, agentBearerExchangeUrl: "https://auth.example.test",
     mintSessionServing: async () => "", mintRetirementRequester: async () => "", prepareAgentRetirement: async () => {},
     validateRetainedAgent: async () => { throw new Error("not used"); }, scanGoalIndex: async () => [],
@@ -184,5 +194,5 @@ for (const command of ["despawn", "attach", "input", "turn"]) {
 assert.deepEqual(effects, []);
 assert.equal(remoteChecks, 10);
 
-console.log("remote authority operations: 31 passed, 0 failed");
+console.log("remote authority operations: 34 passed, 0 failed");
 emitSentinel({ passed: cells(), failed: 0 });

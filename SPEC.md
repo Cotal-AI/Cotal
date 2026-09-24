@@ -1197,6 +1197,25 @@ stream/KV authority, or authority over another instance's gate, records, contrac
 credentials. A manager-service credential is ledgered and gated exactly as this section requires;
 its `holderPrincipal` is the derived-owner/fixed-actor principal, never the endpoint name.
 
+The typed protocol includes two host-owned registration-maintenance operations. An
+`evict-family-principal` request names one principal, but the host MUST enumerate the authenticated
+caller instance's `epcred.manager.<instanceId>.*` family and refuse unless that principal is one of
+its holders. The host, using its signer, then mints the bounded delivery-admin caller, requests
+`evictPrincipal`, and returns the closed `EvictionResult`; a garbled, foreign, or contradictory
+result MUST NOT authorize. The participant never receives that credential. A
+`reconcile-registration` request MAY name another manager instance in the same space only to clear
+an abandoned governance-slot holder. The host MUST observe that target's frozen registration gate,
+prove the freeze-holder `gone` under a complete liveness sweep, run the normal registration repair
+with verified eviction, and refuse live, unknown, incomplete, unestablishable, or non-registration
+states. There is no force path. A participant credential still gains no direct authority over the
+target gate, records, family, or delivery-admin rail.
+
+The bounded executor returned by `prepare` is renewable through `renew` for the same public nkey and
+current open registration. A remote manager MUST obtain a fresh executor before maintenance or clean
+deregistration when its retained credential is not healthy. A restart MUST drive family eviction
+through the host operation before advancing its epoch. A registration blocked by a foreign frozen
+manager governance slot MAY request guarded host reconciliation and retry exactly once.
+
 The host, not the participant, issues every data-account credential requiring the account signing
 key. The only remote path is the lifecycle- and instance-bound typed protocol of §13.6; a broader
 bearer or a generic credential-mint endpoint is non-conformant. Its gate is frozen before staged

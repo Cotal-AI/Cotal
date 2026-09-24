@@ -64,7 +64,7 @@
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
 
@@ -123,6 +123,8 @@ export interface AuthLedgerScanner {
   /** LastPerSubject over `cred.<lifecycleUid>.>` — the current last of every credential row in the
    *  agent family (markers included). */
   scanCredentialFamily(lifecycleUid: string): Promise<RawScanEntry[]>;
+  /** LastPerSubject over one endpoint instance's `epcred.<endpoint>.<instanceId>.>` family. */
+  scanEndpointCredentialFamily(endpoint: string, instanceId: string): Promise<RawScanEntry[]>;
   /** LastPerSubject over `bysrc.<issuerKeyId>.<id>.>` — the current last of every lineage-index row
    *  under one handle. */
   scanBysrc(issuerKeyId: string, id: string): Promise<RawScanEntry[]>;
@@ -390,6 +392,8 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   const scanner: AuthLedgerScanner = Object.freeze({
     scanCredentialFamily: (lifecycleUid: string) =>
       serialized(() => guarded(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`))),
+    scanEndpointCredentialFamily: (endpoint: string, instanceId: string) =>
+      serialized(() => guarded(() => scanOnce(`epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.`))),
     scanBysrc: (issuerKeyId: string, id: string) =>
       serialized(() => guarded(() => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`))),
     scanStageFamily: () => serialized(() => guarded(() => scanOnce("stage."))),

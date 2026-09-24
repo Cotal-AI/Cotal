@@ -13,6 +13,8 @@ import {
   type RemoteManagerAuthorityRequest,
   type RemoteManagerGoalIndexScanRequest,
   type RemoteManagerGoalIndexScanResult,
+  type RemoteManagerMaintenanceRequest,
+  type RemoteManagerMaintenanceResult,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RetainedAgentAuthority,
@@ -157,6 +159,76 @@ export function remoteManagerAuthorityRequest(
       sessionLedger: { id: state.identities.sessionLedger.id },
     },
   };
+}
+
+export function remoteManagerMaintenanceRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  operation: RemoteManagerMaintenanceRequest["operation"],
+  targetInstanceId: string,
+  principal?: string,
+): RemoteManagerMaintenanceRequest {
+  return {
+    v: 1,
+    kind: "manager-service-maintenance",
+    operation,
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `maintain${mintLifecycleUid()}`,
+    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerMaintenanceRequest["identities"],
+    targetInstanceId,
+    ...(principal ? { principal } : {}),
+  };
+}
+
+/** Bind a host maintenance result to every request coordinate and validate the returned evidence. */
+export function remoteManagerMaintenanceResult(
+  result: RemoteManagerMaintenanceResult,
+  request: RemoteManagerMaintenanceRequest,
+  expectedOwner: string,
+): RemoteManagerMaintenanceResult {
+  const expectedKeys = [
+    "v", "kind", "operation", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
+    "requestId", "identities", "targetInstanceId", ...(request.principal ? ["principal"] : []),
+    request.operation === "evict-family-principal" ? "eviction" : "reconciliation",
+  ];
+  if (!result || typeof result !== "object" || Array.isArray(result) ||
+      Object.keys(result).sort().join(",") !== expectedKeys.sort().join(",") ||
+      result.v !== 1 || result.kind !== "manager-service-maintenance" || result.owner !== expectedOwner ||
+      result.operation !== request.operation || result.space !== request.space || result.actor !== request.actor ||
+      result.instanceId !== request.instanceId || result.managerLifecycleUid !== request.managerLifecycleUid ||
+      result.requestId !== request.requestId || result.targetInstanceId !== request.targetInstanceId ||
+      JSON.stringify(result.identities) !== JSON.stringify(request.identities) || result.principal !== request.principal)
+    throw new Error("manager maintenance returned different lifecycle, target, principal, or owner coordinates");
+  if (request.operation === "evict-family-principal") {
+    const e = result.eviction;
+    if (!e || typeof e !== "object" || Array.isArray(e) ||
+        Object.keys(e).some((key) => !["principal", "kicked", "remaining", "verifiedGone", "scanComplete", "note"].includes(key)) ||
+        e.principal !== request.principal || !Number.isSafeInteger(e.kicked) || e.kicked < 0 ||
+        !Number.isSafeInteger(e.remaining) || e.remaining < 0 || typeof e.verifiedGone !== "boolean" || typeof e.scanComplete !== "boolean")
+      throw new Error("manager maintenance returned garbled or foreign eviction evidence");
+    if (e.verifiedGone && (!e.scanComplete || e.remaining !== 0))
+      throw new Error("manager maintenance returned contradictory eviction evidence");
+  } else {
+    const r = result.reconciliation;
+    const reportKeys = [
+      "endpoint", "instanceId", "holderPrincipal", "opId", "freezeToken", "before", "after", "liveness",
+      "familyRows", "revoked", "evicted", "holders", "holdersVerifiedBeforeAttempt",
+      "holdersVerifiedThisAttempt", "holdersRemaining", "repairCursorCleanup", "reopenedAtGeneration",
+    ];
+    if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).sort().join(",") !== reportKeys.sort().join(",") ||
+        r.endpoint !== "manager" || r.instanceId !== request.targetInstanceId ||
+        !Number.isSafeInteger(r.freezeToken) || !Number.isSafeInteger(r.familyRows) || !Number.isSafeInteger(r.reopenedAtGeneration) ||
+        ![r.holderPrincipal, r.opId].every((value) => typeof value === "string" && value.length > 0) ||
+        ![r.revoked, r.evicted, r.holders, r.holdersVerifiedBeforeAttempt, r.holdersVerifiedThisAttempt, r.holdersRemaining]
+          .every((value) => Array.isArray(value) && value.every((item) => typeof item === "string")) ||
+        (r.repairCursorCleanup !== "deleted" && r.repairCursorCleanup !== "retained") ||
+        !r.liveness || r.liveness.state !== "gone" || typeof r.liveness.detail !== "string")
+      throw new Error("manager maintenance returned no closed matching reconciliation report");
+  }
+  return result;
 }
 
 export function remoteRetainedAgentValidationRequest(

@@ -57,7 +57,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintPublicUserJwt, rawDigest, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteRetainedAgentValidationRequest, type SecretStore } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintCreds, mintPublicUserJwt, newIdentity, rawDigest, reconcileEndpointGate, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -70,6 +70,7 @@ import { issueRemoteManagerAuthority } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
+import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
@@ -78,7 +79,7 @@ import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
-import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
+import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
@@ -146,6 +147,7 @@ export interface AuthAuthorityPlane {
     alreadyRetired?: boolean;
   }>;
   issueManagerServiceAuthority: (args: { owner: string; scope: string[]; request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
+  maintainRemoteManager: (args: { owner: string; scope: string[]; request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
   validateRetainedAgent: (args: {
     owner: string;
     scope: string[];
@@ -478,6 +480,18 @@ export async function openAuthAuthorityPlane(opts: {
             { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
           );
           const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
+          if (r.operation === "renew") {
+            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const observed = await gate.observe();
+            if (!observed || observed.state !== "open")
+              throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no current open manager gate");
+            const actors = remoteManagerActors(r.instanceId);
+            if (observed.principal !== `${owner}.${actors.serve}`)
+              throw new EpEnvelopeError("permission-denied", "manager-service renewal gate does not belong to this authenticated owner and instance");
+            const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
+            if (r.registrationProof !== expectedProof)
+              throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current host registration");
+          }
           if (r.operation === "prepare" || r.operation === "renew") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
@@ -485,9 +499,8 @@ export async function openAuthAuthorityPlane(opts: {
             });
             // The executor receives the exact instance-scoped registration/maintenance surface under
             // a separate nkey and bounded five-minute lifetime. The participant retains it for the
-            // immediate goalidx boot sweep and clean service deregistration. In-place remote renewal
-            // is not wired into Manager yet, so a long-running manager fails deregistration loud at
-            // expiry rather than falling back to an anonymous dial.
+            // immediate goalidx boot sweep and clean service deregistration, and renews it in place
+            // before maintenance or deregistration once its retained credential is unhealthy.
             credentials.executor = await credential("executor", "remote-manager", actors.executor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
               expiresInSeconds: 5 * 60,
@@ -596,6 +609,61 @@ export async function openAuthAuthorityPlane(opts: {
           return { credentials };
         },
       });
+    },
+    maintainRemoteManager: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      const gateKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
+      const authorized = await authorizeRemoteManagerMaintenance({
+        owner,
+        scope,
+        space,
+        request,
+        scanner,
+        observeManagerGate: async (instanceId) =>
+          serveIssuanceGateKv(gateKv, space, { endpoint: "manager", instanceId }).observe(),
+      });
+      const evict = makeDeliveryAdminEvictor({ space, server, dataAccount, log });
+      if (authorized.operation === "evict-family-principal") {
+        const eviction = await evict(authorized.principal!);
+        return completeRemoteManagerMaintenance(authorized, owner, { eviction });
+      }
+      const principalOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount, log });
+      const executorIdentity = newIdentity();
+      const hostAuth: SpaceAuth = {
+        space,
+        operator: { seed: "", jwt: "" },
+        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+        sys: { pub: "", jwt: "" },
+      };
+      const executorCreds = await mintCreds(hostAuth, executorIdentity, "endpoint-serve-executor", {
+        endpointServeExecutor: { endpoint: "manager", instanceId: authorized.targetInstanceId },
+        expiresInSeconds: 60,
+      });
+      const maintenanceNc = await connect({
+        servers: server,
+        ...standaloneConnectOpts({ creds: executorCreds, tls: false }),
+        maxReconnectAttempts: 0,
+      });
+      let report;
+      try {
+        const maintenanceKvm = new Kvm(maintenanceNc);
+        report = await reconcileEndpointGate({
+          kv: await maintenanceKvm.open(epAuthBucket(space)),
+          recordsKv: await maintenanceKvm.open(recordsBucket(space)),
+          space,
+          endpoint: "manager",
+          instanceId: authorized.targetInstanceId,
+          probeHolder: async (principal) => {
+            const result = await principalOracle(principal);
+            return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };
+          },
+          evict: async (principal) => (await evict(principal)).verifiedGone,
+          log,
+        });
+      } finally {
+        await maintenanceNc.drain().catch(() => maintenanceNc.close());
+      }
+      return completeRemoteManagerMaintenance(authorized, owner, { reconciliation: report });
     },
     validateRetainedAgent: async ({ owner, scope, request }) => {
       refuseIfFenced();
@@ -858,6 +926,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     bridgeIdp,
     ownerSecret,
     managerServiceAuthority: plane.issueManagerServiceAuthority,
+    maintainRemoteManager: plane.maintainRemoteManager,
     validateRetainedAgent: plane.validateRetainedAgent,
     scanManagerGoalIndex: plane.scanManagerGoalIndex,
     authorizeManagerAdmin: plane.authorizeManagerAdmin,
@@ -954,6 +1023,7 @@ interface HandlerCtx {
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
   ownerSecret: string | Uint8Array;
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
+  maintainRemoteManager: AuthAuthorityPlane["maintainRemoteManager"];
   validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
   scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
   authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
@@ -972,7 +1042,7 @@ interface HandlerCtx {
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin">,
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin">,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -1002,6 +1072,8 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
   if (request.kind === "manager-admin-authorization")
     return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
+  if (request.kind === "manager-service-maintenance")
+    return ctx.maintainRemoteManager({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerMaintenanceRequest });
   return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
 }
 

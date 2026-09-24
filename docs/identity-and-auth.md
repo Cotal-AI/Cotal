@@ -399,7 +399,8 @@ registration, contracts, status, endpoint rails, gate and credential family; it 
 write another owner or instance. It never exposes a signer, static provisioner credential, owner
 secret, raw stream/KV/consumer authority, or a generic credential-mint API. The host creates the
 public-nkey JWT material through the typed lifecycle-bound protocol: **prepare → activate →
-renew**, plus a one-shot **retire** phase for one exact managed lifecycle. Each request is replay-safe and idempotent at its lifecycle/instance operation
+renew**, plus host-owned **evict-family-principal** and **reconcile-registration** maintenance
+operations and a one-shot **retire** phase for one exact managed lifecycle. Each request is replay-safe and idempotent at its lifecycle/instance operation
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
@@ -408,6 +409,15 @@ operation id derived from the target lifecycle UID. The terminal rail recomputes
 broker-pinned target before any durable access. A caller cannot substitute another valid operation
 identity for the same target, and retries plus auth-service boot recovery finish the same terminal
 barrier. It never exposes the barrier executor or a general mint surface.
+
+Registration maintenance stays on the host. Eviction accepts only a principal found by the host's
+sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family. Reconciliation may
+target a foreign manager slot holder in the same space, but it runs only after the delivery daemon
+proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
+evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
+unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
+blocked by an abandoned foreign governance slot asks the host to reconcile that holder and retries
+the registration once.
 
 A remote manager can provision only descendants of the same derived owner, and the host
 validates that relation and the current manager grant for every provision. It cannot broaden the
