@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.52.1
+
+### Patch Changes
+
+- f17791d: Give pinned managers without a spare-capability record a stop route that works for both legacy and non-detaching managers.
+- Updated dependencies [5784ec9]
+  - @cotal-ai/core@0.52.1
+
 ## 0.52.0
 
 ### Patch Changes
