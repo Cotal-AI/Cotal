@@ -22,6 +22,7 @@ export * from "./endpoint-effects.js";
 export * from "./endpoint-checkpoint.js";
 export * from "./endpoint-contract-store.js";
 export * from "./endpoint-serve-kv.js";
+export * from "./endpoint-reconcile.js";
 export * from "./endpoint-guard.js";
 export * from "./endpoint-handle.js";
 export * from "./endpoint-session.js";

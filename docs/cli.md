@@ -1293,6 +1293,12 @@ and the signed-in actor has the dedicated `supervise` ledger scope. The CLI obta
 loopback-only `manager-service` view; `spawn` and `admin` do not substitute for that scope. The
 host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
 → renew protocol, never by handing the participant a signer or static provisioner credential.
+The host also performs instance-scoped eviction and guarded gate reconciliation. A remote manager
+refreshes its short-lived registration executor before clean deregistration, so a long-running
+process removes its service row on `SIGINT` or `SIGTERM`. After an unclean stop, the same instance
+verify-evicts its superseded family and advances the process epoch. If an abandoned frozen gate
+holds the manager governance slot, a different supervise-scoped manager asks the host to reconcile
+that holder after a complete gone verdict, then retries its registration once.
 
 The broker URL in the registry entry decides the transport. A remote broker is often published
 over a `wss://` edge rather than a raw `nats://` port, and `supervise` dials whichever scheme the
@@ -1383,15 +1389,16 @@ cotal reconcile-gate [--space <s>] [--server <url>] [--endpoint <e>] [--instance
 **When you need this.** A manager restart killed after deregistration begins but before the new
 incarnation finishes leaves the endpoint's issuance gate *frozen*, held by a
 process that no longer exists. The freeze is what stops two incarnations serving at once, which is
-correct. The successor manager now completes that dead registration itself on boot, using the same
-guard this command uses: it acts only when the freeze-holder is affirmatively gone under a complete
+correct. The successor manager now completes that dead registration itself on boot, including on
+the remote user-auth path. A foreign remote manager blocked by this gate also asks the host to repair
+it before one registration retry. Both use the same guard this command uses: they act only when the freeze-holder is affirmatively gone under a complete
 CONNZ sweep (`gone` and `sweepComplete=true`). If that registration's spec write already committed,
 it finishes the same freeze at the committed registration revision. If the spec did not advance, it
 abort-reopens the gate at generation+1 with processEpoch unchanged and continues the normal takeover.
 Live, unknown, unestablishable, and
 wrong-op-kind still refuse; there is no TTL.
 
-Use this command when the boot path cannot run: the delivery daemon is down, the repair targets a
+Use this command when the automatic path cannot run: the delivery daemon is down, the repair targets a
 non-manager endpoint, or you want to lift the freeze without starting a manager. It checks that the
 holder really is gone, prints what it found, and then finishes the dead operation the same way as the
 interrupted restart would have: revoke the old credentials, evict their holders with verification,

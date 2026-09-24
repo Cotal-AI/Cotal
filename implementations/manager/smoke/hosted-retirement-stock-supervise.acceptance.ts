@@ -115,13 +115,14 @@ if (subcommand === "auth-service" || subcommand === "agent-bearer") {
 
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
 const betterAuthRoot = new URL("../../auth/node_modules/better-auth/", import.meta.url);
 const { betterAuth } = await import(new URL("dist/index.mjs", betterAuthRoot).href);
 const { memoryAdapter } = await import(new URL("dist/adapters/memory-adapter/index.mjs", betterAuthRoot).href);
@@ -133,12 +134,19 @@ import {
   CotalEndpoint,
   BROKER_FLOOR,
   createSpaceAuth,
+  endpointRegistrationBarrier,
+  epAuthBucket,
+  epgateKey,
   meetsBrokerFloor,
   mintConnectionEvictorCreds,
   mintCreds,
   mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
+  recordSpecKey,
+  RECORD_KINDS,
+  recordsBucket,
+  eprepairKey,
   provisionAgentDurables,
   serverConfig,
   setupSpaceStreams,
@@ -155,6 +163,9 @@ import {
   deliveryCredsKey,
   hasUserAuthState,
   materializeSecretToFile,
+  canonicalLocalProcessPath,
+  MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_PIDFILE,
   membershipObserverCredsKey,
   membershipRwCredsKey,
   userAuthStateDir,
@@ -172,6 +183,7 @@ import {
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { loadOrCreateRemoteManagerIdentity, remoteManagerMaintenanceRequest } from "../src/remote-authority.js";
 
 if (process.platform !== "linux") throw new Error("stock hosted-retirement supervise acceptance requires Linux");
 
@@ -181,7 +193,7 @@ const tsx = join(repo, "node_modules", ".bin", "tsx");
 const self = process.argv[1]!;
 const home = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-home-"));
 const hostRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}stock-supervise-host-`));
-const participantRoot = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-participant-"));
+const participantRoot = realpathSync(mkdtempSync(join(tmpdir(), "cotal-stock-supervise-participant-")));
 const previousHome = process.env.COTAL_HOME;
 process.env.COTAL_HOME = home;
 
@@ -253,6 +265,15 @@ const stop = async (child: ChildProcess | undefined): Promise<boolean> => {
   child.kill("SIGKILL");
   return awaitClose(child, 5_000);
 };
+const killUnclean = async (child: ChildProcess): Promise<boolean> => {
+  const expected = owned.get(child);
+  if (!expected) return false;
+  const current = processIdentity(expected.pid);
+  if (!current) return awaitClose(child, 1_000);
+  if (current.startTime !== expected.startTime || current.cgroupSha256 !== expected.cgroupSha256) return false;
+  child.kill("SIGKILL");
+  return awaitClose(child, 5_000);
+};
 
 const space = `stock-retirement-${Math.random().toString(36).slice(2, 10)}`;
 const brokerPort = await pickFreePort();
@@ -270,6 +291,8 @@ let idpServer: ReturnType<typeof createServer> | undefined;
 let exchangeProxy: ReturnType<typeof createHttpsServer> | undefined;
 let endpoint: CotalEndpoint | undefined;
 let storeDir: string | undefined;
+let secondHome: string | undefined;
+let secondRoot: string | undefined;
 let supervisorOutput = "";
 let authOutput = "";
 let deliveryOutput = "";
@@ -278,6 +301,7 @@ let activateRequests = 0;
 let validationRequests = 0;
 let adminAuthorizationRequests = 0;
 let retirementRequests = 0;
+let maintenanceRequests = 0;
 
 try {
   mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
@@ -391,14 +415,16 @@ try {
           const parsed = JSON.parse(body.toString("utf8")) as { request?: { kind?: string; operation?: string } };
           if (parsed.request?.kind === "manager-retained-agent-validation") validationRequests++;
           else if (parsed.request?.kind === "manager-admin-authorization") adminAuthorizationRequests++;
+          else if (parsed.request?.kind === "manager-service-maintenance") maintenanceRequests++;
           else if (parsed.request?.operation === "prepare") prepareRequests++;
           else if (parsed.request?.operation === "activate") activateRequests++;
           else if (parsed.request?.operation === "retire") retirementRequests++;
         } catch { /* the upstream owns malformed-request reporting */ }
       }
       const upstreamUrl = new URL(service!.publicUrl!);
+      const upstreamPath = req.url?.startsWith("/register/") ? "/register" : req.url;
       const upstream = httpRequest({
-        host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: req.url,
+        host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: upstreamPath,
         method: req.method, headers: { ...req.headers, host: upstreamUrl.host },
       }, (response) => { res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res); });
       upstream.on("error", (error) => { res.statusCode = 502; res.end(error.message); });
@@ -435,6 +461,10 @@ try {
     }),
     sentinelCreds: callout.sentinelCreds,
   }, false, false);
+  const { findMesh, recordMesh } = await import("@cotal-ai/workspace");
+  const participantEntry = findMesh(space);
+  if (!participantEntry) throw new Error("participant registry entry vanished after persistence");
+  recordMesh({ ...participantEntry, policyCheckedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
   check("participant registry is remote user mode with no hosting marker",
     existsSync(participantDir) && hasUserAuthState(participantRoot, space) === false);
 
@@ -625,6 +655,250 @@ registry.register({
   check("stock refusal issues zero retirement requester and leaves the supervisor running",
     retirementRequests === 0 && supervisor.exitCode === null,
     { retirementRequests, supervisorExitCode: supervisor.exitCode });
+
+  const firstState = loadOrCreateRemoteManagerIdentity(participantRoot, space);
+  const firstSpecKey = recordSpecKey(RECORD_KINDS.svc, ["manager", firstState.instanceId]);
+  const observeRegistration = async () => {
+    const observerId = newIdentity();
+    const observer = await connect({
+      servers: server,
+      ...standaloneConnectOpts({
+        creds: await mintCreds(auth, observerId, "endpoint-serve-executor", {
+          endpointServeExecutor: { endpoint: "manager", instanceId: firstState.instanceId },
+        }),
+        tls: false,
+      }),
+      maxReconnectAttempts: 0,
+    });
+    try {
+      return await (await new Kvm(observer).open(recordsBucket(space))).get(firstSpecKey);
+    } finally {
+      await observer.drain().catch(() => observer.close());
+    }
+  };
+  const observeGateRepair = async () => {
+    const observerId = newIdentity();
+    const observer = await connect({
+      servers: server,
+      ...standaloneConnectOpts({
+        creds: await mintCreds(auth, observerId, "endpoint-serve-executor", {
+          endpointServeExecutor: { endpoint: "manager", instanceId: firstState.instanceId },
+        }),
+        tls: false,
+      }),
+      maxReconnectAttempts: 0,
+    });
+    try {
+      const authKv = await new Kvm(observer).open(epAuthBucket(space));
+      return {
+        gate: await authKv.get(epgateKey("manager", firstState.instanceId)),
+        repair: await authKv.get(eprepairKey("manager", firstState.instanceId)),
+      };
+    } finally {
+      await observer.drain().catch(() => observer.close());
+    }
+  };
+
+  console.log("  waiting for the stock five-minute executor credential to expire");
+  await wait(310_000);
+  const beforeMaintenance = maintenanceRequests;
+  const cleanStopped = await stop(supervisor);
+  supervisor = undefined;
+  const cleanRegistration = await observeRegistration();
+  const cleanDeregistered = cleanRegistration === null || cleanRegistration.operation === "DEL";
+  check("stock clean stop refreshes the executor and deregisters after its retained credential expires",
+    cleanStopped && cleanDeregistered && supervisorOutput.includes("✓ deregistered manager instance"),
+    {
+      stopped: cleanStopped,
+      registrationOperation: cleanRegistration?.operation ?? null,
+      maintenanceRequestsBefore: beforeMaintenance,
+      maintenanceRequestsAfter: maintenanceRequests,
+      output: supervisorOutput.slice(-1200),
+    });
+  console.log("RM2_POSTFIX_STEP1", JSON.stringify({
+    stopped: cleanStopped,
+    serviceRegistrationOperation: cleanRegistration?.operation ?? null,
+    maintenanceRequestsBefore: beforeMaintenance,
+    maintenanceRequestsAfter: maintenanceRequests,
+    deregistered: supervisorOutput.includes("✓ deregistered manager instance"),
+  }));
+
+  let restartOutput = "";
+  supervisor = track("same-instance-restart", spawn(tsx, [cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+    cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  supervisor.stdout?.on("data", (chunk) => { restartOutput = append(restartOutput, chunk); });
+  supervisor.stderr?.on("data", (chunk) => { restartOutput = append(restartOutput, chunk); });
+  for (let tries = 0; tries < 600 && !restartOutput.includes("manager up"); tries++) {
+    if (supervisor.exitCode !== null || supervisor.signalCode !== null) break;
+    await wait(100);
+  }
+  const restartedState = loadOrCreateRemoteManagerIdentity(participantRoot, space);
+  const restartedRegistration = await observeRegistration();
+  const restartedGate = await observeGateRepair();
+  const restartedGateRow = restartedGate.gate?.operation === "PUT"
+    ? JSON.parse(new TextDecoder().decode(restartedGate.gate.value)) as { processEpoch?: number }
+    : undefined;
+  const sameInstanceReady = restartOutput.includes("manager up") && supervisor.exitCode === null &&
+    restartedState.instanceId === firstState.instanceId && restartedRegistration?.operation === "PUT" &&
+    restartedGateRow?.processEpoch === 1 &&
+    (restartedGate.repair === null || restartedGate.repair.operation === "DEL");
+  check("same remote manager instance restarts after clean expired-executor deregistration",
+    sameInstanceReady,
+    {
+      ready: restartOutput.includes("manager up"),
+      exitCode: supervisor.exitCode,
+      sameInstance: restartedState.instanceId === firstState.instanceId,
+      registrationOperation: restartedRegistration?.operation ?? null,
+      processEpoch: restartedGateRow?.processEpoch ?? null,
+      repairCursorOperation: restartedGate.repair?.operation ?? null,
+      output: restartOutput.slice(-1200),
+    });
+  console.log("RM2_POSTFIX_STEP2", JSON.stringify({
+    ready: restartOutput.includes("manager up"),
+    exitCode: supervisor.exitCode,
+    firstInstanceId: firstState.instanceId,
+    restartedInstanceId: restartedState.instanceId,
+    serviceRegistrationOperation: restartedRegistration?.operation ?? null,
+    processEpoch: restartedGateRow?.processEpoch ?? null,
+    repairCursorOperation: restartedGate.repair?.operation ?? null,
+  }));
+  if (!sameInstanceReady) throw new Error("same-instance remote manager restart failed");
+
+  secondHome = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-second-home-"));
+  secondRoot = realpathSync(mkdtempSync(join(tmpdir(), "cotal-stock-supervise-second-root-")));
+  mkdirSync(join(secondRoot, ".cotal"), { recursive: true });
+  const secondSignup = await idp.api.signUpEmail({
+    body: { email: "second@example.test", password: "correct-horse-battery-2", name: "Second" },
+    returnHeaders: true,
+  });
+  const secondCookie = secondSignup.headers.get("set-cookie")?.split(";")[0];
+  if (!secondCookie) throw new Error("second fixture login returned no session cookie");
+  await establishIdpSession({
+    dir: secondHome,
+    idpUrl,
+    clientId,
+    onPrompt: async (prompt) => {
+      await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(prompt.userCode)}`, {
+        headers: { cookie: secondCookie, origin },
+      });
+      const response = await fetch(`${idpUrl}/device/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: secondCookie, origin },
+        body: JSON.stringify({ userCode: prompt.userCode }),
+      });
+      if (!response.ok) throw new Error(`second device approval failed: HTTP ${response.status}`);
+    },
+  });
+  const savedHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = secondHome;
+  const secondOwner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
+  grantActor(hostDir, { owner: secondOwner, actor: "cli", scope: ["supervise"], allowSubscribe: [], allowPublish: [] });
+  persistRemoteUserEntry(space, server, secondRoot, {
+    space,
+    server,
+    tlsRequired: false,
+    userAuth: assertUserAuthInfo({
+      provider: "cotal",
+      idp: { url: idpUrl, issuer: origin, audience: origin },
+      endpoints: { url: secureExchangeUrl },
+    }),
+    sentinelCreds: callout.sentinelCreds,
+  }, false, false);
+  const foreignEntry = findMesh(space);
+  if (!foreignEntry) throw new Error("foreign participant registry entry vanished after persistence");
+  recordMesh({ ...foreignEntry, policyCheckedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
+  process.env.COTAL_HOME = savedHome;
+
+  const secondXdg = join(secondHome, "xdg");
+  mkdirSync(secondXdg, { recursive: true });
+  const foreignEnv = { ...supervisorEnv, COTAL_HOME: secondHome, XDG_CONFIG_HOME: secondXdg };
+
+  const freezeId = newIdentity();
+  const freezeNc = await connect({
+    servers: server,
+    ...standaloneConnectOpts({
+      creds: await mintCreds(auth, freezeId, "endpoint-serve-executor", {
+        endpointServeExecutor: { endpoint: "manager", instanceId: firstState.instanceId },
+      }),
+      tls: false,
+    }),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const freezeKv = await new Kvm(freezeNc).open(epAuthBucket(space));
+    const barrier = endpointRegistrationBarrier(freezeKv, space, {
+      endpoint: "manager", instanceId: firstState.instanceId, opId: firstState.instanceId,
+    });
+    const observed = await barrier.observe();
+    if (!observed || observed.state !== "open" || await barrier.freeze(observed.revision) === null)
+      throw new Error("fixture could not freeze the abandoned manager registration");
+  } finally {
+    await freezeNc.drain().catch(() => freezeNc.close());
+  }
+
+  const foreignState = loadOrCreateRemoteManagerIdentity(secondRoot, space);
+  const liveRequest = remoteManagerMaintenanceRequest(foreignState, "cli", "reconcile-registration", firstState.instanceId);
+  let liveRefusal = "";
+  process.env.COTAL_HOME = secondHome;
+  try {
+    await cotalAuthProvider.maintainRemoteManager!({
+      store: workspaceSecretStore(secondRoot),
+      dir: userAuthStateDir(secondRoot, space),
+      request: liveRequest,
+    });
+  } catch (error) {
+    liveRefusal = (error as Error).message;
+  } finally {
+    process.env.COTAL_HOME = savedHome;
+  }
+  check("a foreign manager gets in only after the holder is proven gone",
+    /ALIVE|holder-alive|still running/.test(liveRefusal) && supervisor.exitCode === null,
+    { refusal: liveRefusal, holderExitCode: supervisor.exitCode });
+
+  const uncleanStopped = await killUnclean(supervisor);
+  supervisor = undefined;
+  const processContext = { root: participantRoot, space };
+  rmSync(canonicalLocalProcessPath(MANAGER_PIDFILE, processContext), { force: true });
+  rmSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, processContext), { force: true });
+  const abandonedRegistration = await observeRegistration();
+  check("unclean same-instance stop leaves the registration for guarded foreign recovery",
+    uncleanStopped && abandonedRegistration?.operation === "PUT",
+    { uncleanStopped, registrationOperation: abandonedRegistration?.operation ?? null });
+
+  let foreignOutput = "";
+  const beforeForeignMaintenance = maintenanceRequests;
+  supervisor = track("foreign-instance", spawn(tsx, [cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+    cwd: secondRoot, env: foreignEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  supervisor.stdout?.on("data", (chunk) => { foreignOutput = append(foreignOutput, chunk); });
+  supervisor.stderr?.on("data", (chunk) => { foreignOutput = append(foreignOutput, chunk); });
+  for (let tries = 0; tries < 900 && !foreignOutput.includes("manager up"); tries++) {
+    if (supervisor.exitCode !== null || supervisor.signalCode !== null) break;
+    await wait(100);
+  }
+  const foreignRecovered = foreignOutput.includes("manager up") && supervisor.exitCode === null &&
+    secondOwner !== owner && foreignState.instanceId !== firstState.instanceId && maintenanceRequests > beforeForeignMaintenance;
+  check("a different remote owner recovers an abandoned manager registration through guarded reconciliation",
+    foreignRecovered,
+    {
+      ready: foreignOutput.includes("manager up"),
+      exitCode: supervisor.exitCode,
+      differentOwner: secondOwner !== owner,
+      differentInstance: foreignState.instanceId !== firstState.instanceId,
+      maintenanceRequestsBefore: beforeForeignMaintenance,
+      maintenanceRequestsAfter: maintenanceRequests,
+      output: foreignOutput.slice(-1600),
+    });
+  console.log("RM2_POSTFIX_STEP3", JSON.stringify({
+    ready: foreignOutput.includes("manager up"),
+    exitCode: supervisor.exitCode,
+    firstInstanceId: firstState.instanceId,
+    foreignInstanceId: foreignState.instanceId,
+    differentOwner: secondOwner !== owner,
+    maintenanceRequestsBefore: beforeForeignMaintenance,
+    maintenanceRequestsAfter: maintenanceRequests,
+  }));
 } catch (error) {
   fail++;
   console.log("  ✗ FAIL: harness threw", error instanceof Error ? redact(error.stack ?? error.message) : String(error));
@@ -650,6 +924,8 @@ registry.register({
     rmSync(home, { recursive: true, force: true });
     rmSync(hostRoot, { recursive: true, force: true });
     rmSync(participantRoot, { recursive: true, force: true });
+    if (secondHome) rmSync(secondHome, { recursive: true, force: true });
+    if (secondRoot) rmSync(secondRoot, { recursive: true, force: true });
     if (storeDir) rmSync(storeDir, { recursive: true, force: true });
   }
   if (previousHome === undefined) delete process.env.COTAL_HOME;
