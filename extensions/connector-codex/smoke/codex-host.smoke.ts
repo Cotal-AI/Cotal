@@ -279,14 +279,16 @@ try {
   check("interrupted turn's batch is dismissed, not redelivered", !afterHang.includes("HANG now"), afterHang);
 
   // (5b) an unknown terminal status (missing/unrecognized `status`) is neither a real interrupt
-  // nor a completion — the batch stays un-acked, same as today, so it redelivers into the next
-  // turn (the fake's marker is one-shot, so that redelivery completes normally).
+  // nor a completion — the batch stays un-acked, same as today, so the boundary immediately
+  // redrives it into a second turn (no backoff, unlike `failed`); the fake's marker is one-shot,
+  // so that redelivery completes normally. The wait is caught rather than left to throw, so a
+  // mutant that acks it instead reddens a named check rather than an uncaught timeout.
   await sleep(300);
   await dm("UNKNOWNSTATUS now");
   await waitFor("unknown-status turn", () => turnStarts().find((t) => t.includes("UNKNOWNSTATUS now")));
   const unknownRedelivered = await waitFor("unknown-status redelivery", () =>
     turnStarts().filter((t) => t.includes("UNKNOWNSTATUS now")).length >= 2 ? true : undefined,
-  );
+  ).catch(() => false);
   check("unknown terminal status leaves the batch un-acked", unknownRedelivered === true);
   await dm("after-unknown");
   await waitFor("after-unknown turn", () => turnStarts().find((t) => t.includes("after-unknown")));
