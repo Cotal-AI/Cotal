@@ -10,12 +10,12 @@
   "why": "The gate decides whether a release version reached npm across the whole lockstep closure. Its two failure directions are silent and opposite: calling registry lag a partial publish (a false alarm, which gets a gate switched off) and calling a partial publish complete (a Release cut for a version that did not fully ship). Each mutation below breaks one of those decisions and must be caught by the cell named, so the suite is shown to discriminate rather than merely to pass. Every mutated file is the gate's own code or its generator -- no shipped product source -- which is what grades:\"tool\" asserts.",
   "mutations": [
     {
-      "name": "stability window collapses, so any missing set is instantly a partial publish",
+      "name": "the old stability window ends a clean incomplete run as PARTIAL again",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "  if (unchangedForMs >= opts.stableWindowMs) {",
-      "replace": "  if (missing.length > 0) {",
-      "expectRed": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish",
-      "cell": "a missing set that repeats identically and THEN clears is PUBLISHED, not a partial publish"
+      "find": "  if (elapsedMs >= opts.deadlineMs) {",
+      "replace": "  if (unchangedForMs >= opts.stableWindowMs && missing.length < total) return { state: \"partial\", missing, why: \"stability-window\" };\n  if (elapsedMs >= opts.deadlineMs) {",
+      "expectRed": "a package that appears after the old stability window but before the deadline reaches PUBLISHED",
+      "cell": "a package that appears after the old stability window but before the deadline reaches PUBLISHED"
     },
     {
       "name": "success tolerates one missing package, so a dropped sibling still reads as published",
@@ -34,12 +34,12 @@
       "cell": "the closure is derived from .changeset/config.json, matching every name in the fixed group"
     },
     {
-      "name": "the deadline asserts a failure instead of reporting that it cannot tell",
+      "name": "a clean incomplete reading at the deadline is called PARTIAL without positive evidence",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "  if (elapsedMs >= opts.deadlineMs) return { state: \"unsettled\", missing, why: \"deadline\" };",
-      "replace": "  if (elapsedMs >= opts.deadlineMs) return { state: \"partial\", missing, why: \"deadline\" };",
-      "expectRed": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'",
-      "cell": "a set still shrinking at the deadline reports UNSETTLED — the gate fails toward 'cannot tell'"
+      "find": "    return { state: \"unsettled\", missing, why: \"deadline\" };",
+      "replace": "    return { state: \"partial\", missing, why: \"deadline\" };",
+      "expectRed": "two clean 404s held to the deadline remain UNSETTLED because either can still be slow",
+      "cell": "two clean 404s held to the deadline remain UNSETTLED because either can still be slow"
     },
     {
       "name": "a stability window narrower than the poll interval is silently widened instead of refused",
@@ -68,8 +68,8 @@
     {
       "name": "a push that published NOTHING is reported as a partial publish, reddening every version-PR push",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "    if (missing.length === total) return { state: \"none\", missing };",
-      "replace": "    if (missing.length === total + 1) return { state: \"none\", missing };",
+      "find": "  if (missing.length === total && unchangedForMs >= opts.stableWindowMs) return { state: \"none\", missing };",
+      "replace": "  if (missing.length === total + 1 && unchangedForMs >= opts.stableWindowMs) return { state: \"none\", missing };",
       "expectRed": "a wholly absent version is NONE (published nothing), never PARTIAL",
       "cell": "a wholly absent version is NONE (published nothing), never PARTIAL"
     },
@@ -86,8 +86,8 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "      errored.push(pkg);\n      continue;",
       "replace": "      missing.push(pkg);\n      continue;",
-      "expectRed": "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package",
-      "cell": "a total registry outage is UNSETTLED, never NONE — an unreachable registry is not an absent package"
+      "expectRed": "a total registry outage is UNSETTLED, never NONE \u2014 an unreachable registry is not an absent package",
+      "cell": "a total registry outage is UNSETTLED, never NONE \u2014 an unreachable registry is not an absent package"
     },
     {
       "name": "an unclean scan is allowed to reach a decisive verdict again",
@@ -100,26 +100,26 @@
     {
       "name": "any non-200 is treated as absence again, so a 5xx reads as an unpublished package",
       "file": "scripts/verify-publish-closure.mjs",
-      "find": "    if (status === 404) missing.push(pkg);\n    else errored.push(pkg);",
-      "replace": "    if (status !== 200) missing.push(pkg);",
-      "expectRed": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say",
-      "cell": "a total 5xx outage is UNSETTLED, not NONE — a registry that will not answer has published nothing to say"
+      "find": "    else {\n      errored.push(pkg);\n      failed.push(pkg);\n    }",
+      "replace": "    else missing.push(pkg);",
+      "expectRed": "a total 5xx outage is UNSETTLED, not NONE \u2014 a registry that will not answer has published nothing to say",
+      "cell": "a total 5xx outage is UNSETTLED, not NONE \u2014 a registry that will not answer has published nothing to say"
     },
     {
       "name": "404 stops counting as absence, so a genuine partial publish can never be detected",
       "file": "scripts/verify-publish-closure.mjs",
       "find": "    if (status === 404) missing.push(pkg);",
       "replace": "    if (status === 410) missing.push(pkg);",
-      "expectRed": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires",
-      "cell": "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires"
+      "expectRed": "a genuine held 404 on one package is PARTIAL only after the deadline supplies evidence",
+      "cell": "a genuine held 404 on one package is PARTIAL only after the deadline supplies evidence"
     },
     {
       "name": "redirects are followed again, so a 302 onto a generic 200 reads as a published package",
       "file": "scripts/verify-publish-closure.mjs",
       "find": "      fetchImpl(url, { method: \"GET\", redirect: \"manual\", signal: AbortSignal.timeout(remainingMs) }),",
       "replace": "      fetchImpl(url, { method: \"GET\", signal: AbortSignal.timeout(remainingMs) }),",
-      "expectRed": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence",
-      "cell": "a registry that redirects onto a generic 200 does NOT report published — a followed redirect is not presence"
+      "expectRed": "a registry that redirects onto a generic 200 does NOT report published \u2014 a followed redirect is not presence",
+      "cell": "a registry that redirects onto a generic 200 does NOT report published \u2014 a followed redirect is not presence"
     },
     {
       "name": "the read is awaited unbounded again, so a socket that never answers parks the gate past its own deadline",
@@ -150,16 +150,16 @@
       "file": "scripts/verify-publish-closure.mjs",
       "find": "        const body = await res.json();\n        if (body && body.name === pkg && body.version === version) continue;",
       "replace": "        continue;",
-      "expectRed": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)",
-      "cell": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)"
+      "expectRed": "a 200 with the wrong version in the body is NOT presence \u2014 it is no evidence (#1257)",
+      "cell": "a 200 with the wrong version in the body is NOT presence \u2014 it is no evidence (#1257)"
     },
     {
       "name": "a wrong-version body is accepted as presence (#1257)",
       "file": "scripts/verify-publish-closure.mjs",
       "find": "        if (body && body.name === pkg && body.version === version) continue;",
       "replace": "        if (body && body.name === pkg) continue;",
-      "expectRed": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)",
-      "cell": "a 200 with the wrong version in the body is NOT presence — it is no evidence (#1257)"
+      "expectRed": "a 200 with the wrong version in the body is NOT presence \u2014 it is no evidence (#1257)",
+      "cell": "a 200 with the wrong version in the body is NOT presence \u2014 it is no evidence (#1257)"
     },
     {
       "name": "a wrong-name body is accepted as presence (#1257)",
@@ -168,6 +168,46 @@
       "replace": "        if (body && body.version === version) continue;",
       "expectRed": "a 200 naming a different package in the body is NOT presence (#1257)",
       "cell": "a 200 naming a different package in the body is NOT presence (#1257)"
+    },
+    {
+      "name": "one transient errored poll ends the run instead of being retried",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (confirmedErrored.length === 0) return { state: \"polling\", missing, errored };",
+      "replace": "    return { state: \"unsettled\", missing, errored, why: \"transport\" };",
+      "expectRed": "one all-error poll near the deadline neither resets nor ends a run that then reaches PUBLISHED",
+      "cell": "one all-error poll near the deadline neither resets nor ends a run that then reaches PUBLISHED"
+    },
+    {
+      "name": "the error bound is off by one and confirms the nth failed poll",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "      (pkg) => (consecutiveErrors.get(pkg) ?? 0) > opts.maxConsecutiveErrorPolls,",
+      "replace": "      (pkg) => (consecutiveErrors.get(pkg) ?? 0) >= opts.maxConsecutiveErrorPolls,",
+      "expectRed": "the configured error bound tolerates exactly n consecutive registry failures",
+      "cell": "the configured error bound tolerates exactly n consecutive registry failures"
+    },
+    {
+      "name": "the deadline evidence arm returns UNSETTLED for a true one-package partial",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "      return { state: \"partial\", missing, why: \"deadline-evidence\" };",
+      "replace": "      return { state: \"unsettled\", missing, why: \"deadline-evidence\" };",
+      "expectRed": "one 404 held for the whole deadline with every sibling present is PARTIAL evidence",
+      "cell": "one 404 held for the whole deadline with every sibling present is PARTIAL evidence"
+    },
+    {
+      "name": "the re-check flag stops selecting its short read-only defaults",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "  const opts = parseOptions(argv, recheck ? RECHECK_DEFAULTS : DEFAULTS);",
+      "replace": "  const opts = parseOptions(argv, DEFAULTS);",
+      "expectRed": "the re-check entry reports NONE for an absent version",
+      "cell": "the re-check entry reports NONE for an absent version"
+    },
+    {
+      "name": "the re-check entry accepts a malformed version",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    throw new Error(`invalid version: ${version}`);",
+      "replace": "    process.stderr.write(`invalid version ignored: ${version}\\n`);",
+      "expectRed": "the re-check entry refuses a malformed version",
+      "cell": "the re-check entry refuses a malformed version"
     }
   ]
 }

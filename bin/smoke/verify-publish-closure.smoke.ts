@@ -78,8 +78,8 @@ check(
   classify({ missing: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs - 1, elapsedMs: 0 }).state === "polling",
 );
 check(
-  "a missing set unchanged past the stability window is PARTIAL",
-  classify({ missing: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+  "a missing set held past the old stability window is still POLLING without deadline evidence",
+  classify({ missing: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "polling",
 );
 check(
   "a wholly absent version is NONE (published nothing), never PARTIAL",
@@ -87,8 +87,11 @@ check(
   classify({ missing: ["a", "b"], total: 2, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }),
 );
 check(
-  "PARTIAL is reserved for SOME of the group live — the case a Release must not be cut for",
-  classify({ missing: ["a"], total: 2, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+  "one 404 held for the whole deadline with every sibling present is PARTIAL",
+  classify({
+    missing: ["a"], total: 4, unchangedForMs: DEFAULTS.deadlineMs,
+    elapsedMs: DEFAULTS.deadlineMs, missingFromStart: true,
+  }).state === "partial",
 );
 check(
   "reaching the deadline while still missing reports UNSETTLED, never PARTIAL",
@@ -113,6 +116,76 @@ function scriptedFetch(sequence: string[][]): typeof fetch {
   }) as unknown as typeof fetch;
 }
 const fastClock = () => { let t = 0; return { now: () => (t += 1000), sleep: async () => {} }; };
+
+const longOpts = (overrides: Partial<typeof DEFAULTS> = {}) => ({
+  ...DEFAULTS,
+  pollIntervalMs: 60_000,
+  stableWindowMs: 300_000,
+  deadlineMs: 600_000,
+  ...overrides,
+});
+const scenario = async (
+  reply: (pkg: string, scan: number, elapsedMs: number) => number | "error",
+  opts = longOpts(),
+) => {
+  let elapsedMs = 0, scan = 0, seen = 0;
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const pkg = ["a", "b", "c", "d"].find((p) => String(url).endsWith(`/${p}/9.9.9`))!;
+    const response = reply(pkg, scan, elapsedMs);
+    if (++seen % 4 === 0) scan++;
+    if (response === "error") throw new Error("registry transient");
+    if (response === 200) {
+      return { status: 200, json: async () => ({ name: pkg, version: "9.9.9" }) } as unknown as Response;
+    }
+    return { status: response } as Response;
+  }) as unknown as typeof fetch;
+  return verifyClosure("9.9.9", {
+    packages: ["a", "b", "c", "d"],
+    opts,
+    fetchImpl,
+    now: () => elapsedMs,
+    sleep: async (ms) => { elapsedMs += ms; },
+  });
+};
+
+const slowPastWindow = await scenario((pkg, _scan, elapsedMs) => pkg === "d" && elapsedMs < 360_000 ? 404 : 200);
+check(
+  "a package that appears after the old stability window but before the deadline reaches PUBLISHED",
+  slowPastWindow.state === "published",
+  slowPastWindow,
+);
+const neverPublished = await scenario((pkg) => pkg === "d" ? 404 : 200);
+check(
+  "one 404 held for the whole deadline with every sibling present is PARTIAL evidence",
+  neverPublished.state === "partial" && neverPublished.why === "deadline-evidence",
+  neverPublished,
+);
+const twoMissingAtDeadline = await scenario((pkg) => ["c", "d"].includes(pkg) ? 404 : 200);
+check(
+  "two clean 404s held to the deadline remain UNSETTLED because either can still be slow",
+  twoMissingAtDeadline.state === "unsettled",
+  twoMissingAtDeadline,
+);
+const transientPoll = await scenario((pkg, scan) => scan === 9 ? "error" : (pkg === "d" && scan < 10 ? 404 : 200));
+check(
+  "one all-error poll near the deadline neither resets nor ends a run that then reaches PUBLISHED",
+  transientPoll.state === "published" && transientPoll.reads.some((read) => read.errored.length === 4),
+  transientPoll,
+);
+
+const errorOpts = longOpts({ pollIntervalMs: 10, stableWindowMs: 20, deadlineMs: 60_000 });
+const twoErrors = await scenario((pkg, scan) => pkg === "d" && scan < 2 ? 500 : 200, errorOpts);
+check(
+  "the configured error bound tolerates exactly n consecutive registry failures",
+  twoErrors.state === "published",
+  twoErrors,
+);
+const threeErrors = await scenario((pkg, scan) => pkg === "d" && scan < 3 ? 500 : 200, errorOpts);
+check(
+  "the configured error bound classifies n+1 package-specific failures as PARTIAL",
+  threeErrors.state === "partial" && threeErrors.why === "registry-error",
+  threeErrors,
+);
 
 // THE CASE THAT MOTIVATES THE WHOLE GATE: two identical reads, then it clears.
 const lagClock = fastClock();
@@ -141,7 +214,7 @@ const partial = await verifyClosure("9.9.9", {
   fetchImpl: scriptedFetch([["d"]]),
   ...partialClock,
 });
-check("a missing set that never shrinks is reported PARTIAL", partial.state === "partial", partial);
+check("a missing set that never shrinks supplies PARTIAL evidence at the deadline", partial.state === "partial", partial);
 check("the PARTIAL verdict names which packages are missing", partial.missing?.join() === "d", partial.missing);
 
 const stallClock = fastClock();
@@ -204,8 +277,8 @@ check(
   classify({ missing: ["d"], errored: ["a"], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state !== "partial",
 );
 check(
-  "a CLEAN scan still settles normally once the errors stop",
-  classify({ missing: ["d"], errored: [], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "partial",
+  "a CLEAN scan before the deadline is not decisive merely because the missing set is stable",
+  classify({ missing: ["d"], errored: [], total: 4, unchangedForMs: DEFAULTS.stableWindowMs, elapsedMs: 0 }).state === "polling",
 );
 
 // ------------------------------------------------- only 200 is presence, only 404 is absence
@@ -226,7 +299,7 @@ const held = { ...DEFAULTS, pollIntervalMs: 0, stableWindowMs: 5_000, deadlineMs
 const run = (f: typeof fetch) =>
   verifyClosure("9.9.9", { packages: ["a", "b", "c", "d"], opts: held, fetchImpl: f, ...fastClock() });
 
-const sibling500 = await run(statusFetch((pkg) => (pkg === "d" ? 500 : 200)));
+const sibling500 = await run(statusFetch((pkg, scan) => (pkg === "d" && scan < 2 ? 500 : 200)));
 check(
   "a 5xx on one sibling of a published version is NOT a partial publish — it must not red the release",
   sibling500.state !== "partial" && sibling500.state !== "none",
@@ -248,8 +321,8 @@ check(
 // REGRESSION GUARDS: widening "not evidence" must not have broken real absence detection.
 const real404 = await run(statusFetch((pkg) => (pkg === "d" ? 404 : 200)));
 check(
-  "a genuine held 404 on one package is STILL a partial publish — the loud verdict still fires",
-  real404.state === "partial" && real404.missing?.join() === "d",
+  "a genuine held 404 on one package is PARTIAL only after the deadline supplies evidence",
+  real404.state === "partial" && real404.missing?.join() === "d" && real404.why === "deadline-evidence",
   real404,
 );
 const all404 = await run(statusFetch(() => 404));
@@ -400,7 +473,7 @@ check(
   `${allThere.stdout}${allThere.stderr}`,
 );
 
-const fast = ["--poll-interval-ms=10", "--stable-window-ms=20", "--deadline-ms=60000"];
+const fast = ["--poll-interval-ms=20", "--stable-window-ms=100", "--deadline-ms=200"];
 const oneGone = shipped([closure[0]], fast);
 check(
   "the shipped command exits 1 on a package that never appears, and names it",
@@ -427,6 +500,35 @@ check(
   "the shipped command exits 3 (not 0) on a version nothing serves, so the caller skips instead of cutting a Release",
   nothingPublished.status === 3 && nothingPublished.stdout.includes("nothing published"),
   `${nothingPublished.stdout}${nothingPublished.stderr}`,
+);
+
+const recheckPresent = shipped([], ["--recheck"]);
+check(
+  "the re-check entry reports PUBLISHED for an already present version without publishing",
+  recheckPresent.status === 0 && recheckPresent.stdout.includes("fully published"),
+  `${recheckPresent.stdout}${recheckPresent.stderr}`,
+);
+const recheckAbsent = shipped(closure, ["--recheck"]);
+check(
+  "the re-check entry reports NONE for an absent version",
+  recheckAbsent.status === 3 && recheckAbsent.stdout.includes("nothing published"),
+  `${recheckAbsent.stdout}${recheckAbsent.stderr}`,
+);
+const recheckJson = shipped([], ["--recheck", "--json"]);
+check(
+  "the re-check entry still accepts JSON output for a valid version",
+  recheckJson.status === 0 && JSON.parse(recheckJson.stdout).state === "published",
+  `${recheckJson.stdout}${recheckJson.stderr}`,
+);
+const refusedMalformedVersion = spawnSync(
+  "node",
+  [join(ROOT, "scripts/verify-publish-closure.mjs"), "not-a-version", "--recheck"],
+  { encoding: "utf8", cwd: ROOT, env: childEnvFor([]) },
+);
+check(
+  "the re-check entry refuses a malformed version",
+  refusedMalformedVersion.status === 2 && refusedMalformedVersion.stderr.includes("invalid version"),
+  `${refusedMalformedVersion.stdout}${refusedMalformedVersion.stderr}`,
 );
 
 process.env.COTAL_PROBE_AMBIENT = "a-live-credential-would-look-like-this";
@@ -529,7 +631,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 56;
+const EXPECTED = 66;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");

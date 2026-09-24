@@ -104,6 +104,17 @@ If every exact version already exists, the preflight reports a no-op and exits s
 credential checks. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only
 package exits before `pnpm publish`.
 
+The post-publish closure gate checks every package in the fixed group. `PARTIAL` now means the
+registry supplied package-specific evidence: one 404 persisted for the whole deadline while every
+sibling was present, or one package repeatedly returned a non-404 failure past the error bound. A
+clean incomplete reading before that evidence is `UNSETTLED`.
+
+Re-check a version that already shipped without publishing, tagging, or changing git:
+
+```bash
+node scripts/verify-publish-closure.mjs 0.52.0 --recheck
+```
+
 The publish job refuses an npm access token in its environment and publishes through OIDC only.
 This prevents pnpm from falling back to a classic token when an OIDC exchange fails.
 

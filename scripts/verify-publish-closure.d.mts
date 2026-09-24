@@ -12,11 +12,13 @@ export function parseOptions(argv: any, base?: {
     pollIntervalMs: number;
     stableWindowMs: number;
     deadlineMs: number;
+    maxConsecutiveErrorPolls: number;
 }): {
     registryBase: string;
     pollIntervalMs: number;
     stableWindowMs: number;
     deadlineMs: number;
+    maxConsecutiveErrorPolls: number;
 };
 /**
  * The closure is DERIVED from the repo, never typed. An earlier hand-written list carried 20 entries
@@ -31,9 +33,14 @@ export function versionUrl(base: any, pkg: any, version: any): string;
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, errored, total, unchangedForMs, elapsedMs }: {
+export function classify({ missing, errored, failed, confirmedErrored, confirmedFailed, missingFromStart, uninterrupted, total, unchangedForMs, elapsedMs, }: {
     missing: any;
     errored?: any[];
+    failed?: any[];
+    confirmedErrored?: any[];
+    confirmedFailed?: any[];
+    missingFromStart?: boolean;
+    uninterrupted?: boolean;
     total: any;
     unchangedForMs: any;
     elapsedMs: any;
@@ -42,16 +49,17 @@ export function classify({ missing, errored, total, unchangedForMs, elapsedMs }:
     pollIntervalMs: number;
     stableWindowMs: number;
     deadlineMs: number;
+    maxConsecutiveErrorPolls: number;
 }): {
     state: string;
     missing: any;
     errored: any[];
-    why: string;
+    why?: undefined;
 } | {
     state: string;
     missing: any;
     errored: any[];
-    why?: undefined;
+    why: string;
 } | {
     state: string;
     missing?: undefined;
@@ -100,7 +108,7 @@ export function verifyClosure(version: string, { packages, opts, fetchImpl, slee
     state: string;
     missing: any;
     errored: any[];
-    why: string;
+    why?: undefined;
 } | {
     reads: {
         published: number;
@@ -112,7 +120,7 @@ export function verifyClosure(version: string, { packages, opts, fetchImpl, slee
     state: string;
     missing: any;
     errored: any[];
-    why?: undefined;
+    why: string;
 } | {
     reads: {
         published: number;
@@ -155,4 +163,13 @@ export namespace DEFAULTS {
     let pollIntervalMs: number;
     let stableWindowMs: number;
     let deadlineMs: number;
+    let maxConsecutiveErrorPolls: number;
+}
+export namespace RECHECK_DEFAULTS {
+    let pollIntervalMs_1: number;
+    export { pollIntervalMs_1 as pollIntervalMs };
+    let stableWindowMs_1: number;
+    export { stableWindowMs_1 as stableWindowMs };
+    let deadlineMs_1: number;
+    export { deadlineMs_1 as deadlineMs };
 }
