@@ -83,6 +83,11 @@ const PURE = 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n';
 const CHECKPOINT = 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n';
 const ASK_TWO = 'const asked = await spawn("asked");\nconst other = await spawn("other");\nconst v = await ask(asked, { name: "size", schema: { estimate: "number" }, deadline: "2m" });\nlog("resolved", v.estimate, other.agent);\n';
 const BROKEN = 'log("unclosed"\n';
+const COMPUTED_PLACEMENT = 'const id = "abcdefghijklmnopqrstuvwxyz"; await spawn("a", { placement: { endpoint: "manager", instanceId: id } });\n';
+const TRAILING_SPREAD_PLACEMENT = 'const extra = { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; await spawn("a", { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" }, ...extra });\n';
+const CONDITIONAL_OPTIONS_PLACEMENT = 'const which = true; await spawn("a", which ? { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } } : { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" } });\n';
+const VARIABLE_OPTIONS_PLACEMENT = 'let opts = { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" } }; opts = { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; await spawn("a", opts);\n';
+const FUNCTION_OPTIONS_PLACEMENT = 'function options() { return { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; } await spawn("a", options());\n';
 
 const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
@@ -168,6 +173,42 @@ try {
       wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+  }
+
+  console.log("A1a. hosted placement authority must be literal before credential minting");
+  {
+    const computed = await call("run-start", { source: COMPUTED_PLACEMENT, file: "computed-placement.cotal.js" });
+    const details = ((computed.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+    c("run-start refuses a computed placement before hosted credential minting",
+      computed.ok === false && computed.error?.code === "bad-request"
+        && details.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("manager must mint")), computed.error);
+    const ps = await call("run-ps");
+    c("the computed placement recorded no run",
+      ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+
+    const spread = await call("run-start", { source: TRAILING_SPREAD_PLACEMENT, file: "trailing-spread-placement.cotal.js" });
+    const spreadDetails = ((spread.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+    c("run-start refuses a trailing option spread that can replace literal placement before hosted credential minting",
+      spread.ok === false && spread.error?.code === "bad-request"
+        && spreadDetails.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("spreads its option bag")), spread.error);
+    const spreadPs = await call("run-ps");
+    c("the trailing option spread recorded no run",
+      spreadPs.ok === true && (spreadPs.data as RunListRowT[]).length === 0, spreadPs.data);
+
+    for (const [kind, source] of [
+      ["conditional", CONDITIONAL_OPTIONS_PLACEMENT],
+      ["variable", VARIABLE_OPTIONS_PLACEMENT],
+      ["function-returned", FUNCTION_OPTIONS_PLACEMENT],
+    ] as const) {
+      const nonLiteral = await call("run-start", { source, file: `${kind}-options-placement.cotal.js` });
+      const nonLiteralDetails = ((nonLiteral.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+      c(`run-start refuses a ${kind} option bag before hosted credential minting`,
+        nonLiteral.ok === false && nonLiteral.error?.code === "bad-request"
+          && nonLiteralDetails.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("cannot inspect")), nonLiteral.error);
+    }
+    const nonLiteralPs = await call("run-ps");
+    c("the non-literal option bags recorded no runs",
+      nonLiteralPs.ok === true && (nonLiteralPs.data as RunListRowT[]).length === 0, nonLiteralPs.data);
   }
 
   console.log("A1b. a legacy-rail caller holding the same capability is refused run-start by name");
@@ -626,7 +667,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 59;
+const EXPECTED_CELLS = 67;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
