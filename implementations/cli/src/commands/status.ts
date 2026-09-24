@@ -32,6 +32,7 @@ import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { listPersonas } from "../lib/personas.js";
 import { c, statusBadge } from "../ui.js";
+import { preparedCatalogDiagnostics } from "./sync.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` remains a broad, recovery-oriented diagnostic and keeps exit 0; this explicit mode is for
@@ -385,6 +386,15 @@ async function printRegistry(): Promise<void> {
   );
   if (current && !meshes.some((m) => m.space === current))
     console.log(c.dim(`  note: current mesh "${current}" is not recorded`));
+
+  const catalogs = preparedCatalogDiagnostics();
+  if (catalogs.length) {
+    section("Space Catalog Accounts");
+    for (const result of catalogs) {
+      const detail = result.state === "failed" ? `: ${result.error ?? "refresh failed"}` : "";
+      console.log(`  ${result.account.idpUrl}  ${result.state}${detail}`);
+    }
+  }
 }
 
 async function printTarget(selected: Selected, cmd: string, responder: DeliveryResponderState = "unknown"): Promise<void> {

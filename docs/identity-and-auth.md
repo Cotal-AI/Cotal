@@ -170,9 +170,11 @@ The catalog request carries the opaque cached session as its bearer and returns 
 The client checks every `registration` with the same `checkUserBundle` validator used by `cotal
 meshes add`. One invalid entry refuses the whole candidate snapshot. Conditional refresh uses the
 catalog's `ETag`; a transport error, non-success response, or invalid candidate leaves the prior
-snapshot intact and reports the failure. The registry is reconciled under the provider's catalog
-lock, and a snapshot whose reconciliation was interrupted is reconciled again by the next refresh
-before it counts as fresh or not modified.
+snapshot intact and reports the failure. Only a 401 response for the saved session recommends signing
+in again. Transport errors and server failures report that account's refresh error without discarding
+the session. The registry is reconciled under the provider's catalog lock, and a snapshot whose
+reconciliation was interrupted is reconciled again by the next refresh before it counts as fresh or
+not modified.
 
 The user-auth registration document may include one closed policy object:
 

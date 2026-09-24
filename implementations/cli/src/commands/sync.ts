@@ -2,12 +2,10 @@ import { join } from "node:path";
 import { mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   clearCurrent,
-  findCotalRoot,
   findMesh,
   getCurrent,
   homeCotalDir,
   loadMeshes,
-  meshesForRoot,
   recordMesh,
   removeMesh,
   userAuthStateDir,
@@ -238,25 +236,27 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
   return { results, diffs: results.map((result) => applied.get(result.account.ownerKey) ?? emptyDiff()) };
 }
 
-/** Shared once-per-command preparation. A named manual/local entry never depends on discovery and
- * makes no request here: a manual entry's policy refresh runs where a launch, join, or manager start
- * consumes it. Unknown names force one refresh even inside the freshness window. `status` keeps a
- * failed stale snapshot only as timestamped diagnostics; operational commands refuse before target
- * resolution. */
+let catalogDiagnostics: AuthSpaceCatalogResult[] = [];
+
+/** The account results prepared by the dispatcher immediately before `status` renders. */
+export function preparedCatalogDiagnostics(): readonly AuthSpaceCatalogResult[] {
+  return catalogDiagnostics;
+}
+
+/** Shared once-per-command preparation. Every target-resolving call gives each signed-in account a
+ * chance to refresh inside the provider's freshness window. An operational catalog target scopes
+ * that work to its own account and treats its failure as fatal. Other targets warn per account;
+ * diagnostics retain every result for `status` and never refuse the command. Unknown names force a
+ * refresh even inside the freshness window. */
 export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false, command?: "meshes" | "use"): Promise<void> {
+  catalogDiagnostics = [];
   const values = args.values as { space?: string };
   const requested = values.space ?? (command === "use" ? args.positionals[0] : undefined);
   const named = requested ? findMesh(requested) : undefined;
-  if (named && named.origin !== "catalog") return;
-  if (!requested && command !== "meshes") {
-    const current = getCurrent();
-    const selected = current ? findMesh(current) : undefined;
-    if (selected && selected.origin !== "catalog") return;
-    const local = meshesForRoot(findCotalRoot()).filter((m) => m.origin !== "catalog");
-    if (local.length > 0) return;
-    const registered = loadMeshes();
-    if (registered.length === 1 && registered[0].origin !== "catalog") return;
-  }
+  const current = !requested && command !== "meshes" ? getCurrent() : undefined;
+  const selected = current ? findMesh(current) : undefined;
+  const target = named ?? selected;
+  const targetCatalog = !diagnostics && target?.origin === "catalog" ? target : undefined;
   const force = Boolean(requested && !named);
   if (registry.all<AuthProvider>("auth-provider").length === 0) return;
   const provider = resolveAuthProvider();
@@ -264,11 +264,12 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   const diffs: CatalogDiff[] = [];
   const results = await provider.prepareSpaceCatalogs({
     dir: homeCotalDir(),
-    ...(named?.origin === "catalog" && named.userAuth?.idp.url ? { idpUrl: named.userAuth.idp.url } : {}),
+    ...(targetCatalog?.userAuth?.idp.url ? { idpUrl: targetCatalog.userAuth.idp.url } : {}),
     ...(force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
     apply: (result) => void diffs.push(consume(result, force)),
   });
+  catalogDiagnostics = results;
   if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined)) return;
   const vanished = diffs.map((d) => d.selectionInvalidated).filter((s): s is string => Boolean(s));
   if (vanished.length) {
@@ -276,10 +277,12 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
     if (diagnostics) console.error(c.yellow(message));
     else throw new Error(message);
   }
-  if (diagnostics) return;
   const failures = results.filter((r) => r.state === "failed");
-  if (failures.length)
+  if (diagnostics) return;
+  if (targetCatalog && failures.length)
     throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "));
+  for (const failure of failures)
+    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}`));
 }
 
 export async function sync(args: ParsedArgs): Promise<void> {
