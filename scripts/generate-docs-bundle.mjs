@@ -4,9 +4,9 @@
 // /spec/cotal-lang.md + /spec/cotal.schema.json, stamped with the release version (bin/package.json). Run:
 // `pnpm gen:docsbundle`.
 //
-// Emits extensions/connector-core/src/docs-bundle.generated.ts as a plain typed constant
-// (a JSON.stringify'd object literal — readable and bundler-proof: tsc copies it into dist
-// and esbuild inlines it into the OpenCode plugin bundle, where loose files would be
+// Emits extensions/connector-core/src/docs-bundle.generated.ts by default, as a plain typed
+// constant (a JSON.stringify'd object literal — readable and bundler-proof: tsc copies it into
+// dist and esbuild inlines it into the OpenCode plugin bundle, where loose files would be
 // dropped). FAILS LOUD on an empty or missing source so a release can never ship hollow docs.
 //
 // THE OUTPUT IS A BUILD ARTIFACT, NOT A TRACKED FILE. `@cotal-ai/connector-core` runs this
