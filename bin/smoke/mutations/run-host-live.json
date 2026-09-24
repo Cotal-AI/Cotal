@@ -28,11 +28,20 @@
     {
       "name": "a trailing option spread can replace placement after hosted credential minting",
       "file": "implementations/runtime/src/run-host.ts",
-      "find": "            if (optionsSpread !== undefined)",
-      "replace": "            if (optionsSpread !== undefined && properties?.length === 0)",
+      "find": "            else if (optionsSpread !== undefined)",
+      "replace": "            else if (optionsSpread !== undefined && properties?.length === 0)",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "run-start refuses a trailing option spread that can replace literal placement before hosted credential minting",
       "cell": "run-start refuses a trailing option spread that can replace literal placement before hosted credential minting"
+    },
+    {
+      "name": "a non-literal option bag can hide placement from hosted credential minting",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "            if (options !== undefined && options.type !== \"ObjectExpression\")",
+      "replace": "            if (options !== undefined && options.type !== \"ObjectExpression\" && options.type !== \"ConditionalExpression\")",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "run-start refuses a conditional option bag before hosted credential minting",
+      "cell": "run-start refuses a conditional option bag before hosted credential minting"
     },
     {
       "name": "run-start skips validation",
