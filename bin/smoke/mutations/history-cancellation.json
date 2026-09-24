@@ -90,6 +90,17 @@
       "expectRed": "multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
       "cell": "multiChannelHistory merges BATCHES by arrival, not by the highest `ts`",
       "note": "Repointed after MEASUREMENT. It first named web cell 8.4, which compares a one-create read against a forced-batch read. That cell SURVIVED this mutation, and the reason is structural rather than incidental: the mutation reorders BOTH arms identically, so an equality between two arms of the same implementation cannot see the key it sorts on. The tie-based reasoning offered for it was wrong. The core suite pins the key against an ORACLE instead: a corpus published frame by frame so that `ts` and arrival disagree, where selecting by `ts` returns the other message. 8.4 is kept, because batch-invariance is worth asserting, but it is not this mutation's detector. RE-AIMED after a WRONG-RED: the first name pointed at the single-batch check, which stays GREEN under this mutation because streamHistory applies the limit inside the one batch, leaving one row for the merge to sort. The multi-batch check is the earliest red and is now asserted first, since this suite stops at the first failure.\n\nNo `completionMarker`: this suite is fail-fast (`check` is `assert.ok`) and its only summary line is a success banner after the last check, so a genuine kill can never print it. Measured: with the marker declared, a red on the named cell graded INCONCLUSIVE at 23 of 26 marks, which is every check before the named one and none after. The mutation above it against this same suite declares none either."
+    },
+    {
+      "name": "the chat source answers empty while the deadline stands, so the feed serves a whole-marked page with no chat in it",
+      "file": "implementations/web/src/web.ts",
+      "command": "pnpm smoke:web-activity-read-cost",
+      "completionMarker": "activity-read-cost smoke:",
+      "find": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))\n            .map(({ channel, msg }) => ({ mode: \"chat\" as const, channel, msg })),",
+      "replace": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))\n            .slice(0, 0)\n            .map(({ channel, msg }) => ({ mode: \"chat\" as const, channel, msg })),",
+      "expectRed": "8.2 the activity feed carries chat entries at this channel count, or names chat missing on a page the deadline cut",
+      "cell": "8.2 the activity feed carries chat entries at this channel count, or names chat missing on a page the deadline cut",
+      "note": "Added with the #1463 deadline-relative rewrite of 8.2. The cell accepts two honest endings: chat entries on a page that answered, or a partial page naming chat missing. Both halves must be able to fail. The batching mutant above exercises the second half (the read rejects and chat is named missing; 8.0 reddens first there). This mutant exercises the first: the read ANSWERS, the slice discards every row, and the page comes back `partial: false` with zero chat entries — the useless-whole page the rewrite exists to refuse. 8.3 stays green under it, because nothing is named missing; the page lies by being whole, which is exactly the shape only 8.2 sees. Deterministic, no timing in it."
     }
   ]
 }
