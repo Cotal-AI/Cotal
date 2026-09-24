@@ -429,12 +429,30 @@
       "cell": "a binding in a block the launch is not inside cannot witness it (decoy first)"
     },
     {
+      "name": "the same block-transparency removal, graded on the decoy-last cell alone",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, true)); return; }",
+      "replace": "      if (node !== scope && blockLike(node)) { ts.forEachChild(node, (child) => scan(child, false)); return; }",
+      "expectRed": "a binding in a block the launch is not inside cannot witness it (decoy last)",
+      "cell": "a binding in a block the launch is not inside cannot witness it (decoy last)",
+      "note": "The decoy-last fixture used to pair the decoy with a real declaration textually BEFORE it, which the scan finds first regardless of the block guard, so this cell never reddened for any mutant. The fixture now uses a declaration-free distractor block ahead of the decoy, so the decoy is the only candidate in either source order and this same removal reddens both cells independently."
+    },
+    {
       "name": "a declaration after the use is still resolved",
       "file": "scripts/mutation-coverage.mjs",
       "find": "          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);",
       "replace": "          record(node.initializer === undefined || usePos === undefined ? OPAQUE : node.initializer);",
       "expectRed": "a use before its declaration cannot witness an entrypoint launch",
       "cell": "a use before its declaration cannot witness an entrypoint launch"
+    },
+    {
+      "name": "the same guard is what terminates a cyclic binding, graded on that cell alone",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "          record(node.initializer === undefined || usePos === undefined || node.end > usePos ? OPAQUE : node.initializer);",
+      "replace": "          record(node.initializer === undefined || usePos === undefined ? OPAQUE : node.initializer);",
+      "expectRed": "a cyclic binding is refused rather than crashing the resolver",
+      "cell": "a cyclic binding is refused rather than crashing the resolver",
+      "note": "Before #1909 this same removal reddened `use-before-decl` first, on the same fixture-file position basis, so whether `cyclic-binding` would redden on its own was masked. Since #1909 every cell runs and is graded independently, so this row proves this guard's removal reddens the cyclic-binding cell by itself, not by riding the earlier cell's failure."
     },
     {
       "name": "a parameter is not a binding",
@@ -451,6 +469,14 @@
       "replace": "  const executionPos = (use) => use.getStart(sf);",
       "expectRed": "a launcher called after the declaration witnesses the launch it makes",
       "cell": "a launcher called after the declaration witnesses the launch it makes"
+    },
+    {
+      "name": "an enclosing function whose call cannot be located falls back to the identifier's own position",
+      "file": "scripts/mutation-coverage.mjs",
+      "find": "      const call = earliestCall(name, scope);\n      if (call === undefined) return undefined;\n      pos = call;",
+      "replace": "      const call = earliestCall(name, scope);\n      pos = call ?? pos;",
+      "expectRed": "a launcher reached with no locatable call site cannot witness an entrypoint launch",
+      "cell": "a launcher reached with no locatable call site cannot witness an entrypoint launch"
     },
     {
       "name": "a destructuring pattern is not a binding",
