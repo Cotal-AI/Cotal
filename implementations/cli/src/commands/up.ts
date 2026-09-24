@@ -41,7 +41,6 @@ import {
   type SpaceAuth,
   type ChannelRegistryFile,
   type ParsedArgs,
-  parseCommandArgs,
   type FlagSpec,
   type CompletionResult,
 } from "@cotal-ai/core";
