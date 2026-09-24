@@ -19,7 +19,7 @@
     {
       "name": "an ask payload is surfaced as a bare turn",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        ask = renderAskRequest(p, this.config.name);\n",
+      "find": "        ask = renderAskRequest(p);\n",
       "replace": "",
       "expectRed": "the ask is rendered after the context: the step, every field with its kind, and the attempt count",
       "cell": "the ask is rendered after the context: the step, every field with its kind, and the attempt count",
@@ -89,7 +89,7 @@
     {
       "name": "an escalated checkpoint is surfaced as a bare turn again",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "  const escalation = renderEscalation(p, seatName);\n  if (escalation !== \"\") return escalation;\n",
+      "find": "  const escalation = renderEscalation(p);\n  if (escalation !== \"\") return escalation;\n",
       "replace": "",
       "expectRed": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
       "cell": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
