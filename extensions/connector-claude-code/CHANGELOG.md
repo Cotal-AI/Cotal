@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.52.1
+
+### Patch Changes
+
+- d28860f: Preserve working or waiting presence when a Claude session restarts during an open turn, including compaction. Reset to idle only when no turn is open.
+
 ## 0.52.0
 
 ## 0.51.0
