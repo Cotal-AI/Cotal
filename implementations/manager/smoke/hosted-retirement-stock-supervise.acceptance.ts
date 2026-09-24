@@ -134,9 +134,12 @@ import {
   CotalEndpoint,
   BROKER_FLOOR,
   createSpaceAuth,
+  contractRefToHex,
+  contractStoreContext,
   endpointRegistrationBarrier,
   epAuthBucket,
   epgateKey,
+  fetchContractArtifact,
   meetsBrokerFloor,
   mintConnectionEvictorCreds,
   mintCreds,
@@ -146,6 +149,8 @@ import {
   recordSpecKey,
   RECORD_KINDS,
   recordsBucket,
+  registerServiceInstance,
+  remoteManagerActors,
   eprepairKey,
   provisionAgentDurables,
   serverConfig,
@@ -180,16 +185,17 @@ import {
   loadAuthServiceInfo,
   loadCalloutAuth,
 } from "@cotal-ai/auth";
+import { makeDeliveryAdminPrincipalOracle } from "../../auth/src/plane-claim.js";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { pickFreePort } from "../../auth/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { loadOrCreateRemoteManagerIdentity, remoteManagerMaintenanceRequest } from "../src/remote-authority.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts } from "../src/manager-service-contract.js";
 
 if (process.platform !== "linux") throw new Error("stock hosted-retirement supervise acceptance requires Linux");
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
 const cli = join(repo, "bin", "cotal.ts");
-const tsx = join(repo, "node_modules", ".bin", "tsx");
 const self = process.argv[1]!;
 const home = mkdtempSync(join(tmpdir(), "cotal-stock-supervise-home-"));
 const hostRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}stock-supervise-host-`));
@@ -215,6 +221,7 @@ const redact = (value: string) => value
   .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]");
 const append = (current: string, chunk: Buffer | string): string => redact(`${current}${chunk.toString()}`).slice(-cap);
 const closed = new WeakSet<ChildProcess>();
+const exited = new WeakSet<ChildProcess>();
 type OwnedProcess = { label: string; pid: number; startTime: string; cgroupSha256: string };
 const owned = new Map<ChildProcess, OwnedProcess>();
 const identityFile = join(home, "owned-processes.json");
@@ -239,6 +246,7 @@ const track = (label: string, child: ChildProcess): ChildProcess => {
   if (!identity) throw new Error(`owned ${label} process identity could not be read`);
   owned.set(child, { label, ...identity });
   persistOwned();
+  child.once("exit", () => exited.add(child));
   child.once("close", () => closed.add(child));
   return child;
 };
@@ -272,7 +280,12 @@ const killUnclean = async (child: ChildProcess): Promise<boolean> => {
   if (!current) return awaitClose(child, 1_000);
   if (current.startTime !== expected.startTime || current.cgroupSha256 !== expected.cgroupSha256) return false;
   child.kill("SIGKILL");
-  return awaitClose(child, 5_000);
+  if (exited.has(child) || child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolveExit) => {
+    const done = () => { clearTimeout(timer); resolveExit(true); };
+    const timer = setTimeout(() => { child.off("exit", done); resolveExit(false); }, 5_000);
+    child.once("exit", done);
+  });
 };
 
 const space = `stock-retirement-${Math.random().toString(36).slice(2, 10)}`;
@@ -562,7 +575,7 @@ registry.register({
   supervisorEnv.NODE_EXTRA_CA_CERTS = process.env.COTAL_STOCK_HTTPS_CA!;
   supervisorEnv.COTAL_STOCK_FIXTURE = self;
   supervisorEnv.COTAL_STOCK_EXECARGV = JSON.stringify(process.execArgv);
-  supervisor = track("supervisor", spawn(tsx, [cli, "supervise", "--space", space, "--server", server, "--runtime", "pty", "--resume-attempt", "stock_restore"], {
+  supervisor = track("supervisor", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty", "--resume-attempt", "stock_restore"], {
     cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
   }));
   supervisor.stdout?.on("data", (chunk) => { supervisorOutput = append(supervisorOutput, chunk); });
@@ -724,7 +737,7 @@ registry.register({
   }));
 
   let restartOutput = "";
-  supervisor = track("same-instance-restart", spawn(tsx, [cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+  supervisor = track("same-instance-restart", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
     cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
   }));
   supervisor.stdout?.on("data", (chunk) => { restartOutput = append(restartOutput, chunk); });
@@ -827,12 +840,32 @@ registry.register({
   });
   try {
     const freezeKv = await new Kvm(freezeNc).open(epAuthBucket(space));
+    const freezeRecords = await new Kvm(freezeNc).open(recordsBucket(space));
     const barrier = endpointRegistrationBarrier(freezeKv, space, {
       endpoint: "manager", instanceId: firstState.instanceId, opId: firstState.instanceId,
     });
-    const observed = await barrier.observe();
-    if (!observed || observed.state !== "open" || await barrier.freeze(observed.revision) === null)
-      throw new Error("fixture could not freeze the abandoned manager registration");
+    const artifacts = managerClusterArtifacts();
+    const store = await contractStoreContext(freezeNc, space);
+    let freezeRefusal = "";
+    try {
+      await registerServiceInstance(freezeRecords, {
+        space,
+        spec: { endpoint: MANAGER_ENDPOINT, owner, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 } },
+        instanceId: firstState.instanceId,
+        registrant: { owner },
+        authority: { authorize: (endpoint, candidateOwner) => ({ authorized: endpoint === MANAGER_ENDPOINT && candidateOwner === owner, revision: 0 }) },
+        barrier,
+        readClusterArtifact: async (digest) => {
+          const bytes = await fetchContractArtifact(store, contractRefToHex(digest));
+          return bytes ? JSON.parse(new TextDecoder().decode(bytes)) : undefined;
+        },
+      });
+    } catch (error) {
+      freezeRefusal = (error as Error).message;
+    }
+    const frozen = await barrier.observe();
+    if (!freezeRefusal.includes("re-registration could not revoke + verify-evict") || frozen?.state !== "frozen")
+      throw new Error(`fixture could not leave the live manager registration frozen at Phase 2: ${freezeRefusal || "registration unexpectedly completed"}`);
   } finally {
     await freezeNc.drain().catch(() => freezeNc.close());
   }
@@ -862,13 +895,20 @@ registry.register({
   rmSync(canonicalLocalProcessPath(MANAGER_PIDFILE, processContext), { force: true });
   rmSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, processContext), { force: true });
   const abandonedRegistration = await observeRegistration();
+  const abandonedPrincipal = `${owner}.${remoteManagerActors(firstState.instanceId).serve}`;
+  const principalOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount: auth.account, log: () => {} });
+  let abandonedLiveness = await principalOracle(abandonedPrincipal);
+  for (let tries = 0; tries < 50 && (abandonedLiveness.state !== "gone" || abandonedLiveness.sweepComplete !== true); tries++) {
+    await wait(200);
+    abandonedLiveness = await principalOracle(abandonedPrincipal);
+  }
   check("unclean same-instance stop leaves the registration for guarded foreign recovery",
-    uncleanStopped && abandonedRegistration?.operation === "PUT",
-    { uncleanStopped, registrationOperation: abandonedRegistration?.operation ?? null });
+    uncleanStopped && abandonedRegistration?.operation === "PUT" && abandonedLiveness.state === "gone" && abandonedLiveness.sweepComplete === true,
+    { uncleanStopped, registrationOperation: abandonedRegistration?.operation ?? null, liveness: abandonedLiveness });
 
   let foreignOutput = "";
   const beforeForeignMaintenance = maintenanceRequests;
-  supervisor = track("foreign-instance", spawn(tsx, [cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+  supervisor = track("foreign-instance", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
     cwd: secondRoot, env: foreignEnv, stdio: ["ignore", "pipe", "pipe"],
   }));
   supervisor.stdout?.on("data", (chunk) => { foreignOutput = append(foreignOutput, chunk); });
