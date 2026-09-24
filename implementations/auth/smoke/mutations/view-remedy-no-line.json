@@ -39,6 +39,14 @@
       "expectRed": "the no-ACL view refusal promises no line to run, and prints no grant command at all",
       "cell": "the no-ACL view refusal promises no line to run, and prints no grant command at all",
       "note": "The positive half of the cell. Without it the assertion would pass on any refusal that merely lacks the two forbidden needles, including one that says nothing about why it printed no command."
+    },
+    {
+      "name": "manager-caller permissions are minted without the fresh gate authorizer",
+      "file": "implementations/auth/src/permissions.ts",
+      "find": "        return authorizeManagerCaller(t.owner, instanceId).then(() => permissionsFor(\n          \"manager-caller\",",
+      "replace": "        return Promise.resolve(permissionsFor(\n          \"manager-caller\",",
+      "expectRed": "manager-caller refuses when the gate is not open at the permission mint",
+      "note": "The exchange-time choice is not enough because a gate may freeze or change owner before the broker JWT is minted."
     }
   ]
 }

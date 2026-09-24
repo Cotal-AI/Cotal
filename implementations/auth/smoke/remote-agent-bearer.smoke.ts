@@ -31,9 +31,11 @@ if (SUBCOMMAND === "auth-service" || SUBCOMMAND === "agent-bearer") {
 }
 
 const { CotalEndpoint, chatSubject, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid,
-  newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts } = await import("@cotal-ai/core");
+  newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts, epAuthBucket, recordsBucket,
+  recordSpecKey, recordStatusKey, RECORD_KINDS } = await import("@cotal-ai/core");
+const { Kvm } = await import("@nats-io/kv");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
-const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, grantActor, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
 const { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } = await import("jose");
 const { pickFreePort } = await import("./_free-port.js");
@@ -176,6 +178,20 @@ try {
   teardownOnSignal(broker);
   for (let i = 0; i < 50 && !(await isReachable(SERVER)); i++) await wait(100);
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const managerInstanceId = mintLifecycleUid();
+  const managerServe = newIdentity();
+  saveManagerInstanceIdentity(serverRoot, SPACE, { instanceId: managerInstanceId, serveIdentity: managerServe });
+  {
+    const execId = newIdentity();
+    const execNc = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintCreds(auth, execId, "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: managerInstanceId } }), tls: false }) });
+    const kvm = new Kvm(execNc);
+    const records = await kvm.open(recordsBucket(SPACE));
+    const authKv = await kvm.open(epAuthBucket(SPACE));
+    const spec = await records.put(recordSpecKey(RECORD_KINDS.svc, ["manager", managerInstanceId]), new TextEncoder().encode(JSON.stringify({ endpoint: "manager", owner: "local", clusterDigests: [`sha256:${"a".repeat(64)}`], protocol: { v: 1 } })));
+    await records.put(recordStatusKey(RECORD_KINDS.svc, ["manager", managerInstanceId]), new TextEncoder().encode(JSON.stringify({ epoch: 1, state: "ready", observedSpecRevision: spec })));
+    await authKv.put(`epgate.manager.${managerInstanceId}`, new TextEncoder().encode(JSON.stringify({ state: "open", generation: 1, processEpoch: 1, registrationRevision: spec, nameAuthorityRevision: 0, principal: `local.${managerServe.id}` })));
+    await execNc.drain();
+  }
   grantActor(serverDir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], lifecycleUid });
   const secret = newActorToken();
   grantManagedActor(serverDir, { owner: OWNER, actor: ACTOR, scope: ["role:worker"], allowSubscribe: ["general"],
@@ -311,6 +327,26 @@ try {
   });
   cell("the public exchange receives exact agent proof with NO capability header", () => {
     const req = exchangeRequests[0]; assert.equal(req.authorization, undefined); assert.deepEqual(req.body, { owner: OWNER, actor: ACTOR, actorToken: secret.actorToken });
+  });
+  cell("--manager-call prints one raw bearer line, binds the selected instance, and leaves health untouched", async () => {
+    writeFileSync(healthPath, "seat-health");
+    const result = await execBearer([...bearerArgv(), "--manager-call", "--manager-instance", managerInstanceId]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim().split("\n").length, 1);
+    const payload = await verifyFrom(exchangeBase, result.stdout.trim());
+    const act = payload.act as { view?: string; managerInstanceId?: string };
+    assert.equal(act.view, "manager-caller");
+    assert.equal(act.managerInstanceId, managerInstanceId);
+    assert.equal(readFileSync(healthPath, "utf8"), "seat-health");
+    const req = exchangeRequests.at(-1)!;
+    assert.deepEqual(req.body, { owner: OWNER, actor: ACTOR, actorToken: secret.actorToken, view: "manager-caller", managerInstanceId });
+  });
+  cell("--manager-instance refuses an empty selector instead of silently defaulting", async () => {
+    const before = exchangeRequests.length;
+    const result = await execBearer([...bearerArgv(), "--manager-call", "--manager-instance", ""]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /manager instance/);
+    assert.equal(exchangeRequests.length, before);
   });
   cell("the remote bearer verifies against the advertised public JWKS with exact principal and lifecycle", async () => {
     const payload = await verifyFrom(exchangeBase, firstBearer); assert.equal(payload.sub, OWNER);

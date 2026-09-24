@@ -31,6 +31,9 @@ export interface EpCapability {
   command: string;
   routes?: ("one" | "all")[];
   instanceId?: string;
+  /** Emit only the exact instance route. Requires `instanceId`; used by a manager-bound caller
+   *  whose credential must never retain the class or scatter rails. */
+  instanceOnly?: boolean;
   target?: EpTarget;
   /** Also grant the matching journal-submission append row (`epj`, §13.9 matrix). */
   journal?: boolean;
@@ -86,7 +89,9 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
   const cmd = assertCommandToken(cap.command);
   const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
   const tail = `${mid}.${callerBlock(caller)}.*`;
-  const rows = (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
+  if (cap.instanceOnly && cap.instanceId === undefined)
+    throw new Error(`an instance-only capability on "${cap.endpoint}.${cap.command}" requires instanceId`);
+  const rows = cap.instanceOnly ? [] : (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
   if (cap.instanceId)
     rows.push(`${spacePrefix(space)}.${plane(caller)}.inst.${e}.${assertLifecycleToken(cap.instanceId, "instanceId")}.${cmd}${tail}`);
   return rows;
@@ -460,6 +465,12 @@ export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin
       ...tierCaps.map((cap) => ({ ...cap, instanceId: id })),
     ];
   });
+}
+
+/** Pin any capability set to one exact manager instance and remove every class/scatter route. */
+export function instanceOnlyManagerCapabilities(caps: EpCapability[], instanceId: string): EpCapability[] {
+  const id = assertLifecycleToken(instanceId, "instanceId");
+  return caps.map((cap) => ({ ...cap, endpoint: BASELINE_LIFECYCLE_ENDPOINT, routes: [], instanceId: id, instanceOnly: true }));
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

@@ -626,7 +626,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
@@ -764,13 +764,18 @@ CAS re-exports the SAME id on the next exchange (that id IS the incarnation's li
 is nothing unobserved to revoke); the only pre-release crash window is a durable active-but-
 unstamped row, which the head-equality check denies. Rotating an incarnation's root credential is
 exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry a server-authored
-**view** claim, minted only by the deployment's signed-in human exchange (never accepted from the
-client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
-every connect: the callout then mints the connection as the named elevated profile (Appendix B:
-`admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
-On a public exchange face, only `channel-writer` and `channel-purger` MAY be issued, still
-re-authorized against ledger scope `admin`; `admin`, `purger`, `deployer`, and `manager-service`
-MUST remain loopback-only. A managed-agent secret exchange MUST still refuse every view.
+**view** claim, selected only by the exchange and re-authorized against the live grant ledger at
+every connect. The callout then mints the connection as that closed profile instead of `agent`.
+Elevated views such as `admin`, `purger`, `channel-writer`, and `deployer` remain human-only. The
+narrowing `manager-caller` view MAY be minted by either the human or managed-agent exchange and is
+served on both exchange faces. It adds no capability. Its required `act.managerInstanceId` binds
+every manager request to one exact live registered instance and is valid with no other view. The
+exchange selects from read-only observations of manager issuance gates and service registrations.
+It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
+rather than falling through to a co-located manager. An explicit selector must name a live candidate.
+On a public exchange face, `channel-writer`, `channel-purger`, and `manager-caller` MAY be issued.
+`admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A managed-agent
+secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
 

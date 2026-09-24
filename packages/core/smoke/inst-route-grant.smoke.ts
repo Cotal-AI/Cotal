@@ -64,6 +64,16 @@ const rowsFor = (profile: Profile, actor: string, opts: Record<string, unknown> 
 const instRows = (rows: string[]) => rows.filter((r) => r.includes(`.ep.inst.`));
 const ordinaryRows = (rows: string[]) => rows.filter((r) => /\.ep\.(one|all)\./.test(r));
 
+const managerCallerRows = rowsFor("manager-caller", "bound", {
+  lifecycleUid: "b".repeat(26),
+  capabilities: ["spawn"],
+  managerInstanceId: "m".repeat(26),
+});
+check("manager-caller emits exact instance rows", instRows(managerCallerRows).length > 0);
+check("manager-caller emits no class or scatter rows", ordinaryRows(managerCallerRows).length === 0, managerCallerRows);
+check("manager-caller never wildcards the instance token",
+  !managerCallerRows.some((r) => /\.ep\.inst\.manager\.[*>]\./.test(r)), managerCallerRows);
+
 // The profiles the `--on` route matters for, and the ones it must never reach. Names come from the
 // shipped `Profile` union, so a renamed profile fails to compile rather than silently dropping an arm.
 // Each entry DECLARES whether it is an ep caller, and CELL 1 checks the declaration against the

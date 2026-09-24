@@ -36,20 +36,20 @@ export const MAX_TOKEN_TTL_SEC = 900;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Human views the public exchange face will mint (still ledger-gated). Every other
  *  {@link USER_TOKEN_VIEWS} value stays loopback-only; a managed-agent secret exchange
  *  never mints a view on either face. */
-export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger"] as const satisfies readonly UserTokenView[];
+export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller"] as const satisfies readonly UserTokenView[];
 
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
  *  the callout re-asserts, defense in depth). `admin` = operator authority (god-view read +
  *  destructive space writes); `deployer` is spawn-grade — deploying YOUR OWN team's manifest rides
  *  the same owner-domain model as own-agent stop/attach (the manager still enforces owner equality
  *  at launch, and the view's control grant is the PRIVILEGED tier, never the admin bypass). */
-export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "supervise"> = {
+export const VIEW_REQUIRED_SCOPE: Partial<Record<UserTokenView, "admin" | "spawn" | "supervise">> = {
   admin: "admin",
   purger: "admin",
   "channel-purger": "admin",
@@ -79,6 +79,8 @@ export interface UserTokenActor {
   credentialId?: string;
   /** Exchange-authorized elevated view ({@link USER_TOKEN_VIEWS}); absent = agent profile. */
   view?: UserTokenView;
+  /** The one manager instance a manager-caller bearer may address. */
+  managerInstanceId?: string;
 }
 
 /** A fully validated user token, reduced to what the callout needs. */
@@ -193,6 +195,15 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     throw new Error(
       `user token: act.view "${String(act.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - unknown views fail closed`,
     );
+  if (act.managerInstanceId !== undefined) {
+    if (typeof act.managerInstanceId !== "string")
+      throw new Error("user token: act.managerInstanceId must be a string token when present");
+    assertLifecycleToken(act.managerInstanceId, "user token act.managerInstanceId");
+  }
+  if (act.view === "manager-caller" && act.managerInstanceId === undefined)
+    throw new Error('user token: view "manager-caller" requires act.managerInstanceId');
+  if (act.managerInstanceId !== undefined && act.view !== "manager-caller")
+    throw new Error('user token: act.managerInstanceId is valid only with view "manager-caller"');
   // Lifecycle claim (SPEC 13.1): grammar-asserted when present. Presence/absence POLICY lives at the
   // connect boundary (ledgerAuthorizeConnect requires it on EVERY bearer, views included) and the
   // mint boundary (the idp bridge and the agent exchange stamp it from the grant row); the validator
@@ -218,7 +229,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId },
     credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
     exp: payload.exp,

@@ -120,6 +120,8 @@ export interface RawScanEntry {
 /** The sealed auth-ledger scanner: CLOSED, validated ops only — no raw prefix, no NATS/JS handle,
  *  no credential. Each op forces its exact filter from a validated id. */
 export interface AuthLedgerScanner {
+  /** LastPerSubject over every `epgate.manager.<instanceId>` row for manager-caller selection. */
+  scanManagerGates(): Promise<RawScanEntry[]>;
   /** LastPerSubject over `cred.<lifecycleUid>.>` — the current last of every credential row in the
    *  agent family (markers included). */
   scanCredentialFamily(lifecycleUid: string): Promise<RawScanEntry[]>;
@@ -390,6 +392,7 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // freeze guarantees its ops are still the module's when an install seam asserts the brand — a
   // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
   const scanner: AuthLedgerScanner = Object.freeze({
+    scanManagerGates: () => serialized(() => guarded(() => scanOnce("epgate.manager."))),
     scanCredentialFamily: (lifecycleUid: string) =>
       serialized(() => guarded(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`))),
     scanEndpointCredentialFamily: (endpoint: string, instanceId: string) =>

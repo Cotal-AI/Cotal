@@ -73,8 +73,8 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import {
-  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
-  operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
+  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
+  operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
@@ -97,6 +97,7 @@ import {
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
 export type Profile =
   | "agent"
+  | "manager-caller"
   | "observer"
   | "admin"
   | "supervisor"
@@ -213,6 +214,7 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
   agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
@@ -540,6 +542,8 @@ export interface MintOpts {
    *  caller's own reply-rail read row. Requires {@link MintOpts.lifecycleUid} — the rows pin
    *  the full caller triple. Default-deny when absent. */
   endpointCapabilities?: EpCapability[];
+  /** `manager-caller` profile only: the one manager instance every request row pins. */
+  managerInstanceId?: string;
   /** The caller's lifecycle UID (SPEC §13.1), minted by the managing authority BEFORE the
    *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
    *  forge-locks it as the third caller token. */
@@ -1029,6 +1033,7 @@ export function permissionsFor(
   if (opts.issued && !ISSUABLE_PROFILES.has(profile))
     throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
+  if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority (closure (ii))
@@ -1471,6 +1476,35 @@ export function permissionsFor(
   // Manager control replies ride the v0.4 ep reply rail (in `epSub`, keyed on the caller triple) —
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail (1d).
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...subChat, ...epSub] } };
+}
+
+/** One seat's manager control view. It carries no agent messaging or delivery surface, and every
+ * manager request, including describe, is pinned to one exact registered instance. */
+function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
+  if (!pr.lifecycleUid)
+    throw new Error("permissionsFor(manager-caller): a lifecycleUid is required");
+  const instanceId = opts.managerInstanceId === undefined
+    ? (() => { throw new Error("permissionsFor(manager-caller): managerInstanceId is required"); })()
+    : assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
+  const caps = opts.capabilities ?? [];
+  const ordinary = [
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe" },
+    ...baselineCallerCapabilities().filter((cap) => cap.endpoint === BASELINE_LIFECYCLE_ENDPOINT),
+    ...(caps.includes("spawn") ? spawnCallerCapabilities(pr.owner) : []),
+    ...(caps.includes("run") ? runCallerCapabilities(pr.owner) : []),
+    ...(caps.includes("admin") ? operatorInstrumentCapabilities("admin", pr.owner) : []),
+  ];
+  const caller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) }, opts);
+  const rows = epCallerGrantRows(space, instanceOnlyManagerCapabilities(ordinary, instanceId), caller);
+  return {
+    pub: {
+      allow: [
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+        ...rows.pub,
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...rows.sub] },
+  };
 }
 
 /** The long-lived SUPERVISOR permission set (closure (ii), residual 2) — the always-on manager daemon
