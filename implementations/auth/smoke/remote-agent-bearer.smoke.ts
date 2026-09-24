@@ -244,6 +244,53 @@ try {
       /auth service not ready after 1000ms .*the auth service has not written its discovery file yet/,
     );
   });
+  cell("the wait bound to a live pid that never binds refuses at the BOUND, not the base clock, naming the pid", async () => {
+    // #1931's boundary: a daemon that is provably ALIVE but never finishes binding (a wedged
+    // authority-plane open) must not be followed forever, and must not be misreported at the base
+    // clock while it lives. The live pid is THIS smoke's own helper process; the state dir is one
+    // no daemon writes, so readiness can only end by bound or by the pid's exit.
+    //
+    // The elapsed clock is load-bearing, not decoration: the refusal message names maxWaitMs
+    // verbatim, so a mutant that drops the pid-bound deadline (deadline = base clock) still prints
+    // "after 1600ms" — only the measured wait separates 1600ms (kept the bound) from ~800ms (gave
+    // up at the base clock while the pid lived, the exact #1931 misreport).
+    const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "bound-"));
+    const held = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30);"], { stdio: "ignore" });
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => prepared.service.ready({ dir: dirNoServiceWritesTo, timeoutMs: 800, maxWaitMs: 1_600, pid: held.pid }),
+        /auth service not ready after 1600ms - the process \(pid \d+\) is alive and still starting/,
+      );
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed >= 1_400, `refused after ${elapsed}ms; the wait must run to the 1600ms bound, not the 800ms base clock`);
+    } finally {
+      held.kill("SIGKILL");
+    }
+  });
+  cell("the wait bound to a pid that EXITS ends at once with the exited reason", async () => {
+    // The other boundary: a dead daemon can never become ready, so the wait ends the moment the
+    // pid is gone — well before the base clock — and the refusal says the process exited.
+    const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "exited-"));
+    const shortLived = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 300);"], { stdio: "ignore" });
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => prepared.service.ready({ dir: dirNoServiceWritesTo, timeoutMs: 60_000, maxWaitMs: 60_000, pid: shortLived.pid }),
+        /auth service not ready - the process \(pid \d+\) exited before becoming ready/,
+      );
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 15_000, `the exited-pid wait took ${elapsed}ms; it must end at the exit, not at a clock`);
+    } finally {
+      shortLived.kill("SIGKILL");
+    }
+  });
+  cell("a live pid that BECOMES ready inside the bound resolves (slow-but-alive is accepted)", async () => {
+    // The acceptance the bound must not over-refuse: the real daemon's own discovery file — the
+    // service IS ready — resolves immediately even with the pid of the (live) daemon bound in.
+    const out = await prepared.service.ready({ dir: serverDir, timeoutMs: 800, maxWaitMs: 2_000, pid: authService!.pid });
+    assert.equal(typeof out.url, "string");
+  });
   cell("the real public exchange is ready behind verified HTTPS", async () => assert.equal((await tlsGet(exchangeBase, "health")).status, 200));
   cell("the managed actor row uses the already-issued actorToken and lifecycle", () => {
     assert.equal(statSync(tokenPath).mode & 0o777, 0o600); assert.equal(readFileSync(tokenPath, "utf8"), secret.actorToken);

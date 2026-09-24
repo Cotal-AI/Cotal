@@ -182,11 +182,27 @@ function startAuthServiceDetached(space: string, server: string, command: string
   }
 }
 
+/** The pid the readiness wait should bind to, or undefined when none can be named: the pid THIS
+ *  call launched (startAuthServiceDetached returns the spawned child's pid, or the live holder a
+ *  claimed slot yielded to), else the live pid authServiceUp found in the pidfile. 0 means a
+ *  spawn was attempted but nothing was claimed — the wait stays clock-only rather than binding
+ *  to a pid nobody can attribute. */
+function authServiceWaitPid(space: string, launched: number | undefined): number | undefined {
+  if (launched !== undefined && launched > 0) return launched;
+  const p = readPidPath(space);
+  if (!existsSync(p)) return undefined;
+  const pid = parsePid(readFileSync(p, "utf8"));
+  return pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined;
+}
+
 /** Make the user-auth service available for a space: start the provider's daemon unless it's
- *  already up, then wait on the provider's readiness contract (both planes bound). Returns the
- *  provider-reported runtime endpoints for the mesh registry. THROWS with the reason + the log
- *  path on a service that never became ready — the caller surfaces it loudly (U5); user-mode `up`
- *  must never quietly succeed with a dead auth plane. */
+ *  already up, then wait on the provider's readiness contract (both planes bound). The wait is
+ *  bound to the daemon process (#1931): while the pid this call launched (or found live) is
+ *  provably alive, the provider waits past the base clock to a fixed upper bound instead of
+ *  misreporting a still-binding daemon as dead, and a daemon that exited refuses at once.
+ *  Returns the provider-reported runtime endpoints for the mesh registry. THROWS with the
+ *  reason + the log path on a service that never became ready — the caller surfaces it loudly
+ *  (U5); user-mode `up` must never quietly succeed with a dead auth plane. */
 export async function ensureAuthService(opts: {
   space: string;
   server: string;
@@ -197,11 +213,13 @@ export async function ensureAuthService(opts: {
    *  service keeps the flags it was started with (restart via `cotal down`/`up` to change them). */
   extraArgs?: string[];
 }): Promise<Record<string, unknown>> {
-  if (!authServiceUp(opts.space)) startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
+  let launched: number | undefined;
+  if (!authServiceUp(opts.space)) launched = startAuthServiceDetached(opts.space, opts.server, opts.prepared.service.command, opts.extraArgs);
+  const pid = authServiceWaitPid(opts.space, launched);
   try {
-    return await opts.prepared.service.ready({ dir: opts.stateDir });
+    return await opts.prepared.service.ready({ dir: opts.stateDir, pid });
   } catch (e) {
-    throw new Error(`${e instanceof Error ? e.message : String(e)} - see ${LOG_PATH(opts.space)}`);
+    throw new Error(`${e instanceof Error ? e.message : String(e)} - the daemon's pid is recorded at ${readPidPath(opts.space)}, its log is at ${LOG_PATH(opts.space)}`);
   }
 }
 

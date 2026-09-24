@@ -128,7 +128,10 @@ actor ledger are **not** store-injected: `runAuthService` resolves them under
 `userAuthStateDir(findCotalRoot(), space)`, a path relative to the process working directory, so a
 host provisions those into that exact directory (neither `store` nor `COTAL_HOME` selects it). It
 also writes an ephemeral `auth-service.json` discovery file there that carries the live exchange
-capability.
+capability. That file appears only after every plane is bound, so waiting on it is the readiness
+signal: a host that also passes the daemon's pid to the provider's `ready()` gets a process-bound
+wait. The wait extends past the base timeout while that pid is alive, up to a fixed bound, and it
+ends at once when the pid exits.
 
 ```ts
 import { runAuthService } from "@cotal-ai/auth";

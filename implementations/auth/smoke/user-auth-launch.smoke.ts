@@ -86,11 +86,11 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
-      env: childEnv,
+      env: { ...childEnv, ...(opts.env ?? {}) },
     };
     assertSmokeSandboxDown(sandbox, args, options);
     const child = spawn(TSX, [BIN, ...args], options);
@@ -463,6 +463,111 @@ try {
   check("refresh `cotal up` also ensures the manager renewal owner", renewal?.owner === "manager", renewal);
   const healedSend = await cotal(["send", "msg", "general", "healed", "--space", SPACE]);
   check("user-mode send works again after the heal", healedSend.status === 0, healedSend.out);
+
+  // ---------- E2. the readiness window (#1931): the refresh's wait is bound to the daemon pid ----------
+  // A same-root refresh launched right after the old daemon died on a broker reload used to give
+  // up at a FIXED 15s clock while the replacement daemon was alive and still binding (its
+  // authority-plane open outlasting the clock), then a second identical `up` succeeded — a
+  // one-shot false "auth service dead". The wait is now process-bound: it continues past the
+  // base clock while the pid the launcher claimed is provably alive (up to a fixed bound), and
+  // ends AT ONCE with the exit when that pid is gone. The daemon's smoke-only startup hold
+  // (COTAL_SMOKE_AUTH_STARTUP_HOLD_MS, honored between the discovery scrub and the authority
+  // plane open) makes each leg deterministic without touching a live daemon's boot order.
+  console.log("E2) readiness window: slow-but-alive daemon is waited for, dead daemon refused at once, wedged daemon refused at the bound");
+  const pidPath = join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`);
+  const readSvcPid = () => Number(readFileSync(pidPath, "utf8").trim());
+  const pidGone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+  // E2a. SLOW BUT ALIVE: the daemon holds its startup 10s inside the readiness window (a slow
+  // authority-plane open), alive the whole time. The wait is bound to the launched pid, so the
+  // refresh must WAIT for it, not race a clock: it exits 0 once the daemon binds. The hold rides
+  // the daemon's env only (the refresh argv is untouched, no test hooks on the caller's side).
+  const killAuthDaemon = async () => {
+    // The daemon may already be gone (a refused cell leaves a dead pid behind): kill only what
+    // still runs, and wait for the record's pid to be absent before the next leg claims the slot.
+    try { process.kill(readSvcPid(), "SIGTERM"); } catch { /* already dead */ }
+    await until(() => { try { return pidGone(readSvcPid()); } catch { return true; } });
+  };
+  await killAuthDaemon();
+  const slowHold = await cotal(["up", "--user-auth", "--idp", base, "--server", SERVER, "--space", SPACE], {
+    timeoutMs: 120_000, // base clock + 10s hold + boot + margin
+    env: { COTAL_SMOKE_AUTH_STARTUP_HOLD_MS: "10000" },
+  });
+  check(
+    "a daemon alive but slow to bind is waited for: the same-root up exits 0 once it binds",
+    slowHold.status === 0 && slowHold.out.includes("user-auth service up"),
+    slowHold.out,
+  );
+  {
+    const info = loadAuthServiceInfo(userAuthStateDir(root, SPACE));
+    check("…and the waited-for daemon is the live one (discovery names a pid that is alive)", info !== undefined && !pidGone(info.pid), info);
+  }
+
+  // E2b. DEAD: the daemon the refresh launched exits before becoming ready — the wait must end
+  // AT ONCE with the exited reason, long before either clock. The hold gives the launched pid a
+  // window to be claimed and bound to; the KILL makes that pid exit inside the hold.
+  await killAuthDaemon();
+  const deadStarted = Date.now();
+  const deadChild = spawn(TSX, [BIN, "up", "--user-auth", "--idp", base, "--server", SERVER, "--space", SPACE], {
+    cwd: root,
+    env: { ...childEnv, COTAL_SMOKE_AUTH_STARTUP_HOLD_MS: "60000" },
+  });
+  let deadOut = "";
+  deadChild.stdout!.on("data", (d: Buffer) => { deadOut += d.toString(); });
+  deadChild.stderr!.on("data", (d: Buffer) => { deadOut += d.toString(); });
+  // Kill ONLY the daemon, identified by what it IS, not by pid arithmetic: the daemon is the one
+  // pid whose /proc cmdline names "auth-service". The pidfile first names the LAUNCHER (the `up`
+  // process pre-populates its own pid into the claim; `deadChild.pid` is only the tsx wrapper
+  // around it, so a pid-inequality guard cannot protect it), and SIGKILLing the launcher
+  // mid-wait kills the reporter before any refusal line while the detached held daemon
+  // orphans (observed live: the cell dies with bare output and the orphan later steals the
+  // authority plane, cascading red through the suite's later legs). A dead or yet-unborn pid
+  // has no readable cmdline: keep polling.
+  const killTimer = setInterval(() => {
+    let pid = 0;
+    try { pid = Number(readFileSync(pidPath, "utf8").trim()); } catch { return; }
+    if (!(pid > 0)) return;
+    try {
+      if (!readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("auth-service")) return;
+    } catch { return; }
+    try { process.kill(pid, "SIGKILL"); } catch { /* raced its own exit */ }
+    clearInterval(killTimer);
+  }, 20);
+  const deadStatus = await new Promise<number | null>((r) => deadChild.once("close", (c) => r(c)));
+  clearInterval(killTimer);
+  const deadElapsed = Date.now() - deadStarted;
+  const dead = { status: deadStatus, out: deadOut, elapsed: deadElapsed };
+  check(
+    "a daemon that exits before ready ends the wait at once with the exited reason",
+    dead.status !== 0 && dead.out.includes("exited before becoming ready"),
+    dead.out,
+  );
+  check("…the refusal came from the pid observation, not a clock (well under the 15s base budget)", dead.elapsed < 15_000, dead.elapsed);
+
+  // E2c. WEDGED: a daemon alive past the bound must still end in a loud refusal that names the
+  // live pid and the still-starting state. The hold outlasts the 60s bound, so the cell's own
+  // timeout must allow base+bound+margin while the refusal itself lands at ~bound.
+  await killAuthDaemon();
+  const wedgedHold = await cotal(["up", "--user-auth", "--idp", base, "--server", SERVER, "--space", SPACE], {
+    timeoutMs: 180_000, // the 60s bound + daemon teardown margin on a slow runner
+    env: { COTAL_SMOKE_AUTH_STARTUP_HOLD_MS: "120000" },
+  });
+  check(
+    "a daemon alive past the bound is refused loudly as alive-and-still-starting",
+    wedgedHold.status !== 0 && wedgedHold.out.includes("alive and still starting"),
+    wedgedHold.out,
+  );
+  check(
+    "…the wedged refusal names the pid record and the log path",
+    wedgedHold.out.includes(`auth-service.${spaceKey(SPACE)}.pid`) && wedgedHold.out.includes(`auth-service.${spaceKey(SPACE)}.log`),
+    wedgedHold.out,
+  );
+  // The wedged daemon is still holding: stop it so the rest of the suite starts clean.
+  try { process.kill(readSvcPid(), "SIGKILL"); } catch { /* already gone */ }
+  await until(() => { try { return pidGone(readSvcPid()); } catch { return true; } });
+  const reHeal = await cotal(["up", "--user-auth", "--idp", base, "--server", SERVER, "--space", SPACE]);
+  check("after the wedge is cleared a plain re-up heals the service", reHeal.status === 0 && reHeal.out.includes("user-auth service up"), reHeal.out);
+
 
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");

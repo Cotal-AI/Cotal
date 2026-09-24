@@ -772,6 +772,20 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a
   // readiness poll for THIS start (the provider's ready() also pid-checks; belt and braces).
   clearAuthServiceInfo(dir);
+  // SMOKE-ONLY startup hold: holds THIS daemon's startup between the discovery scrub and the
+  // authority-plane open (before any broker or listener footprint), for the pid-bound readiness
+  // cells. A live `up` never sets it; when set, it delays this many ms and a plain integer is
+  // REQUIRED (a malformed value throws rather than silently starting without the hold).
+  {
+    const holdRaw = process.env.COTAL_SMOKE_AUTH_STARTUP_HOLD_MS;
+    if (holdRaw !== undefined) {
+      const hold = Number(holdRaw);
+      if (!Number.isSafeInteger(hold) || hold < 0)
+        throw new Error(`auth-service: COTAL_SMOKE_AUTH_STARTUP_HOLD_MS must be a non-negative integer (got ${JSON.stringify(holdRaw)})`);
+      console.error(`auth-service: smoke startup hold for ${hold}ms (before the authority plane opens)`);
+      await new Promise((r) => setTimeout(r, hold));
+    }
+  }
   const keys = await loadServiceKeys(secrets, space);
   const callout = await loadCalloutAuth(secrets, space);
   const issuer = await loadIssuer(secrets, space);
