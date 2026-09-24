@@ -107,10 +107,10 @@ export interface ExchangeResult {
 
 export interface IdpBridge {
   /** Exchange a verified IdP token for a Cotal user bearer bound to (derived owner, actor).
-   *  `view` requests an elevated per-connection profile ({@link USER_TOKEN_VIEWS}); it is
-   *  authorized HERE against the fresh ledger grant — scope must contain `admin` — and minted as
-   *  the server-authored `act.view` claim. Human exchanges only; the managed (agent-secret)
-   *  exchange path rejects views before it ever reaches a bridge. */
+   *  `view` requests a per-connection profile ({@link USER_TOKEN_VIEWS}), authorized against
+   *  the fresh ledger grant and its explicit required-scope policy, then stamped into `act.view`.
+   *  This bridge handles human proofs only; the actor-secret handler separately allows the
+   *  narrowing manager-caller view. */
   exchange(idpToken: string, req: { actor: string; ttlSec?: number; view?: UserTokenView; managerInstanceId?: string }): Promise<ExchangeResult>;
 }
 

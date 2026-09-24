@@ -31,9 +31,9 @@
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
  * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
  * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
- * hold verbatim; `view` requests other than `channel-writer` and `channel-purger` are REFUSED
- * (those two stay ledger-gated on `admin`; every other operator surface stays loopback-only); a
- * managed-agent secret exchange never mints a view on either face;
+ * hold verbatim. Public views are channel-writer/channel-purger (admin-gated) and manager-caller
+ * (instance-bound, with no added command scope). Other views stay loopback-only. The agent-secret
+ * arm may request only manager-caller on either face;
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
@@ -1363,7 +1363,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
   if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
   if (managerInstanceId !== undefined && view !== "manager-caller") return send(res, 400, { error: 'managerInstanceId is valid only with view "manager-caller"' });
-  // Public face: only channel-writer / channel-purger ride this listener (still ledger-gated).
+  // Public face: channel-writer / channel-purger and the narrowing manager-caller view.
   // admin, purger, deployer, and manager-service stay loopback-only, whatever the credential.
   // A refused view is a refused exchange: record, audit, then 429 when the peer is already
   // throttled, same order as the neighbouring denial sites. A served view stays unthrottled.
@@ -1381,8 +1381,8 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   if (idpToken !== undefined && actorToken !== undefined)
     return send(res, 400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
   if (actorToken !== undefined) {
-    // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
-    // whatever its ledger row carries (v1 — agents hold no god views).
+    // The actor-secret exception is manager-caller only: it adds no command capability.
+    // Elevated views still require a signed-in human, whatever this agent's row carries.
     if (view !== undefined && view !== "manager-caller")
       return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
     if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)

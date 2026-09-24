@@ -31,17 +31,18 @@ export const MAX_TOKEN_TTL_SEC = 900;
 
 /** The elevated per-connection profiles a bearer may request at exchange time (the "views"):
  *  read-only god view, space-history purge, channel delete, channel-registry writes, and the
- *  manifest-deploy preflight. Server-authored into `act.view` ONLY by the human exchange after a
- *  fresh ledger check against {@link VIEW_REQUIRED_SCOPE}; the callout mints the matching profile
+ *  manifest-deploy preflight. The narrowing manager-caller view is also available to an actor-secret
+ *  exchange. Views are server-authored after a fresh ledger check against {@link VIEW_REQUIRED_SCOPE};
+ *  the callout mints the matching profile
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
 export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
-/** Human views the public exchange face will mint (still ledger-gated). Every other
- *  {@link USER_TOKEN_VIEWS} value stays loopback-only; a managed-agent secret exchange
- *  never mints a view on either face. */
+/** Views the public exchange face will mint (still ledger-gated). Every other
+ *  {@link USER_TOKEN_VIEWS} value stays loopback-only. An actor-secret exchange may request
+ *  only manager-caller, which narrows its existing command authority to one instance. */
 export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller"] as const satisfies readonly UserTokenView[];
 
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
@@ -49,13 +50,14 @@ export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manag
  *  destructive space writes); `deployer` is spawn-grade — deploying YOUR OWN team's manifest rides
  *  the same owner-domain model as own-agent stop/attach (the manager still enforces owner equality
  *  at launch, and the view's control grant is the PRIVILEGED tier, never the admin bypass). */
-export const VIEW_REQUIRED_SCOPE: Partial<Record<UserTokenView, "admin" | "spawn" | "supervise">> = {
+export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "supervise" | undefined> = {
   admin: "admin",
   purger: "admin",
   "channel-purger": "admin",
   "channel-writer": "admin",
   deployer: "spawn",
   "manager-service": "supervise",
+  "manager-caller": undefined, // baseline self calls are allowed; command grants still derive from scope
 };
 
 /** The server-authored actor claim. `owner` restates `sub` (cross-checked); `actor` is the

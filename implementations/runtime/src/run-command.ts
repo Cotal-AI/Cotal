@@ -655,7 +655,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, { deadlineMs: 10_000 });
+    const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, {
+      deadlineMs: 10_000,
+      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
+    });
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
