@@ -216,6 +216,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    * command/action awaiting approval, not just "Claude needs your permission".
    */
   let pendingTool: { name: string; detail: string } | undefined;
+  /** SessionStart can arrive during an open turn, including after compaction. */
+  let turnOpen = false;
   /** Batches awaiting a delivery verdict, keyed by the EVENT OBJECT the control server passes to
    *  both `handle` and `onReply`. Frames are separate socket connections and can overlap (a
    *  `PreToolUse` from a parallel tool batch while a `UserPromptSubmit` reply is still being
@@ -307,7 +309,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // NOT a turn ending. `SessionStart` fires on compact, clear and resume, and a compaction
           // lands mid-turn: routed through the boundary this published `done` for a run turn the
           // model was still working on.
-          try { await agent.resetStatus("idle"); } catch { /* best-effort */ }
+          // Preserve working or waiting until the turn's own terminal hook arrives.
+          if (!turnOpen) {
+            try { await agent.resetStatus("idle"); } catch { /* best-effort */ }
+          }
           // Reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently
           // deaf. Advisory: the local default is already "open", so a failed write changes nothing.
           try {
@@ -323,6 +328,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit": {
+          turnOpen = true;
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           flushEvents(ev.transcript_path);
           await safeStatus(agent, "working");
@@ -361,6 +367,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         }
         case "Stop":
         case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
+          turnOpen = false;
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
           flushEvents(ev.transcript_path);
           // THE TURN TERMINAL, and it has to be a second call rather than part of the flush. The
@@ -390,6 +397,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
         case "SessionEnd":
+          turnOpen = false;
           flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");
           return {};
