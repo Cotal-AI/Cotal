@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import {
   readVersion,
   packPackage,
+  verifyPackageTarball,
   extractTarball,
   verifyBinEntry,
   startFakeRegistry,
@@ -49,6 +50,55 @@ try {
   check("the tarball filename contains the package name", tarball.includes("cotal-ai"), tarball);
 } finally {
   rmSync(packTmp, { recursive: true, force: true });
+}
+
+function writeFixturePackage(dir: string, files: string[], exportsValue: unknown = undefined): void {
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  writeFileSync(join(dir, "dist", "index.js"), "export const fixture = true;\n");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({
+    name: "@fixture/probe-sibling",
+    version: "1.0.0",
+    type: "module",
+    main: "./dist/index.js",
+    ...(exportsValue === undefined ? {} : { exports: exportsValue }),
+    files,
+  }, null, 2));
+}
+
+// ---------------------------------------------------------------- unit: sibling tarball entry points
+const siblingTmp = mkdtempSync(join(tmpdir(), "probe-sibling-"));
+try {
+  const goodDir = join(siblingTmp, "good");
+  writeFixturePackage(goodDir, ["dist"]);
+  const good = verifyPackageTarball(goodDir, join(siblingTmp, "good-pack"));
+  check("a sibling tarball with its main entry passes", good.pass, good);
+
+  const missingMainDir = join(siblingTmp, "missing-main");
+  writeFixturePackage(missingMainDir, []);
+  const missingMain = verifyPackageTarball(missingMainDir, join(siblingTmp, "missing-main-pack"));
+  check(
+    "a sibling tarball missing main fails with the package and path",
+    !missingMain.pass
+      && missingMain.name === "@fixture/probe-sibling"
+      && missingMain.missing.includes("./dist/index.js"),
+    missingMain,
+  );
+
+  const missingExportDir = join(siblingTmp, "missing-export");
+  writeFixturePackage(missingExportDir, ["dist"], {
+    ".": { import: "./dist/index.js" },
+    "./missing": { import: "./dist/missing.js" },
+  });
+  const missingExport = verifyPackageTarball(missingExportDir, join(siblingTmp, "missing-export-pack"));
+  check(
+    "a sibling tarball missing an exports target fails with the package and path",
+    !missingExport.pass
+      && missingExport.name === "@fixture/probe-sibling"
+      && missingExport.missing.includes("./dist/missing.js"),
+    missingExport,
+  );
+} finally {
+  rmSync(siblingTmp, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------- unit: extractTarball + verifyBinEntry
@@ -153,7 +203,7 @@ try {
   rmSync(mismatchTmp, { recursive: true, force: true });
 }
 
-const EXPECTED = 17;
+const EXPECTED = 20;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`\nPOST-PUBLISH INSTALL PROBE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
