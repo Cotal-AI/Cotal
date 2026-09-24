@@ -60,7 +60,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1337,9 +1337,23 @@ export class Manager {
     // through the SecretStore seam (`this.secrets` — the injected `ManagerOptions.secretStore`, or
     // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
     // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
-    this.auth = await getSpaceAuth(this.secrets, this.space);
-    if (this.remoteAuthority && this.auth)
-      throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
+    //
+    // REMOTE AUTHORITY (#1944): a manager holding host-issued remote authority mints nothing from a
+    // local signer, so it never composes or validates local trust. It asks ONE question of the
+    // store — does THIS space's own local signing trust exist (`localTrustOfSpace`) — because that
+    // alone is the conflict of authorities a supervisor refuses. The stock behaviour this replaces
+    // read the whole root's trust chain (`getSpaceAuth`): with no records for this space it fell
+    // back to the legacy monolith of an UNRELATED static tenant and reported that bundle as
+    // "corrupt or mislabeled". Other tenants' records — split (their account + the shared
+    // per-root broker record) or monolith — are not this space's trust and never refuse; an
+    // unreadable record on a key that is read refuses loud with the store's own parse message.
+    if (this.remoteAuthority) {
+      if ((await localTrustOfSpace(this.secrets, this.space)).present)
+        throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
+      this.auth = undefined;
+    } else {
+      this.auth = await getSpaceAuth(this.secrets, this.space);
+    }
     // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
     // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
     // take the static self-mint branch. A marker/registry disagreement is a refused start with the
