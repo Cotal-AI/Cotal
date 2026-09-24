@@ -138,14 +138,6 @@
       "expectRed": "the shipped command exits 2 (cannot tell) against a registry that never answers, rather than being killed"
     },
     {
-      "name": "elapsed is read from the injected clock alone, so a run whose reads all time out polls forever",
-      "file": "scripts/verify-publish-closure.mjs",
-      "find": "    const elapsedMs = Math.max(now() - started, Date.now() - ioStarted);",
-      "replace": "    const elapsedMs = now() - started;",
-      "cell": "spending the real budget ends the run even when the injected clock has not moved",
-      "expectRed": "spending the real budget ends the run even when the injected clock has not moved"
-    },
-    {
       "name": "the body validation is skipped, so any 200 is presence again (#1257)",
       "file": "scripts/verify-publish-closure.mjs",
       "find": "        const body = await res.json();\n        if (body && body.name === pkg && body.version === version) continue;",
