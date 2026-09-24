@@ -33,7 +33,10 @@
       "replace": "",
       "expectRed": "host maintenance refuses a principal outside the caller instance family",
       "cell": "host maintenance refuses a principal outside the caller instance family",
-      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:manager-service-authority",
+      "completionMarker": "manager-service-authority:",
+      "_note": "This entry is graded by the auth smoke alone: it is a counting suite whose summary line prints whether it passes or fails, so it can carry its own completion marker. The shared command chains this smoke before the acceptance suite with `&&`, so under the shared marker a real kill here never reaches the acceptance banner and grades INCONCLUSIVE."
     },
     {
       "name": "host reconciliation skips the affirmative liveness guard",
