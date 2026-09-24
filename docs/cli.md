@@ -122,7 +122,10 @@ After disk reconciliation, `update` reads the selected running manager. A machin
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A recorded mesh that is down is still a
 refusal when the command selects it, with `--space` or by running inside its project, and so is a
-named space that is not running. A manager without a
+named space that is not running. With several meshes running and no `--space`, `--server` or
+`--creds`, the install is machine-wide, so every running manager is reported in turn, each under its
+space name, before anything is written; a `legacy` verdict on any of them makes the whole run not a
+hot update. A selector flag still reports one manager. A manager without a
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
 for every seat. This report sends no stop, preservation-commit, or replacement command.
