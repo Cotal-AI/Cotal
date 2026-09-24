@@ -1402,13 +1402,31 @@ try {
   // A block is a scope, and the resolver finds the FIRST matching declaration, so the decoy is
   // tested in BOTH source orders. One order alone passes against a resolver that treats a block
   // as transparent, which is how a first-match walk hides half its behaviour.
-  for (const [name, before] of [["block-decoy-before", true], ["block-decoy-after", false]]) {
-    const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+  //
+  // The two orders are NOT a textual mirror of each other, because the walk keeps the first match
+  // it finds and never revisits one already found. Pairing the decoy with a REAL declaration that
+  // sits textually after it lets "before" catch a decoy wrongly preferred over the real one, but
+  // the same real declaration textually BEFORE the decoy is found first regardless of the block
+  // guard, and no mutation of that guard could ever change which one wins — a distractor with no
+  // declaration of its own, ahead of the decoy, keeps the decoy the only candidate in EITHER slot
+  // and still lets the block guard alone decide the verdict.
+  const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+  {
     const real = '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n  spawnSync(process.execPath, [ENTRY]);\n';
-    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${before ? decoy + real : real + decoy}}\nrun(false);\n`);
+    const name = "block-decoy-before";
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${decoy + real}}\nrun(false);\n`);
     config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
     result = run(name);
-    check(`a binding in a block the launch is not inside cannot witness it (${before ? "decoy first" : "decoy last"})`, refusedForReach(name, result), report(result));
+    check("a binding in a block the launch is not inside cannot witness it (decoy first)", refusedForReach(name, result), report(result));
+  }
+  {
+    const distractor = '  if (other) {\n    console.log("distractor");\n  }\n';
+    const call = '  spawnSync(process.execPath, [ENTRY]);\n';
+    const name = "block-decoy-after";
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag, other) {\n${distractor + decoy + call}}\nrun(false, false);\n`);
+    config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check("a binding in a block the launch is not inside cannot witness it (decoy last)", refusedForReach(name, result), report(result));
   }
   // The accept twin. Refusing every block binding closes the false accept by breaking real suites,
   // so a launch INSIDE the block, using that block's own binding, must still be witnessed.
