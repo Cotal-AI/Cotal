@@ -33,6 +33,11 @@ c("request row: class one, owner mode, caller-pinned, nonce-only wildcard",
 c("request rows: routes + instance pin",
   epRequestGrantRows("demo", { endpoint: "manager", command: "status", routes: ["one", "all"], instanceId: IID }, caller).join("|")
   === `cotal.demo.ep.one.manager.status.u_abc.cli.${UID}.*|cotal.demo.ep.all.manager.status.u_abc.cli.${UID}.*|cotal.demo.ep.inst.manager.${IID}.status.u_abc.cli.${UID}.*`);
+c("request row: instance-only omits every class/scatter row",
+  epRequestGrantRows("demo", { endpoint: "manager", command: "status", instanceId: IID, instanceOnly: true }, caller).join("|")
+  === `cotal.demo.ep.inst.manager.${IID}.status.u_abc.cli.${UID}.*`);
+throws("instance-only refuses without an exact instance id",
+  () => epRequestGrantRows("demo", { endpoint: "manager", command: "status", instanceOnly: true }, caller));
 c("journal row: same authz block, no nonce",
   epJournalGrantRow("demo", spawnCap, caller) === `cotal.demo.epj.manager.spawn.owner.u_abc.u_abc.cli.${UID}`);
 c("reply-rail read row: own rail, exact arity",

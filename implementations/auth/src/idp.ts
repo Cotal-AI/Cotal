@@ -111,7 +111,7 @@ export interface IdpBridge {
    *  authorized HERE against the fresh ledger grant — scope must contain `admin` — and minted as
    *  the server-authored `act.view` claim. Human exchanges only; the managed (agent-secret)
    *  exchange path rejects views before it ever reaches a bridge. */
-  exchange(idpToken: string, req: { actor: string; ttlSec?: number; view?: UserTokenView }): Promise<ExchangeResult>;
+  exchange(idpToken: string, req: { actor: string; ttlSec?: number; view?: UserTokenView; managerInstanceId?: string }): Promise<ExchangeResult>;
 }
 
 /** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
@@ -218,7 +218,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         if (!USER_TOKEN_VIEWS.includes(req.view))
           throw new Error(`view "${String(req.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")})`);
         const need = VIEW_REQUIRED_SCOPE[req.view];
-        if (!(grant.scope ?? []).includes(need))
+        if (need !== undefined && !(grant.scope ?? []).includes(need))
           throw new Error(
             `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant the WHOLE ROW with "${need}" ADDED to its scope. This is not a scope edit: ` +
               regrantRemedy(owner, req.actor, grant, need),
@@ -257,11 +257,12 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         lifecycleUid: grant.lifecycleUid,
         credentialId,
         view: req.view,
+        managerInstanceId: req.managerInstanceId,
         ttlSec,
       });
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
-      return { token, owner, exp };
+      return { token, owner, exp, ...(req.managerInstanceId ? { managerInstanceId: req.managerInstanceId } : {}) };
     },
   };
 }

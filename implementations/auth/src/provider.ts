@@ -173,13 +173,13 @@ export const cotalAuthProvider: AuthProvider = {
   /** Client side: this machine's login session → a fresh IdP JWT → the local auth service's
    *  exchange → the Cotal bearer, plus the space's sentinel creds. NO fallback anywhere; each
    *  failure is one sentence with the exact operator action (U1/U10/U11 acceptance strings). */
-  async userCredentials({ store, dir, space, actor, view }: { store: SecretStore; dir: string; space: string; actor: string; view?: string }) {
+  async userCredentials({ store, dir, space, actor, view, managerInstanceId }: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string }) {
     const idp = loadPinnedIdp(dir);
     const callout = await loadCalloutAuth(store, space);
     // No local material: this machine may still hold a REMOTE registration (\`cotal meshes add
     // --from\`), whose registry entry pinned the IdP + public exchange at registration time. The
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
-    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view);
+    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view, managerInstanceId);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
@@ -202,7 +202,7 @@ export const cotalAuthProvider: AuthProvider = {
       res = await fetch(`${info.url}/exchange`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
-        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}) }),
+        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}) }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
@@ -218,10 +218,10 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string };
+    const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
-    return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+    return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
@@ -717,7 +717,8 @@ async function remoteUserCredentials(
   space: string,
   actor: string,
   view?: string,
-): Promise<{ bearer: string; sentinelCreds: string }> {
+  managerInstanceId?: string,
+): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }> {
   const remote = remoteUserAuthEntry(dir, space);
   if (!remote)
     throw new Error(
@@ -745,7 +746,7 @@ async function remoteUserCredentials(
       // NO Authorization header: the public face is capless by design - the idpToken in the body
       // is the whole credential, and the loopback capability never leaves the daemon's machine.
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}) }),
+      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}) }),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
@@ -762,8 +763,8 @@ async function remoteUserCredentials(
       `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
     );
   }
-  const out = (await res.json().catch(() => ({}))) as { token?: string };
+  const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
-  return { bearer: out.token, sentinelCreds };
+  return { bearer: out.token, sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
 }

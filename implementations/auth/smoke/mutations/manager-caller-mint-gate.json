@@ -1,0 +1,17 @@
+{
+  "suite": ["implementations/auth/smoke/views.smoke.ts"],
+  "guard": "manager-caller authority is re-checked against the live manager gate at the permission mint",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:views",
+  "completionMarker": "views smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/manager-caller-mint-gate.json",
+  "mutations": [
+    {
+      "name": "manager-caller permissions are minted without the fresh gate authorizer",
+      "file": "implementations/auth/src/permissions.ts",
+      "find": "        return authorizeManagerCaller(t.owner, instanceId).then(() => permissionsFor(\n          \"manager-caller\",",
+      "replace": "        return Promise.resolve(permissionsFor(\n          \"manager-caller\",",
+      "expectRed": "manager-caller refuses when the gate is not open at the permission mint",
+      "note": "The exchange-time choice is not enough because a gate may freeze or change owner before the broker JWT is minted."
+    }
+  ]
+}
