@@ -112,7 +112,14 @@ export function verifyPackageTarball(pkgDir, outDir) {
     if (!packedTargetExists(packedFiles, target)) missing.push(target);
   }
 
-  return { name: pkg.name, tarball, packedFiles: [...packedFiles], missing, pass: missing.length === 0 };
+  const uniqueMissing = [...new Set(missing)];
+  return {
+    name: pkg.name,
+    tarball,
+    packedFiles: [...packedFiles],
+    missing: uniqueMissing,
+    pass: uniqueMissing.length === 0,
+  };
 }
 
 function findWorkspacePackageDir(packageName) {

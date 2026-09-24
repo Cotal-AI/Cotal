@@ -62,8 +62,8 @@
     {
       "name": "the sibling tarball validator rejects a package whose main is present",
       "file": "scripts/post-publish-install-probe.mjs",
-      "find": "  return { name: pkg.name, tarball, packedFiles: [...packedFiles], missing, pass: missing.length === 0 };",
-      "replace": "  return { name: pkg.name, tarball, packedFiles: [...packedFiles], missing, pass: false };",
+      "find": "    pass: uniqueMissing.length === 0,",
+      "replace": "    pass: false,",
       "expectRed": "a sibling tarball with its main entry passes",
       "cell": "a sibling tarball with its main entry passes"
     }
