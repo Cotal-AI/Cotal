@@ -434,9 +434,10 @@ const frozen = await withGuard(verifyClosure("9.9.9", {
   now: () => 0,
 }).catch(() => ({ state: "ABANDONED" })), 8_000);
 abandoned = true;
+const frozenElapsed = "reads" in frozen ? frozen.reads.at(-1)?.elapsedMs : undefined;
 check(
   "spending the real budget ends the run even when the injected clock has not moved",
-  frozen.state === "unsettled" && "reads" in frozen && frozen.reads.at(-1)?.elapsedMs >= 300,
+  frozen.state === "unsettled" && frozenElapsed !== undefined && frozenElapsed >= 300,
   frozen,
 );
 
