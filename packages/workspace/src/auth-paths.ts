@@ -1068,6 +1068,36 @@ export async function getSoleSpaceAuth(store: SecretStore, dir: string): Promise
   return space ? getSpaceAuth(store, space) : undefined;
 }
 
+/** The LOCAL trust position a remote-authority manager must know about, read without ever
+ *  composing or validating another tenant's material (#1944).
+ *
+ *  The one question under remote authority is "does THIS space's own local signing trust exist
+ *  under this store", because that alone is the conflict of authorities a supervisor refuses.
+ *  Three facts answer it, and nothing else is read:
+ *   - this space's own account record key (`auth/account.<key>.json`) — its presence IS the
+ *     space's split-layout trust, whatever the bytes say;
+ *   - the legacy monolith key (`auth/auth.json`) — a value that names this space is the
+ *     pre-split layout's same fact. A value that names another space is that tenant's trust and
+ *     reports nothing here. The parse rides the STORE's own discipline ({@link parseStoreRecord}
+ *  semantics, same message the composed reader prints), so an unreadable value refuses loud
+ *  rather than being swallowed into a proceed — but errors carry only the KEY and the space
+ *  label, never stored bytes.
+ *   - the broker record key (`auth/broker.json`) is deliberately NOT consulted: it is one per
+ *  root and shared by every static space in the split layout, so it names no tenant and can
+ *  never be this space's own trust.
+ *
+ *  Exported for the manager (the one remote-authority caller); lives here so the key spellings
+ *  and the parse message cannot drift from the reader that owns them. */
+export async function localTrustOfSpace(store: SecretStore, space: string): Promise<{ present: boolean }> {
+  const accountRaw = await store.get(spaceAccountKey(space));
+  if (accountRaw !== undefined) return { present: true };
+  const legacyRaw = await store.get(SPACE_AUTH_KEY);
+  if (legacyRaw === undefined) return { present: false };
+  // The ONE parse discipline this module owns: the same reader, the same message, no drift.
+  const doc = parseStoreRecord<{ space?: unknown }>(legacyRaw, SPACE_AUTH_KEY, "space trust bundle");
+  return { present: doc.space === space };
+}
+
 /** Persist a composed value through the seam by DECOMPOSING it into its two records - the seam
  *  writer with the SAME refusals as the FS pair ({@link saveBrokerAuth}/{@link saveSpaceAccountAuth},
  *  shared via {@link guardBrokerOverwrite}): a stripped value, a foreign-operator overwrite, a stale

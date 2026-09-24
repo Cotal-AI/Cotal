@@ -417,9 +417,10 @@ degraded state and refuses new agents, restarts, or replacement credentials rath
 substituting local/static authority. Existing live agents remain running only while their own
 valid authority permits it; recovery requires the host service and a fresh successful renewal.
 
-A manager on remote authority never reads the local root's signing trust, so a workspace that
-hosts an unrelated static space beside the participant sign-in is a normal configuration; only
-split trust records for the supervised space itself are refused, as a conflict of authorities.
+A manager on remote authority mints from that authority alone; it consults the local root's
+records only to refuse a conflict, and only the supervised space's own trust records count as
+one. A workspace that hosts an unrelated static space beside the participant sign-in is a
+normal configuration.
 
 **User authentication has one path.** On a user-auth space, commands never fall back to
 static minting or credless connects: a missing login or a down auth service is one

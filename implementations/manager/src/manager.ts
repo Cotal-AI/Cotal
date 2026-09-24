@@ -60,7 +60,7 @@ import {
   controlServiceSubject,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, BROKER_AUTH_KEY, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceAccountKey, SPACE_AUTH_KEY, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1339,29 +1339,17 @@ export class Manager {
     // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
     //
     // REMOTE AUTHORITY (#1944): a manager holding host-issued remote authority mints nothing from a
-    // local signer, so it must not read local trust AT ALL. The old unconditional read made the
-    // cwd root's legacy monolith for an UNRELATED static space satisfy (and fail) the lookup for
-    // the remote space: `getSpaceAuth` fell back to `auth/auth.json` and reported another tenant's
-    // bundle as "corrupt or mislabeled". A root hosting a static space beside the sign-in is a
-    // normal configuration. The one refusal that stays is the REAL conflict of authorities: split
-    // records for THIS space under this root, which would hand one manager two authority paths.
-    // The check reads the store's own keys (never the legacy monolith): an unrelated tenant's
-    // monolith is invisible, and a same-space monolith cannot exist without also tripping the
-    // split-record check once migrated — but a same-space monolith ALONE (pre-split layout, no
-    // broker/account records) is still this space's local signing trust, so it refuses too.
+    // local signer, so it never composes or validates local trust. It asks ONE question of the
+    // store — does THIS space's own local signing trust exist (`localTrustOfSpace`) — because that
+    // alone is the conflict of authorities a supervisor refuses. The stock behaviour this replaces
+    // read the whole root's trust chain (`getSpaceAuth`): with no records for this space it fell
+    // back to the legacy monolith of an UNRELATED static tenant and reported that bundle as
+    // "corrupt or mislabeled". Other tenants' records — split (their account + the shared
+    // per-root broker record) or monolith — are not this space's trust and never refuse; an
+    // unreadable record on a key that is read refuses loud with the store's own parse message.
     if (this.remoteAuthority) {
-      const brokerRaw = await this.secrets.get(BROKER_AUTH_KEY);
-      const accountRaw = await this.secrets.get(spaceAccountKey(this.space));
-      if (brokerRaw !== undefined || accountRaw !== undefined) {
+      if ((await localTrustOfSpace(this.secrets, this.space)).present)
         throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
-      }
-      const legacyRaw = await this.secrets.get(SPACE_AUTH_KEY);
-      if (legacyRaw !== undefined) {
-        let sameSpace = false;
-        try { sameSpace = (JSON.parse(legacyRaw) as { space?: unknown }).space === this.space; } catch { /* unreadable: still just a store value this manager must not consume */ }
-        if (sameSpace)
-          throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
-      }
       this.auth = undefined;
     } else {
       this.auth = await getSpaceAuth(this.secrets, this.space);

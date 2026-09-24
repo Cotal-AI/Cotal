@@ -1298,10 +1298,11 @@ loopback-only `manager-service` view; `spawn` and `admin` do not substitute for 
 host issues the manager's public-nkey JWT material through its lifecycle-bound prepare → activate
 → renew protocol, never by handing the participant a signer or static provisioner credential.
 
-A remote supervise never consults local signing trust: with host-issued authority in hand, the
-manager does not read the cwd root's space trust material, so a root that hosts another static
-space beside the sign-in is a normal configuration. Only split trust records for the supervised
-space itself under that root are refused, as a conflict of authorities.
+A remote supervise never uses local signing trust: with host-issued authority in hand, the
+manager mints from that authority alone and consults local records only to refuse a conflict,
+namely the supervised space's own trust records under the cwd root. A root that hosts another
+static space beside the sign-in is a normal configuration and is never read as this space's
+trust.
 
 The broker URL in the registry entry decides the transport. A remote broker is often published
 over a `wss://` edge rather than a raw `nats://` port, and `supervise` dials whichever scheme the

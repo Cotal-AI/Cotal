@@ -13,10 +13,16 @@
  * `superviseTarget`, so the URL under test is the one the shipped command actually hands to the
  * registration, not one the suite chose.
  *
- * The trust cells (F/G/H) additionally stand up the host half of the remote user-auth mesh (a dev
- * Better-Auth IdP, the real `cotal auth-service` with its public exchange, and a signed-in
+ * The trust cells (F/F2/G/I/H) additionally stand up the host half of the remote user-auth mesh (a
+ * dev Better-Auth IdP, the real `cotal auth-service` with its public exchange, and a signed-in
  * participant home) and run the SHIPPED `cotal supervise` as a child from a participant root that
- * also hosts an unrelated tenant's legacy monolith (F) or the remote space's own split records (G).
+ * also hosts an unrelated tenant's trust beside the sign-in:
+ *   F: an unrelated tenant's legacy monolith — the manager comes UP.
+ *   F2: an unrelated tenant's SPLIT records (own account record + the shared per-root broker
+ *       record) — the manager comes UP; the broker record names no tenant.
+ *   G: the remote space's OWN split records — refused with the combination message.
+ *   I: an unreadable auth/auth.json — refused on the store's parse message before any exchange.
+ *   H: no trust text may name auth/auth.json in F's output.
  *
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/supervise-remote-dial.json
  */
@@ -404,20 +410,12 @@ try {
     const append = (chunk: Buffer | string): void => { output += chunk.toString(); };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
-    const done =
-      label === "F"
-        ? new Promise<void>((resolve) => {
-            const timer = setInterval(() => {
-              if (/✓ manager up|corrupt or mislabeled|cannot be combined/.test(output)) { clearInterval(timer); resolve(); }
-            }, 100);
-            setTimeout(() => { clearInterval(timer); resolve(); }, 120_000).unref?.();
-          })
-        : new Promise<void>((resolve) => {
-            const timer = setInterval(() => {
-              if (/cannot be combined|corrupt or mislabeled|✓ manager up/.test(output) || child.exitCode !== null) { clearInterval(timer); resolve(); }
-            }, 100);
-            setTimeout(() => { clearInterval(timer); resolve(); }, 120_000).unref?.();
-          });
+    const done = new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        if (/cannot be combined|corrupt or mislabeled|not valid JSON|✓ manager up/.test(output) || child.exitCode !== null) { clearInterval(timer); resolve(); }
+      }, 100);
+      setTimeout(() => { clearInterval(timer); resolve(); }, 120_000).unref?.();
+    });
     await done;
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
     await awaitExit(child);
@@ -434,6 +432,17 @@ try {
   ok("F: a remote supervise with an unrelated legacy monolith in the root reaches manager up",
     /✓ manager up/.test(fLine), fLine.slice(-600));
 
+  // F2: an unrelated static tenant in the SPLIT layout (its own account record beside the shared
+  // per-root broker record) is equally not this space's trust: the broker record is one per root
+  // and names no tenant, so the manager must come up here too (#1944 round two).
+  await trustCell("F2", async (cellRoot) => {
+    const other = await createSpaceAuth("supervisedial-split-tenant");
+    await putSpaceAuth(workspaceSecretStore(cellRoot), other);
+  });
+  const f2Line = trustOutcomes.get("F2")!;
+  ok("F2: a remote supervise with an unrelated tenant's split records (shared broker record included) reaches manager up",
+    /✓ manager up/.test(f2Line), f2Line.slice(-600));
+
   // G: split records for the REMOTE space itself beside the sign-in is the real conflict of
   // authorities: the same command refuses with the combination message, never the corrupt one,
   // and never reaches manager up.
@@ -444,10 +453,21 @@ try {
   ok("G: a remote supervise with split records for the remote space refuses the authority combination",
     /cannot be combined with local space signing trust/.test(gLine) && !/corrupt or mislabeled|✓ manager up/.test(gLine), gLine.slice(-600));
 
-  // H: the wrong-space monolith is NEVER read. F pins the positive outcome; H pins the negative:
-  // no line of F's output names auth/auth.json as trust — a read that ran would print one of the
-  // two trust texts. Assert on the MESSAGE, not on timing.
-  ok("H: the wrong-space monolith is never read (no trust text names auth/auth.json)",
+  // I: an UNREADABLE bundle on the one legacy key the check reads refuses loud with the store's
+  // own parse message, before any authority exchange output (round two: the first cut swallowed
+  // the parse failure and proceeded).
+  await trustCell("I", async (cellRoot) => {
+    writeFileSync(join(cellRoot, ".cotal", "auth", "auth.json"), "{not json", { mode: 0o600 });
+  });
+  const iLine = trustOutcomes.get("I")!;
+  ok("I: an unreadable auth/auth.json under the sign-in refuses on the store's parse message before any exchange output",
+    /the space trust bundle \(auth\/auth\.json\) is not valid JSON - repair or replace the store value/.test(iLine)
+      && !/✓ manager up|remote manager service endpoint activated/.test(iLine), iLine.slice(-600));
+
+  // H: the wrong-space monolith is never USED as this space's trust. F pins the positive outcome;
+  // H pins the negative: no line of F's output names auth/auth.json as trust — a read that
+  // validated it as this space's would print one of the trust texts. Assert on the MESSAGE.
+  ok("H: the wrong-space monolith is never used as this space's trust (no trust text names auth/auth.json)",
     !/corrupt or mislabeled|cannot be combined|space trust bundle \(auth\/auth\.json\)/.test(fLine), fLine.slice(-600));
 
   await teardown();

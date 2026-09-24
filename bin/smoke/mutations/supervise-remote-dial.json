@@ -56,17 +56,35 @@
       "cell": "F",
       "name": "Manager.start restores the unconditional local trust read under remote authority",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority) {\n      const brokerRaw = await this.secrets.get(BROKER_AUTH_KEY);\n      const accountRaw = await this.secrets.get(spaceAccountKey(this.space));\n      if (brokerRaw !== undefined || accountRaw !== undefined) {\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      }\n      const legacyRaw = await this.secrets.get(SPACE_AUTH_KEY);\n      if (legacyRaw !== undefined) {\n        let sameSpace = false;\n        try { sameSpace = (JSON.parse(legacyRaw) as { space?: unknown }).space === this.space; } catch { /* unreadable: still just a store value this manager must not consume */ }\n        if (sameSpace)\n          throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      }\n      this.auth = undefined;\n    } else {\n      this.auth = await getSpaceAuth(this.secrets, this.space);\n    }",
+      "find": "    if (this.remoteAuthority) {\n      if ((await localTrustOfSpace(this.secrets, this.space)).present)\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      this.auth = undefined;\n    } else {\n      this.auth = await getSpaceAuth(this.secrets, this.space);\n    }",
       "replace": "    this.auth = await getSpaceAuth(this.secrets, this.space);\n    if (this.remoteAuthority && this.auth)\n      throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "FAIL: F: a remote supervise with an unrelated legacy monolith in the root reaches manager up"
     },
     {
+      "cell": "F2",
+      "name": "localTrustOfSpace treats the shared broker record as this space's local trust",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "  const accountRaw = await store.get(spaceAccountKey(space));\n  if (accountRaw !== undefined) return { present: true };",
+      "replace": "  const brokerRaw = await store.get(BROKER_AUTH_KEY);\n  const accountRaw = await store.get(spaceAccountKey(space));\n  if (brokerRaw !== undefined || accountRaw !== undefined) return { present: true };",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/manager build",
+      "expectRed": "FAIL: F2: a remote supervise with an unrelated tenant's split records (shared broker record included) reaches manager up"
+    },
+    {
+      "cell": "I",
+      "name": "localTrustOfSpace swallows an unparseable bundle value and proceeds",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "  const doc = parseStoreRecord<{ space?: unknown }>(legacyRaw, SPACE_AUTH_KEY, \"space trust bundle\");\n  return { present: doc.space === space };",
+      "replace": "  let doc: { space?: unknown };\n  try {\n    doc = JSON.parse(legacyRaw) as { space?: unknown };\n  } catch {\n    return { present: false };\n  }\n  return { present: doc.space === space };",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/manager build",
+      "expectRed": "FAIL: I: an unreadable auth/auth.json under the sign-in refuses on the store's parse message before any exchange output"
+    },
+    {
       "cell": "G",
       "name": "Manager.start drops the same-space conflict refusal under remote authority",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (brokerRaw !== undefined || accountRaw !== undefined) {\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      }",
-      "replace": "      void brokerRaw; void accountRaw;",
+      "find": "      if ((await localTrustOfSpace(this.secrets, this.space)).present)\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");",
+      "replace": "      await localTrustOfSpace(this.secrets, this.space);",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "FAIL: G: a remote supervise with split records for the remote space refuses the authority combination"
     }
