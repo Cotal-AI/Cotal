@@ -98,7 +98,13 @@ reopens past the stamp (the successor's boot heal, or
 Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
 the manager and the daemon to address one credential store. Separate host filesystems still
 leave manager root A writing and the daemon reloading root B; that composition is refused
-while the daemon stays up. Keep delivery on the broker host under `up`, and share one store
+while the daemon stays up. Before every remint the manager challenges the delivery daemon's
+store identity, and the answer must come from the process holding the delivery lease: the
+reply names the answering endpoint and the manager reads the lease row itself under its own
+credential, so a non-holder answering on the queue-grouped admin rail is refused instead of
+counting as the daemon's store. A rail that reports no responder is also settled from the
+lease row, so a live holder on record makes that outcome a refusal rather than an absent
+daemon. Keep delivery on the broker host under `up`, and share one store
 only when you are composing a hosted pair ([embedding](embedding.md#supervisor-signing-authority)).
 
 ### Split host bind
