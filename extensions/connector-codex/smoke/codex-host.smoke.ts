@@ -312,25 +312,28 @@ try {
   // (6) failed: the batch is NOT acked — the backoff timer retries it (the fake's FAIL is
   // one-shot, so the retry completes and acks), and the loop is not wedged afterwards.
   await sleep(300);
+  const failSentAt = Date.now();
   await dm("FAIL this");
   await waitFor("FAIL turn", () => turnStarts().find((t) => t.includes("FAIL this")));
-  const failedCondition = await waitFor("failed-turn presence condition", () =>
-    // `operator.getRoster()` is a SNAPSHOT: the failed turn's condition and the next turn's
-    // `working` (which clears it — safeStatus's condition-clear-on-working, same as a real
-    // operator's dashboard) can both land inside one boundary's async tail, so polling the live
-    // roster can step over the whole window and see only the clear. `presenceLog` recorded every
-    // push as it arrived, so the condition is found even if nothing was polling while it was live.
-    presenceLog.find((e) => e.condition?.source === "rateLimitExceeded")?.condition,
-  );
-  check(
-    "failed turn relays Codex's native error as a rate-limit condition",
-    failedCondition.code === "rate_limit" && failedCondition.message === "fake rate limit",
-    failedCondition,
-  );
+  const failSeenAt = Date.now();
   const retried = await waitFor("failed-turn retry", () =>
     turnStarts().filter((t) => t.includes("FAIL this")).length >= 2 ? true : undefined,
   );
   check("failed turn's batch retries with backoff (never acked-dropped)", retried === true);
+  // The fake fails this turn in the same frame it starts it, so the host handles the start and
+  // the failure in one tick. Its start clears the condition and its failure sets one; the record
+  // that STANDS after the boundary is whichever write went out last. Grade that standing record,
+  // not whether the condition was ever glimpsed: the presence bucket keeps one revision per key,
+  // so a condition written first and cleared a millisecond later may or may not reach a watcher,
+  // and a glimpse would pass by luck. The retry follows a one-second backoff, so every push in the
+  // window after the failed start and before it belongs to the failed turn's boundary.
+  const boundary = presenceLog.filter((e) => e.at >= failSentAt && e.at < failSeenAt + 600);
+  const standing = boundary.at(-1)?.condition;
+  check(
+    "failed turn relays Codex's native error as a rate-limit condition",
+    standing?.code === "rate_limit" && standing.source === "rateLimitExceeded" && standing.message === "fake rate limit",
+    boundary,
+  );
   await dm("after-fail");
   const t6 = await waitFor("post-fail turn", () => turnStarts().find((t) => t.includes("after-fail")));
   check("loop released after the failed batch settled", !t6.includes("FAIL this"), t6);

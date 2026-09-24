@@ -465,6 +465,19 @@ export async function runCodexHost(): Promise<void> {
   let desired: Presence | undefined;
   let desiredCondition: PresenceCondition | null | undefined;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
+  // Presence writes go out IN CALL ORDER. `agent.setStatus("working")` clears the condition before
+  // it publishes, and it awaits the connection first, so two fire-and-forget writes from one tick
+  // can land in either order. Measured: a turn that failed in the tick it started published its
+  // failure condition and then its own start's clear one millisecond later, and the presence
+  // bucket (history 1) dropped the condition revision before any watcher read it. The chain keeps
+  // the start's clear ahead of the failure's condition, so the condition is what the roster shows
+  // until the NEXT turn starts.
+  let presenceChain: Promise<void> = Promise.resolve();
+  const inOrder = (write: () => Promise<void>): Promise<void> => {
+    const next = presenceChain.then(write, write);
+    presenceChain = next.catch(() => {});
+    return next;
+  };
   function armStatusFlush(): void {
     if (flushTimer) return;
     flushTimer = setInterval(() => {
@@ -481,11 +494,10 @@ export async function runCodexHost(): Promise<void> {
       desiredCondition = undefined;
       clearInterval(flushTimer);
       flushTimer = undefined;
-      Promise.resolve()
-        .then(async () => {
-          if (wantCondition !== undefined) await agent.setCondition(wantCondition);
-          if (want) await agent.setStatus(want.status, want.activity);
-        })
+      inOrder(async () => {
+        if (wantCondition !== undefined) await agent.setCondition(wantCondition);
+        if (want) await agent.setStatus(want.status, want.activity);
+      })
         .catch(() => {
           if (!desired) desired = want;
           if (desiredCondition === undefined) desiredCondition = wantCondition;
@@ -499,12 +511,14 @@ export async function runCodexHost(): Promise<void> {
     if (!agent.connected) return armStatusFlush();
     const want = desired;
     desired = undefined;
-    try {
-      await agent.setStatus(status, activity);
-    } catch {
-      if (!desired) desired = want;
-      armStatusFlush();
-    }
+    await inOrder(async () => {
+      try {
+        await agent.setStatus(status, activity);
+      } catch {
+        if (!desired) desired = want;
+        armStatusFlush();
+      }
+    });
   };
 
   const safeCondition = async (condition: PresenceCondition | null): Promise<void> => {
@@ -512,12 +526,14 @@ export async function runCodexHost(): Promise<void> {
     if (!agent.connected) return armStatusFlush();
     const want = desiredCondition;
     desiredCondition = undefined;
-    try {
-      await agent.setCondition(condition);
-    } catch {
-      if (desiredCondition === undefined) desiredCondition = want;
-      armStatusFlush();
-    }
+    await inOrder(async () => {
+      try {
+        await agent.setCondition(condition);
+      } catch {
+        if (desiredCondition === undefined) desiredCondition = want;
+        armStatusFlush();
+      }
+    });
   };
 
   let ready = false; // thread up — never drive before then

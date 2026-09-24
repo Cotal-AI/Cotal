@@ -132,7 +132,9 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
   approval requests relay an `approval` condition. A failed turn maps its native
   `codexErrorInfo` into the closed condition vocabulary and preserves that value in
-  `condition.source`. The model id is reported from the started thread.
+  `condition.source`. Presence writes leave the host in the order the events arrived, so a
+  turn that fails or asks for approval in the tick it started keeps its condition until the
+  next turn starts. The model id is reported from the started thread.
 
   `contextWindowExceeded` maps to `context`; `sessionBudgetExceeded` to `budget`;
   `usageLimitExceeded` to `billing`; `rateLimitExceeded` to `rate_limit`;

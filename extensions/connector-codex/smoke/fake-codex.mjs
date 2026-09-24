@@ -4,7 +4,7 @@
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
 // TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
-// arrives, else self-interrupt after ~1s; FAIL → complete with status "failed";
+// arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
 // default → complete.
 //
 // Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
@@ -301,6 +301,35 @@ async function runTurn(text) {
   activeTurn = turnId;
   activeTurnIsRace = text.includes("RACE");
   rolloutRecord("event_msg", { type: "task_started", turn_id: turnId, started_at: stamp() });
+  if (text.includes("FAIL") && !failUsed) {
+    // A turn that fails on its first request (what a rate limit looks like) ends in the SAME
+    // frame it started in, so the client processes the start and the failed terminal in one
+    // tick. That is the ordering in which the turn's own start-clear can overwrite the failure
+    // condition it publishes; a fixed host keeps the two in call order.
+    failUsed = true;
+    rolloutRecord("event_msg", {
+      type: "task_complete",
+      turn_id: turnId,
+      completed_at: stamp(),
+      error: { message: "fake failure", codex_error_info: "fake" },
+    });
+    if (ROLLOUT_LATE && turnSeq >= 2) materializeRollout();
+    activeTurn = undefined;
+    raw(
+      JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId: THREAD, turn: { id: turnId, status: "inProgress" } } }) +
+        "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: {
+            threadId: THREAD,
+            turn: { id: turnId, status: "failed", error: { message: "fake rate limit", codexErrorInfo: "rateLimitExceeded", willRetry: false } },
+          },
+        }) +
+        "\n",
+    );
+    return;
+  }
   notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
 
   if (activeTurnIsRace) {
@@ -419,42 +448,23 @@ async function runTurn(text) {
     journal({ ev: "died", turnId });
     process.exit(3);
   }
-  const status = text.includes("FAIL") && !failUsed ? "failed" : "completed";
-  if (status === "failed") failUsed = true;
-  if (status === "completed") {
-    rolloutRecord("response_item", {
-      type: "message",
-      role: "assistant",
-      id: `msg_${turnSeq}`,
-      content: [{ type: "output_text", text: `ok:${turnSeq}` }],
-    });
-  }
-  rolloutRecord("event_msg", {
-    type: "task_complete",
-    turn_id: turnId,
-    completed_at: stamp(),
-    error: status === "failed" ? { message: "fake failure", codex_error_info: "fake" } : null,
+  rolloutRecord("response_item", {
+    type: "message",
+    role: "assistant",
+    id: `msg_${turnSeq}`,
+    content: [{ type: "output_text", text: `ok:${turnSeq}` }],
   });
+  rolloutRecord("event_msg", { type: "task_complete", turn_id: turnId, completed_at: stamp(), error: null });
   // The SECOND turn is what materializes the file in `late` mode: the first turn's records are
   // buffered and land the moment it is created, so nothing written before the bind is lost.
   if (ROLLOUT_LATE && turnSeq >= 2) materializeRollout();
-  if (status === "completed")
-    notify("item/completed", {
-      threadId: THREAD,
-      turnId,
-      item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
-    });
-  activeTurn = undefined;
-  notify("turn/completed", {
+  notify("item/completed", {
     threadId: THREAD,
-    turn: {
-      id: turnId,
-      status,
-      ...(status === "failed"
-        ? { error: { message: "fake rate limit", codexErrorInfo: "rateLimitExceeded", willRetry: false } }
-        : {}),
-    },
+    turnId,
+    item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
   });
+  activeTurn = undefined;
+  notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
 }
 
 // One websocket frame is a complete unit (no partial message carries across frames), but it may
