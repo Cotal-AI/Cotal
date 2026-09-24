@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Post-publish installability probe: verify that `npm pack` of the workspace cotal-ai package
- * produces a tarball whose binary is present and runs correctly.
+ * Post-publish installability probe: verify that `npm pack` of the workspace cotal-ai package and
+ * each runtime workspace sibling produces a tarball with its declared entry points.
  *
  * The release pipeline ends at `pnpm publish -r`. Nothing afterwards checks that the published
  * release carries a working binary. Issue #1412 recorded a five-minute window where
@@ -9,20 +9,22 @@
  * check (`npm view`) passed throughout. This probe closes the gap.
  *
  * Steps:
- *   1. `npm pack` the workspace `cotal-ai` package into a tarball.
- *   2. Serve the tarball from a throwaway local HTTP server (fake registry).
- *   3. Extract the tarball into a clean directory and verify the bin entry exists.
- *   4. Run the packed binary (`cotal --version`) and assert the printed version.
- *   5. Run an offline smoke (`cotal --help`) to verify the binary loads without a broken
+ *   1. `npm pack` the workspace `cotal-ai` package and each runtime workspace sibling.
+ *   2. Verify each tarball contains its declared `main` and every string `exports` target.
+ *   3. Serve the binary tarball from a throwaway local HTTP server (fake registry).
+ *   4. Extract the binary tarball into a clean directory and verify the bin entry exists.
+ *   5. Run the packed binary (`cotal --version`) and assert the printed version.
+ *   6. Run an offline smoke (`cotal --help`) to verify the binary loads without a broken
  *      require chain.
  *
- * The probe validates the SHAPE of what `pnpm publish -r` would ship for cotal-ai itself: the
- * tarball contains the expected binary, the version matches, and the binary starts. It is a LEAF
- * job that runs after the `version` job completes, so `gh release create` has already run by then;
- * it reds the overall workflow but does NOT gate the GitHub Release (which is gated by the closure
- * gate from #1502). It packs only the cotal-ai package, so the sibling workspace packages' own
- * packaging (their `files`, `exports` and prepack behaviour) is NOT exercised. It does not cover
- * registry-side propagation or native-asset loading. It never writes to any registry.
+ * The probe validates the SHAPE of what `pnpm publish -r` would ship: every runtime sibling's own
+ * tarball is checked for its declared entry points, and the binary tarball contains the expected
+ * binary, reports the expected version, and starts. It is a LEAF job that runs after the `version`
+ * job completes, so `gh release create` has already run by then; it reds the overall workflow but
+ * does NOT gate the GitHub Release (which is gated by the closure gate from #1502). The binary still
+ * runs against workspace-resolved siblings; the sibling tarballs are checked for shape, not installed
+ * together. It does not cover registry-side propagation or native-asset loading. It never writes to
+ * any registry.
  *
  * Exit codes:
  *   0  PASS
@@ -32,7 +34,7 @@
  */
 import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +64,79 @@ export function packPackage(pkgDir, outDir) {
     throw new Error(`npm pack did not produce expected tarball: ${tarball}`);
   }
   return tarball;
+}
+
+/**
+ * Return every string target reachable from an exports value, including nested conditions.
+ */
+export function collectExportTargets(value) {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(collectExportTargets);
+  if (value && typeof value === "object") {
+    return Object.values(value).flatMap(collectExportTargets);
+  }
+  return [];
+}
+
+function packedTargetExists(files, target) {
+  const relative = target.startsWith("./") ? target.slice(2) : target;
+  if (!relative.includes("*")) return files.has(relative);
+  const pattern = relative
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".+");
+  const matcher = new RegExp(`^${pattern}$`);
+  return [...files].some((file) => matcher.test(file));
+}
+
+/**
+ * Pack one package and verify that its declared entry points are present in the tarball.
+ */
+export function verifyPackageTarball(pkgDir, outDir) {
+  const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+  mkdirSync(outDir, { recursive: true });
+  const tarball = packPackage(pkgDir, outDir);
+  const packedFiles = new Set(
+    execFileSync("tar", ["tzf", tarball], { encoding: "utf8" })
+      .split("\n")
+      .filter((entry) => entry.startsWith("package/") && !entry.endsWith("/"))
+      .map((entry) => entry.slice("package/".length)),
+  );
+  const missing = [];
+
+  if (packedFiles.size === 0) missing.push("<empty tarball>");
+  if (typeof pkg.main === "string" && !packedTargetExists(packedFiles, pkg.main)) {
+    missing.push(pkg.main);
+  }
+  for (const target of collectExportTargets(pkg.exports)) {
+    if (!packedTargetExists(packedFiles, target)) missing.push(target);
+  }
+
+  return { name: pkg.name, tarball, packedFiles: [...packedFiles], missing, pass: missing.length === 0 };
+}
+
+function findWorkspacePackageDir(packageName) {
+  for (const parent of ["packages", "extensions", "implementations"]) {
+    const parentDir = join(ROOT, parent);
+    for (const entry of readdirSync(parentDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const packageDir = join(parentDir, entry.name);
+      const manifest = join(packageDir, "package.json");
+      if (!existsSync(manifest)) continue;
+      const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+      if (pkg.name === packageName) return packageDir;
+    }
+  }
+  throw new Error(`workspace package not found: ${packageName}`);
+}
+
+function runtimePackageDirs(binDir) {
+  const pkg = JSON.parse(readFileSync(join(binDir, "package.json"), "utf8"));
+  const siblingNames = Object.entries(pkg.dependencies ?? {})
+    .filter(([, spec]) => typeof spec === "string" && spec.startsWith("workspace:"))
+    .map(([name]) => name)
+    .sort();
+  return [binDir, ...siblingNames.map(findWorkspacePackageDir)];
 }
 
 /**
@@ -206,12 +281,23 @@ export async function probe() {
   const tmp = mkdtempSync(join(tmpdir(), "cotal-install-probe-"));
 
   try {
-    // Step 1: Pack
-    console.log("1. Packing cotal-ai tarball");
-    const tarball = packPackage(binDir, tmp);
-    check("npm pack produced a tarball", existsSync(tarball), tarball);
+    // Steps 1-2: Pack the binary and its runtime siblings, then inspect their own tarballs.
+    console.log("1. Packing runtime package tarballs");
+    const packageResults = runtimePackageDirs(binDir).map((packageDir) =>
+      verifyPackageTarball(packageDir, tmp),
+    );
+    for (const result of packageResults) {
+      check(
+        `${result.name} tarball contains its declared entry points`,
+        result.pass,
+        result.pass ? undefined : { package: result.name, missing: result.missing },
+      );
+    }
+    const binResult = packageResults.find((result) => result.name === "cotal-ai");
+    if (!binResult) throw new Error("packed cotal-ai tarball result not found");
+    const tarball = binResult.tarball;
 
-    // Step 2: Serve from fake registry (validates the registry machinery)
+    // Step 3: Serve from fake registry (validates the registry machinery)
     console.log("2. Starting local registry");
     const reg = await startFakeRegistry(tarball, "cotal-ai", version);
     // Fetch the packument to validate registry shape
@@ -223,7 +309,7 @@ export async function probe() {
     );
     await reg.close();
 
-    // Step 3: Extract and verify bin
+    // Step 4: Extract and verify bin
     console.log("3. Extracting tarball and verifying bin entry");
     const pkgDir = extractTarball(tarball, join(tmp, "extracted"));
     const binInfo = verifyBinEntry(pkgDir);
@@ -234,7 +320,7 @@ export async function probe() {
       { binPath: binInfo.binPath, exists: binInfo.exists },
     );
 
-    // Step 4: Version check (runs the PACKED binary from the tarball, not the workspace copy)
+    // Step 5: Version check (runs the PACKED binary from the tarball, not the workspace copy)
     console.log("4. Checking cotal --version");
     const versionResult = runBinary(binInfo.binPath, ["--version"]);
     check(
@@ -248,7 +334,7 @@ export async function probe() {
       { expected: version, got: versionResult.stdout },
     );
 
-    // Step 5: Offline smoke
+    // Step 6: Offline smoke
     console.log("5. Running offline smoke (cotal --help)");
     const helpResult = runBinary(binInfo.binPath, ["--help"]);
     check(
