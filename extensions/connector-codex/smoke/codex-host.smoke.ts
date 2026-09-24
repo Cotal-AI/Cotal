@@ -32,7 +32,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, type PresenceCondition } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -121,9 +121,20 @@ const operator = new CotalEndpoint({
 });
 operator.on("error", () => {});
 let online = false;
-operator.on("presence", (e: { type: string; presence: { card: { id: string; name: string } } }) => {
+// Every presence event the operator has seen for PEER, in arrival order. A condition can be
+// published and cleared again within one boundary's async tail (the next turn's `working`
+// transition wipes it, same as any real operator's dashboard would lose it if they blinked) —
+// polling `operator.getRoster()` for it is a snapshot race that can step over the window
+// entirely. Recording every push as it lands, the way `logEntries()` does for the fake's own
+// journal, means a condition that was genuinely published is never missed just because nothing
+// polled while it was live.
+const presenceLog: { at: number; status?: string; condition?: PresenceCondition }[] = [];
+operator.on("presence", (e: { type: string; presence: { card: { id: string; name: string }; status?: string; condition?: PresenceCondition } }) => {
   const c = e.presence.card;
-  if ((c.id === PEER || c.name === PEER) && e.type !== "offline") online = true;
+  if ((c.id === PEER || c.name === PEER) && e.type !== "offline") {
+    online = true;
+    presenceLog.push({ at: Date.now(), status: e.presence.status, condition: e.presence.condition });
+  }
 });
 
 /** DM the peer by its ROSTER id (principal dot-form) — names are not unicast recipients. */
@@ -303,10 +314,14 @@ try {
   await sleep(300);
   await dm("FAIL this");
   await waitFor("FAIL turn", () => turnStarts().find((t) => t.includes("FAIL this")));
-  const failedCondition = await waitFor("failed-turn presence condition", () => {
-    const condition = operator.getRoster().find((p) => p.card.name === PEER)?.condition;
-    return condition?.source === "rateLimitExceeded" ? condition : undefined;
-  });
+  const failedCondition = await waitFor("failed-turn presence condition", () =>
+    // `operator.getRoster()` is a SNAPSHOT: the failed turn's condition and the next turn's
+    // `working` (which clears it — safeStatus's condition-clear-on-working, same as a real
+    // operator's dashboard) can both land inside one boundary's async tail, so polling the live
+    // roster can step over the whole window and see only the clear. `presenceLog` recorded every
+    // push as it arrived, so the condition is found even if nothing was polling while it was live.
+    presenceLog.find((e) => e.condition?.source === "rateLimitExceeded")?.condition,
+  );
   check(
     "failed turn relays Codex's native error as a rate-limit condition",
     failedCondition.code === "rate_limit" && failedCondition.message === "fake rate limit",
@@ -338,10 +353,12 @@ try {
 
   await dm("APPROVAL probe");
   await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "item/commandExecution/requestApproval"));
-  const approvalCondition = await waitFor("approval presence condition", () => {
-    const condition = operator.getRoster().find((p) => p.card.name === PEER)?.condition;
-    return condition?.source === "item/commandExecution/requestApproval" ? condition : undefined;
-  });
+  const approvalCondition = await waitFor("approval presence condition", () =>
+    // Same race as the failed-turn condition above: the approval `waiting` condition and a
+    // later turn's `working` (which clears it) can both land before anything polls the live
+    // roster. Read the recorded push log instead of `operator.getRoster()`.
+    presenceLog.find((e) => e.condition?.source === "item/commandExecution/requestApproval")?.condition,
+  );
   check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
 
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
