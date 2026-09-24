@@ -2730,6 +2730,33 @@ export class Manager {
     return caller;
   }
 
+  /** A baseline seat may answer only the pause whose relay is pending on that exact incarnation.
+   *  Explicit `run` holders and unmanaged operator instruments keep the run capability's existing
+   *  answer reach. The relay payload is manager-held state written by the runtime, never request
+   *  input, and its token is checked against the open checkpoint before any answer is filed. */
+  private authorizeRunAnswer(ctx: EpServeContext, args: { runId: string; stepKey: string }, open: { token: string }): void {
+    const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    const agent = [...this.agents.values()].find((a) =>
+      this.managedPrincipal(a) === caller && a.lifecycleUid === ctx.subject.caller.uid);
+    if (agent === undefined || agent.launch.capabilities?.includes("run")) return;
+    const pending = [...this.pendingTurns.values()].find((p) =>
+      p.seat.owner === ctx.subject.caller.owner
+      && p.seat.actor === ctx.subject.caller.actor
+      && p.seat.uid === ctx.subject.caller.uid);
+    if (pending === undefined)
+      throw new EpEnvelopeError("permission-denied", `run-answer is allowed to this baseline seat only for a pending ask or escalation addressed to its own incarnation; none is pending for ${agent.name}`);
+    let payload: unknown;
+    try { payload = JSON.parse(pending.payload); } catch {
+      throw new EpEnvelopeError("permission-denied", `turn "${pending.goalId}" carries no readable ask or escalation authorization; run-answer is refused`);
+    }
+    const p = payload as { run?: unknown; step?: unknown; ask?: { token?: unknown }; checkpoint?: { token?: unknown; escalatedTo?: unknown } };
+    const addressedToken = typeof p.ask?.token === "string" ? p.ask.token
+      : p.checkpoint?.escalatedTo === agent.name && typeof p.checkpoint?.token === "string" ? p.checkpoint.token
+      : undefined;
+    if (p.run !== args.runId || p.step !== args.stepKey || addressedToken !== open.token)
+      throw new EpEnvelopeError("permission-denied", `run-answer is allowed to ${agent.name} only for the open pause named by its pending ask or escalation relay; ${args.runId} ${args.stepKey} is not that pause`);
+  }
+
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -2867,7 +2894,10 @@ export class Manager {
       // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
       runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
       runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
-      runAnswer: (ctx) => this.serveGated(ctx, () => this.runHost().answer(args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, this.runAnswerer(ctx))),
+      runAnswer: (ctx) => this.serveGated(ctx, () => {
+        const input = args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string };
+        return this.runHost().answer(input, this.runAnswerer(ctx), (open) => this.authorizeRunAnswer(ctx, input, open));
+      }),
       runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),
       runPs: (ctx) => this.serveGated(ctx, () => this.runHost().list(args(ctx) as { endpoint?: string })),
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),

@@ -244,8 +244,8 @@ export const AUTOMATIC_QUEUE_STALL_MS = 600_000;
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
  *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
  *  a checkpoint is answered through). Empty when the payload carries no ask. */
-function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }, seatName: string): string {
-  const escalation = renderEscalation(p, seatName);
+function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }): string {
+  const escalation = renderEscalation(p);
   if (escalation !== "") return escalation;
   const ask = p.ask;
   if (ask === null || typeof ask !== "object") return "";
@@ -256,14 +256,14 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; che
   const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json record>'`;
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;
 }
 
 /** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
  *  carries a schema, and the same answer command an ask uses. The runtime submitted this shape from
  *  the day escalations were relayed, and the seat read `ask` alone: the addressee was woken with a
  *  context block and no question, auto-yielded `done`, and the pause ran to its own expiry. */
-function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }, seatName: string): string {
+function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }): string {
   const cp = p.checkpoint;
   if (cp === null || typeof cp !== "object") return "";
   const c = cp as { prompt?: unknown; schema?: unknown; deadlineAt?: unknown };
@@ -271,7 +271,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
   const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
   const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
   return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json>'`;
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
 }
 
 export class MeshAgent extends EventEmitter {
@@ -1576,7 +1576,10 @@ export class MeshAgent extends EventEmitter {
    *  as a manager that did not answer. */
   async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>): Promise<ControlReply> {
     await this.requireConnected();
-    return this.managerInvoke(`run-${verb}`, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
+    return this.managerInvoke(`run-${verb}`, args, {
+      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+      ...(verb === "answer" ? { target: { mode: "self" as const } } : {}),
+    });
   }
 
   // ---- the turn relay (seat side) ------------------------------------------------------------
@@ -1651,7 +1654,7 @@ export class MeshAgent extends EventEmitter {
       try {
         const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown; checkpoint?: unknown };
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
-        ask = renderAskRequest(p, this.config.name);
+        ask = renderAskRequest(p);
       } catch { /* opaque payload — surface it as it came */ }
       return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}${ask}`;
     });

@@ -337,7 +337,13 @@ conclave cancelled on a losing branch is released by the same cancellation sweep
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
 token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
-seat's connector renders as the record wanted and the command that answers it. An ask addresses
+seat's connector renders as the record wanted and the hosted command that answers it. When that
+literal command is run inside the managed seat, the CLI reuses the seat's lifecycle credential and
+issued caller identity rather than minting an operator instrument. The command
+does not take `--by`: the manager records the authenticated caller as the answerer. A spawned seat's
+baseline credential carries only the self-targeted `run-answer` row, and the manager accepts it only
+for the open ask or escalation relayed to that exact incarnation. It cannot answer another seat's
+ask, an unrelayed checkpoint, another run, or start and resume commands. An ask addresses
 an agent the run spawned (anything else refuses before an attempt opens), a resumed attempt tells
 the seat nothing twice, and a seat gone at the relay is L4002. On the pause itself:
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
@@ -375,7 +381,7 @@ catchable L4002, and a death the manager marked on the deadline terminal reads t
 turns on one seat, from two branches or from two runs, reach it one at a time: the language
 dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
 turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
-credential carries its own pull and yield rows, the run driver's operator instrument carries the
+credential carries its own pull, yield, and caller-bound answer rows, the run driver's operator instrument carries the
 turn request, and the manager arms the deadline hold over its own serve grant and expires it
 itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
 it bound, and a retry of that submission is refused naming the terminal rather than accepted a

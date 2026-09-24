@@ -310,7 +310,11 @@ export class RunHosting {
    *  one minted for that pause's token alone, so the writes reach no other pause on the endpoint.
    *  `by` is the caller as the manager knows them, decided by the serve layer from the
    *  authenticated principal (SPEC 14.5), never read from the request. */
-  async answer(args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, by: string): Promise<unknown> {
+  async answer(
+    args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string },
+    by: string,
+    authorize?: (open: RunHostOpenPause) => void | Promise<void>,
+  ): Promise<unknown> {
     const host = this.host();
     const endpoint = args.endpoint ?? this.ctx.endpoint;
     let open: RunHostOpenPause;
@@ -324,6 +328,7 @@ export class RunHosting {
       if ((e as { name?: string }).name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", (e as Error).message);
       throw e;
     }
+    await authorize?.(open);
     return await this.withOperator({ endpoint, answers: { token: open.token } }, (planes) =>
       host.answer(planes, {
         endpoint,

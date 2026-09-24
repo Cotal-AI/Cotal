@@ -13,8 +13,8 @@
     "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
     "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment.",
     "",
-    "M2 restores revision 14 after classSpawn is a SECOND output change on top of",
-    "static reconciliation. Both surface changes ship, so 14 would name only one of them. The",
+    "M2 restores revision 16 after resolve-cwd is the next shipped command change. The new command",
+    "ships with its contract and handler, so 16 would name the preceding surface. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
     "actual shipped document.",
     "",
@@ -34,10 +34,10 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 15 after resolve-cwd is added",
+      "name": "M2 keep revision 16 after resolve-cwd is added",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 16,",
-      "replace": "    revision: 15,",
+      "find": "    revision: 17,",
+      "replace": "    revision: 16,",
       "expectRed": "resolve-cwd advances the manager cluster revision",
       "cell": "resolve-cwd advances the manager cluster revision"
     },
