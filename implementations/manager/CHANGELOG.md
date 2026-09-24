@@ -1,5 +1,21 @@
 # @cotal-ai/manager
 
+## 0.53.0
+
+### Minor Changes
+
+- 104921c: Let remote user-auth managers renew registration executors and recover stopped or frozen manager registrations through host-scoped eviction and guarded reconciliation.
+
+### Patch Changes
+
+- d1f9703: Supervise of a registered remote user-auth space no longer composes or validates local trust under remote authority. A root hosting an unrelated static space's trust records beside the participant sign-in used to fail with a corrupt-bundle refusal; the manager now consults the store only for the supervised space's own records (account record, or a legacy bundle naming the space), refusing that combination of authorities while other tenants' records are never used. An unreadable record on a key that is read refuses loud with the store's own parse message.
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+  - @cotal-ai/seat@0.53.0
+
 ## 0.52.1
 
 ### Patch Changes
