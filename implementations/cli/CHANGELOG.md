@@ -1,5 +1,46 @@
 # @cotal-ai/cli
 
+## 0.52.0
+
+### Minor Changes
+
+- 6595c48: The console can drive the mesh as well as watch it. Every operator action (kill, spawn, status, purge, channel delete, attach) rides the CLI's own per-action control path over the endpoint rails, never the observer, using only the manager commands that already exist; `a` attaches through the full `cotal attach` loop in place; on an open mesh the operator's first send starts a presence-only peer under the observer's card so agents can reply, with concurrent sends sharing that startup result; multi-manager reads keep silent instances separate from reachable error replies; the topology lens overlays the broker-authoritative membership feed and says live, stale, traffic-only, or unreadable; channel tabs carry unread badges, the roster tags each agent's harness, the agent detail lists runs, model, and skills, and the status bar draws a 60-second activity sparkline.
+
+### Patch Changes
+
+- a08528a: `cotal up --no-manager`: an explicit broker-only boot. The flag starts the broker and, in auth mode, the delivery daemon, and no local manager, on every `up` path (fresh boot, `--detach`, refresh, `-f` manifest). A refresh under the flag of a mesh whose manager is live refuses with the `cotal down manager` remedy rather than silently keeping or stopping it. `--runtime` and `--max-sessions` are refused beside it, and a manifest declaring agents under it is refused before anything boots. The `--detach` summary lists only what actually started, and `-f --dry-run` prints the omission. Fixes #1417.
+- 1d2daa6: Bare `cotal down` names a registered live broker that answers when this stack holds no pidfile for it, whether or not other owned components were running: those stop and clear their artifacts first. It prints the space, the broker address, that no pidfile records the process, and that it will not stop a process it did not start, then exits 1. The broker is left to whatever started it.
+- 600216a: The setup finale, the `cotal up` closing line, and the onboarding docs (Quickstart, README, Watch a mesh, docs index) now lead with `cotal web` as the watch step of the loop and name `cotal console` as the terminal alternative, instead of putting the terminal console in the loop and mentioning the dashboard as an afterthought. The Quickstart loop is four commands: start, talk, watch in the browser, stop.
+- cf5a5cb: The renewal record is per-space: `renewalRecordPath(root, space)` now writes and reads `.cotal/renewal.<spaceKey>.json`, keyed by the same injective hex the pidfiles use, and every writer and reader threads the space — the manager's renewal pass, `doctor auth --fix`'s write, `doctor auth`'s verdict reads, and `status --components`' delivery row. Before, one root-scoped `.cotal/renewal.json` served every space at a root, so with two spaces co-resident the last pass won: a refused adoption in one space was reported as accepted once the other's manager ran a clean pass, and the mirror case reddened a healthy space's doctor. A root-only `renewal.json` left by a pre-per-space build names no space and is never read as any space's verdict; `doctor auth` names it as a leftover with its cleanup, and `cotal clean all` removes it beside the per-space record. Fixes #1850.
+- 7940589: `cotal agent-bearer` skips the connector-seed boot gate. The helper is exec'd by a spawned seat on every bearer refresh, so a seed store stamped newer than the invoking binary refused its boot before the token file was read and a live seat died at its token expiry, while a matching generation made the credential exchange write every connector payload into the operator-global store. The skip is by command name (like `ext root`), with no environment flag: the helper reads one 0600 token file, exchanges it and prints the bearer without consulting or mutating the store. The generation guard and the auto-seed on operator-facing commands are unchanged. Fixes #1857.
+- ab0808c: `cotal up --max-file-store <bytes>` sets the broker's JetStream file storage cap. Before, the rendered broker config carried only `store_dir`, so nats-server always sized its store at start as three quarters of the free disk and an operator on a shared disk had no supported way to bound it. `serverConfig` and `openServerConfig` take an optional `maxFileStore` byte count and render `max_file_store` inside the `jetstream{}` block; left unset, the rendered config is byte-identical to before, and a zero, negative or non-integer value throws naming the option. The cap is recorded on the mesh entry, carried through `down --preserve-state` into the resume, and rendered again by the bare `cotal up` that resumes it. A resume or a refresh of a running mesh that asks for a different cap is refused, because nats-server fixes the cap at start and refuses a reload that changes it. The flag is refused with `-f`. Fixes #1888.
+- 4a41fd5: `cotal spawn` (foreground, user-auth mesh): the launch line now names what cleanup does on the arm that printed it. The local arm keeps its sentence (the actor row is revoked automatically on exit). The remote arm (a one-time enrollment or the advertised agent-provisioning endpoint) no longer promises that revocation: its sentence says this machine's credential files are removed on exit and the grant stays until the mesh operator revokes it, which is what its cleanup does. No cleanup behavior changed on either arm. Fixes #1837.
+- 6b375c8: `cotal update` reports every running manager's continuity, and its refusal carries the remedy
+
+  With several meshes running and the shell outside every project root, the continuity check printed
+  the mesh resolver's bare text and exited before writing anything. It now renders that refusal through
+  the workspace renderer, the way every other command does, so it carries the `--space` / `cotal use`
+  recovery sentence. And because the install replaces the single `cotal-ai` that every running manager
+  shares, an unselected run now reports each running manager in turn instead of refusing, with any
+  `legacy` verdict making the whole run not a hot update. `--space`, `--server` and `--creds` still
+  select exactly one manager, and nothing is written until every selected manager has been observed.
+
+- 50998a8: `cotal status` answers for a user-auth space whose material is a remote registry entry (a discovered space or a `meshes add --from` registration) instead of a local provisioning: the bare-status login row shows the signed-in subject from the entry's pinned IdP (grant reads as "not checkable on this machine", since the ledger runs where the space was provisioned), and `status --components` probes the manager as the signed-in login — the same credential `ps` uses — instead of minting static creds or connecting with none. A user-mode components row that cannot obtain that credential states the reason on the row (verdict `refused`), never a raw Authorization Violation. In user mode the manager row grades `serving` on the manager's own typed service answer, because the manager-lease sweep is a host credential an interactive bearer does not hold. The bare-status delivery responder axis stays `unknown` in user mode, as its comment states. Status still never static-mints on a user-auth mesh, and a signed-out machine still gets the offline "not signed in" row with the exact login command and no network round trip. Refs #1832.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+
 ## 0.51.0
 
 ### Minor Changes

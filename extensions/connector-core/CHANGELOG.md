@@ -1,5 +1,25 @@
 # @cotal-ai/connector-core
 
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 6595c48: The console can drive the mesh as well as watch it. Every operator action (kill, spawn, status, purge, channel delete, attach) rides the CLI's own per-action control path over the endpoint rails, never the observer, using only the manager commands that already exist; `a` attaches through the full `cotal attach` loop in place; on an open mesh the operator's first send starts a presence-only peer under the observer's card so agents can reply, with concurrent sends sharing that startup result; multi-manager reads keep silent instances separate from reachable error replies; the topology lens overlays the broker-authoritative membership feed and says live, stale, traffic-only, or unreadable; channel tabs carry unread badges, the roster tags each agent's harness, the agent detail lists runs, model, and skills, and the status bar draws a 60-second activity sparkline.
+
+### Patch Changes
+
+- 794acb1: The version-exact docs bundle `cotal_docs` serves is generated during the connector's build instead of being committed. Any two branches that regenerated the same region of the checked-in artifact conflicted in it while their source pages merged cleanly, so editing a docs page now means editing the page and nothing else. `check:docsbundle` can no longer diff a committed file, so it regenerates into a temporary path and refuses a generator failure or a hollow bundle, which keeps a release unable to ship empty docs; the upgrade-section gate regenerates the same way instead of reading the tree behind an `existsSync` that silently dropped its shipped-copy check when the file was absent. Fixes #1713.
+- 9269fc2: Keep a jcode seat with events enabled alive through a mesh rebuild window. Previously an event
+  flush or run close that ran while the endpoint was reconnecting read `max_payload` off a connection
+  that was not there, and the seat exited 1 with `AG-UI emitter stopped: ... max_payload is only
+known while connected`. `AguiEmitterHolder` takes an optional `waitLive` hook that a queued step
+  awaits before it measures and publishes. The jcode host waits on both the Cotal bind and the raw
+  transport, so the queued records publish in order once the connection is live, with none dropped or
+  duplicated. A seat stopped during the outage still exits, and its unpublished records stay in
+  the journal behind the stored cursor. Every other emitter failure stays terminal. Connectors that do
+  not pass the hook behave as before. Fixes #1868.
+
 ## 0.51.0
 
 ### Minor Changes

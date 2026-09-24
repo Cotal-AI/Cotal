@@ -1,5 +1,34 @@
 # @cotal-ai/runtime
 
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 5b2c19f: Let hosted workflow runs resolve an existing absolute working directory on the selected manager and launch the placed seat in its canonical path.
+
+### Patch Changes
+
+- c902af4: `settleOnce` now drains the fire pump before it returns: the wait's answer is still decided by the race (fact, failure, or cancellation), but the settle does not return until the pump's in-flight `takeFire` has ended, and the pump re-checks `wait.over` after each fire so it stops without starting another. Before (#1460), a settle whose fire was mid-flight returned as soon as its fact was observed, so a completed `driveRun` could resolve while the pump's journal replay under the run's takeover id was still open — the replay consumer appeared after the drive had returned, and the next reader under the same takeover hit `RunJournalReplayRaced` cross-process about a driver that no longer existed. A failed pump still raises through the drain exactly as it did through the race.
+- c44aaf8: Show a settled workflow pause's accepted answer and attribution in the run journal.
+- 8bd4279: `cotal run migrate <runId> --local --file <program>` now runs the migrate check from the terminal. The check existed as `migrateRun` and nothing could call it: the verb table refused `migrate` as usage, while `resume --file` refused an edited program and named "a migration or a fork" as the remedy. The verb reads the run record (pins read back, never re-derived) and the journal under the same one-shot run-operator credential `journal` uses, walks the edited program over the recorded journal, prints whether the migration is admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and code, the divergence or unwalkable step when there is one, and exits 0 on admissible and non-zero on not. It writes nothing: the commit side (`commitMigration`) is not reachable from any surface yet, and the printed report says what a commit would file and that this invocation filed nothing. Commit-side overrides (`--adopt`, `--release`, `--discard-approvals`) are parsed only so the verb can refuse them by name, and the hosted path refuses with the sentence naming `--local` (the manager serves no run-migrate command). Refs #1529.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [7ea6fee]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+  - @cotal-ai/lang@0.52.0
+
 ## 0.51.0
 
 ### Patch Changes

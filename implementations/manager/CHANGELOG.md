@@ -1,5 +1,34 @@
 # @cotal-ai/manager
 
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 5b2c19f: Let hosted workflow runs resolve an existing absolute working directory on the selected manager and launch the placed seat in its canonical path.
+
+### Patch Changes
+
+- c44aaf8: Show a settled workflow pause's accepted answer and attribution in the run journal.
+- e064fa2: The manager's reap line now says which door stopped a seat and who asked: a requested stop names the authenticated requesting principal (`at u_alice.actor's request`), a self-stop, a recursive reap (naming the parent that left) and a manager shutdown each render their own sentence, and the shutdown teardown — which previously printed no line at all — now logs one line per seat. The former combined `this manager stopped it (despawn or shutdown)` text is gone. Refs #1423
+- cf5a5cb: The renewal record is per-space: `renewalRecordPath(root, space)` now writes and reads `.cotal/renewal.<spaceKey>.json`, keyed by the same injective hex the pidfiles use, and every writer and reader threads the space — the manager's renewal pass, `doctor auth --fix`'s write, `doctor auth`'s verdict reads, and `status --components`' delivery row. Before, one root-scoped `.cotal/renewal.json` served every space at a root, so with two spaces co-resident the last pass won: a refused adoption in one space was reported as accepted once the other's manager ran a clean pass, and the mirror case reddened a healthy space's doctor. A root-only `renewal.json` left by a pre-per-space build names no space and is never read as any space's verdict; `doctor auth` names it as a leftover with its cleanup, and `cotal clean all` removes it beside the per-space record. Fixes #1850.
+- 09fa8d8: Importing the manager package no longer compiles its service contracts at module scope. Every CLI invocation loads the module before its verb is read (`bin/run.ts` self-registers the manager surface), and the eager Ajv compile of all 41 distinct schema roots cost ~1.8 CPU-seconds paid by `cotal --version` (#1323; an empty node process costs ~28 ms). Command pairs now compile on first access — `managerCommandDefs` materializes the full table at serve registration, where the validators are needed and a compile failure surfaces with the same error class as before — and the §13.7 cluster document derives each command's digests from the source schema through the same member-free manifest construction the profile uses, so all digests stay byte-identical and describe-only readers never compile. `MANAGER_CONTRACTS`, `MANAGER_STATUS_CONTRACT`, and every other export keep their names and types. Measured on a built tree: `cotal --version` median CPU 1.819 s -> 0.867 s; the contract module's import cost 739 ms -> ~200 ms wall (the remainder is the core/cli import graphs, unchanged). Refs #1323.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+  - @cotal-ai/seat@0.52.0
+
 ## 0.51.0
 
 ### Minor Changes
