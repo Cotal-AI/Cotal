@@ -45,6 +45,15 @@ const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const OIDC_AUDIENCE = "npm:registry.npmjs.org";
 const WORKFLOW_FILE = ".github/workflows/changesets.yml";
 const REQUIRED_ENVIRONMENT = "npm-publish";
+const NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES = [
+  "NPM_TOKEN",
+  "NODE_AUTH_TOKEN",
+  "npm_config__authToken",
+  "pnpm_config__auth",
+  "PNPM_CONFIG__AUTH",
+  "npm_config_//registry.npmjs.org/:_authToken",
+  "pnpm_config_//registry.npmjs.org/:_authToken",
+];
 
 function decodeJwtPayload(token) {
   const parts = token.split(".");
@@ -348,6 +357,10 @@ export async function preflightNpmPublish({
   fetchImpl = fetch,
   log = console.log,
 }) {
+  const accessTokenVariable = NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES.find((name) => Boolean(env[name]));
+  if (accessTokenVariable) {
+    throw new Error(`publish preflight refused: ${accessTokenVariable} is set; release publishes through OIDC only`);
+  }
   let packages;
   try {
     packages = validateReleaseSet(fixedPackages, workspacePackages);
@@ -423,11 +436,6 @@ export async function preflightNpmPublish({
         row.direct = "not-run";
       }
     }
-  } else if (env.NPM_TOKEN || env.NODE_AUTH_TOKEN) {
-    for (const row of rows) {
-      row.oidc = "not-available:classic-token";
-      row.direct = "not-available:classic-token";
-    }
   } else {
     for (const row of rows) {
       row.oidc = "refused:no publish credential path";
@@ -435,6 +443,9 @@ export async function preflightNpmPublish({
     }
   }
   printPublishCensus(rows, log);
+  // The post-census refusal contract is limited to the OIDC, stage-only, and direct-publish
+  // refusals below. Every other direct result is either createPackage or the trust-read 401
+  // exception, which cannot prove Allowed actions because npm requires an access token for it.
   const refusedOidc = rows.filter((row) => row.oidc.startsWith("refused:"));
   if (refusedOidc.length) throw new Error(`npm OIDC exchange refused ${refusedOidc.length}/${rows.length} packages`);
   const stageOnly = rows.filter((row) => row.direct === "stage-only");
@@ -446,7 +457,6 @@ export async function preflightNpmPublish({
     throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);
   }
   const unproven = rows.filter((row) => row.direct !== "createPackage"
-    && row.direct !== "not-available:classic-token"
     && row.direct !== "unverifiable:trust-endpoint-needs-npm-token");
   if (unproven.length) {
     throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);
