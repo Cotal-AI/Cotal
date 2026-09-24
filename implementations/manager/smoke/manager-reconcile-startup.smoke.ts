@@ -33,6 +33,9 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  deliveryBucket,
+  leaseKey,
+  principalKey,
   mintCheckpoint,
   mintLifecycleUid,
   setupSpaceStreams,
@@ -59,6 +62,11 @@ import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot, staticLifecycleTransport } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";
+
+// The machine-home registry is not under test; a foreign or damaged record in the operator's
+// ~/.cotal must not refuse this suite's starts (loadMeshes reads every record it finds).
+for (const k of Object.keys(process.env)) if (k === "COTAL_HOME" || k.startsWith("COTAL_")) delete process.env[k];
+process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "cotal-reconcile-start-home-"));
 
 const ORPHANS = 8;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -596,6 +604,116 @@ try {
     await adopting.stop({ withAgents: true }).catch(() => {});
   }
 
+  // ── SR1 (#1694) reproduction: a queue-grouped NON-HOLDER answers the store-identity challenge ──
+  //
+  // The delivery-admin rail is a queue group: EVERY process holding a `delivery` credential for the
+  // space is bound, while only the holder of `lease.0` reloads standing credentials. Two responders
+  // are stood up here — the LEASE HOLDER (holding `lease.0`, written in the row shape `encodeLease`
+  // produces, answering with a FOREIGN store so it can never pass the identity comparison) and a
+  // NON-HOLDER (bound alongside, naming the manager's own store). The main manager above is stopped
+  // first (a second manager in one space needs a second root, and none is needed here); the
+  // reproduction manager shares the ORIGINAL root so the non-holder's "manager-own" store is a true
+  // match. Drive the ownership decision (`claimDaemonRenewalOwnership`, the public path start() and
+  // every renewal pass take) until the non-holder answers, and observe the manager read "shared"
+  // off a process that holds no lease and TAKE the renewal lease. AT THE BASE this cell is GREEN
+  // (the bare `SecretStoreIdentity` reply carries no answerer, so the manager cannot tell who
+  // answered) — that green IS the defect #1694 files.
+  {
+    await manager!.stop({ withAgents: true }).catch(() => {});
+    await delivery!.stop().catch(() => {});
+
+    const holderId = newIdentity();
+    const holder = new CotalEndpoint({
+      space,
+      servers: broker.servers,
+      creds: await mintCreds(auth, holderId, "delivery"),
+      card: { id: holderId.id, name: "delivery-holder", role: "delivery", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    });
+    holder.on("error", () => {});
+    await holder.start();
+    // The row `acquireDeliveryLease` writes: holder in wire dot-form + a per-instance incarnation,
+    // TTL maintained by the bucket. Written through the holder's own `delivery` cred (the one
+    // writer of lease keys), exactly as the endpoint's acquire does. This daemon is the process
+    // that reloads the standing credentials, and its store is deliberately NOT the manager's.
+    let holderAnswers = 0;
+    const evict = async (req: { op: string; args?: unknown }): Promise<ControlReply> => {
+      if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
+      const principal = String((req.args as { principal?: unknown })?.principal ?? "");
+      return {
+        ok: true,
+        data: await evictDeniedPrincipalWithCreds({
+          servers: broker.servers,
+          observerCreds,
+          evictorCreds,
+          accountId: auth.account.pub,
+          principal,
+        }),
+      };
+    };
+    holder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+      if (req.op === "reloadStoreIdentity") {
+        holderAnswers++;
+        return { ok: true, data: { kind: "fs", root: join(workspaceRoot, "holder-store") } };
+      }
+      return evict(req);
+    }, { boundReply: true });
+    const leaseRow = new TextEncoder().encode(JSON.stringify({
+      holder: principalKey("local", holderId.id).key,
+      incarnation: randomUUID(),
+      since: Date.now(),
+      ready: true,
+    }));
+    {
+      const bucket = await (holder as unknown as {
+        deliveryRegistry(): Promise<{ create(k: string, v: Uint8Array): Promise<number>; destroy(k: string): Promise<boolean> }>;
+      }).deliveryRegistry();
+      await bucket.destroy(leaseKey(0)).catch(() => {});
+      await bucket.create(leaseKey(0), leaseRow);
+    }
+
+    // The NON-HOLDER: same rail, no lease, names the MANAGER'S OWN store. Whichever of the two the
+    // queue group picks, the base code compares the answerer's bare store identity — so this is the
+    // answer that can produce a false "shared".
+    const nonHolderId = newIdentity();
+    const nonHolder = new CotalEndpoint({
+      space,
+      servers: broker.servers,
+      creds: await mintCreds(auth, nonHolderId, "delivery"),
+      card: { id: nonHolderId.id, name: "delivery-nonholder", role: "delivery", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    });
+    nonHolder.on("error", () => {});
+    await nonHolder.start();
+    let nonHolderAnswers = 0;
+    nonHolder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+      if (req.op === "reloadStoreIdentity") {
+        nonHolderAnswers++;
+        return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
+      }
+      return evict(req);
+    }, { boundReply: true });
+
+    // The reproduction manager: SAME root as the stopped one (its instance identity file is
+    // persisted, so this is the restart shape), same store as the non-holder names.
+    const sr1 = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+    await sr1.start();
+    const doors = sr1 as unknown as {
+      daemonRenewalOwner: boolean;
+      renewDaemonCreds: () => Promise<void>;
+    };
+    check("the challenge CAN be driven to the non-holder (the queue group answered from it)",
+      await until(async () => { await doors.renewDaemonCreds(); return nonHolderAnswers > 0; }, 30_000),
+      { nonHolderAnswers, holderAnswers });
+    check("a NON-HOLDER answer with the manager's own store makes the manager read shared and TAKE the renewal lease (#1694 defect, green at base)",
+      doors.daemonRenewalOwner === true,
+      { daemonRenewalOwner: doors.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
+
+    await sr1.stop().catch(() => {});
+    await nonHolder.stop().catch(() => {});
+    await holder.stop().catch(() => {});
+  }
+
 
 } finally {
   await callerNc?.drain().catch(() => callerNc?.close());
@@ -605,7 +723,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 27;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
