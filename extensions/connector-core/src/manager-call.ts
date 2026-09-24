@@ -61,7 +61,16 @@ export async function invokeUserManager(
     const invoke = async () => {
       const result = await invokeCommand(nc, config.space, service, command, args, opts);
       if (result.reply.ok === false && replyRefusedBeforeEffect(result.reply.error)) {
-        service = await resolve();
+        try {
+          service = await resolve();
+        } catch (error) {
+          return { ...result, reply: { ...result.reply, error: {
+            ...result.reply.error!,
+            message: `${command} WAS NOT RUN; manager instance ${instanceId} refused before effects, and re-resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+          } } };
+        }
+        // Keep the second invoke outside the catch: it may execute and must never inherit the
+        // first attempt's not-executed verdict if its response is lost.
         return invokeCommand(nc, config.space, service, command, args, opts);
       }
       return result;
