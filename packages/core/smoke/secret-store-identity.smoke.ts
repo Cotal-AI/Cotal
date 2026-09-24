@@ -5,6 +5,7 @@
 import {
   divergentSecretStoreNotice,
   formatSecretStoreIdentity,
+  parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
 } from "../src/secret-store.js";
@@ -45,5 +46,33 @@ ok("parse injected", parseSecretStoreIdentity({ kind: "injected", coordinate: "k
 throws("parse refuses mixed shape", () => parseSecretStoreIdentity({ kind: "fs", root: "/r", coordinate: "x" }), "admits only");
 throws("parse refuses blank root", () => parseSecretStoreIdentity({ kind: "fs", root: "  " }), "non-blank root");
 throws("parse refuses unknown kind", () => parseSecretStoreIdentity({ kind: "s3", root: "/r" }), "fs\" or \"injected");
+
+// ---------- #1694: the answer to the store challenge names the process that answered ----------
+// The delivery-admin rail is queue-grouped, so the store a manager compares against is the store of
+// AN answerer unless the reply says whose it is. These cells grade the parser only. Whether a
+// non-holder is refused is the caller's job, and the parser must not pre-empt it: an honest
+// `false` has to survive parsing so the caller can act on it and say why.
+const ANS = { identity: { kind: "fs" as const, root: "/r" }, responder: "dlv-1", holdsDeliveryLease: true };
+ok("parse accepts a fully bound store answer",
+  parseDaemonStoreAnswer(ANS).responder === "dlv-1" && parseDaemonStoreAnswer(ANS).identity.kind === "fs");
+ok("a lease-less answer parses and reports the claim honestly (refusing is the caller's job, not the parser's)",
+  parseDaemonStoreAnswer({ ...ANS, holdsDeliveryLease: false }).holdsDeliveryLease === false);
+throws("parse refuses the bare identity shape that carried no binding",
+  () => parseDaemonStoreAnswer({ kind: "fs", root: "/r" }), "admits only");
+throws("parse refuses an answer with no responder identity",
+  () => parseDaemonStoreAnswer({ identity: ANS.identity, holdsDeliveryLease: true }), "non-blank responder");
+throws("parse refuses a blank responder identity",
+  () => parseDaemonStoreAnswer({ ...ANS, responder: "   " }), "non-blank responder");
+throws("parse refuses an ABSENT lease claim rather than defaulting it to false",
+  () => parseDaemonStoreAnswer({ identity: ANS.identity, responder: "dlv-1" }), "an absent claim is not a false one");
+throws("parse refuses a non-boolean lease claim",
+  () => parseDaemonStoreAnswer({ ...ANS, holdsDeliveryLease: "yes" }), "as a boolean");
+throws("parse refuses a non-object answer", () => parseDaemonStoreAnswer("x"), "must be an object");
+throws("parse refuses an UNKNOWN top-level key rather than ignoring it (closed, like the identity parser)",
+  () => parseDaemonStoreAnswer({ ...ANS, extra: 1 }), "admits only");
+throws("...and the refusal NAMES the unknown key, so an operator sees which field was not understood",
+  () => parseDaemonStoreAnswer({ ...ANS, extra: 1 }), "unknown: extra");
+ok("CONTROL: the admitted three-field shape still parses after the extra-key refusal",
+  parseDaemonStoreAnswer(ANS).holdsDeliveryLease === true);
 
 console.log(`\nSECRET-STORE-IDENTITY SMOKE OK  (${pass} passed)`);

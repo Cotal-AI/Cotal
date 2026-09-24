@@ -1488,6 +1488,7 @@ export function permissionsFor(
  *  actor, provision, purge, or tamper with a stream. */
 function supervisorPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, MKV = `KV_${managerBucket(space)}`;
+  const SUP_DLVKV = `KV_${deliveryBucket(space)}`;
   // 1d: the supervisor no longer serves the manager control tiers — the manager's control surface
   // is its v0.4 `service` endpoint, served on a SEPARATE connection under its own `endpoint-serve`
   // credential (its rails are that credential's grant, not the supervisor's). The supervisor now
@@ -1521,6 +1522,18 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         // files it requests `reloadCreds` here so adoption is an explicit, auditable event. Self-scoped
         // request subject (its own owner+actor slots), bounded reply subtree in sub.allow below.
         controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor),
+        // #1694: a POINT READ of the delivery lease row, so the store-identity challenge can verify
+        // that the process which answered the queue-grouped admin rail is the holder that actually
+        // reloads the standing credentials. Without it the challenge can only report what some
+        // responder sent, and a non-holder's store stands in for the reloading process's.
+        //
+        // READ ONLY, and that is the half that matters: a credential able to WRITE this row could
+        // manufacture the very fact the challenge reads, which would put the determination back in
+        // the hands of a participant. No `$KV.${deliveryBucket(space)}` publish, no watch consumer,
+        // no STREAM.DELETE or PURGE.
+        `$JS.API.STREAM.INFO.${SUP_DLVKV}`,
+        `$JS.API.STREAM.MSG.GET.${SUP_DLVKV}`,
+        `$JS.API.DIRECT.GET.${SUP_DLVKV}.>`,
       ],
     },
     sub: {

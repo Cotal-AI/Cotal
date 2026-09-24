@@ -11,6 +11,7 @@ import {
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
   divergentSecretStoreNotice,
+  parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
@@ -61,7 +62,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -1566,37 +1567,117 @@ export class Manager {
     // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
   }
 
+  /** The delivery shard whose lease names the process that reloads the standing credentials.
+   *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
+   *  keeps the manager's binding check and that reply arguing about the same row. */
+  private static readonly DELIVERY_SHARD = 0;
+
   /** Proof that this manager remints into the store the delivery daemon reloads from.
    *  Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores
    *  refuse the pass. A daemon that is not bound yet is not a named store: start and
    *  remint still proceed (tests, delayed delivery), writing this manager's store. The
    *  challenge runs again before every remint, so a later daemon on a foreign store is
    *  refused then rather than certified by an earlier absence. A request timeout is not
-   *  absence: a hung rail would skip the proof, so it fails closed. */
+   *  absence: a hung rail would skip the proof, so it fails closed.
+   *
+   *  ABSENCE IS READ OFF THE LEASE ROW, never off the rail's no-responder shape alone (#1694).
+   *  The rail is queue-grouped, so "no responder answered" is itself something the rail reports,
+   *  and a responder that answers in a shape the client turns into that error makes the pass read
+   *  "absent" while a holder is live on the row — certifying every later remint with no proof at
+   *  all. So a no-responder outcome is decided by the row: a row that names a holder makes the
+   *  pass refuse (undetermined — a live daemon went unanswered, which must not read as "no
+   *  daemon"), and only a row that is absent or holderless settles "absent", the state start()
+   *  treats as not-yet-bound. An unreadable row (a failed read, or a key that exists but does not
+   *  parse) is a genuine unknown and refuses fail-closed, like a hung rail. */
   private async daemonStoreRelation(): Promise<"shared" | "absent" | "divergent"> {
     let reply: ControlReply;
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
     } catch (e) {
       const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return "absent";
+      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();
       throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
     }
     if (!reply.ok)
       throw new Error(
         reply.error ?? "delivery daemon refused to name the SecretStore it reloads from",
       );
-    let daemon: SecretStoreIdentity;
+    let answer: DaemonStoreAnswer;
     try {
-      daemon = parseSecretStoreIdentity(reply.data);
+      answer = parseDaemonStoreAnswer(reply.data);
     } catch (e) {
-      throw new Error(`delivery daemon named an unreadable SecretStore: ${(e as Error).message}`);
+      throw new Error(
+        `delivery daemon named an unreadable SecretStore: ${(e as Error).message}. A daemon older ` +
+          `than #1694 replies with a bare store identity and no answerer binding; this manager ` +
+          `cannot establish which process answered, so nothing reminted - upgrade the delivery daemon`,
+      );
     }
+    // The answerer's own claim first, so an honest non-holder is refused by its own admission and
+    // the operator-facing reason names that. This is the CHEAP half of the test and NOT the binding
+    // one: a responder that does not hold the lease can assert `true` here just as easily.
+    if (!answer.holdsDeliveryLease)
+      throw new Error(
+        "the delivery-admin rail was answered by a responder that does not hold this space's " +
+          "delivery lease, so its SecretStore is not the store the daemon reloads from - nothing reminted",
+      );
+    // THE BINDING TEST, measured by this manager rather than asserted by the answerer. The lease
+    // row's holder is read here under this manager's own credential; the answerer must BE that
+    // principal. A reply asserting the claim while some other process holds the shard fails here,
+    // which is the case a bare store identity could not see. An unreadable row is an unknown and
+    // refuses too: this test may never be satisfied by failing to run.
+    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);
+    if (holder === undefined)
+      throw new Error(
+        "this manager could not read the delivery lease row, so it cannot verify that the answering " +
+          "responder is the process that reloads the standing credentials - nothing reminted",
+      );
+    if (holder !== answer.responder)
+      throw new Error(
+        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of ` +
+          `this space's delivery lease (${holder}), so its SecretStore is not the store the daemon ` +
+          `reloads from - nothing reminted`,
+      );
+    const daemon = answer.identity;
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) {
       console.error(`! ${divergentSecretStoreNotice(this.secretStoreIdentity, daemon)}`);
       return "divergent";
     }
     return "shared";
+  }
+
+  /** Settle a no-responder challenge outcome from the lease row, never from the rail's own
+   *  reporting shape (#1694). The three cases:
+   *
+   *  1. The row READS but names a holder: a live daemon holds the shard and the rail went
+   *     unanswered. That is undetermined, not "no daemon" — treating it as absent would let this
+   *     manager remint with no proof while a reloading daemon runs, which is exactly what the
+   *     challenge exists to prevent. Refuse.
+   *  2. The row is unreadable — a read that fails (a denied or erroring bucket) OR a key that
+   *     exists but does not parse as a lease record (`readDeliveryLeaseEntry` throws for both):
+   *     undetermined, and it refuses the same fail-closed way a hung rail does. Never a silent
+   *     "absent" over a row the manager could not read.
+   *  3. The row is absent or holderless (no key, a DEL/PURGE tombstone, or a row that names no
+   *     holder): today's "absent", the state start() treats as a daemon that is not bound yet.
+   *
+   *  `deliveryLeaseHolder` swallows its read failures into `undefined`, which would fold case 2
+   *  into case 3 — so this reads the entry directly and lets the read's own failure refuse. */
+  private async absentByLeaseRow(): Promise<"absent"> {
+    let entry: { info: DeliveryLeaseInfo } | undefined;
+    try {
+      entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
+    } catch (e) {
+      throw new Error(
+        `could not read the delivery lease row to settle whether the delivery daemon is absent ` +
+          `(${(e as Error).message}) - absence is undetermined, nothing reminted`,
+      );
+    }
+    const holder = entry?.info.holder;
+    if (holder !== undefined && holder !== "")
+      throw new Error(
+        `the delivery-admin rail reported no responder while the delivery lease names a holder ` +
+          `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`,
+      );
+    return "absent";
   }
 
   /** Keep this manager's renewal lease alive between credential passes (#1634). The manager bucket
@@ -1630,7 +1711,21 @@ export class Manager {
    *
    *  A manager failing either test serves the space normally and skips only the daemon remint. */
   private async claimDaemonRenewalOwnership(): Promise<void> {
-    if ((await this.daemonStoreRelation()) === "divergent") {
+    // EVERY refusal outcome drops a held lease, not only "divergent". The refusal paths THROW
+    // (#1694: a non-holder answer, an unbindable answerer, an unreadable or holder-naming row on a
+    // no-responder rail), and a thrown refusal caught by renewDaemonCreds would otherwise leave a
+    // manager that once owned the renewal still holding the lease behind its own heartbeat — the
+    // pass refuses, the log says so, and the space keeps a renewal owner that must not remint.
+    // Deciding here, inside the claim, is what keeps the release on the refusal path itself.
+    let relation: "shared" | "absent" | "divergent";
+    try {
+      relation = await this.daemonStoreRelation();
+    } catch (e) {
+      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});
+      this.daemonRenewalOwner = false;
+      throw e;
+    }
+    if (relation === "divergent") {
       // Not our daemon's store: drop any lease we hold rather than sit on it, so the manager that
       // CAN remint is not blocked behind us.
       if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease();
