@@ -225,7 +225,7 @@ let P = "";
     answered.answer?.value === 42 && answered.answer.by === "operator" && answered.answer.artifact === "artifact://proof"
       && answered.answer.answerId === "answer-1" && answered.answer.at === 123,
     answered.answer);
-  const expired = journalStepRow(2, { ...base, result: { outcome: "expired", at: 456 } });
+  const expired = journalStepRow(2, { ...base, result: { outcome: "expired", value: "stale", by: "nobody", answerId: "answer-expired", at: 456 } });
   c("an expired pause row carries no answer",
     expired.outcome === "expired" && expired.answer === undefined,
     expired);

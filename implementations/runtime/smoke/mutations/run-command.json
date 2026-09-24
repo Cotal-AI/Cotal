@@ -50,11 +50,11 @@
       "name": "an expired pause is exposed as answered",
       "file": "implementations/runtime/src/run-host.ts",
       "find": "    && result?.outcome === \"resolved\"",
-      "replace": "    && (result?.outcome === \"resolved\" || result?.outcome === \"expired\")",
+      "replace": "    && true",
       "expectRed": "an expired pause row carries no answer",
       "completionMarker": "run-command:",
       "cell": "an expired pause row carries no answer",
-      "note": "An expiry has no accepted answer. Even answer-shaped fields on that result must not become an answer row."
+      "note": "An expiry has no accepted answer. Even a malformed expired result carrying answer-shaped fields must not become an answer row."
     },
     {
       "name": "an ordinary step is exposed as an answered pause",
