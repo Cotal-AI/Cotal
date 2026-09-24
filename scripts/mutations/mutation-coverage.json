@@ -5,6 +5,7 @@
   ],
   "guard": "aggregate mutation coverage examines the full selection, recognizes supported execution paths and summaries, reports every outcome with the exact tree, and fails after rather than during incomplete grading",
   "command": "node scripts/mutation-coverage.selftest.mjs",
+  "completionMarker": "MUTATION-COVERAGE SELF-TEST:",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/mutation-coverage.json",
   "why": [
     "Each mutation removes one public guarantee from the aggregate validator. The self-test drives throwaway repositories through the real command entrypoint, so the mutated script is the code under test rather than a copied helper.",
@@ -642,7 +643,7 @@
       "replace": "    return names.has(expr.text);",
       "expectRed": "a destructured parameter shadowing an imported reader is not that reader",
       "cell": "a destructured parameter shadowing an imported reader is not that reader",
-      "note": "Removing the call-site resolution breaks EVERY shadow form at once, so five cells go red together: the destructured parameter and local, the plain parameter, the named function expression, and the class declaration. The selftest stops at its first failure, so only the first of those is ever printed, and expectRed therefore names that one. The earlier wording named the plain-parameter cell, which the mutant does redden but which the run never reaches, so the harness graded it WRONG-RED. Entry 79 is what keeps this row honest: it breaks the binding-pattern arm ALONE, so the same cell firing there is attributable to the destructuring, while this row is the whole-check removal."
+      "note": "Removing the call-site resolution breaks EVERY shadow form at once, so five cells go red together: the destructured parameter and local, the plain parameter, the named function expression, and the class declaration. `expectRed` names the destructured-parameter cell, and every cell now grades independently of the others, so that cell reds on its own regardless of the four siblings that also break. Entry 79 is what keeps this row honest: it breaks the binding-pattern arm ALONE, so the same cell firing there is attributable to the destructuring, while this row is the whole-check removal."
     },
     {
       "name": "a binding pattern binds nothing, so a destructured shadow reads as the import",
