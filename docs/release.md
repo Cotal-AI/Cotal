@@ -104,10 +104,11 @@ If every exact version already exists, the preflight reports a no-op and exits s
 credential checks. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only
 package exits before `pnpm publish`.
 
-The post-publish closure gate checks every package in the fixed group. `PARTIAL` now requires one
-package to exceed the bounded retry count with a non-404 registry failure while every sibling is
-present. A clean incomplete reading, including one 404 held for the whole deadline, is `UNSETTLED`
-because slow propagation produces the same evidence.
+The post-publish closure gate checks every package in the fixed group. Registry observations cannot
+distinguish a partial publish from slow propagation: clean 404s and repeated non-404 failures both
+lack evidence that a package will never appear. The census therefore reports an incomplete or
+errored closure as `UNSETTLED` and never fails the job on its own. Exit 1 remains reserved for future
+positive publisher evidence.
 
 Re-check a version that already shipped without publishing, tagging, or changing git:
 

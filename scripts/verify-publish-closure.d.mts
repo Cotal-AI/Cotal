@@ -33,12 +33,11 @@ export function versionUrl(base: any, pkg: any, version: any): string;
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, errored, failed, confirmedErrored, confirmedFailed, total, unchangedForMs, elapsedMs, }: {
+export function classify({ missing, errored, failed, confirmedErrored, total, unchangedForMs, elapsedMs, }: {
     missing: any;
     errored?: any[];
     failed?: any[];
     confirmedErrored?: any[];
-    confirmedFailed?: any[];
     total: any;
     unchangedForMs: any;
     elapsedMs: any;
@@ -164,10 +163,14 @@ export namespace DEFAULTS {
     let maxConsecutiveErrorPolls: number;
 }
 export namespace RECHECK_DEFAULTS {
+    import registryBase_1 = DEFAULTS.registryBase;
+    export { registryBase_1 as registryBase };
     let pollIntervalMs_1: number;
     export { pollIntervalMs_1 as pollIntervalMs };
     let stableWindowMs_1: number;
     export { stableWindowMs_1 as stableWindowMs };
     let deadlineMs_1: number;
     export { deadlineMs_1 as deadlineMs };
+    import maxConsecutiveErrorPolls_1 = DEFAULTS.maxConsecutiveErrorPolls;
+    export { maxConsecutiveErrorPolls_1 as maxConsecutiveErrorPolls };
 }

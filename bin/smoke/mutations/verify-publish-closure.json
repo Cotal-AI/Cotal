@@ -208,6 +208,30 @@
       "replace": "    process.stderr.write(`invalid version ignored: ${version}\\n`);",
       "expectRed": "the re-check entry refuses a malformed version",
       "cell": "the re-check entry refuses a malformed version"
+    },
+    {
+      "name": "confirmed non-404 failures are promoted back to a false PARTIAL verdict",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    return { state: \"unsettled\", missing, errored, why: failed.length > 0 ? \"registry-error\" : \"transport\" };",
+      "replace": "    if (missing.length === 0 && failed.length === 1 && errored.length === 1) return { state: \"partial\", missing: failed, errored, why: \"registry-error\" };\n    return { state: \"unsettled\", missing, errored, why: failed.length > 0 ? \"registry-error\" : \"transport\" };",
+      "expectRed": "the configured error bound ends n+1 package-specific failures as UNSETTLED, never PARTIAL",
+      "cell": "the configured error bound ends n+1 package-specific failures as UNSETTLED, never PARTIAL"
+    },
+    {
+      "name": "the UNSETTLED CLI labels errored packages as missing again",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "    if (result.errored?.length > 0) process.stdout.write(`  errored: ${result.errored.join(\" \")}\\n`);",
+      "replace": "    if (result.errored?.length > 0) process.stdout.write(`  missing: ${result.errored.join(\" \")}\\n`);",
+      "expectRed": "the shipped command reports repeated non-404 failures as ERRORED, not MISSING or PARTIAL",
+      "cell": "the shipped command reports repeated non-404 failures as ERRORED, not MISSING or PARTIAL"
+    },
+    {
+      "name": "re-check defaults omit inherited registry and error-bound options again",
+      "file": "scripts/verify-publish-closure.mjs",
+      "find": "export const RECHECK_DEFAULTS = {\n  registryBase: DEFAULTS.registryBase,\n  pollIntervalMs: 1_000,\n  stableWindowMs: 5_000,\n  deadlineMs: 15_000,\n  maxConsecutiveErrorPolls: DEFAULTS.maxConsecutiveErrorPolls,\n};",
+      "replace": "export const RECHECK_DEFAULTS = {\n  pollIntervalMs: 1_000,\n  stableWindowMs: 5_000,\n  deadlineMs: 15_000,\n};",
+      "expectRed": "re-check defaults retain every operator option from the normal gate",
+      "cell": "re-check defaults retain every operator option from the normal gate"
     }
   ]
 }

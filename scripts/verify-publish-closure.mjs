@@ -20,10 +20,9 @@
  * keeps serving it -- so SUCCESS can be reported the moment the missing set empties. Declaring
  * FAILURE is the hard direction, because a partial publish and ordinary registry propagation produce
  * the identical reading. Silence for a calibrated interval is not evidence that a package will never
- * appear: 0.49.0 held one clean 404 for 12m13s after the package was written. PARTIAL therefore needs
- * positive evidence: the registry repeatedly answers one package with a non-404 failure while every
- * sibling is live. Even one clean 404 held for the whole deadline stays UNSETTLED, because that is
- * exactly what the 12m13s propagation lag at 0.49.0 looked like.
+ * appear: 0.49.0 held one clean 404 for 12m13s after the package was written. A non-404 registry
+ * failure is no stronger: it says the registry did not answer the question. The registry census has
+ * no positive evidence that a package will never appear, so it never emits PARTIAL on its own.
  *
  * Measured on this repo, polling the per-version endpoint after the publish job reported success:
  *   0.41.2  17/21 -> 17/21 -> 19/21 -> 21/21   (60s apart; reads 1 and 2 IDENTICAL, still pure lag)
@@ -43,8 +42,8 @@
  *
  * Usage:  node scripts/verify-publish-closure.mjs <version> [--json] [--recheck]
  * Exit:   0 PUBLISHED  — the whole closure is live; a Release may be cut
- *         1 PARTIAL    — some of the group live and some not. The dangerous case; do NOT cut
- *         2 UNSETTLED  — still moving, or the deadline passed. Cannot tell; skip rather than guess
+ *         1 PARTIAL    — reserved for positive publisher evidence; this registry census cannot emit it
+ *         2 UNSETTLED  — incomplete or errored. Cannot tell; skip rather than guess
  *         3 NONE       — nothing published at all (an ordinary version-PR push). Skip, not a failure
  */
 import { readFileSync } from "node:fs";
@@ -77,10 +76,11 @@ export const DEFAULTS = {
 };
 
 export const RECHECK_DEFAULTS = {
-  ...DEFAULTS,
+  registryBase: DEFAULTS.registryBase,
   pollIntervalMs: 1_000,
   stableWindowMs: 5_000,
   deadlineMs: 15_000,
+  maxConsecutiveErrorPolls: DEFAULTS.maxConsecutiveErrorPolls,
 };
 
 /**
@@ -116,8 +116,8 @@ export function parseOptions(argv, base = DEFAULTS) {
     throw new Error("--max-consecutive-error-polls needs a non-negative integer");
   }
   if (opts.deadlineMs < opts.stableWindowMs) {
-    // Otherwise the deadline fires first every time and PARTIAL is unreachable: the gate could
-    // never raise the one verdict it exists to raise.
+    // Otherwise an all-404 version reaches the deadline before the NONE stability window, so the
+    // ordinary no-publish path becomes UNSETTLED instead of its distinct harmless skip.
     throw new Error("--deadline-ms must be at least --stable-window-ms");
   }
   if (opts.stableWindowMs < opts.pollIntervalMs) {
@@ -165,20 +165,16 @@ export function classify({
   errored = [],
   failed = [],
   confirmedErrored = [],
-  confirmedFailed = [],
   total,
   unchangedForMs,
   elapsedMs,
 }, opts = DEFAULTS) {
-  // A scan carrying transport errors is not an observation of the closure. It can keep polling,
-  // reach the bounded registry-error evidence case, or end as cannot-tell. One unclean scan never
-  // settles into `published`, `none` or `partial`.
+  // A scan carrying errors is not an observation of the closure. It can keep polling or end as
+  // cannot-tell after the bound. Repetition bounds the run; it does not turn a failed registry answer
+  // into evidence that the package will never appear.
   const clean = errored.length === 0;
   if (!clean) {
     if (confirmedErrored.length === 0) return { state: "polling", missing, errored };
-    if (missing.length === 0 && confirmedFailed.length === 1 && errored.length === 1 && total > 1) {
-      return { state: "partial", missing: confirmedFailed, errored, why: "registry-error" };
-    }
     return { state: "unsettled", missing, errored, why: failed.length > 0 ? "registry-error" : "transport" };
   }
   if (missing.length === 0) return { state: "published" };
@@ -314,8 +310,6 @@ export async function verifyClosure(version, {
     const confirmedErrored = errored.filter(
       (pkg) => (consecutiveErrors.get(pkg) ?? 0) > opts.maxConsecutiveErrorPolls,
     );
-    const confirmedFailed = confirmedErrored.filter((pkg) => failed.includes(pkg));
-
     if (errored.length === 0) {
       const key = missing.join(" ");
       if (previous === null || key !== previous) unchangedSince = now();
@@ -335,7 +329,6 @@ export async function verifyClosure(version, {
       errored,
       failed,
       confirmedErrored,
-      confirmedFailed,
       total: packages.length,
       unchangedForMs,
       elapsedMs,
@@ -379,11 +372,13 @@ async function main(argv) {
   } else if (result.state === "none") {
     process.stdout.write(`VERDICT: nothing published — no package serves ${version}; skipping the Release.\n`);
   } else if (result.state === "partial") {
-    process.stdout.write(`VERDICT: PARTIAL PUBLISH — the registry supplied package-specific failure evidence.\n`);
+    process.stdout.write(`VERDICT: PARTIAL PUBLISH — positive publisher evidence says the closure is incomplete.\n`);
     process.stdout.write(`  missing: ${result.missing.join(" ")}\n`);
-    process.stdout.write(`  This is not registry lag. Do not cut a Release; report it.\n`);
+    process.stdout.write(`  Do not cut a Release; report it.\n`);
   } else {
-    process.stdout.write(`VERDICT: UNSETTLED — still ${result.missing.length} missing and the set was still moving.\n`);
+    process.stdout.write(`VERDICT: UNSETTLED — the registry census cannot establish closure.\n`);
+    if (result.missing.length > 0) process.stdout.write(`  missing: ${result.missing.join(" ")}\n`);
+    if (result.errored?.length > 0) process.stdout.write(`  errored: ${result.errored.join(" ")}\n`);
     process.stdout.write(`  Treat as "cannot tell", not as a failure.\n`);
   }
   return EXIT[result.state];

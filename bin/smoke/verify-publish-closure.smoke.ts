@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { emitDeclaration } from "./gen-publish-closure-dts.mjs";
 import {
   DEFAULTS,
+  RECHECK_DEFAULTS,
   classify,
   closureFromConfig,
   parseOptions,
@@ -66,6 +67,12 @@ check(
 check(
   "an unscoped package keeps its plain path",
   versionUrl("https://r", "cotal-ai", "1.2.3") === "https://r/cotal-ai/1.2.3",
+);
+
+check(
+  "re-check defaults retain every operator option from the normal gate",
+  Object.keys(RECHECK_DEFAULTS).sort().join() === Object.keys(DEFAULTS).sort().join(),
+  { normal: Object.keys(DEFAULTS).sort(), recheck: Object.keys(RECHECK_DEFAULTS).sort() },
 );
 
 // ---------------------------------------------------------------- the decision rule
@@ -188,8 +195,8 @@ check(
 );
 const threeErrors = await scenario((pkg, scan) => pkg === "d" && scan < 3 ? 500 : 200, errorOpts);
 check(
-  "the configured error bound classifies n+1 package-specific failures as PARTIAL",
-  threeErrors.state === "partial" && threeErrors.why === "registry-error",
+  "the configured error bound ends n+1 package-specific failures as UNSETTLED, never PARTIAL",
+  threeErrors.state === "unsettled" && threeErrors.why === "registry-error",
   threeErrors,
 );
 
@@ -221,7 +228,7 @@ const partial = await verifyClosure("9.9.9", {
   ...partialClock,
 });
 check("a missing set that never shrinks stays UNSETTLED without non-404 evidence", partial.state === "unsettled", partial);
-check("the PARTIAL verdict names which packages are missing", partial.missing?.join() === "d", partial.missing);
+check("the UNSETTLED verdict names which clean-404 packages remain missing", partial.missing?.join() === "d", partial.missing);
 
 const stallClock = fastClock();
 const stalled = await verifyClosure("9.9.9", {
@@ -446,7 +453,7 @@ check("--registry overrides the base and strips a trailing slash", parseOptions(
 check("--stable-window-ms is parsed", parseOptions(["--stable-window-ms=42000"]).stableWindowMs === 42_000);
 let deadlineGuard = false;
 try { parseOptions(["--stable-window-ms=600000", "--deadline-ms=300000"]); } catch { deadlineGuard = true; }
-check("a deadline narrower than the stability window is refused (it makes PARTIAL unreachable)", deadlineGuard);
+check("a deadline narrower than the stability window is refused (it makes NONE unreachable)", deadlineGuard);
 check("the default deadline fits inside the release job's 15min budget", DEFAULTS.deadlineMs < 15 * 60_000, DEFAULTS.deadlineMs);
 let guarded = false;
 try { parseOptions(["--poll-interval-ms=60000", "--stable-window-ms=1000"]); } catch { guarded = true; }
@@ -469,18 +476,19 @@ function scrubbedEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function childEnvFor(missing: string[]): NodeJS.ProcessEnv {
+function childEnvFor(missing: string[], errored: string[] = []): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = scrubbedEnv();
   env.SMOKE_CLOSURE_MISSING = missing.join(",");
+  env.SMOKE_CLOSURE_ERRORED = errored.join(",");
   env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${fixtureFetch}`.trim();
   return env;
 }
 
-function shipped(missing: string[], extra: string[] = []) {
+function shipped(missing: string[], extra: string[] = [], errored: string[] = []) {
   return spawnSync("node", [join(ROOT, "scripts/verify-publish-closure.mjs"), "9.9.9", ...extra], {
     encoding: "utf8",
     cwd: ROOT,
-    env: childEnvFor(missing),
+    env: childEnvFor(missing, errored),
   });
 }
 
@@ -511,6 +519,16 @@ check(
   "cotal-ai being live does NOT clear the gate while a sibling is missing (the #1254 defect)",
   siblingGone.status === 2 && siblingGone.stdout.includes("UNSETTLED"),
   `${siblingGone.stdout}${siblingGone.stderr}`,
+);
+
+const repeated500 = shipped([], fast, [closure[0]]);
+check(
+  "the shipped command reports repeated non-404 failures as ERRORED, not MISSING or PARTIAL",
+  repeated500.status === 2
+    && repeated500.stdout.includes(`errored: ${closure[0]}`)
+    && !repeated500.stdout.includes(`missing: ${closure[0]}`)
+    && !repeated500.stdout.includes("PARTIAL PUBLISH"),
+  `${repeated500.stdout}${repeated500.stderr}`,
 );
 
 const nothingPublished = shipped(closure, fast);
@@ -649,7 +667,7 @@ check(
   committedDts === emitDeclaration(),
 );
 
-const EXPECTED = 67;
+const EXPECTED = 69;
 check(`every cell ran (${EXPECTED} before sentinel)`, passed + failed === EXPECTED, passed + failed);
 console.log(`VERIFY PUBLISH CLOSURE SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 console.log("SUITE COMPLETE");
