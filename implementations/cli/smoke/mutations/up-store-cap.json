@@ -1,0 +1,55 @@
+{
+  "suite": [
+    "implementations/cli/smoke/up-adopt-resume-lock-live.smoke.ts"
+  ],
+  "guard": "`cotal up --max-file-store` renders the cap and nats-server applies it, `down --preserve-state` journals it, a resume asking for a different cap is refused, and the bare resume re-renders the preserved cap (#1888).",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-adopt-resume-lock:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-store-cap.json",
+  "why": [
+    "The suite drives the shipped binary against a real broker and reads the rendered server-open.conf, the nats-server `Max Storage` line, the resume document and the mesh record, so every mutant is observed through what an operator would see.",
+    "The CLI resolves its workspace packages from `dist`, so every mutant builds first and `afterRestore` rebuilds.",
+    "The first mutant keeps `--max-file-store` accepted and recorded but stops passing it to the renderer, so the cap is silently ignored."
+  ],
+  "mutations": [
+    {
+      "name": "detached boot accepts the flag but does not render it",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore: opts.maxFileStore })",
+      "replace": "writeOpenBrokerConf(storeDir, { port, host, transport })",
+      "expectRed": "the fresh boot renders --max-file-store into the jetstream block",
+      "cell": "the fresh boot renders --max-file-store into the jetstream block",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-adopt-resume-lock:live",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the preservation cut does not journal the cap",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};\n",
+      "replace": "  const cap: { maxFileStore?: number } = {};\n",
+      "expectRed": "the cut journals the store cap in the preserved launch",
+      "cell": "the cut journals the store cap in the preserved launch",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-adopt-resume-lock:live",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a resume with a different cap is not refused",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "        if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore)\n",
+      "replace": "        if (requestedMaxFileStore !== undefined && requestedMaxFileStore !== resumeMaxFileStore && false)\n",
+      "expectRed": "a resume asking for a different --max-file-store is refused",
+      "cell": "a resume asking for a different --max-file-store is refused",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-adopt-resume-lock:live",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the resume re-entry drops the preserved cap",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "              \"max-file-store\": pending.maxFileStore === undefined ? undefined : String(pending.maxFileStore),\n",
+      "replace": "",
+      "expectRed": "the bare resume re-renders the preserved store cap",
+      "cell": "the bare resume re-renders the preserved store cap",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-adopt-resume-lock:live",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

@@ -61,7 +61,7 @@
     {
       "name": "M7 honest-text entries lose their output proof",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "      \"proof\": {\n        \"path\": \"extensions/connector-core/smoke/orientation.smoke.ts\",\n        \"anchor\": \"assert.match(o.peers.summary, /bob\\\\/worker \\\\(working \\u00b7 progress unknown\\\\)/,\"\n      }",
+      "find": "      \"proof\": {\n        \"path\": \"extensions/connector-core/smoke/orientation.smoke.ts\",\n        \"anchor\": \"assert.match(o.peers.summary, /bob\\\\/worker \\\\(working · progress unknown\\\\)/,\"\n      }",
       "replace": "      \"proofRemovedByMutation\": true",
       "allowMultiple": true,
       "expectRed": "honest-text entry lacks output/shared-renderer proof"
@@ -77,8 +77,8 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 375,",
-      "replace": "    \"total\": 374,",
+      "find": "    \"total\": 387,",
+      "replace": "    \"total\": 386,",
       "expectRed": "presence render census count drifted"
     },
     {

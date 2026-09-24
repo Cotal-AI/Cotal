@@ -166,6 +166,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's name | Space name |
 | `--store-dir <dir>` | none | JetStream store directory |
+| `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
@@ -1559,7 +1560,11 @@ cotal console [--plain] [--space <s>]
 
 A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. On a
 user-auth mesh it rides the read-only admin view over your login, which needs ledger scope
-`admin`. See [Watch a mesh](watch-a-mesh.md).
+`admin`. Inside the TUI, operator control (`D` kill, `:spawn`, `:status`, `:purge`) rides the
+same per-action instrument path as `cotal stop` and `cotal ps`, never the observer; a raw
+`--creds` file cannot drive it. `a` (or `:attach <agent>`) runs
+[`cotal attach`](#managed-seats) in place and returns to the console on detach. See
+[Watch a mesh](watch-a-mesh.md).
 
 ## web
 

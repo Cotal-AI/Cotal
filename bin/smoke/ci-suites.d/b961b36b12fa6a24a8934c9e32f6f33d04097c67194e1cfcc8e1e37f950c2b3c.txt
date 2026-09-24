@@ -1,0 +1,2 @@
+# The console rendering the four membership pill states and the sparkline, at the component level. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-render

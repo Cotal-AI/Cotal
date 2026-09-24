@@ -2689,6 +2689,9 @@ export function openServerConfig(opts: {
   port?: number;
   host?: string;
   storeDir: string;
+  /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
+   *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
+  maxFileStore?: number;
   transport: BrokerTransport;
 }): string {
   const port = opts.port ?? 4222;
@@ -2697,8 +2700,17 @@ export function openServerConfig(opts: {
 host: ${host}
 port: ${port}
 max_control_line: 65536
-${renderTlsBlock(opts.transport)}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
 `;
+}
+
+/** The one place the `jetstream{}` block is produced, shared by both broker renderers. An unset
+ *  cap renders the bare `store_dir` block; a set cap must be a positive integer byte count. */
+function renderJetStreamBlock(renderer: string, storeDir: string, maxFileStore: number | undefined): string {
+  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;
+  if (!Number.isSafeInteger(maxFileStore) || maxFileStore <= 0)
+    throw new Error(`${renderer}: maxFileStore must be a positive integer number of bytes (got ${String(maxFileStore)})`);
+  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore} }`;
 }
 
 /** The one place a `tls{}` block is produced, shared by both broker renderers.
@@ -2724,6 +2736,9 @@ export function serverConfig(
     port?: number;
     host?: string;
     storeDir: string;
+    /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
+     *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
+    maxFileStore?: number;
     /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
      *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
     extraAccounts?: Array<{ pub: string; jwt: string }>;
@@ -2774,7 +2789,7 @@ export function serverConfig(
 host: ${host}
 port: ${port}
 max_control_line: 65536
-${tlsBlock}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
 resolver: MEMORY

@@ -483,7 +483,10 @@ cotal up --detach
 cotal up --restore ./space-backup --detach
 ```
 
-Use `--store-dir` on both preservation and backup for a custom JetStream store. `registry` is the
+Use `--store-dir` on both preservation and backup for a custom JetStream store. A store cap set
+with `cotal up --max-file-store <bytes>` travels with the preserved state, and the resume renders it
+again. nats-server reads the cap once at start and refuses a config reload that changes it, so a new
+cap always needs a restart. `registry` is the
 only partial selection (`backup create ... --only registry`; `up --restore ... --restore-only
 registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
 does not contain credentials or trust secrets. Backup/restore in every auth mode, open included,
