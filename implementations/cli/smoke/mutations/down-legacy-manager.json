@@ -47,6 +47,7 @@
       "file": "packages/workspace/src/manager-shutdown.ts",
       "find": "    throw new Error(\n      `refusing bare manager stop: ${path} does not contain a usable capability, so this CLI cannot ` +\n      \"tell whether the manager predates spare-capability reporting or reported that it cannot detach agents. \" +\n      \"To stop it, stop its managed agents explicitly, then run `cotal down --with-agents` from this mesh root; \" +\n      \"that command stops the whole stack, and an older manager may not honor its agent-reap request\",\n    );",
       "replace": "    throw new Error(`refusing bare manager stop: ${path} does not prove this manager can detach its agents; use --with-agents or stop the agents explicitly`);",
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts",
       "expectRed": "a missing capability names the one legacy-safe stop route and none of the dead routes",
       "cell": "a missing capability names the one legacy-safe stop route and none of the dead routes",
       "note": "Restores the exact old refusal. The named workspace cell requires the combined explicit-agent-stop plus whole-stack route and rejects both ambiguous old remedies.",
