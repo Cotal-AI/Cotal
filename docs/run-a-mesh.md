@@ -250,7 +250,9 @@ Stop one part without tearing down the mesh by naming its registered component: 
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
 join the same surface; `cotal down` with no names retains whole-stack behavior and
 leaves managed agents running as unmanaged OS processes. `cotal down --with-agents`
-is the previous reap.
+is the previous reap. If a pinned manager has no spare-capability record, stop its managed agents
+explicitly before running that whole-stack command. The record is also absent when a manager predates
+capability reporting, and that older manager may not understand the reap request.
 
 ## Remote supervised agents
 
