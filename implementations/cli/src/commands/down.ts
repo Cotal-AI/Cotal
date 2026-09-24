@@ -587,6 +587,8 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     throw new Error(`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`);
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
+  // The store cap the broker was started with travels with the store, so the resume re-renders it.
+  const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
   const lock = acquireMaintenanceLock(root);
   try {
     const all = localProcessSurface();
@@ -658,7 +660,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           writeMaintenanceResumeDocument(lock, {
             version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
             inventory: replan.inventory as JsonValue,
-            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, mode: mesh.mode },
+            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, ...cap, mode: mesh.mode },
           });
         } catch (cause) {
           // A restarted manager prepared a DIFFERENT inventory: the journaled cut no longer
@@ -729,6 +731,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
           space: mesh.space,
           server: mesh.server,
           storeDir,
+          ...cap,
           mode: mesh.mode,
         },
       });
@@ -738,7 +741,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         mode: mesh.mode,
         sourcePath: storeDir,
         resume,
-        launch: { server: mesh.server, storeDir },
+        launch: { server: mesh.server, storeDir, ...cap },
       });
       clearPreservationPrepareIntent(lock);
     }

@@ -56,6 +56,11 @@ export interface MeshEntry {
    * The browser console opens one session per pane, so the right number is roughly agents × panes.
    */
   maxSessions?: number;
+  /** The JetStream file storage cap in bytes the running broker was started with (`cotal up
+   *  --max-file-store`). `down --preserve-state` copies it into the preserved launch so the resume
+   *  re-renders it, and a refresh compares a requested cap against it. Absent means the broker runs
+   *  on nats-server's dynamic default. */
+  maxFileStore?: number;
   /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
    *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
    *  decision was recorded (and is what any record written before this field means).
