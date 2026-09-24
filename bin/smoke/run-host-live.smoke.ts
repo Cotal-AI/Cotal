@@ -307,7 +307,7 @@ try {
       acceptedToken: asked.issued?.acceptedToken, creds: askedCreds, subscribe: [], allowSubscribe: [],
       allowPublish: [], capabilities: [], kind: "agent", tls: false,
     });
-    let renderedForm: true | string = "the seat rendered no pending ask";
+    let renderedForm: { ok: true; token: string; answerId: string } | { ok: false; error: string } = { ok: false, error: "the seat rendered no pending ask" };
     try {
       await seat.start();
       await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
@@ -329,13 +329,25 @@ try {
               COTAL_LIFECYCLE_UID: asked.lifecycleUid,
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
-          }).then(() => true, (e: unknown) => String((e as Error).message));
-        } else renderedForm = `unexpected rendered command ${String(command)}`;
+          }).then(({ stdout }) => {
+            const reply = JSON.parse(stdout) as { token?: unknown; answerId?: unknown };
+            return typeof reply.token === "string" && typeof reply.answerId === "string"
+              ? { ok: true as const, token: reply.token, answerId: reply.answerId }
+              : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
+          }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
+        } else renderedForm = { ok: false, error: `unexpected rendered command ${String(command)}` };
       }
     } finally {
       await seat.stop();
     }
-    c("the addressed baseline seat's exact rendered command is accepted through the shipped CLI path", renderedForm === true, renderedForm);
+    let recordedBy: string | undefined;
+    if (renderedForm.ok) {
+      const readNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: "manager", runId, takeoverId: newTakeoverId() } }), tls: false }), maxReconnectAttempts: 0 });
+      try {
+        recordedBy = (await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", renderedForm.token, renderedForm.answerId))?.by;
+      } finally { await readNc.drain().catch(() => readNc.close()); }
+    }
+    c("the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
     const answered = await until(async () => {
       const v = await status(runId);
       return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;

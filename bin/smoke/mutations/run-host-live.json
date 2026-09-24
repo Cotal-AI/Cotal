@@ -186,8 +186,8 @@
       "find": "  const t = await resolveRunControlTarget(values);",
       "replace": "  const t = await resolveControlTarget(values, \"control-caller-privileged\");",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path",
-      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path"
+      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked",
+      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked"
     },
     {
       "name": "the hosted run command sends run-answer without its required self target",
@@ -195,8 +195,8 @@
       "find": "      ...(command === \"run-answer\" ? { target: { mode: \"self\" as const } } : {}),",
       "replace": "",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path",
-      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path"
+      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked",
+      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked"
     }
   ]
 }
