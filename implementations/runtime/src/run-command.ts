@@ -17,7 +17,7 @@
  * resolves, it just cannot expire a pause.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -30,6 +30,7 @@ import {
   newTakeoverId,
   newIdentity,
   mintCreds,
+  readAcceptedRow,
   openRecordsBucket,
   admissionBucket,
   createRunAdmission,
@@ -42,6 +43,7 @@ import {
   type RunAdmissionView,
   type RunRevocation,
   type IssuedSubjectAllow,
+  type IssuedCaller,
   readRunProgram,
   readRunRecord,
   renderLifecycleBlocked,
@@ -63,7 +65,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { journalEntryKeyString, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type Connection, type ControlAuth } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveMeshTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
 import { journalOutcomeOf } from "./run-host.js";
@@ -659,7 +661,7 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
  *  fetch, digest-verified recompile), then the invoke. The reply's data on success; on a refusal
  *  the manager's own sentence, printed, and a non-zero exit. */
 async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined): Promise<unknown> {
-  const t = await resolveControlTarget(values, "control-caller-privileged");
+  const t = await resolveRunControlTarget(values);
   const who = controlCaller(t.auth);
   if ("refusal" in who) {
     console.error(who.refusal);
@@ -676,7 +678,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeCommand(nc, t.space, service, command, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
+    const r = await invokeCommand(nc, t.space, service, command, args, {
+      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+    });
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       console.error(`run ${command.slice(4)}: ${renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err)}`);
@@ -692,6 +697,46 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       process.exit(1);
     }
     throw e;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** A spawned static seat that shells out to the rendered `cotal run answer …` command must answer as
+ *  THAT seat, not as a freshly minted operator instrument. Connection material is intentionally not
+ *  inherited by shell children; the non-secret launch identity points back to the manager-owned
+ *  lifecycle credential, and the accepted-row token resolves its issuer-bound generation. Outside a
+ *  managed seat, keep the ordinary operator target resolution unchanged. */
+async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
+  if (values.creds !== undefined) return resolveControlTarget(values, "control-caller-privileged");
+  const name = process.env.COTAL_NAME?.trim();
+  const actor = process.env.COTAL_ID?.trim();
+  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
+  if (!name || !actor || !uid || !acceptedToken) return resolveControlTarget(values, "control-caller-privileged");
+  const mesh = resolveMeshTarget(process.cwd(), { space: values.space, server: values.server });
+  if (mesh.mode !== "auth") return resolveControlTarget(values, "control-caller-privileged");
+  const path = agentLifecycleSecretFilePaths(mesh.root, mesh.space, name, uid).creds;
+  if (!existsSync(path))
+    throw new Error(`run: managed seat credential is missing at ${path}; refusing to answer as a different caller`);
+  const creds = readFileSync(path, "utf8");
+  const nc = await dialerFor(mesh.server)({
+    servers: mesh.server,
+    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const ref = await readAcceptedRow(nc, mesh.space, acceptedToken);
+    if (ref.owner !== DEV_OWNER || ref.actor !== actor || ref.uid !== uid)
+      throw new Error(`run: managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
+    return {
+      space: mesh.space,
+      server: mesh.server,
+      auth: { creds, tls: mesh.tlsRequired, epCaller: { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller },
+      root: mesh.root,
+      mode: mesh.mode,
+      ...(mesh.policy ? { policy: mesh.policy } : {}),
+    };
   } finally {
     await nc.drain().catch(() => nc.close());
   }

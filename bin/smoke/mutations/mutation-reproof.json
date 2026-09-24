@@ -8,6 +8,22 @@
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/mutation-reproof.json",
   "mutations": [
     {
+      "name": "git children do not disable optional index locks",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  return execFileSync(\"git\", argv, { cwd: root, encoding: \"utf8\", env: { ...process.env, GIT_OPTIONAL_LOCKS: \"0\" } });",
+      "replace": "  return execFileSync(\"git\", argv, { cwd: root, encoding: \"utf8\", env: { ...process.env } });",
+      "expectRed": "git children receive GIT_OPTIONAL_LOCKS=0 through a real scanner invocation",
+      "cell": "git children receive GIT_OPTIONAL_LOCKS=0 through a real scanner invocation"
+    },
+    {
+      "name": "dirty-root refusal no longer names the clean root requirement",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    console.error(\"mutation reproof: UNMEASURED — root must be clean and checked out at the requested head before comparison\");",
+      "replace": "    console.error(\"mutation reproof: UNMEASURED — root check failed\");",
+      "expectRed": "the dirty-root refusal output is unchanged",
+      "cell": "the dirty-root refusal output is unchanged"
+    },
+    {
       "name": "metadata-only legacy suite canonicalization stops being excluded",
       "file": "scripts/mutation-reproof.mjs",
       "find": "    config: changed.has(fixture.path) && !metadataOnlyExclusions.has(fixture.path),",

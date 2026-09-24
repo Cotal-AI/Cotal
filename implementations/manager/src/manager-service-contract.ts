@@ -701,7 +701,7 @@ const ROWS: CommandRow[] = [
   // ride `manager.read` beside every other read.
   { name: "run-start", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runStart" },
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
-  { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: false, handler: "runAnswer" },
+  { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
   { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
@@ -833,7 +833,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  15 = manager `status` adds `classSpawn`: whether this instance takes unpinned spawn/launch
  *  on the class rail. A changed output contract is a changed described surface even though
- *  the command name is unchanged. */
+ *  the command name is unchanged.
+ *
+ *  16 = `run-answer` moves onto authz-mode `self`. The command input is unchanged; the caller's
+ *  authenticated incarnation is now part of the request form so baseline seats can hold the row
+ *  without gaining any untargeted run command. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -851,7 +855,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 15,
+    revision: 16,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

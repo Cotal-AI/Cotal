@@ -152,6 +152,51 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a hosted resume of a revoked run is permission-denied naming who revoked it and why, and no drive is launched",
       "cell": "a hosted resume of a revoked run is permission-denied naming who revoked it and why, and no drive is launched"
+    },
+    {
+      "name": "the baseline drops its self-targeted run-answer row",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\", \"run-answer\"] as const);",
+      "replace": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\"] as const);",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the addressed baseline seat answers through self-targeted run-answer",
+      "cell": "the addressed baseline seat answers through self-targeted run-answer"
+    },
+    {
+      "name": "the self-answer handler stops checking which seat owns the relay",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (pending === undefined)\n      throw new EpEnvelopeError(\"permission-denied\", `run-answer is allowed to this baseline seat only for a pending ask or escalation addressed to its own incarnation; none is pending for ${agent.name}`);",
+      "replace": "    if (pending === undefined) return;",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a different baseline seat is refused the ask addressed to asked",
+      "cell": "a different baseline seat is refused the ask addressed to asked"
+    },
+    {
+      "name": "the self-answer handler stops matching the relayed run step and pause token",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (p.run !== args.runId || p.step !== args.stepKey || addressedToken !== open.token)\n      throw new EpEnvelopeError(\"permission-denied\", `run-answer is allowed to ${agent.name} only for the open pause named by its pending ask or escalation relay; ${args.runId} ${args.stepKey} is not that pause`);",
+      "replace": "    void addressedToken;",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "a baseline seat is refused an unrelayed checkpoint on another run",
+      "cell": "a baseline seat is refused an unrelayed checkpoint on another run"
+    },
+    {
+      "name": "the hosted run command mints an operator instrument inside a managed seat",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  const t = await resolveRunControlTarget(values);",
+      "replace": "  const t = await resolveControlTarget(values, \"control-caller-privileged\");",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked",
+      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked"
+    },
+    {
+      "name": "the hosted run command sends run-answer without its required self target",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "      ...(command === \"run-answer\" ? { target: { mode: \"self\" as const } } : {}),",
+      "replace": "",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "expectRed": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked",
+      "cell": "the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked"
     }
   ]
 }
