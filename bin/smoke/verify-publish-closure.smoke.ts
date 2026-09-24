@@ -415,6 +415,11 @@ const stoppableSleep = (ms: number) =>
     ? Promise.reject(new Error("the cell abandoned this run"))
     : new Promise<void>((r) => { setTimeout(r, ms); });
 
+const frozenSleep = async () => {
+  if (abandoned) throw new Error("the cell abandoned this run");
+  await new Promise<void>((r) => { setTimeout(r, 1); });
+};
+
 const frozen = await withGuard(verifyClosure("9.9.9", {
   packages: ["a", "b", "c", "d"],
   opts: {
@@ -425,13 +430,13 @@ const frozen = await withGuard(verifyClosure("9.9.9", {
     maxConsecutiveErrorPolls: 0,
   },
   fetchImpl: neverAnswers,
-  sleep: stoppableSleep,
+  sleep: frozenSleep,
   now: () => 0,
 }).catch(() => ({ state: "ABANDONED" })), 8_000);
 abandoned = true;
 check(
   "spending the real budget ends the run even when the injected clock has not moved",
-  frozen.state === "unsettled",
+  frozen.state === "unsettled" && frozen.reads?.at(-1)?.elapsedMs >= 300,
   frozen,
 );
 
