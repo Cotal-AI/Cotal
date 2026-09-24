@@ -1960,6 +1960,15 @@ check(
   stageOnly.logs.some((line) => line.includes("@cotal-ai/seat\t9.9.9\tabsent\texchanged\tstage-only")),
   stageOnly.logs,
 );
+check(
+  "the three post-census refusals do not retain the removed unproven guard",
+  !readFileSync(join(ROOT, "scripts", "preflight-npm-publish.mjs"), "utf8").includes("direct-publish authorization was not proven")
+    && oidcRefused.error instanceof Error
+    && !oidcRefused.error.message.includes("not proven")
+    && stageOnly.error instanceof Error
+    && !stageOnly.error.message.includes("not proven"),
+  { oidc: oidcRefused.error, stageOnly: stageOnly.error },
+);
 
 const mixedPublisher = await scenario({
   trust: {
@@ -2021,6 +2030,11 @@ const opaque201 = await scenario({
 check(
   "an opaque HTTP 201 exchange is not treated as direct-publish proof",
   opaque201.error instanceof Error && opaque201.error.message.includes("direct-publish authorization refused"),
+  opaque201.error,
+);
+check(
+  "accept control: direct authorization still refuses an opaque exchange without the removed guard",
+  opaque201.error instanceof Error && !opaque201.error.message.includes("not proven"),
   opaque201.error,
 );
 

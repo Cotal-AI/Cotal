@@ -25,6 +25,24 @@
       "note": "The spawned repository entrypoint carries NPM_TOKEN plus a local fake registry and OIDC requester. Removing the boundary lets that child exchange OIDC, so the refusal and zero-request assertion both fail."
     },
     {
+      "name": "the retired unproven direct-publish guard returns",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (refusedDirect.length) {\n    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);\n  }\n",
+      "replace": "  if (refusedDirect.length) {\n    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);\n  }\n  const unproven = rows.filter((row) => row.direct !== \"createPackage\"\n    && row.direct !== \"unverifiable:trust-endpoint-needs-npm-token\");\n  if (unproven.length) {\n    throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);\n  }\n",
+      "expectRed": "the three post-census refusals do not retain the removed unproven guard",
+      "cell": "the three post-census refusals do not retain the removed unproven guard",
+      "note": "Every possible direct result is already consumed by the OIDC, stage-only, or direct-publish guards, except the permitted createPackage and 401 outcomes. Restoring this unreachable fourth guard must red the source-contract cell."
+    },
+    {
+      "name": "the retired unproven guard returns beside opaque exchange refusal",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (refusedDirect.length) {\n    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);\n  }\n",
+      "replace": "  if (refusedDirect.length) {\n    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);\n  }\n  const unproven = rows.filter((row) => row.direct !== \"createPackage\"\n    && row.direct !== \"unverifiable:trust-endpoint-needs-npm-token\");\n  if (unproven.length) {\n    throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);\n  }\n",
+      "expectRed": "accept control: direct authorization still refuses an opaque exchange without the removed guard",
+      "cell": "accept control: direct authorization still refuses an opaque exchange without the removed guard",
+      "note": "The opaque HTTP 201 scenario must retain the named direct-authorization refusal and cannot silently pass through the retired fourth guard."
+    },
+    {
       "name": "an already-published exact version is treated as absent",
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    if (response.status === 200) return \"present\";\n",

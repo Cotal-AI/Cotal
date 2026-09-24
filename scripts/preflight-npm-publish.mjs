@@ -443,9 +443,10 @@ export async function preflightNpmPublish({
     }
   }
   printPublishCensus(rows, log);
-  // The post-census refusal contract is limited to the OIDC, stage-only, and direct-publish
-  // refusals below. Every other direct result is either createPackage or the trust-read 401
-  // exception, which cannot prove Allowed actions because npm requires an access token for it.
+  // The post-census refusal contract has three outcomes: OIDC failure, stage-only authorization,
+  // and direct-publish authorization failure. Every other direct result is either createPackage
+  // or the trust-read 401 exception, which cannot prove Allowed actions because npm requires an
+  // access token for it.
   const refusedOidc = rows.filter((row) => row.oidc.startsWith("refused:"));
   if (refusedOidc.length) throw new Error(`npm OIDC exchange refused ${refusedOidc.length}/${rows.length} packages`);
   const stageOnly = rows.filter((row) => row.direct === "stage-only");
@@ -455,11 +456,6 @@ export async function preflightNpmPublish({
   const refusedDirect = rows.filter((row) => row.direct.startsWith("refused:"));
   if (refusedDirect.length) {
     throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);
-  }
-  const unproven = rows.filter((row) => row.direct !== "createPackage"
-    && row.direct !== "unverifiable:trust-endpoint-needs-npm-token");
-  if (unproven.length) {
-    throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);
   }
   return { state: "ready", rows };
 }
