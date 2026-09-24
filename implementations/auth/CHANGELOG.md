@@ -1,5 +1,19 @@
 # @cotal-ai/auth
 
+## 0.53.0
+
+### Minor Changes
+
+- 104921c: Let remote user-auth managers renew registration executors and recover stopped or frozen manager registrations through host-scoped eviction and guarded reconciliation.
+
+### Patch Changes
+
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+
 ## 0.52.1
 
 ### Patch Changes
