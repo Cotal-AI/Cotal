@@ -1,5 +1,33 @@
 # @cotal-ai/workspace
 
+## 0.52.0
+
+### Patch Changes
+
+- cf5a5cb: The renewal record is per-space: `renewalRecordPath(root, space)` now writes and reads `.cotal/renewal.<spaceKey>.json`, keyed by the same injective hex the pidfiles use, and every writer and reader threads the space — the manager's renewal pass, `doctor auth --fix`'s write, `doctor auth`'s verdict reads, and `status --components`' delivery row. Before, one root-scoped `.cotal/renewal.json` served every space at a root, so with two spaces co-resident the last pass won: a refused adoption in one space was reported as accepted once the other's manager ran a clean pass, and the mirror case reddened a healthy space's doctor. A root-only `renewal.json` left by a pre-per-space build names no space and is never read as any space's verdict; `doctor auth` names it as a leftover with its cleanup, and `cotal clean all` removes it beside the per-space record. Fixes #1850.
+- ab0808c: `cotal up --max-file-store <bytes>` sets the broker's JetStream file storage cap. Before, the rendered broker config carried only `store_dir`, so nats-server always sized its store at start as three quarters of the free disk and an operator on a shared disk had no supported way to bound it. `serverConfig` and `openServerConfig` take an optional `maxFileStore` byte count and render `max_file_store` inside the `jetstream{}` block; left unset, the rendered config is byte-identical to before, and a zero, negative or non-integer value throws naming the option. The cap is recorded on the mesh entry, carried through `down --preserve-state` into the resume, and rendered again by the bare `cotal up` that resumes it. A resume or a refresh of a running mesh that asks for a different cap is refused, because nats-server fixes the cap at start and refuses a reload that changes it. The flag is refused with `-f`. Fixes #1888.
+- 6b375c8: `cotal update` reports every running manager's continuity, and its refusal carries the remedy
+
+  With several meshes running and the shell outside every project root, the continuity check printed
+  the mesh resolver's bare text and exited before writing anything. It now renders that refusal through
+  the workspace renderer, the way every other command does, so it carries the `--space` / `cotal use`
+  recovery sentence. And because the install replaces the single `cotal-ai` that every running manager
+  shares, an unselected run now reports each running manager in turn instead of refusing, with any
+  `legacy` verdict making the whole run not a hot update. `--space`, `--server` and `--creds` still
+  select exactly one manager, and nothing is written until every selected manager has been observed.
+
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [ab0808c]
+  - @cotal-ai/core@0.52.0
+
 ## 0.51.0
 
 ### Minor Changes
