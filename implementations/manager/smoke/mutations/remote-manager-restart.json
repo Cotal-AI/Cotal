@@ -39,7 +39,7 @@
       "name": "host reconciliation skips the affirmative liveness guard",
       "file": "packages/core/src/endpoint-reconcile.ts",
       "find": "  const liveness = await opts.probeHolder(row.principal);",
-      "replace": "  const liveness = { state: \"gone\" as const, detail: \"mutant skipped the oracle\" };",
+      "replace": "  const liveness = { state: \"gone\", detail: \"mutant skipped the oracle\" } as HolderLiveness;",
       "expectRed": "a foreign manager gets in only after the holder is proven gone",
       "cell": "a foreign manager gets in only after the holder is proven gone",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build"
