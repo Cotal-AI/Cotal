@@ -475,6 +475,9 @@ export async function submitAndFollowGoal(
     },
   });
   try {
+    // A borrowed submit can use another connection. Confirm this SUB at the broker before
+    // that connection can publish a command whose terminal would otherwise outrun our interest.
+    await nc.flush();
     const attributed = await submit();
     if (attributed.reply.ok !== true) return attributed; // refuse at accept — surface as-is
     const acceptance = attributed.reply.data as { goalId?: unknown; readinessDeadlineMs?: unknown } | undefined;

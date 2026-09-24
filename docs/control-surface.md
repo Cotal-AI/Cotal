@@ -156,8 +156,9 @@ them. Existing unbound sessions can use the exchange's unique authorized selecti
 replacing their actor or conversation. The connector uses a separate control connection; the
 standing message connection and its credential source are unchanged. Accepted spawn goals are
 followed on that renewing connection, using its existing caller-scoped progress grant, so a long
-readiness budget does not depend on the short-lived control credential. A caller still checks the
-resolved instance and epoch, and never retries an ambiguous mutation outcome.
+readiness budget does not depend on the short-lived control credential. The follower confirms its
+progress subscription with the broker before submitting on the separate connection. A caller still
+checks the resolved instance and epoch, and never retries an ambiguous mutation outcome.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a
