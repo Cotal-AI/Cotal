@@ -13,7 +13,7 @@
     {
       "name": "let a URL through --host to the bracketing",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  if (/^[a-z][a-z0-9+.-]*:\\/\\//i.test(host)) {\n    console.error(\n      c.red(\n        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,\n      ),\n    );\n    process.exit(1);\n  }\n",
+      "find": "    console.error(\n      c.red(\n        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,\n      ),\n    );\n    process.exit(1);",
       "replace": "",
       "expectRed": "...naming --host and pointing at --server",
       "cell": "...naming --host and pointing at --server",
@@ -24,8 +24,8 @@
     {
       "name": "drop the bind-host parse refusal (the parse guard)",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  try {\n    // ONE parse, both consumers served from it: `literal` builds the derived URL (a URL host needs\n    // the brackets), `hostname` compares against the explicit server's (the URL API strips them).\n    return { literal, hostname: new URL(`nats://${literal}:1`).hostname };\n  } catch {\n    console.error(\n      c.red(\n        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,\n      ),\n    );\n    process.exit(1);\n  }\n",
-      "replace": "  return { literal, hostname: new URL(`nats://${literal}:1`).hostname };\n",
+      "find": "    console.error(\n      c.red(\n        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,\n      ),\n    );\n    process.exit(1);",
+      "replace": "    throw new Error(\"Invalid URL\");",
       "expectRed": "a host:port spelling is refused as a bind host",
       "cell": "a host:port spelling is refused as a bind host",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
