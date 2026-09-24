@@ -249,13 +249,21 @@ try {
     // authority-plane open) must not be followed forever, and must not be misreported at the base
     // clock while it lives. The live pid is THIS smoke's own helper process; the state dir is one
     // no daemon writes, so readiness can only end by bound or by the pid's exit.
+    //
+    // The elapsed clock is load-bearing, not decoration: the refusal message names maxWaitMs
+    // verbatim, so a mutant that drops the pid-bound deadline (deadline = base clock) still prints
+    // "after 1600ms" — only the measured wait separates 1600ms (kept the bound) from ~800ms (gave
+    // up at the base clock while the pid lived, the exact #1931 misreport).
     const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "bound-"));
     const held = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30);"], { stdio: "ignore" });
+    const started = Date.now();
     try {
       await assert.rejects(
         () => prepared.service.ready({ dir: dirNoServiceWritesTo, timeoutMs: 800, maxWaitMs: 1_600, pid: held.pid }),
         /auth service not ready after 1600ms - the process \(pid \d+\) is alive and still starting/,
       );
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed >= 1_400, `refused after ${elapsed}ms; the wait must run to the 1600ms bound, not the 800ms base clock`);
     } finally {
       held.kill("SIGKILL");
     }
