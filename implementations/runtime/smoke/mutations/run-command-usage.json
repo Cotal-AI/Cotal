@@ -11,6 +11,14 @@
   ],
   "mutations": [
     {
+      "name": "validated source drops the placement target before hosted credential minting",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "      return { ok: true, ...(placements.size > 0 ? { placements: [...placements.values()] } : {}) };",
+      "replace": "      return { ok: true };",
+      "expectRed": "validated source reports the literal manager placement the hosted mediator must be minted for",
+      "cell": "validated source reports the literal manager placement the hosted mediator must be minted for"
+    },
+    {
       "name": "the verb gate is gone, so an unroutable verb reaches answer parsing",
       "file": "implementations/runtime/src/run-command.ts",
       "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\", \"revoke\", \"migrate\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
