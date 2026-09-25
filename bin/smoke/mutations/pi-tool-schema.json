@@ -46,6 +46,36 @@
       "expectRed": "a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (22 tools)",
       "cell": "a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (22 tools)",
       "note": "A non-brand re-introduction: one enumerable key no JSON Schema defines, on every tool. Proves the cell grades key names against the vocabulary at all depths rather than matching the literal ~standard."
+    },
+    {
+      "name": "P3 the bounded continuation retry never fires (#726 defect verbatim)",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "      if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {\n        this.continuationAttempts++;\n        this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);\n        this.scheduleContinuation();\n        return;\n      }\n      this.hold(\n        `${reasonLabel} after ${CONTINUATION_ATTEMPT_LIMIT} automatic continuation attempts; Cotal delivery ` +\n          \"needs intervention: start a new turn in this session, or replace the seat.\",\n      );\n      return;",
+      "replace": "      this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);\n      return;",
+      "expectRed": "the bounded continuation re-dispatches the exact retained batch content within the backoff window",
+      "cell": "the bounded continuation re-dispatches the exact retained batch content within the backoff window",
+      "command": "pnpm --filter @cotal-ai/pi... build && pnpm smoke:pi",
+      "note": "Restores the pre-#726 shape verbatim: a non-terminal error with a batch pending holds forever with no timer and no retry path, exactly the defect the issue reports (a turn nothing in the process can start). The acceptance cell's second host.sent assertion, which waits past the 50ms backoff for a second send, reddens because that send never happens."
+    },
+    {
+      "name": "P4 the attempt bound is removed (retries forever, never reaches intervention)",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "      if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {",
+      "replace": "      if (true) {",
+      "expectRed": "the held reason names the spent attempt count",
+      "cell": "the held reason names the spent attempt count",
+      "command": "pnpm --filter @cotal-ai/pi... build && pnpm smoke:pi",
+      "note": "Removes the bound while keeping the retry itself: every non-terminal failure re-schedules a continuation forever, so the attempts-spent cell's two-failure loop never reaches the intervention hold and its heldReason regex against '2 automatic continuation attempts' reddens (the driver is still 'held' with the retrying-reason text, not the spent-attempts text)."
+    },
+    {
+      "name": "P5 the intervention wording is dropped from the spent-attempts hold",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "        `${reasonLabel} after ${CONTINUATION_ATTEMPT_LIMIT} automatic continuation attempts; Cotal delivery ` +\n          \"needs intervention: start a new turn in this session, or replace the seat.\",",
+      "replace": "        `${reasonLabel} after ${CONTINUATION_ATTEMPT_LIMIT} automatic continuation attempts; Cotal delivery is retained until a proven clean continuation completes.`,",
+      "expectRed": "the held reason names intervention rather than promising a continuation",
+      "cell": "the held reason names intervention rather than promising a continuation",
+      "command": "pnpm --filter @cotal-ai/pi... build && pnpm smoke:pi",
+      "note": "Keeps the attempt bound and the attempt-count wording (the driver still stops retrying at the limit and still names the count) but reverts only the terminal clause back to the ordinary 'retained until a proven clean continuation completes' text, silently promising a continuation that will never come once the budget is spent. The attempts-spent cell's /intervention/i checks against both heldReason and the presence line redden, while the attempt-count assertion on the same line stays green, isolating the named cell."
     }
   ]
 }
