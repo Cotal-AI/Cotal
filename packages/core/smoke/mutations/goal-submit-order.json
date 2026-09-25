@@ -8,8 +8,8 @@
     {
       "name": "the standing subscription is not broker-confirmed before borrowed submit",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "  try {\n    // A borrowed submit can use another connection. Confirm this SUB at the broker before\n    // that connection can publish a command whose terminal would otherwise outrun our interest.\n    await nc.flush();\n    const attributed = await submit();\n",
-      "replace": "  try {\n    const attributed = await submit();\n",
+      "find": "      try { await bounded(() => preparing.flush(), deadline); }",
+      "replace": "      try { await Promise.resolve(); }",
       "expectRed": "held standing subscription receives borrowed terminal after gate release",
       "cell": "held standing subscription receives borrowed terminal after gate release",
       "note": "Removing the standing connection's await nc.flush() before submit leaves SUB queued. The borrowed publisher emits the terminal first, and the held-path cell goes red on missed delivery."

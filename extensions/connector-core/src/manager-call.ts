@@ -47,17 +47,23 @@ export async function invokeUserManager(
   bearer: string,
   command: string,
   args: Record<string, unknown> | undefined,
-  opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+  opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal } = {},
 ): Promise<EpAttributedReply> {
+  opts.signal?.throwIfAborted();
   const { caller, instanceId } = managerCallerBinding(bearer, config);
   const nc = await dialerFor(config.servers)({
     servers: config.servers,
     ...standaloneConnectOpts({ bearer, sentinelCreds: config.userAuth!.sentinelCreds, tls: config.tls }),
     maxReconnectAttempts: 0,
+    timeout: Math.min(opts.deadlineMs ?? 10_000, 2_000),
   });
+  const onAbort = () => { void nc.close(); };
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
   try {
+    // An in-flight dial has no connection handle to close yet. A late result never publishes.
+    opts.signal?.throwIfAborted();
     const endpoint = BASELINE_LIFECYCLE_ENDPOINT;
-    const resolve = () => resolveService(nc, config.space, endpoint, caller, { instanceId, deadlineMs: opts.deadlineMs ?? 10_000 });
+    const resolve = () => resolveService(nc, config.space, endpoint, caller, { instanceId, deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal });
     let service = await resolve();
     if (opts.follow && !service.commands.has("goal-result")) {
       return {
@@ -97,6 +103,7 @@ export async function invokeUserManager(
     };
     return await invoke();
   } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([

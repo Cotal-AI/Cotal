@@ -80,9 +80,9 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 /** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
  *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
  *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-function execBearerCmd(argv: string[]): Promise<string> {
+function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+    execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr.trim() || err.message));
       const bearer = stdout.trim();
       if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
@@ -1505,33 +1505,34 @@ export class MeshAgent extends EventEmitter {
     try {
       const input = clean && Object.keys(clean).length ? clean : undefined;
       if (this.config.userAuth) {
-        const submit = async () => {
+        const submit = async (signal?: AbortSignal) => {
           const bearer = await execBearerCmd([
             ...this.config.userAuth!.bearerCmd,
             "--manager-call",
             ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
-          ]);
-          return invokeUserManager(this.config, bearer, command, input, opts);
+          ], signal);
+          return invokeUserManager(this.config, bearer, command, input, { ...opts, signal });
         };
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
         r = opts.follow
           ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
-              reconcile: async (goalId: string, attributed: EpAttributedReply) => {
-                // Pin user result query using EpAttributedReply.responder.instanceId (broker-attributed responder)
+              reconcile: async (goalId, attributed, context) => {
                 const instanceId = attributed.responder?.instanceId;
+                if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
                 const bearer = await execBearerCmd([
                   ...this.config.userAuth!.bearerCmd,
-                  "--manager-call",
-                  ...(instanceId ? ["--manager-instance", instanceId] : []),
-                ]);
-                const queryRes = await invokeUserManager(this.config, bearer, "goal-result", { goalId });
-                if (queryRes.reply.ok !== true) {
-                  const err = queryRes.reply.error;
-                  const e = new Error(err?.message ?? "goal-result query refused");
-                  (e as unknown as { isLookupRefusal: boolean }).isLookupRefusal = true;
-                  throw e;
-                }
+                  "--manager-call", "--manager-instance", instanceId,
+                ], context.signal, Math.min(30_000, context.deadlineMs));
+                // Validate the renewed bearer against the accepting identity, not mutable session state.
+                const config = {
+                  ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
+                  userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
+                };
+                const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
+                  signal: context.signal, deadlineMs: Math.min(opts.deadlineMs ?? 10_000, context.deadlineMs),
+                });
+                if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
                 return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
               },
             })

@@ -166,14 +166,24 @@ goal-writer connection. The caller receives an attributed reply, never a raw Jet
 grant. Each read is admitted by the connection's broker-enforced command grant. A live user-auth
 connection remains bounded by its bearer expiry after revocation; a renewed connection is checked
 against fresh authority. There is no separate per-read ledger check. An absent `result` means no
-terminal is recorded; it does not prove the goal is running or permit another submission. The existing trusted goal-writer's leader-served EPF read is
-space-wide at the broker; the handler confines it to this endpoint and caller triple.
+terminal is recorded; it does not prove the goal is running or permit another submission. The
+existing trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler
+confines it to this endpoint and caller triple.
 
 A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
 the manager, issuer and client together before using that recovery path. Reloading an issuer alone
 cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
 epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
 acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
+
+Cancellation before submission reports `not-executed`. Once submission starts, cancellation or a
+lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
+refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
+The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
+before the wait deadline, and late read completions cannot settle an expired observation. Its read
+callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
+commands and control connections use that signal. An in-flight dial that finishes after cancellation
+closes without publishing. Request cancellation does not revoke or resubmit the accepted operation.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a

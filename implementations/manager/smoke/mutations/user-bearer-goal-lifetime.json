@@ -1,95 +1,133 @@
 {
-  "suite": [
-    "implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts"
-  ],
-  "guard": "user bearer goal follows survive wire expiry rebuilds, stop cleanly, check compatibility and fingerprints, and preserve error provenance",
+  "suite": ["implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts"],
+  "guard": "accepted goals survive native bearer expiry and missed progress without repeat submission, unbounded waits, foreign results or invented refusal provenance",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=61",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/user-bearer-goal-lifetime.json",
   "why": [
-    "An accepted goal must be followable across resident connection wire expiry without silent hangs.",
-    "An unsupported manager lacking goal-result must be refused before effects, while stop must cancel active follows immediately.",
-    "Reconciled facts must validate fingerprint and outcomeDigest, and lookup errors must never copy bind-refusal onto the mutation."
+    "A real Manager and signed user callout exercise a terminal after connection replacement and a canonical terminal recorded while renewal is deliberately held.",
+    "The gap observer reads the real goal-result command; it never proxies a private Manager store into the follower.",
+    "Compatibility views and malformed-result cases are explicit doubles. The compatibility counter observes actual spawn publishes using fetched real contracts.",
+    "The hanging read is released only after its deadline assertion. A late result's getters witness forbidden processing after completion.",
+    "Every mutant must finish all declared checks. Native flush and submission cancellation have their own goal-follow-cancellation fixture."
   ],
   "mutations": [
     {
-      "name": "M1 skip stop cancellation of active followers",
+      "name": "M1 omit endpoint stop cancellation",
       "file": "packages/core/src/endpoint.ts",
       "find": "    for (const follower of this.activeGoalFollowers) {\n      follower.cancel();\n    }",
-      "replace": "    // skipped follower cancellation",
+      "replace": "    // omit owned follower cancellation",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "STOP: settled in <200ms without waiting out deadline",
-      "cell": "STOP: settled in <200ms without waiting out deadline",
-      "note": "Stopping endpoint must cancel active followers immediately without waiting out deadline."
+      "cell": "STOP: settled in <200ms without waiting out deadline"
     },
     {
-      "name": "M2 skip goal-result check in compatibility gate",
+      "name": "M2 invoke an unsupported manager without the compatibility gate",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!service.commands.has(\"goal-result\")) {",
-      "replace": "    if (false && !service.commands.has(\"goal-result\")) {",
+      "find": "      if (opts.follow && !service.commands.has(\"goal-result\")) {",
+      "replace": "      if (false && opts.follow && !service.commands.has(\"goal-result\")) {",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "expectRed": "COMPAT: message provides actionable upgrade notice",
-      "cell": "COMPAT: message provides actionable upgrade notice",
-      "note": "Compatibility gate must refuse before effects when goal-result is missing."
+      "expectRed": "COMPAT: exactly zero mutation submits occurred",
+      "cell": "COMPAT: exactly zero mutation submits occurred"
     },
     {
-      "name": "M3 skip accepted fingerprint validation on reconciled fact",
+      "name": "M3 ignore the accepted fingerprint",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "          if (acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint) {",
-      "replace": "          if (false && acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint) {",
+      "find": "          if (acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint)",
+      "replace": "          if (false && acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint)",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FACT: mismatched fingerprint does not authorize",
-      "cell": "FACT: mismatched fingerprint does not authorize",
-      "note": "Reconciled fact fingerprint must match accepted goal fingerprint."
+      "cell": "FACT: mismatched fingerprint does not authorize"
     },
     {
-      "name": "M4 skip lookup refusal provenance guard",
+      "name": "M4 swallow lookup refusals as silence",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "        observationError = err instanceof Error ? err : new Error(String(err));\n        waiters.get(goalId)?.();",
-      "replace": "        // skipped observation error\n        waiters.get(goalId)?.();",
+      "find": "          observationError = err instanceof Error ? err : new Error(String(err));",
+      "replace": "          void err;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "PROVENANCE: lookup failure returns unavailable",
-      "cell": "PROVENANCE: lookup failure returns unavailable",
-      "note": "Lookup refusal must be caught and converted to distinct observation failure."
+      "cell": "PROVENANCE: lookup failure returns unavailable"
     },
     {
-      "name": "M5 skip pre-deadline fallback reconciliation",
+      "name": "M5 omit mediated canonical reconciliation",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "        if (!terminals.has(goalId) && !stopped && observationError === undefined && !completed && opts?.reconcile) {\n          // Bounded fallback: do NOT await an unbounded query past the deadline!\n          await Promise.race([\n            tryReconcile(),\n            new Promise<void>((r) => setTimeout(r, Math.min(250, followDeadlineMs))),\n          ]).catch(() => {});\n        }",
-      "replace": "        // skip pre-deadline reconcile",
+      "find": "      if (needsReconcile && !reading) void reconcile();",
+      "replace": "      // omit mediated reconciliation",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "GAP: followServiceGoal resolves ok: true via reconciliation",
-      "cell": "GAP: followServiceGoal resolves ok: true via reconciliation",
-      "note": "Pre-deadline fallback must reconcile terminal committed during gap."
+      "cell": "GAP: followServiceGoal resolves ok: true via reconciliation"
     },
     {
-      "name": "M6 skip queryRes goalId check",
+      "name": "M6 ignore the outer response goal id",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "          if (queryRes.goalId !== goalId) {",
-      "replace": "          if (queryRes.goalId === goalId) {",
+      "find": "        if (!result || typeof result !== \"object\" || result.goalId !== goalId)",
+      "replace": "        if (!result || typeof result !== \"object\")",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "MIS-SUBJECT: mismatched goalId in queryRes is rejected",
-      "cell": "MIS-SUBJECT: mismatched goalId in queryRes is rejected",
-      "note": "Reconciled fact must match requested goalId."
+      "cell": "MIS-SUBJECT: mismatched goalId in queryRes is rejected"
     },
     {
-      "name": "M7 skip pre-submit abort check",
+      "name": "M7 ignore a signal already aborted at entry",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "  if (stopped) {\n    return {",
-      "replace": "  if (false && stopped) {\n    return {",
+      "find": "  let stopped = opts?.signal?.aborted === true;",
+      "replace": "  let stopped = false;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "ABORT-PRE: submit was never called",
-      "cell": "ABORT-PRE: submit was never called",
-      "note": "Pre-submit abort must return unavailable error immediately without calling submit."
+      "cell": "ABORT-PRE: submit was never called"
     },
     {
-      "name": "M8 skip pre-effect retry goal-result compatibility check",
+      "name": "M8 lose the original refusal when the refreshed manager is unsupported",
       "file": "packages/core/src/endpoint.ts",
       "find": "            if (opts.follow && !reissueTarget.commands.has(\"goal-result\")) {",
       "replace": "            if (false && opts.follow && !reissueTarget.commands.has(\"goal-result\")) {",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "expectRed": "COMPAT-RETRY: message explains goal-result requirement",
-      "cell": "COMPAT-RETRY: message explains goal-result requirement",
-      "note": "Pre-effect retry must verify re-resolved service supports goal-result before mutation."
+      "expectRed": "COMPAT-RETRY: carries bind refusal detail",
+      "cell": "COMPAT-RETRY: carries bind refusal detail"
+    },
+    {
+      "name": "M9 await a read beyond the observation deadline",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      if (needsReconcile && !reading) void reconcile();",
+      "replace": "      if (needsReconcile && !reading) await reconcile();",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "BOUNDED-REC: settles within deadline budget despite hanging reconcile",
+      "cell": "BOUNDED-REC: settles within deadline budget despite hanging reconcile"
+    },
+    {
+      "name": "M10 process a read that completed after the wait ended",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "        if (completed || stopped || Date.now() >= deadline) return;",
+      "replace": "        // process a late read",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "BOUNDED-REC: late canonical reply is not processed",
+      "cell": "BOUNDED-REC: late canonical reply is not processed"
+    },
+    {
+      "name": "M11 omit notification of a replaced connection",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        follower.reconnected(this.nc);",
+      "replace": "        void follower;",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "GAP-WIRE: recovery settles promptly after renewal",
+      "cell": "GAP-WIRE: recovery settles promptly after renewal"
+    },
+    {
+      "name": "M12 relabel a received refusal as accepted on stop",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "    if (attributed.reply.ok !== true) return attributed;",
+      "replace": "    if (stopped) return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: 'unavailable', outcome: 'unknown', message: 'the goal was accepted but observation stopped' } } };\n    if (attributed.reply.ok !== true) return attributed;",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "REFUSAL: stop preserves the exact attributed refusal",
+      "cell": "REFUSAL: stop preserves the exact attributed refusal"
+    },
+    {
+      "name": "M13 trust an unvalidated canonical fact",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "          const fact = parseGoalResultFact(result.result, \"goal-result reply\", ref);",
+      "replace": "          const fact = (void ref, result.result as GoalResultFact);",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FACT: digest-inconsistent terminal does not authorize",
+      "cell": "FACT: digest-inconsistent terminal does not authorize"
     }
   ]
 }

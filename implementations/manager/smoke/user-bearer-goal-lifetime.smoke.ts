@@ -11,14 +11,22 @@
  *   5. FINGERPRINT & DIGEST VALIDATION: Reconciled fact must match accepted goalId and fingerprint.
  *   6. WIRE EXPIRY REBUILD & GAP RECONCILIATION: 3s user bearer expires, endpoint rebuilds
  *      a fresh NatsConnection, and reconciles the terminal committed during the gap via goal-result.
- *   7. USER QUERY PINNING: User result query is pinned to EpAttributedReply.responder.instanceId.
+ *   7. QUERY IDENTITY: Native mediated reads retain the accepting caller and observed manager.
+ *
+ * The Manager, broker, signed bearer verification and expiry are real. The callout's actor-ledger
+ * authorizer and permission table are fixture policy; this is not an exchange-policy proof.
+ * Compatibility views and several accepted-result inputs are doubles. Instance-bound MeshAgent
+ * routing is exercised separately by user-manager-transport.smoke.ts.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import type { NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
 import {
   CotalEndpoint,
+  EpEnvelopeError,
   createSpaceAuth,
   serverConfig,
   setupSpaceStreams,
@@ -40,6 +48,7 @@ import {
   standaloneConnectOpts,
   actionContext,
   parseEpSubject,
+  invokeCommand,
   replyRefusedBeforeEffect,
   EP_BIND_REFUSED,
   type EpAttributedReply,
@@ -55,7 +64,7 @@ import {
 } from "../../auth/src/index.js";
 import { Manager } from "../src/manager.js";
 import { saveSpaceAuth } from "../../../packages/workspace/src/auth-paths.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -79,8 +88,16 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   }
 };
 
+async function outcomeError(call: Promise<EpAttributedReply>) {
+  try { return (await call).reply.error; }
+  catch (e) { if (e instanceof EpEnvelopeError) return e.toEpError(); throw e; }
+}
+
 async function main() {
-  const TEST_DIR = mkdtempSync(join("/tmp", `${SMOKE_BROKER_TOKEN}u-`));
+  const originalEnv = { ...process.env };
+  const temporaryBase = tmpdir();
+  const SEAT_ROOT = mkdtempSync(join(temporaryBase, "s-"));
+  const TEST_DIR = mkdtempSync(join(temporaryBase, `${SMOKE_BROKER_TOKEN}u-`));
   process.env.HOME = join(TEST_DIR, "h");
   process.env.COTAL_HOME = join(TEST_DIR, "h", ".cotal");
   process.env.COTAL_ROOT = join(TEST_DIR, "r");
@@ -93,10 +110,13 @@ async function main() {
   mkdirSync(process.env.TMPDIR, { recursive: true });
 
   for (const k of Object.keys(process.env)) {
-    if (k.startsWith("COTAL_") && k !== "COTAL_HOME" && k !== "COTAL_ROOT") {
+    if ((k.startsWith("COTAL_") && k !== "COTAL_HOME" && k !== "COTAL_ROOT") || k.startsWith("JCODE_COTAL_")) {
       delete process.env[k];
     }
   }
+  process.env.COTAL_SEAT_ROOT = SEAT_ROOT;
+  process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
+  process.env.XDG_CACHE_HOME = join(TEST_DIR, "cache");
 
   const WS_ROOT = join(TEST_DIR, "ws");
   mkdirSync(join(WS_ROOT, ".cotal", "agents"), { recursive: true });
@@ -117,14 +137,31 @@ async function main() {
     extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
   }));
 
-  const broker = spawn("nats-server", ["-c", join(TEST_DIR, "server.conf")], { stdio: "ignore" });
-  teardownOnSignal(broker, TEST_DIR);
+  const broker = spawn("nats-server", ["-c", join(TEST_DIR, "server.conf")], {
+    stdio: "ignore", env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR },
+  });
+  const releaseBroker = teardownOnSignal(broker, TEST_DIR);
 
   let mgr: InstanceType<typeof Manager> | undefined;
+  let calloutNc: NatsConnection | undefined;
+  const endpoints: CotalEndpoint[] = [];
+  const startEndpoint = async (ep: CotalEndpoint) => { endpoints.push(ep); await ep.start(); };
   const cleanup = async () => {
-    try { if (mgr) await mgr.stop(); } catch {}
-    try { await killAndAwaitExit(broker); } catch {}
-    try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
+    const errors: unknown[] = [];
+    for (const ep of endpoints) { try { await ep.stop(); } catch (e) { errors.push(e); } }
+    try { await mgr?.stop({ withAgents: true }); } catch (e) { errors.push(e); }
+    try { await calloutNc?.close(); } catch (e) { errors.push(e); }
+    try { await killAndAwaitExit(broker); } catch (e) { errors.push(e); }
+    if (errors.length === 0) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+      rmSync(SEAT_ROOT, { recursive: true, force: true });
+      releaseBroker();
+    }
+    for (const k of Object.keys(process.env)) if (!(k in originalEnv)) delete process.env[k];
+    for (const [k, v] of Object.entries(originalEnv)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    if (errors.length) throw new AggregateError(errors, "lifetime fixture cleanup failed; storage preserved");
   };
 
   try {
@@ -137,7 +174,7 @@ async function main() {
     // Auth Callout Service
     const key = await generateSigningKey();
     const issuer = createUserTokenIssuer({ issuer: "https://auth.cotal.test", key });
-    const calloutNc = await dialerFor(SERVERS)({
+    calloutNc = await dialerFor(SERVERS)({
       servers: SERVERS,
       ...standaloneConnectOpts({ creds: callout.calloutCreds, tls: false }),
     });
@@ -201,7 +238,7 @@ async function main() {
       COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "",
       COTAL_NAME: o.name,
       COTAL_CREDS: o.creds ?? "",
-      JOIN_DELAY_MS: "2500",
+      JOIN_DELAY_MS: "4500",
     });
 
     const delayedCon: Connector = { kind: "connector", name: "delayed-join", requires: [], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: ["-e", DELAYED_CHILD], env: envDelayed(o) }) };
@@ -209,6 +246,7 @@ async function main() {
 
     writeFileSync(join(WS_ROOT, ".cotal", "agents", "pos-user.md"), "---\nname: pos-user\nrole: worker\n---\n");
     writeFileSync(join(WS_ROOT, ".cotal", "agents", "neg-user.md"), "---\nname: neg-user\nrole: worker\n---\n");
+    writeFileSync(join(WS_ROOT, ".cotal", "agents", "gap-user.md"), "---\nname: gap-user\nrole: worker\n---\n");
     writeFileSync(join(WS_ROOT, ".cotal", "agents", "stop-user.md"), "---\nname: stop-user\nrole: worker\n---\n");
 
     mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: WS_ROOT });
@@ -224,7 +262,7 @@ async function main() {
     // ==================================================================
     const callerActor1 = "caller_pos";
     const callerUid1 = mintLifecycleUid();
-    const bearer1 = await issuer.issue({
+    const bearer1 = () => issuer.issue({
       owner,
       space: SPACE,
       actor: callerActor1,
@@ -244,7 +282,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await ep1.start();
+    await startEndpoint(ep1);
 
     let posGoalId = "";
     const posStart = Date.now();
@@ -277,39 +315,31 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epCompat.start();
+    await startEndpoint(epCompat);
 
-    // Manually register a service cache entry without goal-result to simulate a 0.53 manager
-    const legacyCommands = new Map<string, unknown>();
-    legacyCommands.set("spawn", { name: "spawn" });
-    const legacyService = {
-      endpoint: BASELINE_LIFECYCLE_ENDPOINT,
-      owner,
-      caller: { owner, actor: callerActor1, uid: callerUid1 },
-      responder: { instanceId: mgrIid, epoch: 1 },
-      commands: legacyCommands,
-    };
-    (epCompat as unknown as { resolvedServices: Map<string, unknown> }).resolvedServices.set(BASELINE_LIFECYCLE_ENDPOINT, legacyService);
+    // Keep the real fetched contracts; only the supported-command view is a compatibility double.
+    await epCompat.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "status");
+    const services = (epCompat as unknown as { resolvedServices: Map<string, import("@cotal-ai/core").ResolvedService> }).resolvedServices;
+    const realService = services.get(BASELINE_LIFECYCLE_ENDPOINT)!;
+    const legacyCommands = new Map(realService.commands);
+    legacyCommands.delete("goal-result");
+    services.set(BASELINE_LIFECYCLE_ENDPOINT, { ...realService, commands: legacyCommands });
 
     let mutationSubmits = 0;
-    let compatResult: EpAttributedReply;
-    try {
-      compatResult = await epCompat.invokeService(
-        BASELINE_LIFECYCLE_ENDPOINT,
-        "spawn",
-        { name: "compat-test", agent: "delayed-join" },
-        { follow: true },
-      );
-    } catch (e) {
-      compatResult = {
-        reply: { v: 1 as const, id: "r-compat", ok: false, error: { code: "failed-precondition", message: (e as Error).message } },
-        responder: { endpoint: BASELINE_LIFECYCLE_ENDPOINT, instanceId: mgrIid, epoch: 1 },
-      };
-    }
-    check("COMPAT: missing goal-result refuses with failed-precondition", compatResult.reply.ok === false && compatResult.reply.error?.code === "failed-precondition");
-    check("COMPAT: message provides actionable upgrade notice", compatResult.reply.error?.message.includes("does not support \"goal-result\"") === true);
-    check("COMPAT: exactly zero mutation submits occurred", mutationSubmits === 0);
-    check("COMPAT: preserves not-executed outcome", compatResult.reply.error?.outcome === "not-executed");
+    const compatNc = (epCompat as unknown as { nc: NatsConnection }).nc;
+    const publish = compatNc.publish.bind(compatNc);
+    compatNc.publish = (subject, data, options) => {
+      const request = parseEpSubject(subject);
+      if (request?.plane === "request" && request.command === "spawn") mutationSubmits++;
+      publish(subject, data, options);
+    };
+    const compatError = await outcomeError(epCompat.invokeService(
+      BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "compat-test", agent: "delayed-join" }, { follow: true },
+    )).finally(() => { compatNc.publish = publish; });
+    check("COMPAT: missing goal-result refuses with failed-precondition", compatError?.code === "failed-precondition");
+    check("COMPAT: message provides actionable upgrade notice", compatError?.message.includes("does not support \"goal-result\"") === true);
+    check("COMPAT: exactly zero mutation submits occurred", mutationSubmits === 0, { mutationSubmits });
+    check("COMPAT: preserves not-executed outcome", compatError?.outcome === "not-executed");
     await epCompat.stop();
 
     // ==================================================================
@@ -326,10 +356,9 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epRetryCompat.start();
+    await startEndpoint(epRetryCompat);
 
     // Candidate 1: Real service commands (with goal-result), but bound to epoch 999 (manager fences before effects)
-    const realService = (ep1 as unknown as { resolvedServices: Map<string, any> }).resolvedServices.get(BASELINE_LIFECYCLE_ENDPOINT);
     const cand1Service = {
       ...realService,
       responder: { instanceId: mgrIid, epoch: 999 },
@@ -363,17 +392,17 @@ async function main() {
     });
     resolvedMap.set(BASELINE_LIFECYCLE_ENDPOINT, cand1Service);
 
-    const retryCompatResult = await epRetryCompat.invokeService(
+    const retryCompatError = await outcomeError(epRetryCompat.invokeService(
       BASELINE_LIFECYCLE_ENDPOINT,
       "spawn",
       { name: "retry-compat", agent: "delayed-join" },
       { follow: true },
-    );
+    ));
 
-    check("COMPAT-RETRY: re-resolved service lacking goal-result refuses with expired or failed-precondition", retryCompatResult.reply.ok === false && (retryCompatResult.reply.error?.code === "expired" || retryCompatResult.reply.error?.code === "failed-precondition"));
-    check("COMPAT-RETRY: preserves original not-executed outcome", retryCompatResult.reply.error?.outcome === "not-executed");
-    check("COMPAT-RETRY: message explains goal-result requirement", retryCompatResult.reply.error?.message.includes("goal-result") === true);
-    check("COMPAT-RETRY: carries bind refusal detail", (retryCompatResult.reply.error?.details ?? []).some((d: any) => d.kind === EP_BIND_REFUSED));
+    check("COMPAT-RETRY: re-resolved service lacking goal-result refuses with expired or failed-precondition", retryCompatError?.code === "expired" || retryCompatError?.code === "failed-precondition");
+    check("COMPAT-RETRY: preserves original not-executed outcome", retryCompatError?.outcome === "not-executed");
+    check("COMPAT-RETRY: message explains goal-result requirement", retryCompatError?.message.includes("goal-result") === true);
+    check("COMPAT-RETRY: carries bind refusal detail", (retryCompatError?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED));
     await epRetryCompat.stop();
 
     // ==================================================================
@@ -390,7 +419,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epStop.start();
+    await startEndpoint(epStop);
 
     const stopFollowP = epStop.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
@@ -423,7 +452,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epProv.start();
+    await startEndpoint(epProv);
 
     const provResult = await epProv.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
@@ -460,7 +489,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epFact.start();
+    await startEndpoint(epFact);
 
     let factReconcileRan = false;
     const factMismatchResult = await epFact.followServiceGoal(
@@ -491,6 +520,14 @@ async function main() {
     );
     check("FACT: reconcile ran", factReconcileRan);
     check("FACT: mismatched fingerprint does not authorize", factMismatchResult.reply.ok === false);
+    const digestResult = await epFact.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, async () => ({
+      reply: { v: 1, id: "r-digest", ok: true, data: { goalId: "g-digest", fingerprint: "fp-digest" } },
+      responder: { endpoint: BASELINE_LIFECYCLE_ENDPOINT, instanceId: mgrIid, epoch: 0 },
+    }), 1000, { reconcile: async (goalId) => ({ goalId, result: {
+      v: 1, goalId, fingerprint: "fp-digest", state: "succeeded", data: { name: "unsafe" },
+      outcomeDigest: contractDigest({ name: "different" }), ts: Date.now(),
+    } }) });
+    check("FACT: digest-inconsistent terminal does not authorize", digestResult.reply.ok === false && digestResult.reply.error?.message.includes("outcomeDigest") === true && digestResult.reply.error.outcome === "unknown");
     await epFact.stop();
 
     // ==================================================================
@@ -506,7 +543,7 @@ async function main() {
         owner,
         space: SPACE,
         actor: callerActor2,
-        scope: ["spawn", "goal-result"],
+        scope: ["spawn"],
         lifecycleUid: callerUid2,
         ttlSec: 3,
       });
@@ -530,24 +567,39 @@ async function main() {
       if (t.connected && bearerMintCount > 1) rebuildsObserved++;
     });
 
-    await ep2.start();
+    await startEndpoint(ep2);
     const initialNc = (ep2 as unknown as { nc: { isClosed: () => boolean } }).nc;
 
+    const queryCallers: Array<{ owner: string; actor: string; uid: string }> = [];
+    let queryIdentityMatches = true;
+    let expiredBeforeSettlement = false;
+    const expiryFollowStarted = Date.now();
+    let expiryFollowElapsed = 0;
     const expFollowP = ep2.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
-      async () => ep2.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "neg-user", agent: "delayed-join", events: false }),
+      async (signal) => ep2.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "neg-user", agent: "delayed-join", events: false }, { signal }),
       15_000,
       {
-        reconcile: async (goalId, attributed) => {
-          check("PINNING: user query pinned to broker-attributed instanceId", attributed.responder?.instanceId === mgrIid);
-          const q = await ep2.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "goal-result", { goalId });
-          if (q.reply.ok && q.reply.data) {
+        reconcile: async (goalId, attributed, context) => {
+          const nc = (ep2 as unknown as { nc: NatsConnection }).nc;
+          const publish = nc.publish.bind(nc);
+          nc.publish = (subject, data, options) => {
+            const request = parseEpSubject(subject);
+            if (request?.plane === "request" && request.command === "goal-result") queryCallers.push(request.caller);
+            publish(subject, data, options);
+          };
+          try {
+            const q = await ep2.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "goal-result", { goalId }, {
+              signal: context.signal, deadlineMs: Math.min(5000, context.deadlineMs),
+            });
+            queryIdentityMatches &&= attributed.responder.instanceId === mgrIid && q.responder.instanceId === mgrIid
+              && context.caller.owner === owner && context.caller.actor === callerActor2 && context.caller.uid === callerUid2;
+            if (!q.reply.ok) throw new Error(q.reply.error?.message ?? "goal-result refused");
             return q.reply.data as { goalId: string; result?: GoalResultFact };
-          }
-          return undefined;
+          } finally { nc.publish = publish; }
         },
       },
-    );
+    ).then((result) => { expiredBeforeSettlement = initialNc.isClosed(); expiryFollowElapsed = Date.now() - expiryFollowStarted; return result; });
 
     // Wait 7.0s so wire expiry drops connection at 3s, rebuilds at ~3.5s, child joins at ~4.5s, and manager commits
     await new Promise((r) => setTimeout(r, 7000));
@@ -561,7 +613,93 @@ async function main() {
     // Await follow outcome (resolves succeeded across wire expiry rebuild!)
     const expResult = await expFollowP;
     check("LIFETIME: followServiceGoal resolves ok: true across wire expiry", expResult.reply.ok === true, expResult.reply);
+    check("LIFETIME: wire expiry preceded goal settlement", expiredBeforeSettlement);
+    check("LIFETIME: outcome observed promptly after wire expiry", expiryFollowElapsed < 10_000, { expiryFollowElapsed });
+    check("QUERY: real mediated reads retain the accepting caller and manager", queryIdentityMatches && queryCallers.length > 0 && queryCallers.every((c) => c.owner === owner && c.actor === callerActor2 && c.uid === callerUid2), queryCallers);
     await ep2.stop();
+
+    // Hold renewal until a separate authorized caller has read the real canonical terminal.
+    // No private Manager state or raw EPF reader is used to supply the follower's result.
+    const gapActor = "caller_gap";
+    const gapUid = mintLifecycleUid();
+    let gapMints = 0;
+    let releaseRenewal!: () => void;
+    const renewalAllowed = new Promise<void>((resolve) => { releaseRenewal = resolve; });
+    const gapBearer = async () => {
+      if (++gapMints > 1) await renewalAllowed;
+      return issuer.issue({ owner, space: SPACE, actor: gapActor, scope: ["spawn"], lifecycleUid: gapUid, ttlSec: 3 });
+    };
+    const epNativeGap = new CotalEndpoint({
+      space: SPACE, servers: SERVERS, bearer: gapBearer, sentinelCreds: callout.sentinelCreds,
+      lifecycleUid: gapUid, card: { owner, actor: gapActor, id: gapActor, name: "caller-gap", kind: "agent" },
+      consume: false, watchPresence: false, registerPresence: false,
+    });
+    const epGapObserver = new CotalEndpoint({
+      space: SPACE, servers: SERVERS,
+      bearer: () => issuer.issue({ owner, space: SPACE, actor: gapActor, scope: ["spawn"], lifecycleUid: gapUid, ttlSec: 60 }),
+      sentinelCreds: callout.sentinelCreds, lifecycleUid: gapUid,
+      card: { owner, actor: gapActor, id: gapActor, name: "gap-observer", kind: "agent" },
+      consume: false, watchPresence: false, registerPresence: false,
+    });
+    let gapRebound = false;
+    epNativeGap.on("error", () => {});
+    epNativeGap.on("connection", (event) => { if (event.connected && gapMints > 1) gapRebound = true; });
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+    let gapFollow: Promise<EpAttributedReply> | undefined;
+    try {
+      await startEndpoint(epNativeGap);
+      await startEndpoint(epGapObserver);
+      const oldGapNc = (epNativeGap as unknown as { nc: NatsConnection }).nc;
+      let gapGoalId: string | undefined;
+      let gapSubmits = 0;
+      let canonicalReadRecovered = false;
+      gapFollow = epNativeGap.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, async (signal) => {
+        gapSubmits++;
+        const accepted = await epNativeGap.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "spawn", { name: "gap-user", agent: "delayed-join", events: false }, { signal });
+        gapGoalId = (accepted.reply.data as { goalId?: string })?.goalId;
+        return accepted;
+      }, 15_000, {
+        reconcile: async (goalId, _attributed, context) => {
+          const read = await epNativeGap.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "goal-result", { goalId }, { signal: context.signal, deadlineMs: Math.min(5000, context.deadlineMs) });
+          if (!read.reply.ok) throw new Error(read.reply.error?.message ?? "goal-result refused");
+          const data = read.reply.data as { goalId: string; result?: GoalResultFact };
+          canonicalReadRecovered ||= data.result?.state === "succeeded";
+          return data;
+        },
+      });
+      // Observe rejections promptly even while the fixture waits for the broker-expiry witness.
+      void gapFollow.catch(() => {});
+      await Promise.race([oldGapNc.closed(), new Promise<never>((_, reject) => {
+        closeTimer = setTimeout(() => reject(new Error("wire-gap connection did not expire")), 5000);
+      })]);
+      if (closeTimer) clearTimeout(closeTimer);
+      check("GAP-WIRE: broker expired the standing connection", oldGapNc.isClosed());
+      let committed: GoalResultFact | undefined;
+      const commitDeadline = Date.now() + 10_000;
+      while (!committed && Date.now() < commitDeadline) {
+        if (gapGoalId) {
+          const read = await epGapObserver.invokeService(BASELINE_LIFECYCLE_ENDPOINT, "goal-result", { goalId: gapGoalId });
+          if (!read.reply.ok) throw new Error(read.reply.error?.message ?? "observer read refused");
+          committed = (read.reply.data as { result?: GoalResultFact }).result;
+        }
+        if (!committed) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      check("GAP-WIRE: native canonical terminal exists before renewal is released", committed?.state === "succeeded" && !gapRebound, { committed: committed?.state, gapRebound });
+      releaseRenewal();
+      const recovered = await Promise.race([gapFollow, new Promise<undefined>((resolve) => { recoveryTimer = setTimeout(resolve, 3000); })]);
+      if (recoveryTimer) clearTimeout(recoveryTimer);
+      check("GAP-WIRE: recovery settles promptly after renewal", recovered !== undefined);
+      check("GAP-WIRE: real goal-result recovers canonical success", recovered?.reply.ok === true && canonicalReadRecovered, recovered?.reply);
+      check("GAP-WIRE: the accepted mutation is submitted only once", gapSubmits === 1, { gapSubmits });
+    } finally {
+      releaseRenewal();
+      if (closeTimer) clearTimeout(closeTimer);
+      if (recoveryTimer) clearTimeout(recoveryTimer);
+      await epNativeGap.stop();
+      await epGapObserver.stop();
+      await gapFollow?.catch(() => {});
+    }
 
     // ==================================================================
     // 7. GAP TERMINAL RECONCILIATION (Terminal committed during disconnect gap)
@@ -577,7 +715,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epGap.start();
+    await startEndpoint(epGap);
 
     const gapGoalId = "goal-gap-terminal";
     const gapFingerprint = "fp-gap-accepted";
@@ -629,14 +767,14 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epAbort.start();
+    await startEndpoint(epAbort);
 
     // Already-aborted signal
     const preAborted = new AbortController();
     preAborted.abort();
     let preAbortSubmitCalled = false;
     const preAbortT0 = Date.now();
-    const preAbortResult = await epAbort.followServiceGoal(
+    const preAbortError = await outcomeError(epAbort.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
       async () => {
         preAbortSubmitCalled = true;
@@ -647,17 +785,17 @@ async function main() {
       },
       5000,
       { signal: preAborted.signal },
-    );
+    ));
     const preAbortElapsed = Date.now() - preAbortT0;
     check("ABORT-PRE: already-aborted signal settles immediately", preAbortElapsed < 100, { preAbortElapsed });
     check("ABORT-PRE: submit was never called", preAbortSubmitCalled === false);
-    check("ABORT-PRE: returns unavailable error", preAbortResult.reply.ok === false && preAbortResult.reply.error?.code === "unavailable");
-    check("ABORT-PRE: carries not-executed outcome", preAbortResult.reply.error?.outcome === "not-executed");
+    check("ABORT-PRE: returns unavailable error", preAbortError?.code === "unavailable");
+    check("ABORT-PRE: carries not-executed outcome", preAbortError?.outcome === "not-executed");
 
     // Abort during submit
     const midAbortCtrl = new AbortController();
     const midAbortT0 = Date.now();
-    const midAbortResult = await epAbort.followServiceGoal(
+    const midAbortError = await outcomeError(epAbort.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
       async () => {
         // Trigger abort while submit is in flight
@@ -669,12 +807,25 @@ async function main() {
       },
       5000,
       { signal: midAbortCtrl.signal },
-    );
+    ));
     const midAbortElapsed = Date.now() - midAbortT0;
     check("ABORT-MID: abort during submit settles promptly", midAbortElapsed < 200, { midAbortElapsed });
-    check("ABORT-MID: returns unavailable error", midAbortResult.reply.ok === false && midAbortResult.reply.error?.code === "unavailable");
-    check("ABORT-MID: carries unknown outcome, never not-executed", midAbortResult.reply.error?.outcome === "unknown");
-    check("ABORT-MID: forbids blind retry", midAbortResult.reply.error?.message.includes("do NOT retry") === true);
+    check("ABORT-MID: returns unavailable error", midAbortError?.code === "unavailable");
+    check("ABORT-MID: carries unknown outcome, never not-executed", midAbortError?.outcome === "unknown");
+    check("ABORT-MID: forbids blind retry", /do not retry/i.test(midAbortError?.message ?? ""));
+
+    const refusalAbort = new AbortController();
+    let wireRefusal: EpAttributedReply | undefined;
+    const refusalResult = await epAbort.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, async (signal) => {
+      wireRefusal = await invokeCommand((epAbort as unknown as { nc: NatsConnection }).nc, SPACE,
+        { ...realService, responder: { ...realService.responder, epoch: 999 } },
+        "spawn", { name: "refused-before-effects", agent: "delayed-join" }, { signal, deadlineMs: 2000 });
+      refusalAbort.abort();
+      return wireRefusal;
+    }, 5000, { signal: refusalAbort.signal });
+    check("REFUSAL: stop preserves the exact attributed refusal", refusalResult === wireRefusal);
+    check("REFUSAL: real manager refused before effects", refusalResult.reply.ok === false && replyRefusedBeforeEffect(refusalResult.reply.error));
+    check("REFUSAL: broker attribution is retained without claiming acceptance", refusalResult.responder.instanceId === mgrIid && refusalResult.reply.error?.outcome === "not-executed" && !refusalResult.reply.error.message.includes("goal was accepted"));
     await epAbort.stop();
 
     // ==================================================================
@@ -691,7 +842,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epBearerErr.start();
+    await startEndpoint(epBearerErr);
 
     const bearerErrResult = await epBearerErr.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
@@ -724,7 +875,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epMisSubject.start();
+    await startEndpoint(epMisSubject);
 
     const misSubjectResult = await epMisSubject.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
@@ -749,7 +900,7 @@ async function main() {
         }),
       },
     );
-    check("MIS-SUBJECT: mismatched goalId in queryRes is rejected", misSubjectResult.reply.ok === false && misSubjectResult.reply.error?.message.includes("mis-subjected reply") === true);
+    check("MIS-SUBJECT: mismatched goalId in queryRes is rejected", misSubjectResult.reply.ok === false && misSubjectResult.reply.error?.code === "unavailable" && misSubjectResult.reply.error.outcome === "unknown" && misSubjectResult.reply.error.message.includes("names a different goal"));
     await epMisSubject.stop();
 
     // ==================================================================
@@ -766,10 +917,14 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epHangRec.start();
+    await startEndpoint(epHangRec);
 
     const hangRecT0 = Date.now();
-    const hangRecResult = await epHangRec.followServiceGoal(
+    let readStartedAt: number | undefined;
+    let readSignal: AbortSignal | undefined;
+    let releaseRead!: (value: { goalId: string; result?: GoalResultFact }) => void;
+    const heldRead = new Promise<{ goalId: string; result?: GoalResultFact }>((resolve) => { releaseRead = resolve; });
+    const hangRecPromise = epHangRec.followServiceGoal(
       BASELINE_LIFECYCLE_ENDPOINT,
       async () => ({
         reply: { v: 1 as const, id: "r-hang", ok: true as const, data: { goalId: "g-hang-rec" } },
@@ -777,12 +932,34 @@ async function main() {
       }),
       600,
       {
-        reconcile: async () => new Promise<never>(() => {}), // hangs forever
+        reconcile: async (_goalId, _attributed, context) => {
+          readStartedAt = Date.now();
+          readSignal = context.signal;
+          return heldRead;
+        },
       },
     );
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
+    const observed = await Promise.race([
+      hangRecPromise,
+      new Promise<undefined>((resolve) => { probeTimer = setTimeout(resolve, 700); }),
+    ]);
+    if (probeTimer) clearTimeout(probeTimer);
     const hangRecElapsed = Date.now() - hangRecT0;
-    check("BOUNDED-REC: settles within deadline budget despite hanging reconcile", hangRecElapsed < 1200, { hangRecElapsed });
+    check("BOUNDED-REC: settles within deadline budget despite hanging reconcile", observed !== undefined, { hangRecElapsed });
+    // Release only after the settlement assertion; a hung implementation cannot earn a green
+    // by receiving a cooperative reply. Getters witness any forbidden late fact processing.
+    let lateFactReads = 0;
+    releaseRead({
+      get goalId() { lateFactReads++; return "g-hang-rec"; },
+      get result() { lateFactReads++; return { v: 1, goalId: "g-hang-rec", fingerprint: "fp", state: "succeeded", outcomeDigest: contractDigest(null), data: null, ts: Date.now() }; },
+    });
+    const hangRecResult = await hangRecPromise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
     check("BOUNDED-REC: times out with deadline-exceeded", hangRecResult.reply.ok === false && hangRecResult.reply.error?.code === "deadline-exceeded");
+    check("BOUNDED-REC: reconciliation begins before the wait deadline", readStartedAt !== undefined && readStartedAt - hangRecT0 < 600);
+    check("BOUNDED-REC: completion cancels the owned read", readSignal?.aborted === true);
+    check("BOUNDED-REC: late canonical reply is not processed", lateFactReads === 0, { lateFactReads });
     await epHangRec.stop();
 
     // ==================================================================
@@ -799,7 +976,7 @@ async function main() {
       watchPresence: false,
       registerPresence: false,
     });
-    await epProd.start();
+    await startEndpoint(epProd);
 
     // Query real manager producer for pos-user goal
     const realProducerReply = await epProd.invokeService(
@@ -827,8 +1004,10 @@ async function main() {
     await cleanup();
   }
 
+  if (pass + fail !== 61) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 61`);
   console.log(`\nSmoke suite completed: ${pass} passed, ${fail} failed.`);
-  if (fail > 0) process.exit(1);
+  emitSentinel({ passed: pass, failed: fail });
+  if (fail > 0) process.exitCode = 1;
 }
 
 main().catch((e) => {

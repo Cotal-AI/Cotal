@@ -201,6 +201,7 @@
     "smoke:manager-invoke-verdict": "tsx extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",
     "smoke:manager-caller-transport": "tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts",
     "smoke:goal-submit-order": "tsx packages/core/smoke/goal-submit-order.smoke.ts",
+    "smoke:user-bearer-goal-lifetime": "tsx implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts",
     "smoke:turn-intake": "tsx extensions/connector-core/smoke/turn-intake.smoke.ts",
     "smoke:claude-turn-frames": "tsx extensions/connector-claude-code/smoke/turn-frames.smoke.ts",
     "smoke:transport-liveness": "tsx extensions/connector-core/smoke/transport-liveness.smoke.ts",

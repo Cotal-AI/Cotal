@@ -396,8 +396,9 @@ export async function epCall(
   space: string,
   route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number },
   op: EpVerbOp,
-  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry" },
+  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry"; signal?: AbortSignal },
 ): Promise<EpAttributedReply> {
+  opts.signal?.throwIfAborted();
   const deadlineMs = assertDeadline(opts.deadlineMs);
   if (route.mode === "one" && opts.currentEpoch === undefined)
     throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2, the stale-reply rejection rule)");
@@ -412,6 +413,11 @@ export async function epCall(
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, undefined, "unknown"));
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+  });
   try {
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
@@ -438,7 +444,7 @@ export async function epCall(
       `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "call");
     nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
-    const msg = await Promise.race([outcome, timeout, denialWatch.denied]);
+    const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
     // the same question better: it knows it did not run the command, where the check can only
@@ -506,6 +512,7 @@ export async function epCall(
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
     denialWatch?.release();
+    if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
   }
 }
 
