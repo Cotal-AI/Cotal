@@ -9,7 +9,7 @@
     "The owner-confusion mutant leaves the positive own-result read working but discloses it to a separately authenticated owner with the same actor and lifecycle.",
     "The missing-reader mutant must fail the real canonical-result cell while still completing the suite, not crash in the test parser.",
     "The open-input mutant tests the fetched closed contract. It is not claimed as a raw-wire server-validator test.",
-    "The reply-destination mutant rebuilds the actual core serveEndpoint path and trusts any supplied destination in the ep.reply namespace. Native no-responder inboxes retain normal behavior, so setup completes and the goal-result cell tests cross-caller redirection. A valid other caller reply rail is used, so broker destination denial cannot hide the defect."
+    "The reply-destination mutant rebuilds the actual core serveEndpoint path and trusts any grammatically valid supplied ep.reply destination without checking its caller. The reserved _nr no-responder rail retains normal behavior, so setup completes and the goal-result cell tests cross-caller redirection. A valid other caller reply rail is used, so broker destination denial cannot hide the defect."
   ],
   "mutations": [
     {
@@ -40,7 +40,7 @@
       "name": "M4 trust any native destination in the endpoint reply namespace",
       "file": "packages/core/src/endpoint-serve.ts",
       "find": "const replySubject = deriveReplySubject(space, parsed, identity);",
-      "replace": "const replySubject = (msg as { reply?: string }).reply?.startsWith(`cotal.${space}.ep.reply.`) ? (msg as unknown as { reply: string }).reply : deriveReplySubject(space, parsed, identity);",
+      "replace": "const replySubject = parseEpSubject((msg as { reply?: string }).reply ?? '')?.plane === 'reply' ? (msg as unknown as { reply: string }).reply : deriveReplySubject(space, parsed, identity);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-service-invoke",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "goal-result ignores a caller-chosen reply destination and returns only to its caller",
