@@ -13,7 +13,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { assertReleasedSeedWriter, entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedGeneration, stampPath, type Semver } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -470,16 +470,6 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
   return { manifestRebuilt, repairAllSeeded };
 }
 
-/** True iff `v` parses as a numeric-core semver (the only thing the refresh comparison can order). */
-function isValidSemver(v: string): boolean {
-  try {
-    parseSemver(v);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The ever-seeded set to reconcile against, per the prefix state and the mode. Pristine/legacy
  * prefixes initialize it; a witnessed prefix with a lost authority is fail-loud in auto/force,
@@ -601,25 +591,6 @@ function officialNameOfPkg(pkg: string): string | undefined {
  *  ordering included), so `1.0.0-rc.1` < `1.0.0` and `1.0.10` > `1.0.9`. */
 function isStrictlyNewer(a: string, b: string | undefined): boolean {
   return compareSemver(a, b ?? "0.0.0") > 0;
-}
-
-interface Semver {
-  readonly rel: [number, number, number];
-  readonly pre: string[];
-}
-
-function parseSemver(v: string): Semver {
-  const core = v.split("+")[0];
-  const dash = core.indexOf("-");
-  const pre = dash >= 0 ? core.slice(dash + 1).split(".") : [];
-  // Fail loud on a non-numeric release segment rather than coercing it to 0 (which would silently
-  // mis-order versions). The generation is a real package.json version and the stamp is one we wrote,
-  // so a non-semver core here means corrupt state → `cotal ext seed --repair`/`--reset`.
-  const release = (dash >= 0 ? core.slice(0, dash) : core).split(".").map((s) => {
-    if (!/^\d+$/.test(s)) throw new Error(`invalid version "${v}" (release segment "${s}" is not numeric) - repair with \`cotal ext seed --repair\` (or --reset)`);
-    return Number(s);
-  });
-  return { rel: [release[0] ?? 0, release[1] ?? 0, release[2] ?? 0], pre };
 }
 
 export function compareSemver(a: string, b: string): number {

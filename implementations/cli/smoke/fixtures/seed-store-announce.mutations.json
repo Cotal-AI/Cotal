@@ -6,7 +6,7 @@
   "command": "pnpm smoke:seed",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-store-announce.mutations.json",
   "why": [
-    "FIVE MUTATIONS. Four break a guard; one models a failure that no single edit to the product can",
+    "EIGHT MUTATIONS. Seven break a guard; one models a failure that no single edit to the product can",
     "produce. The distinction is stated because a reader who assumes all five are the same kind will",
     "over-read the third.",
     "",
@@ -37,6 +37,10 @@
     "the reconcile returning NOOP without calling the stager and the stager's own early return, so no",
     "single edit makes a steady-state boot copy bytes. M5 emits the line from the NOOP return itself,",
     "which is precisely the failure the cell exists to catch.",
+    "",
+    "M6 drops the plausible-semver rule at the reconcile input. M7 drops the separator rule that",
+    "refuses a valid semver whose build metadata carries a traversal. M8 drops the resolved-root",
+    "containment check at the write path. Each must redden its named seed path cell first.",
     "",
     "ORDER, because the suite is fail-fast and a red on the wrong leg is not a kill of the assertion",
     "named. Each mutation's expectRed is the FIRST assertion that mutation can reach: M1 and M2 reach",
@@ -89,6 +93,30 @@
       "replace": "      process.stderr.write(\"wrote operator-global seed store payload (noop)\\n\");\n      return NOOP;\n    }\n  }",
       "expectRed": "✗ FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
       "cell": "✗ FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)"
+    },
+    {
+      "name": "a non-semver traversal generation reaches reconcile",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (!isValidSemver(generation)) invalid(\"not plausible semver\");",
+      "replace": "",
+      "expectRed": "✗ FAIL: seed generation: reconcile input refuses a traversal version before any write",
+      "cell": "✗ FAIL: seed generation: reconcile input refuses a traversal version before any write"
+    },
+    {
+      "name": "a semver build-metadata separator reaches reconcile",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (/[\\\\/]/.test(generation)) invalid(\"path separator\");",
+      "replace": "",
+      "expectRed": "✗ FAIL: seed generation: reconcile input refuses a semver build-metadata separator",
+      "cell": "✗ FAIL: seed generation: reconcile input refuses a semver build-metadata separator"
+    },
+    {
+      "name": "the seed-store write no longer checks resolved-root containment",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (pathFromRoot === \"\" || pathFromRoot === \"..\" || pathFromRoot.startsWith(`..${sep}`)) {\n    throw new Error(`refusing seed-store destination ${destination}: it is not strictly inside ${root}`);\n  }",
+      "replace": "",
+      "expectRed": "✗ FAIL: seed path: containment refuses a traversal destination before a write",
+      "cell": "✗ FAIL: seed path: containment refuses a traversal destination before a write"
     }
   ]
 }
