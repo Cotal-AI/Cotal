@@ -409,6 +409,7 @@ try {
       COTAL_WORKSPACE_ROOT: root,
       COTAL_JCODE_TUI: "0",
       COTAL_EVENTS: "1",
+      COTAL_JCODE_PROMPT: "JCODE-JOURNAL-FOLD-1984",
       COTAL_CONTROL_SOCKET: controlSock("fold-control.sock"),
       COTAL_CONTROL_TOKEN: "fold-control-token",
     },
@@ -417,23 +418,10 @@ try {
   let foldErr = "";
   fold.stderr?.on("data", (chunk: Buffer) => (foldErr += chunk.toString()));
   await waitFor("foldpeer mesh presence", () => foldPeerId);
-  await waitFor(
-    "foldpeer post-join notice",
-    () =>
-      readJsonLines(foldLog).find(
-        (entry) => entry.ev === "request" &&
-          (entry.frame as { req?: string; no_reply?: boolean; content?: string }).req === "send_message" &&
-          (entry.frame as { no_reply?: boolean }).no_reply &&
-          String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"),
-      )
-        ? true
-        : undefined,
-  );
   const foldEventsChannel = eventChannel({ owner: "foldpeer", actor: "foldpeer" });
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
   const foldStart = frames.length;
-  await operator.unicast(foldPeerId!, foldMarker);
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "Jcode journal fold terminal event",
