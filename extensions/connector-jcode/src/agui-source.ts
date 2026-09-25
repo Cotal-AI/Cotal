@@ -1,4 +1,4 @@
-import { access, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { JsonlFileSource, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
@@ -11,13 +11,6 @@ const RETRY_MAX_MS = 250;
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const isMissing = (error: unknown): error is NodeJS.ErrnoException =>
   error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT";
-
-export class JcodeJournalFold extends Error {
-  constructor(readonly lostRecords: number) {
-    super(`Jcode session journal folded into its snapshot; ${lostRecords} unacknowledged record(s) could not be emitted`);
-    this.name = "JcodeJournalFold";
-  }
-}
 
 export function jcodeJournalPath(jcodeHome: string, sessionId: string): string {
   return join(jcodeHome, "sessions", `${sessionId}.journal.jsonl`);
@@ -61,7 +54,7 @@ export async function initializeJcodeEventBoundary(path: string, wal: EventWal):
 export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   readonly kind = "jcode-session-journal";
   private readonly file: JsonlFileSource<JcodeJournalRecord>;
-  private snapshotBytes = 0;
+  private snapshotMessages = 0;
 
   constructor(
     readonly path: string,
@@ -74,12 +67,18 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     if (cursor !== undefined) {
       try {
         const read = await this.file.read(cursor);
-        this.snapshotBytes = await this.snapshotSize();
+        this.snapshotMessages = await this.snapshotMessageCount();
         return read;
       } catch (error) {
         const replacement = await this.foldedSince();
         if (replacement === undefined) throw error;
-        throw new JcodeJournalFold(0);
+        return {
+          cursor: replacement,
+          records: [{
+            cursor: replacement,
+            value: { journal_fold: { lost_records: 0 } },
+          }],
+        };
       }
     }
     const deadline = performance.now() + this.waitMs;
@@ -87,9 +86,11 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     for (;;) {
       try {
         await access(this.path, constants.R_OK);
-        return cursor === undefined
+        const read = cursor === undefined
           ? await this.file.readFromBeginning()
           : await this.file.read(cursor);
+        this.snapshotMessages = await this.snapshotMessageCount();
+        return read;
       } catch (error) {
         if (!isMissing(error)) throw error;
         const remaining = deadline - performance.now();
@@ -104,10 +105,13 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     }
   }
 
-  private async snapshotSize(): Promise<number> {
+  private async snapshotMessageCount(): Promise<number> {
     const snapshot = join(dirname(this.path), `${basename(this.path, ".journal.jsonl")}.json`);
     try {
-      return (await stat(snapshot)).size;
+      if ((await stat(snapshot)).size === 0) return 0;
+      const parsed: unknown = JSON.parse(await readFile(snapshot, "utf8"));
+      if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as { messages?: unknown }).messages)) return 0;
+      return (parsed as { messages: unknown[] }).messages.length;
     } catch (error) {
       if (isMissing(error)) return 0;
       throw error;
@@ -118,9 +122,12 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     const deadline = performance.now() + this.waitMs;
     let retryMs = RETRY_INITIAL_MS;
     for (;;) {
-      if (await this.snapshotSize() > this.snapshotBytes) {
+      const messages = await this.snapshotMessageCount();
+      if (messages > this.snapshotMessages) {
         try {
-          return await this.file.cursorAtBeginning();
+          const cursor = await this.file.cursorAtBeginning();
+          this.snapshotMessages = messages;
+          return cursor;
         } catch (error) {
           if (!isMissing(error)) throw error;
         }
