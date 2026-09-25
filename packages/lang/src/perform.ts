@@ -1575,8 +1575,11 @@ export async function runScope(
         // in-flight entries `cancelled`, a durable fact about a run that was merely stopped, and
         // a resume then replays that cancellation into a healthy run. So the siblings run to
         // their own boundary (each releases there in turn, or finishes work already in flight)
-        // and the unwind propagates bare, with nothing cancelled and nothing settled.
-        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {
+        // and the unwind propagates bare, with nothing cancelled and nothing settled. A
+        // divergence is the same non-fact about the branches: it says the program is not the one
+        // that wrote this journal, so cancelling a sibling would record a consequence of the
+        // disagreement on a run the program has no standing to speak for.
+        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
           await Promise.allSettled(running);
           throw e;
         }
@@ -1638,11 +1641,14 @@ export async function runScope(
         () => onSettle(i, false),
         // A branch that rejected with `Cancelled` reached no outcome, and one that rejected with
         // a host-side unwind (a release, a held run, a refused append) reached none either:
-        // neither is a candidate, and neither may cancel the arms that are still running.
+        // neither is a candidate, and neither may cancel the arms that are still running. A
+        // diverging arm is in that set too: its rejection is a fact about the program, not an
+        // outcome this run reached, and the hoist below the settle surfaces it before any winner
+        // is chosen.
         (e: unknown) =>
           onSettle(
             i,
-            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,
+            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence,
           ),
       );
     });
@@ -1798,9 +1804,9 @@ export async function runScope(
       frame.clock.join(frames.map((f) => f.clock));
       return { branches: branchKeys, value: results };
     } catch (e) {
-      // The same host-side rule as `parallel`: a release, a held run, or a refused append
-      // cancels nothing.
-      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {
+      // The same host-side rule as `parallel`: a release, a held run, a refused append, or a
+      // divergence cancels nothing.
+      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
         await Promise.allSettled(launched);
         throw e;
       }
