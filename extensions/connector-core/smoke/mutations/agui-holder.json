@@ -62,6 +62,14 @@
       "replace": "    return Promise.resolve();\n",
       "expectRed": "waitlive:a-pending-wait-HOLDS-the-pump",
       "note": "Also reds `waitlive:a-closeRun-is-HELD-by-a-pending-wait` and the rejecting-wait and shared-wait cells, since the wait is skipped for every step."
+    },
+    {
+      "name": "H4 start a recovered source at its end instead of byte zero",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "command": "pnpm smoke:durable-source",
+      "find": "      return `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;",
+      "replace": "      return `${String(st.dev)}:${String(st.ino)}:${st.size}:${await JsonlFileSource.sealAt(fh, st.size)}`;",
+      "expectRed": "a beginning cursor reads retained complete records"
     }
   ]
 }
