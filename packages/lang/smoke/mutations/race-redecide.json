@@ -2,7 +2,7 @@
   "suite": [
     "packages/lang/smoke/scopes.smoke.ts"
   ],
-  "guard": "A cancelled race arm whose in-flight effect lands is re-judged against the frontier: past it the pure tail is cut, before it the arm keeps running and can still win. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "A cancelled race arm whose in-flight effect lands is re-judged against the frontier: past it the pure tail is cut, before it the arm keeps running and can still win. A divergence raised inside a scope is never the scope's own outcome: the ladder rethrows it and settles nothing, a divergence among a race's settled arms unwinds the run ahead of the winner scan whichever arm won, and it cancels no sibling — a scope it passes through leaves every other arm to run to its own boundary, so a resume of the original source completes the run. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-scopes",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-redecide.json",
   "mutations": [
@@ -25,6 +25,56 @@
       "completionMarker": "ok the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
       "cell": "an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
       "note": "The guard against over-cutting: an arm landing at 5000 against a frontier of 10000 can still win, and cutting it hands the race to the wrong arm. The cell asserts the early-landing arm WINS."
+    },
+    {
+      "name": "a divergence inside a scope settles as the scope's own L4000 failure (the defect)",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (reason instanceof RunDivergence) throw reason;",
+      "replace": "",
+      "expectRed": "(1) and the scope entry stays PENDING rather than recording the divergence as its outcome",
+      "completionMarker": "ok (1) a resume whose edit diverged inside the pending parallel throws the divergence",
+      "cell": "(1) and the scope entry stays PENDING rather than recording the divergence as its outcome",
+      "note": "Dropping the ladder entry puts the divergence through the generic settle (#1176): the scope is durably recorded `settled/failed` under `L4000` `scope-fault`, so the next resume replays a catchable `EffectError` instead of the divergence and the loudness is spent before anyone sees it. The first cell after the throw is the entry-shape cell, so the marker sits one cell UP: the suite is fail-fast and the fail happens AT this cell, so the marker proves the run reached it. Measured before the rule at 1498d82c9: settled/failed L4000, second resume EffectError(L4000)."
+    },
+    {
+      "name": "a losing race arm's divergence is discarded by the winner scan (the defect)",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),",
+      "replace": "        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),",
+      "expectRed": "(4) a divergence in a losing race arm surfaces as RunDivergence",
+      "completionMarker": "ok (3) and no effect after the catch runs against the journal it diverged from",
+      "cell": "(4) a divergence in a losing race arm surfaces as RunDivergence",
+      "note": "Dropping `RunDivergence` from the hoist is exactly the pre-fix second site: the diverged arm is a rejected non-candidate, the scan picks the pure sibling, and the run COMPLETES with the winner's value while the run-level fault vanishes (measured at the base: outcome COMPLETED, logs [[\"win\",\"pure\",\"pure\"]], race settled ok, the divergence never surfaced). The cell names the throw; the next cell holds the winner's value."
+    },
+    {
+      "name": "a divergence in a parallel arm cancels its sibling (the round-2 defect)",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
+      "replace": "        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n          await Promise.allSettled(running);\n          throw e;\n        }",
+      "expectRed": "(6) and the sibling arm's entry settles ok, not cancelled",
+      "completionMarker": "ok (6) a divergence in one arm of a both-begun parallel still surfaces as RunDivergence",
+      "cell": "(6) and the sibling arm's entry settles ok, not cancelled",
+      "note": "Dropping `RunDivergence` from the `parallel` catch exemption restores the reviewer's failing input exactly: the divergence falls through the catch, every sibling is cancelled (`settled/cancelled` on the journal), and the ScopeFailed wrap is unwrapped by the ladder so the scope stays pending while the cancellation is already durable — a resume of the original source then threw Cancelled and settled the scope cancelled (measured on the seeded both-begun journal at f77b0b891). The fail-fast marker is the cell above: the run reached this cell before reddening."
+    },
+    {
+      "name": "a divergence in a fanOut branch cancels its sibling (the round-2 defect)",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "replace": "      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {\n        await Promise.allSettled(launched);\n        throw e;\n      }",
+      "expectRed": "(7) and the sibling branch's entry settles ok, not cancelled",
+      "completionMarker": "ok (7) a divergence in one branch of a both-begun fanOut still surfaces as RunDivergence",
+      "cell": "(7) and the sibling branch's entry settles ok, not cancelled",
+      "note": "The `fanOut` catch holds the same host-side rule as `parallel`; dropping the divergence from it cancels the sibling branch durably (measured: sleep:w-y settled cancelled, original-source resume threw Cancelled, scope settled cancelled). Fail-fast marker is the cell above."
+    },
+    {
+      "name": "a diverging race arm stays a candidate and cancels the siblings (the round-2 defect)",
+      "file": "packages/lang/src/perform.ts",
+      "find": "            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence,",
+      "replace": "            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,",
+      "expectRed": "(8) and the other arm's entry settles ok, not cancelled",
+      "completionMarker": "ok (8) a divergence in one arm of a both-begun race still surfaces as RunDivergence",
+      "cell": "(8) and the other arm's entry settles ok, not cancelled",
+      "note": "The first round added the divergence to the hoist above the winner scan, which surfaces it; without the non-candidacy the diverging arm still settles as a candidate in `onSettle` and cancels its siblings before the hoist throws (measured on the seeded journal at f77b0b891: slow-work settled cancelled even though the hoist still threw the divergence). Both halves are needed: the hoist surfaces it, the non-candidacy keeps it from cancelling. Fail-fast marker is the cell above."
     }
   ]
 }

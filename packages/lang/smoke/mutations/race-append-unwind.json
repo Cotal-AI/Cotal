@@ -9,18 +9,18 @@
     {
       "name": "a winning sibling buries the refused append and the race completes (the defect)",
       "file": "packages/lang/src/perform.ts",
-      "find": "    const refusedAppend = settled.find(\n      (r): r is PromiseRejectedResult =>\n        r.status === \"rejected\" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),\n    );\n    if (refusedAppend !== undefined) throw refusedAppend.reason as Error;",
+      "find": "    const refusedAppend = settled.find(\n      (r): r is PromiseRejectedResult =>\n        r.status === \"rejected\" &&\n        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),\n    );\n    if (refusedAppend !== undefined) throw refusedAppend.reason as Error;",
       "replace": "    const refusedAppend = undefined as PromiseRejectedResult | undefined;\n    if (refusedAppend !== undefined) throw (refusedAppend as PromiseRejectedResult).reason as Error;",
       "expectRed": "a refused append inside a race unwinds the run even though a sibling won",
       "completionMarker": "ok and a resume replays the same winner from the record",
       "cell": "a refused append inside a race unwinds the run even though a sibling won",
-      "note": "Measured before the rule at 3aabb2583: outcome COMPLETED, race:either settled/ok, ask:q pending forever. The mutant reproduces exactly that by never finding the refused arm."
+      "note": "Measured before the rule at 3aabb2583: outcome COMPLETED, race:either settled/ok, ask:q pending forever. The mutant reproduces exactly that by never finding the refused arm. RE-AIMED for #1176, which added `RunDivergence` to the same hoist: the anchor now names the three-class line as it reads after that change; the mutant and its meaning are unchanged."
     },
     {
       "name": "a held arm is buried by the winner, so the heal a resume owes never fires",
       "file": "packages/lang/src/perform.ts",
-      "find": "        r.status === \"rejected\" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),",
-      "replace": "        r.status === \"rejected\" && r.reason instanceof JournalAppendRejected,",
+      "find": "        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),",
+      "replace": "        (r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),",
       "expectRed": "a held arm inside a race unwinds the run even though a sibling won",
       "completionMarker": "ok and the refused step is still pending, not recorded as anything it is not",
       "cell": "a held arm inside a race unwinds the run even though a sibling won",
