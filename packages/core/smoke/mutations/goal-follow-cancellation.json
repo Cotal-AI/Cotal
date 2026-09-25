@@ -1,0 +1,27 @@
+{
+  "suite": ["packages/core/smoke/goal-follow-cancellation.smoke.ts"],
+  "guard": "Goal following cancellation must settle promptly during pending broker flush or submit and prevent unwanted submission.",
+  "command": "pnpm exec tsx packages/core/smoke/goal-follow-cancellation.smoke.ts",
+  "completionMarker": "goal-follow-cancellation smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/goal-follow-cancellation.json",
+  "mutations": [
+    {
+      "name": "direct flush await misses abort before gate release",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      const preparing = activeNc;\n      try { await bounded(() => preparing.flush(), deadline); }\n",
+      "replace": "      const preparing = activeNc;\n      try { await preparing.flush(); }\n",
+      "expectRed": "aborted follower settles before gate release during held flush",
+      "cell": "aborted follower settles before gate release during held flush",
+      "note": "Awaiting flush directly without bounded race leaves the follower hanging until the gate is released, failing to settle upon abort."
+    },
+    {
+      "name": "direct submit await hangs on unresponded in-flight broker request",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "    try { attributed = await bounded(() => submit(work.signal), deadline); }",
+      "replace": "    try { attributed = await submit(work.signal); }",
+      "expectRed": "aborted follower settles during pending unresponded broker submit",
+      "cell": "aborted follower settles during pending unresponded broker submit",
+      "note": "Awaiting submit directly without bounded race hangs on an unresponded broker request without settling upon abort."
+    }
+  ]
+}
