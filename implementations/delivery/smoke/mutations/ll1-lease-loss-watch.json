@@ -13,6 +13,33 @@
       "expectRed": "L4 and the daemon's log names the watch-driven loss rather than a renew failure",
       "cell": "L4 and the daemon's log names the watch-driven loss rather than a renew failure",
       "note": "The watch trigger's own-write/foreign-write branch removed: every event, including the daemon's own acquire/renew/ready writes, is ignored. The loser still exits via the renew tick, so L5 can stay green while the loss window is back to ~15s; the cells that die are L3 (the 5s bound) and L4 (the watch-named loss line). Measured at the base shape: 14588ms."
+    },
+    {
+      "name": "the registry resolution is dropped (a registered space is dialed at the bare loopback default again)",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "      server = registered.server;\n    }",
+      "replace": "    }",
+      "expectRed": "R1 the subject daemon dialed the RECORDED broker (banner), no --server given",
+      "cell": "R1 the subject daemon dialed the RECORDED broker (banner), no --server given",
+      "note": "The assignment of the recorded server to the dial target removed, so `server` keeps `v.server ?? DEFAULT_SERVER` for a registered space and the daemon dials the loopback default instead of the suite's broker. The banner then reads `no meshes entry ... the local default`, so R1 dies on the dial-target assertion; R2 also dies (its refusal names 127.0.0.1:4222 rather than the recorded dead port), but R1 is the cell named here: it is the registry-resolved dial itself, not a downstream refusal."
+    },
+    {
+      "name": "the --server-vs-record mismatch refusal is dropped (a differing --server silently overrides the record)",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "      if (v.server !== undefined && v.server !== registered.server)\n        throw new Error(\n          `--server ${v.server} does not match registered space \"${space}\" at ${registered.server} - deliver refuses to use a different broker than the meshes entry`,\n        );",
+      "replace": "",
+      "expectRed": "R3 an explicit --server differing from the record is refused before any dial, naming both URLs",
+      "cell": "R3 an explicit --server differing from the record is refused before any dial, naming both URLs",
+      "note": "The refusal removed: `server` stays the explicit `--server`, R3's daemon dials the suite's live broker and comes up instead of exiting with the both-URLs message, so the `done()` wait times out and the cell's log holds a `✓ delivery daemon up` line instead of the refusal. R2 and R4 still pass: they never pass `--server`."
+    },
+    {
+      "name": "the root-mismatch refusal is dropped (a record for another workspace root is served against this root's tenant material)",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "      if (canonicalRoot(registered.root) !== canonicalRoot(root))\n        throw new Error(\n          `delivery: space \"${space}\" is registered for root ${registered.root} but this daemon serves root ${root} - the recorded broker belongs to another workspace; run the daemon from that root, or re-register with \\`cotal meshes add\\``,\n        );",
+      "replace": "",
+      "expectRed": "R4 a record for a different workspace root is refused before any dial, naming both roots",
+      "cell": "R4 a record for a different workspace root is refused before any dial, naming both roots",
+      "note": "The refusal removed: R4's record names the suite's live broker under a different root, so the daemon dials it and comes up rather than exiting with both roots named; the cell times out on `done()` and its log never names the other root. R2 and R3 still pass (R2's record root matches; R3 refuses on --server first)."
     }
   ],
   "why": [

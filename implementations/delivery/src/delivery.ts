@@ -23,7 +23,7 @@ import {
   type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writeIdentityPin, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
@@ -387,18 +387,83 @@ async function runStartedDelivery(
   const credsSrc = resolveCredsStore(v, space, store);
   if (v.creds !== undefined)
     assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
-  const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
-  // REQUIRE TLS when the operator said to. This daemon holds a STANDING credential and reconnects
+  // WHICH BROKER, WORKSTATION COMPOSITION (#756, the deliver half). `cotal ps`/`spawn`/`attach`/
+  // `status`/`supervise` all resolve the registered mesh for the space/root and dial its broker;
+  // this daemon alone took `v.server ?? DEFAULT_SERVER`, so a registered space whose record names
+  // a non-default broker was dialed at the loopback default, and the refusal then named that wrong
+  // URL with the wrong remedy. Mirrors `superviseTarget` (manager/commands.ts): the record is the
+  // broker authority, an explicit `--server` may repeat it but never silently override it, and the
+  // recorded TLS requirement rides along (see the TLS block below for why a downgrade repeats on
+  // every reconnect). A resolver error because NOTHING is recorded for the space keeps today's
+  // bare default: scratch suites, standalone dev runs and hosted compositions register nothing and
+  // must not change. Any other resolver error propagates. An INJECTED store never consults the
+  // registry at all: the hosted daemon learns everything from argv and the store (the launcher
+  // comment in cli delivery-proc.ts), and coupling it to a workstation artifact it may not have
+  // would break the composition it exists for.
+  let server = v.server ?? DEFAULT_SERVER;
+  let registered: MeshTarget | undefined;
+  if (store === undefined) {
+    const root = findCotalRoot();
+    try {
+      registered = resolveMeshTarget(root, { space });
+    } catch (error) {
+      // `unknown-space` is the no-record-for-that-space case: the bare default above stands. A
+      // corrupt/ambiguous record stays its own loud error rather than a silent loopback dial.
+      if (!isWorkspaceTargetError(error) || error.code !== "unknown-space") throw error;
+    }
+    if (registered !== undefined) {
+      // The resolution moves the BROKER to the record while creds and the $SYS scan target stay on
+      // the daemon's own root, so a record for another root would serve this root's tenant material
+      // against another tenant's broker — the silent wrong-mesh outcome the registry exists to
+      // prevent. Refuse before any dial, naming both roots (canonicalRoot-wise, the rule
+      // meshesForRoot states: a raw `===` silently misses differently-spelled roots).
+      if (canonicalRoot(registered.root) !== canonicalRoot(root))
+        throw new Error(
+          `delivery: space "${space}" is registered for root ${registered.root} but this daemon serves root ${root} - the recorded broker belongs to another workspace; run the daemon from that root, or re-register with \`cotal meshes add\``,
+        );
+      if (v.server !== undefined && v.server !== registered.server)
+        throw new Error(
+          `--server ${v.server} does not match registered space "${space}" at ${registered.server} - deliver refuses to use a different broker than the meshes entry`,
+        );
+      server = registered.server;
+    }
+  }
+
+  // REQUIRE TLS when the operator said to, and when the record the server came from demands it
+  // (same rule as an explicit `--tls`). This daemon holds a STANDING credential and reconnects
   // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
   // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
   // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
   // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
   // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
-  const tls = v.tls !== undefined;
+  const tls = v.tls !== undefined || registered?.tlsRequired === true;
+  // SAY THE DIAL TARGET before anything can refuse on it, in every workstation shape: an operator
+  // (and a cell) can then assert WHAT the daemon dialed even when the default port is live on the
+  // host and the run gets past the reachability refusal. The hosted (injected-store) daemon learns
+  // its target from argv and stays silent here.
+  if (store === undefined)
+    console.error(
+      registered !== undefined
+        ? `• delivery: space "${space}" is registered at ${server} (meshes entry) - dialing it${tls ? " with TLS required" : ""}`
+        : `• delivery: no meshes entry for "${space}" - dialing ${server}${v.server !== undefined ? " (--server)" : " (the local default)"}${tls ? " with TLS required" : ""}`,
+    );
   if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
+    // The refusal names the URL actually dialed, and — when that URL came from a registry record —
+    // the remedy that fits the record's origin, in the same wording render.ts uses for preflight
+    // `unreachable`: an `up` record is THIS machine's mesh and `cotal up` restarts it; a `manual`
+    // record is a broker elsewhere that only its own operator can start, so `Run: cotal up` here
+    // would prescribe starting a DIFFERENT, local mesh under that name.
+    if (registered !== undefined) {
+      console.error(
+        registered.origin === "manual" || registered.origin === "catalog"
+          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${space}\` to unregister it`
+          : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
+      );
+      process.exit(1);
+    }
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
     process.exit(1);
   }

@@ -1962,6 +1962,9 @@ daemon that already looks healthy, but production renewal is not that file alone
 the daemon must address one credential store. On a stock split host with two project roots, a
 direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
 host, or inject the same store into both processes ([embedding](embedding.md#supervisor-signing-authority)).
+Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
+registry (a mismatching `--server` is refused before any dial, and a record for a different
+workspace root is refused outright); with no record for the space it falls back to the local mesh.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
