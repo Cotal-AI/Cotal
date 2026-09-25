@@ -35,7 +35,7 @@ import {
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, registry, parseGoalResultFact, goalResultSubject, epfStreamName,
   parseEpSubject, deriveReplySubject, epCallerReplyFilter, epRequestSubject,
-  type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
+  type Connector, type ControlReply, type EpCaller, type EpAttributedReply, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -165,8 +165,8 @@ try {
     if (terminal === undefined) await wait(100);
   }
   check("goal-result reads the real manager's committed terminal for its authenticated caller", terminal !== undefined, terminal);
-  const fact = parseGoalResultFact(terminal, goalResultSubject(space, ref), ref);
-  check("the mediated terminal matches the accepted goal and fingerprint", fact.state === "succeeded" && fact.fingerprint === acc.fingerprint && (fact.data as { name?: string })?.name === "w1", fact);
+  const fact = terminal === undefined ? undefined : parseGoalResultFact(terminal, goalResultSubject(space, ref), ref);
+  check("the mediated terminal matches the accepted goal and fingerprint", fact?.state === "succeeded" && fact.fingerprint === acc.fingerprint && (fact.data as { name?: string })?.name === "w1", fact);
 
   const otherCallers = [
     { label: "actor", caller: { ...caller, actor: newIdentity().id } },
@@ -232,9 +232,12 @@ try {
     return publish(subject, data, options);
   };
   try {
-    const reply = await invokeCommand(nc, space, service, "goal-result", { goalId }, { currentEpoch, deadlineMs: 2_000 });
+    let reply: EpAttributedReply | undefined;
+    let error: unknown;
+    try { reply = await invokeCommand(nc, space, service, "goal-result", { goalId }, { currentEpoch, deadlineMs: 2_000 }); }
+    catch (e) { error = (e as Error).message; }
     await victim.nc.flush();
-    check("goal-result ignores a caller-chosen reply destination and returns only to its caller", suppliedDestination && reply.reply.ok === true && (reply.reply.data as { result?: unknown }).result !== undefined && victimReplies === before, { reply: reply.reply, victimReplies, before });
+    check("goal-result ignores a caller-chosen reply destination and returns only to its caller", suppliedDestination && reply?.reply.ok === true && (reply.reply.data as { result?: unknown }).result !== undefined && victimReplies === before, { reply: reply?.reply, error, victimReplies, before });
   } finally {
     nc.publish = publish;
     victimWatch.unsubscribe();
