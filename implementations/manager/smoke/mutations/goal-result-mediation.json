@@ -1,5 +1,5 @@
 {
-  "suite": "implementations/manager/smoke/manager-service-invoke.smoke.ts",
+  "suite": ["implementations/manager/smoke/manager-service-invoke.smoke.ts"],
   "guard": "manager goal-result reads canonical facts for the full authenticated caller and replies only on its derived rail",
   "command": "pnpm smoke:manager-service-invoke",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/goal-result-mediation.json",
