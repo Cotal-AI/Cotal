@@ -417,6 +417,18 @@ try {
   let foldErr = "";
   fold.stderr?.on("data", (chunk: Buffer) => (foldErr += chunk.toString()));
   await waitFor("foldpeer mesh presence", () => foldPeerId);
+  await waitFor(
+    "foldpeer post-join notice",
+    () =>
+      readJsonLines(foldLog).find(
+        (entry) => entry.ev === "request" &&
+          (entry.frame as { req?: string; no_reply?: boolean; content?: string }).req === "send_message" &&
+          (entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"),
+      )
+        ? true
+        : undefined,
+  );
   const foldEventsChannel = eventChannel({ owner: "foldpeer", actor: "foldpeer" });
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
