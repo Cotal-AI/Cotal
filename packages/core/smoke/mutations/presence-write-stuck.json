@@ -9,14 +9,14 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "      Date.now() - this.presenceWriteFailingSince < this.ttlMs\n",
       "replace": "      false\n",
-      "expectRed": "4.4 one refused write held past TTL does not escalate without consecutive evidence"
+      "expectRed": "4.4 two immediate refused writes do not escalate before one full TTL"
     },
     {
       "name": "S2 a successful presence write no longer clears the consecutive failure state, so a recovered bucket stays diagnosed as stuck",
       "file": "packages/core/src/endpoint.ts",
       "find": "    this.presenceWriteFailures = 0;\n    this.presenceWriteEscalated = false;\n",
       "replace": "",
-      "expectRed": "4.7 the next successful presence write clears the stuck condition and resets the consecutive count"
+      "expectRed": "4.8 a refusal after recovery starts a fresh run at one and is not already stuck"
     }
   ]
 }
