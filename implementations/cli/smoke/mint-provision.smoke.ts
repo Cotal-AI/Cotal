@@ -22,6 +22,13 @@
  *   6. --provision from a root whose auth is for another space; from a FRESH open root (no auth on
  *      disk, as `cotal up` leaves one); from a root holding its OWN auth for a mesh of the same
  *      name that runs on another trust root → exit 1 each, naming why, nothing minted
+ *   7. --expires-in bounds the credential: the JWT's exp is iat + the flag, within a second; a
+ *      bare mint carries no exp (the unbounded default, kept)
+ *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
+ *      original's; the seed file is read by core's own loader
+ *   9. the refusals: both lifetime flags at once; --expires-in the seam would refuse (0, negative,
+ *      fractional); --identity on a file with no seed; --identity with a missing path → exit 1
+ *      each, one sentence, nothing written
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
  * registered runner), never a hand-built ParsedArgs.
@@ -29,7 +36,7 @@
  * Run: pnpm smoke:mint-provision:auth
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +52,7 @@ const {
 } = await import("@cotal-ai/core");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 const { authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { credsClaims } = await import("@cotal-ai/core");
 const { runCli } = await import("../src/command.js");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 
@@ -389,6 +397,80 @@ try {
         && (r4.out.includes(rootB) || r4.out.includes(canonicalRoot(rootB))),
       r4.out);
     check("  and mints nothing", !existsSync(out4));
+  }
+
+  // ── 7. --expires-in bounds the credential ─────────────────────────────────────────────────
+  {
+    // THE UNBOUNDED DEFAULT, KEPT (the repro half 1): a plain observer mint carries no exp at all,
+    // so the bounded cell below cannot green vacuously against a matrix that bounds everything.
+    const bareOut = join(root, "bare-obs.creds");
+    const rb = await runMint(["bareobs", "--profile", "observer", "--out", bareOut]);
+    check("a bare mint stays unbounded (no exp in the JWT - the default, not the fix's business)",
+      rb.code === 0 && existsSync(bareOut) && credsClaims(readFileSync(bareOut, "utf8")).exp === undefined, rb.out);
+
+    const out = join(root, "bounded-obs.creds");
+    const before = Math.floor(Date.now() / 1000);
+    const r = await runMint(["bounded", "--profile", "observer", "--expires-in", "3600", "--out", out]);
+    const after = Math.floor(Date.now() / 1000);
+    check("mint --expires-in 3600 succeeds", r.code === 0 && existsSync(out), r.out);
+    const { exp, iat } = credsClaims(readFileSync(out, "utf8"));
+    check("  the JWT's exp is iat + the flag, computed within the command's own second",
+      typeof exp === "number" && typeof iat === "number" && exp === iat + 3600 && exp >= before + 3600 && exp <= after + 3600,
+      { exp, iat, before, after });
+    // --provision rides the same lifetime through the seam (the durable mint is bounded too).
+    const pout = join(root, "bounded-agent.creds");
+    const rp = await runMint(["bounded-agent", "--profile", "agent", "--provision", "--expires-in", "3600", "--out", pout]);
+    check("mint --provision --expires-in succeeds and bounds the provisioned credential too",
+      rp.code === 0 && existsSync(pout) && credsClaims(readFileSync(pout, "utf8")).exp !== undefined, rp.out);
+  }
+
+  // ── 8. --identity re-mints for the SAME nkey ──────────────────────────────────────────────
+  {
+    // The durable half of the issue: two plain mints churn the principal; --identity must not.
+    const first = join(root, "id-first.creds");
+    const r1 = await runMint(["idfirst", "--profile", "observer", "--out", first]);
+    check("the first plain mint succeeds", r1.code === 0 && existsSync(first), r1.out);
+    const sub1 = credsClaims(readFileSync(first, "utf8")).sub;
+
+    const second = join(root, "id-second.creds");
+    const r2 = await runMint(["idsecond", "--profile", "observer", "--out", second]);
+    const sub2 = credsClaims(readFileSync(second, "utf8")).sub;
+    check("  the control: a second plain mint is a DIFFERENT principal (the churn the flag removes)",
+      r2.code === 0 && sub2 !== sub1, { sub1, sub2 });
+
+    const remint = join(root, "id-remint.creds");
+    const r3 = await runMint(["idremint", "--profile", "observer", "--identity", first, "--expires-in", "3600", "--out", remint]);
+    check("re-mint --identity <creds> succeeds", r3.code === 0 && existsSync(remint), r3.out);
+    const claims3 = credsClaims(readFileSync(remint, "utf8"));
+    check("  the re-minted credential's principal IS the original's (same nkey, so every durable keyed to it survives)",
+      claims3.sub === sub1, { sub1, sub3: claims3.sub });
+    check("  and it is bounded, so the renewal seam's own remedy now has a CLI form",
+      typeof claims3.exp === "number" && claims3.exp > (claims3.iat ?? 0), claims3);
+  }
+
+  // ── 9. the refusals ───────────────────────────────────────────────────────────────────────
+  {
+    const out = join(root, "refused.creds");
+    const r1 = await runMint(["x", "--profile", "observer", "--expires-in", "3600", "--expires-at", "2000000000", "--out", out]);
+    check("--expires-in with --expires-at exits 1 with the reason", r1.code === 1 && /mutually exclusive/.test(r1.out), r1.out);
+    check("  and mints nothing", !existsSync(out));
+    for (const bad of ["0", "-5", "1.5", "abc"]) {
+      // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the
+      // point is that it reaches THE COMMAND's validation and is refused there, naming the value.
+      const r = await runMint(["x", "--profile", "observer", bad.startsWith("-") ? `--expires-in=${bad}` : "--expires-in", ...(bad.startsWith("-") ? [] : [bad]), "--out", out]);
+      check(`--expires-in ${bad} exits 1 naming the value (a TTL the seam would refuse)`,
+        r.code === 1 && new RegExp(`--expires-in must be a positive integer.*${bad === "abc" ? "abc" : bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(r.out), r.out);
+      check("  and mints nothing", !existsSync(out));
+    }
+    const noSeed = join(root, "no-seed.txt");
+    writeFileSync(noSeed, "just some text, no creds structure at all\n");
+    const r2 = await runMint(["x", "--profile", "observer", "--identity", noSeed, "--out", out]);
+    check("--identity on a file with no seed exits 1 refusing it BY NAME",
+      r2.code === 1 && /no user nkey seed/.test(r2.out) && r2.out.includes(noSeed), r2.out);
+    check("  and mints nothing", !existsSync(out));
+    const r3 = await runMint(["x", "--profile", "observer", "--identity", join(root, "missing.creds"), "--out", out]);
+    check("--identity on a missing path exits 1 naming it", r3.code === 1 && /not found/.test(r3.out) && r3.out.includes("missing.creds"), r3.out);
+    check("  and mints nothing", !existsSync(out));
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

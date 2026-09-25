@@ -47,7 +47,11 @@ credentials and pre-creates the durables agents may only *bind* (their DM inbox,
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
 `cotal mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
-the same library ([CLI](cli.md)). Minting static creds is a **static-auth** surface: a
+the same library ([CLI](cli.md)). The out-of-band profiles carry no default TTL: pass
+`--expires-in <seconds>` (or `--expires-at`) for a bounded credential, which a
+standing-renewal consumer requires; pass `--identity <creds>` to re-mint for the nkey a
+file already carries, keeping the principal and its durables. Minting static creds is a
+**static-auth** surface: a
 per-user-auth space refuses it, because agents there join under a logged-in user, never
 via a handed-out file (see *Per-user auth* below).
 
