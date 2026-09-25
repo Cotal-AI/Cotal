@@ -1392,6 +1392,14 @@ export async function performScope(
     // A HELD RUN IS THE SAME SHAPE: the refusal's halt is not this scope's outcome. The refused
     // entry inside the branch is already settled; the scope stays pending and re-enters on resume.
     if (reason instanceof RunHeld) throw reason;
+    // A DIVERGENCE IS NOT AN OUTCOME EITHER. It is the journal saying this program is not the one
+    // that wrote it, and the interpreter already treats it as uncatchable (next to `RunReleased`
+    // and `Cancelled` there); recording it here would convert that run-level signal into a durable
+    // statement that the scope failed for a reason of its own, and the next resume would replay an
+    // `EffectError` a program's `try` could swallow, spending the loudness before anyone sees it.
+    // Settling nothing is the same shape `RunReleased` above takes: the scope stays pending, a
+    // resume re-enters it, and the step that broke diverges again.
+    if (reason instanceof RunDivergence) throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1675,10 +1683,15 @@ export async function runScope(
     // decision this driver may keep (its own cell). A HELD run rides the same hoist: the refused
     // step is settled `refused` and heals only when a resume REACHES it, and a resume
     // short-circuits a settled scope, so a race that completed over a held arm would bury the
-    // heal forever.
+    // heal forever. A DIVERGENCE rides it too, and for the run's own sake rather than a step's:
+    // an arm whose journal lookup refused the program must not be discarded by the tie-break,
+    // because the winner scan's `find` below would otherwise drop the losing arm's rejection on
+    // the floor and hand the program a value recorded by a run this source no longer is. Measured
+    // before this line: a losing arm's divergence, a pure sibling winning, and the run COMPLETED.
     const refusedAppend = settled.find(
       (r): r is PromiseRejectedResult =>
-        r.status === "rejected" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),
+        r.status === "rejected" &&
+        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),
     );
     if (refusedAppend !== undefined) throw refusedAppend.reason as Error;
 
