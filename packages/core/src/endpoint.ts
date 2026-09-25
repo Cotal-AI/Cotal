@@ -4955,12 +4955,18 @@ export class CotalEndpoint extends EventEmitter {
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
+    const durable = dlvDurable(this.owner, this.actor, this.ownLifecycleUid);
     let consumer;
-    try { consumer = await this.js.consumers.get(dlvStream(this.space), dlvDurable(this.owner, this.actor, this.ownLifecycleUid)); }
+    try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
       throw e; // a denied bind is not proof Plane-3 is absent
     }
+    const lease = await this.readDeliveryLease(0);
+    const liveDeliveryPlane = lease?.ready === true;
+    if (!liveDeliveryPlane) this.emit("warning", new Error(
+      `delivery durable "${durable}" for space "${this.space}" bound while the plane this connection reaches has no ready delivery lease, so the durable delivers nothing until a delivery daemon serves this plane. If a daemon serves this space on another plane, reconnect against it, which re-binds the durable there.`,
+    ));
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {

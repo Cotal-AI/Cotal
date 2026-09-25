@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "Four isolated mutations cleanly grade watch rearm, early consumer-identity ownership, closed-epoch cleanup deferral, and permanent-shutdown termination. Direct real-broker cells separately exercise quiet caller stop, predecessor cleanup after terminal self-heal, endpoint ownership during asynchronous cancellation, and rejected-chain recovery; their attempted mutations were removed because they hung, failed before the named cell, or were behaviorally redundant rather than clean named kills.",
+    "Eight isolated mutations cleanly grade watch rearm, early consumer-identity ownership, closed-epoch cleanup deferral, permanent-shutdown termination, and the delivery durable's lease warning. Direct real-broker cells separately exercise quiet caller stop, predecessor cleanup after terminal self-heal, endpoint ownership during asynchronous cancellation, rejected-chain recovery, and the ready, missing, and not-ready delivery lease states; their other attempted mutations were removed because they hung, failed before the named cell, or were behaviorally redundant rather than clean named kills.",
     "The manager-lease mutation restores the rebuild that kept `managerLeaseKv` bound to the drained connection: every renew and re-read after a reconnect then times out, and under the old fail-close that alone ended the manager ten seconds after any reconnect. The two lease cells are the only ones that see it."
   ],
   "mutations": [
@@ -56,6 +56,33 @@
       "expectRed": "the manager lease renews after reconnect",
       "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",
       "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained."
+    },
+    {
+      "name": "delivery durable bind drops the plane lease read",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const lease = await this.readDeliveryLease(0);\n    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n      `delivery durable \"${durable}\" for space \"${this.space}\" bound while the plane this connection reaches has no ready delivery lease, so the durable delivers nothing until a delivery daemon serves this plane. If a daemon serves this space on another plane, reconnect against it, which re-binds the durable there.`,\n    ));\n",
+      "replace": "",
+      "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "note": "Without the liveness read the stale durable binds silently, restoring the reported unnamed empty-inbox behavior."
+    },
+    {
+      "name": "delivery durable bind inverts ready lease acceptance",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
+      "replace": "    const liveDeliveryPlane = lease?.ready !== true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
+      "expectRed": "a quiet delivery durable binds while the plane holds a ready lease",
+      "cell": "a quiet delivery durable binds while the plane holds a ready lease without raising a warning",
+      "note": "A ready live plane is the positive control and must remain the only lease state that binds silently."
+    },
+    {
+      "name": "delivery durable bind treats a missing lease row as live",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const liveDeliveryPlane = lease?.ready === true;\n",
+      "replace": "    const liveDeliveryPlane = lease === undefined || lease.ready === true;\n",
+      "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "note": "A missing lease is the stale-plane signal and must not collapse into a healthy quiet plane without a warning."
     }
   ]
 }
