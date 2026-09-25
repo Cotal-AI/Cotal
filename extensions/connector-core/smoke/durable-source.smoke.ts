@@ -80,6 +80,9 @@ try {
   // ── a fresh adopt starts at the END: an existing session is not rebroadcast ──
   writeFileSync(path, '{"i":1}\n{"i":2}\n');
   const src = new JsonlFileSource<{ i: number }>(path);
+  const beginning = await src.cursorAtBeginning();
+  const fromBeginning = await readOr(src, beginning, "beginning cursor read");
+  c("a beginning cursor reads retained complete records", fromBeginning.records.length === 2 && fromBeginning.records[0]?.value.i === 1 && fromBeginning.records[1]?.value.i === 2, fromBeginning.records);
   const adopt = await readOr(src, undefined, "fresh adopt");
   // ONE cell asserting both halves: the separate cursor row did not discriminate M4 (reading from 0
   // still lands the cursor on the same value), so it read as coverage without being any
