@@ -133,7 +133,7 @@ const s2Alice = s2.signals.dms.find((p) => p.name === "alice");
 const s2Bob = s2.signals.dms.find((p) => p.name === "bob");
 check(
   "tap spoof: nameOf keeps the roster name for the authenticated id",
-  s2.nameOf(ids.alice) === "alice" && !s2.signals.dms.some((p) => p.name === "carol" && p.name === "admin"),
+  s2.nameOf(ids.alice) === "alice",
 );
 check(
   "tap spoof: the line lands in the alice<->bob thread with roster names",

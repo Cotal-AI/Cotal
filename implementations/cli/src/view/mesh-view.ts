@@ -335,16 +335,16 @@ export class MeshView extends EventEmitter {
     this.dirty = true;
   }
 
-  /** Live read-only tap. Drops control/presence/trace frames (deliveryOf → null). */
+  /** Live read-only tap. Drops control/presence/trace frames (deliveryOf → null). A payload
+ *  from.name is sender-chosen display text, not identity (#1399): the roster is the only writer
+ *  of id→name, so a spoofed name can never re-key a thread or a label. */
   private ingest(subject: string, msg: CotalMessage): void {
     const kind = deliveryOf(subject);
     if (!kind) return;
     const now = Date.now();
     this.recentTs.push(now);
     this.roll(now);
-    this.bucketCounts[BUCKET_COUNT - 1]++; // count into the newest bucket
-    // A payload from.name is sender-chosen display text, not identity (issue #1399): the roster
-    // is the only writer of id→name, so a spoofed name can never re-key a thread or a label.
+    this.bucketCounts[BUCKET_COUNT - 1]++;
     if (kind === "unicast") return this.coalesce(msg);
     this.push({
       id: msg.id,
@@ -478,7 +478,8 @@ export class MeshView extends EventEmitter {
   }
 
   /** Best-effort DM backlog for the roll-up — only meaningful for a god-view cred; a non-admin
-   *  observer's `dmHistory` throws (ACL), which just leaves the DM lens live-only. */
+   *  observer's `dmHistory` throws (ACL), which just leaves the DM lens live-only. A history
+   *  row's from.name is payload text, never an id→name source (#1399). */
   private async prefillDms(): Promise<void> {
     let msgs: CotalMessage[];
     try {
@@ -492,7 +493,6 @@ export class MeshView extends EventEmitter {
     const have = new Set(this.dmLog.map(key));
     for (const m of msgs) {
       if (!m.to) continue;
-      // Same rule as ingest: a history row's from.name is payload text, never an id→name source.
       const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };
       if (have.has(key(d))) continue;
       have.add(key(d));

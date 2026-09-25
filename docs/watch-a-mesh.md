@@ -168,7 +168,8 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   (working / waiting / idle / offline / oldest-unattended).
 - **Channel view**: one channel's message list, members shown in the header.
 - **Direct messages**: a per-peer roll-up (one row per peer, not the n² pair list); expand a peer
-  for its conversations.
+  for its conversations. Threads key on authenticated ids, and every shown name, role, and status
+  comes from the roster by id, never from the message payload.
 - **Agent Detail.** A per-agent drill-down rendered from the peer's card: name, role, the harness
   and model, capabilities, and what it's working on or blocked on.
 - **Graph view** (`/graph`, linked from the Monitor header): the same feed as a live
