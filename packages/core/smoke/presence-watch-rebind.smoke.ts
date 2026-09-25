@@ -51,7 +51,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { CotalEndpoint, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -75,7 +75,7 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `presrebind-${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, dir);
+const releaseBroker = teardownOnSignal(broker);
 
 const live = (ep: CotalEndpoint) => ep.getRoster().filter((p) => p.status !== "offline");
 const statusOf = (ep: CotalEndpoint) => Object.fromEntries(ep.getRoster().map((p) => [p.card.name, p.status]));
@@ -430,8 +430,9 @@ try {
 
   await admin.drain();
 } finally {
+  await killAndAwaitExit(broker, "SIGKILL");
   releaseBroker();
-  broker.kill("SIGKILL");
+  if (broker.exitCode === null && broker.signalCode === null) throw new Error("broker exit unproven; storage preserved");
   rmSync(dir, { recursive: true, force: true });
 }
 
