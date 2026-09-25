@@ -306,3 +306,40 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
     }
   }
 }
+
+/**
+ * Substitutes a captured boundary for the caller's cursor on the ONE read where that cursor is
+ * `undefined` — a virgin log positioning itself for the first time.
+ *
+ * **Why this exists.** A lazily-built emitter's source otherwise positions itself on its own FIRST
+ * read, and that read happens only after everything else the bind does first: a mesh wait, the
+ * write-ahead log's directory, the subject frontier, the log open, a channel resolve, a
+ * single-replica preflight. Anything the session writes to its record file during that window lands
+ * behind the position the source discovers later, is treated as already published, and is dropped —
+ * silently, under a line that has by then already announced the stream as started. Measured on the
+ * Codex connector, the shape this wrapper first closed there: 17ms and 36ms on an idle machine, and
+ * a whole turn lost at a widened window.
+ *
+ * So the boundary is captured by the caller BEFORE the bind announces itself, and substituted here,
+ * on the one read that would otherwise ask the source where it currently ends.
+ *
+ * **The limit, stated once.** This positions only a log with no cursor. A log that already carries
+ * one is a resume, and passes through to the inner source untouched: a cursor written by a live
+ * emitter is the honest one, and overwriting it would re-read or skip a live session's records
+ * depending on which one it disagreed with. Nothing is written into the log by this wrapper itself;
+ * it only changes what is asked for, never what is stored.
+ */
+export class BoundStartSource<T> implements DurableSource<T> {
+  readonly kind: string;
+
+  constructor(
+    private readonly inner: DurableSource<T>,
+    private readonly start: string,
+  ) {
+    this.kind = inner.kind;
+  }
+
+  read(cursor: string | undefined): Promise<SourceRead<T>> {
+    return this.inner.read(cursor ?? this.start);
+  }
+}
