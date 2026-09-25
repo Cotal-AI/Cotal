@@ -252,34 +252,36 @@ try {
   const durable = dlvDurable(DEV_OWNER, aId.id, uidA);
   const probeDlvBind = async () => {
     const errors: Error[] = [];
+    const warnings: Error[] = [];
     let messages = 0;
     const probe = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], lifecycleUid: uidA, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice-bind-probe", kind: "agent" } });
     probe.on("error", (e) => errors.push(e));
+    probe.on("warning", (e) => warnings.push(e));
     probe.on("message", () => { messages++; });
     let startError: Error | undefined;
     try { await probe.start(); await wait(100); }
     catch (e) { startError = e as Error; }
-    finally { try { await probe.stop(); } catch { /* a refused bind can leave startup partially bound */ } }
-    return { errors, messages, startError };
+    finally { try { await probe.stop(); } catch { /* isolate probe cleanup from the named bind cells */ } }
+    return { errors, warnings, messages, startError };
   };
 
   const quiet = await probeDlvBind();
-  check("a quiet delivery durable binds while the plane holds a ready lease without raising an error", quiet.startError === undefined && quiet.errors.length === 0, quiet);
+  check("a quiet delivery durable binds while the plane holds a ready lease without raising a warning", quiet.startError === undefined && quiet.errors.length === 0 && quiet.warnings.length === 0, quiet);
   check("the ready-lease control delivers no message on a genuinely quiet plane", quiet.messages === 0, quiet);
 
   await daemon.releaseDeliveryLease(0, readyLeaseRev);
   const missingLease = await probeDlvBind();
-  const missingBindError = missingLease.startError as (Error & { code?: string }) | undefined;
-  check("a delivery durable bind refuses a plane with no ready delivery lease", missingBindError?.code === "failed-precondition", missingLease);
-  check("the missing-lease refusal names the durable, space, and reconnect repair", missingBindError?.message.includes(durable) === true && missingBindError.message.includes(space) && missingBindError.message.includes("Reconnect against the plane the delivery daemon serves"), missingBindError?.message);
-  check("the refused missing-lease bind delivers no message", missingLease.messages === 0, missingLease);
+  const missingLeaseWarning = missingLease.warnings[0];
+  check("a delivery durable binds and warns when the plane has no ready delivery lease", missingLease.startError === undefined && missingLease.errors.length === 0 && missingLease.warnings.length === 1, missingLease);
+  check("the missing-lease warning names the durable, space, condition, and reconnect repair", missingLeaseWarning?.message.includes(durable) === true && missingLeaseWarning.message.includes(space) && missingLeaseWarning.message.includes("no ready delivery lease") && missingLeaseWarning.message.includes("reconnect against it"), missingLeaseWarning?.message);
+  check("the warned missing-lease bind delivers no message", missingLease.messages === 0, missingLease);
 
   const notReadyRev = await daemon.acquireDeliveryLease(0);
   const notReadyLease = await probeDlvBind();
-  const notReadyBindError = notReadyLease.startError as (Error & { code?: string }) | undefined;
-  check("a delivery durable bind refuses a plane whose delivery lease is not ready", notReadyBindError?.code === "failed-precondition", notReadyLease);
-  check("the not-ready refusal names the durable, space, and reconnect repair", notReadyBindError?.message.includes(durable) === true && notReadyBindError.message.includes(space) && notReadyBindError.message.includes("Reconnect against the plane the delivery daemon serves"), notReadyBindError?.message);
-  check("the refused not-ready bind delivers no message", notReadyLease.messages === 0, notReadyLease);
+  const notReadyWarning = notReadyLease.warnings[0];
+  check("a delivery durable binds and warns when the delivery lease is not ready", notReadyLease.startError === undefined && notReadyLease.errors.length === 0 && notReadyLease.warnings.length === 1, notReadyLease);
+  check("the not-ready warning names the durable, space, condition, and reconnect repair", notReadyWarning?.message.includes(durable) === true && notReadyWarning.message.includes(space) && notReadyWarning.message.includes("no ready delivery lease") && notReadyWarning.message.includes("reconnect against it"), notReadyWarning?.message);
+  check("the warned not-ready bind delivers no message", notReadyLease.messages === 0, notReadyLease);
   await daemon.releaseDeliveryLease(0, notReadyRev);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

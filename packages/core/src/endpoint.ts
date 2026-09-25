@@ -4962,15 +4962,11 @@ export class CotalEndpoint extends EventEmitter {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
       throw e; // a denied bind is not proof Plane-3 is absent
     }
-    const refusal = (detail?: string) => new EpEnvelopeError(
-      "failed-precondition",
-      `delivery durable "${durable}" for space "${this.space}" cannot bind: the plane this connection reaches has no readable, ready delivery lease, so the durable can never deliver. Reconnect against the plane the delivery daemon serves, which re-binds the durable.${detail ? ` Lease read failed: ${detail}` : ""}`,
-    );
-    let lease: DeliveryLeaseInfo | undefined;
-    try { lease = await this.readDeliveryLease(0); }
-    catch (e) { throw refusal((e as Error)?.message ?? String(e)); }
+    const lease = await this.readDeliveryLease(0);
     const liveDeliveryPlane = lease?.ready === true;
-    if (!liveDeliveryPlane) throw refusal();
+    if (!liveDeliveryPlane) this.emit("warning", new Error(
+      `delivery durable "${durable}" for space "${this.space}" bound while the plane this connection reaches has no ready delivery lease, so the durable delivers nothing until a delivery daemon serves this plane. If a daemon serves this space on another plane, reconnect against it, which re-binds the durable there.`,
+    ));
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {
