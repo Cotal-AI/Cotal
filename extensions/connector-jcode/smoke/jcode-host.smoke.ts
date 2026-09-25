@@ -385,7 +385,7 @@ try {
   check("host copied auth mirror is owner-only", (statSync(join(peerHome, "auth.json")).mode & 0o777) === 0o600);
 
   const foldLog = join(root, "journal-fold.jsonl");
-  const foldJournal = join(managedHome("jcodehost", "foldpeer"), "home", "sessions", "fake-session.journal.jsonl");
+  const foldJournal = join(managedHome("jcodehost", "foldpeer"), "sessions", "fake-session.journal.jsonl");
   const fold = spawnHost({
     cwd: root,
     env: {
