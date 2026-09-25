@@ -1,6 +1,6 @@
-import { access } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { JsonlFileSource, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
 import type { JcodeJournalRecord, PositionedJcodeJournalRecord } from "./agui-map.js";
 
@@ -54,6 +54,7 @@ export async function initializeJcodeEventBoundary(path: string, wal: EventWal):
 export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   readonly kind = "jcode-session-journal";
   private readonly file: JsonlFileSource<JcodeJournalRecord>;
+  private snapshotMessages = 0;
 
   constructor(
     readonly path: string,
@@ -63,15 +64,33 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<JcodeJournalRecord>> {
-    if (cursor !== undefined) return this.file.read(cursor);
+    if (cursor !== undefined) {
+      try {
+        const read = await this.file.read(cursor);
+        this.snapshotMessages = await this.snapshotMessageCount();
+        return read;
+      } catch (error) {
+        const fresh = await this.foldedSince();
+        if (fresh === undefined) throw error;
+        return {
+          cursor: fresh.fresh.cursor,
+          records: [
+            { cursor: fresh.beginning, value: { journal_fold: {} } },
+            ...fresh.fresh.records,
+          ],
+        };
+      }
+    }
     const deadline = performance.now() + this.waitMs;
     let retryMs = RETRY_INITIAL_MS;
     for (;;) {
       try {
         await access(this.path, constants.R_OK);
-        return cursor === undefined
+        const read = cursor === undefined
           ? await this.file.readFromBeginning()
           : await this.file.read(cursor);
+        this.snapshotMessages = await this.snapshotMessageCount();
+        return read;
       } catch (error) {
         if (!isMissing(error)) throw error;
         const remaining = deadline - performance.now();
@@ -83,6 +102,41 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
         await delay(Math.min(retryMs, remaining));
         retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
       }
+    }
+  }
+
+  private async snapshotMessageCount(): Promise<number> {
+    const snapshot = join(dirname(this.path), `${basename(this.path, ".journal.jsonl")}.json`);
+    try {
+      if ((await stat(snapshot)).size === 0) return 0;
+      const parsed: unknown = JSON.parse(await readFile(snapshot, "utf8"));
+      if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as { messages?: unknown }).messages)) return 0;
+      return (parsed as { messages: unknown[] }).messages.length;
+    } catch (error) {
+      if (isMissing(error)) return 0;
+      throw error;
+    }
+  }
+
+  private async foldedSince(): Promise<{ beginning: string; fresh: SourceRead<JcodeJournalRecord> } | undefined> {
+    const deadline = performance.now() + this.waitMs;
+    let retryMs = RETRY_INITIAL_MS;
+    for (;;) {
+      const messages = await this.snapshotMessageCount();
+      if (messages > this.snapshotMessages) {
+        try {
+          const beginning = await this.file.cursorAtBeginning();
+          const fresh = await this.file.read(beginning);
+          this.snapshotMessages = messages;
+          return { beginning, fresh };
+        } catch (error) {
+          if (!isMissing(error)) throw error;
+        }
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) return undefined;
+      await delay(Math.min(retryMs, remaining));
+      retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
     }
   }
 }

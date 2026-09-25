@@ -17,6 +17,13 @@
       "find": "    if (config.model) {\n      try {\n        await client.setModel(sessionId, config.model);",
       "replace": "    if (false) {\n      try {\n        await client.setModel(sessionId, config.model);",
       "expectRed": "session journal records the requested model pin, not the harness default"
+    },
+    {
+      "name": "A2 do not map a recovered journal fold into its terminal event",
+      "file": "extensions/connector-jcode/src/agui-map.ts",
+      "find": "            runError({\n                message: \"Jcode session journal compacted into its snapshot; records not yet emitted were lost and are not reconstructed\",\n                code: \"jcode_journal_fold\",",
+      "replace": "            runError({\n                message: \"Jcode session journal compacted into its snapshot; records not yet emitted were lost and are not reconstructed\",\n                code: \"not_jcode_journal_fold\",",
+      "expectRed": "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity"
     }
   ],
   "_note": "No completionMarker: this suite is fail-fast (node:assert throws at the first red)."

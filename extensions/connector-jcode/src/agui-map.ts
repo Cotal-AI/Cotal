@@ -3,6 +3,7 @@ import {
   reasoningMessageContent,
   reasoningMessageEnd,
   reasoningMessageStart,
+  runError,
   runStarted,
   textMessageContent,
   textMessageEnd,
@@ -32,6 +33,7 @@ export interface JcodeMessage {
 
 export interface JcodeJournalRecord {
   append_messages?: JcodeMessage[];
+  journal_fold?: Record<string, never>;
 }
 
 export interface PositionedJcodeJournalRecord {
@@ -66,6 +68,22 @@ export function createJcodeMapper(opts: {
   const now = opts.now ?? (() => Date.now());
   let open: string | null = opts.resumeRunId ?? null;
   const map: RecordMapper<PositionedJcodeJournalRecord> = ({ cursor, record }) => {
+    if (record?.journal_fold) {
+      const runId = open;
+      open = null;
+      return runId === null
+        ? null
+        : {
+            runId,
+            events: [
+              runError({
+                message: "Jcode session journal compacted into its snapshot; records not yet emitted were lost and are not reconstructed",
+                code: "jcode_journal_fold",
+                timestamp: now(),
+              }),
+            ],
+          };
+    }
     if (record === null || typeof record !== "object" || !Array.isArray(record.append_messages)) return null;
     const events: AguiEvent[] = [];
     let runId = open;

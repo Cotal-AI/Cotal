@@ -172,17 +172,21 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    * connector would duplicate the opaque cursor format and eventually drift from it.
    */
   async readFromBeginning(): Promise<SourceRead<T>> {
-    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    let cursor: string;
-    try {
-      const st = await fh.stat();
-      cursor = `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;
-    } finally {
-      await fh.close();
-    }
+    const cursor = await this.cursorAtBeginning();
     // A replacement between the two opens is detected by `read`'s file-identity check. Appends are
     // ordinary: starting at zero still means consuming every complete record now present.
     return this.read(cursor);
+  }
+
+  /** Cursor at byte zero for this file's current identity. */
+  async cursorAtBeginning(): Promise<string> {
+    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const st = await fh.stat();
+      return `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;
+    } finally {
+      await fh.close();
+    }
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<T>> {

@@ -2035,6 +2035,10 @@ export async function runJcodeHost(): Promise<void> {
       writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
     }
     initialized = true;
+    // The startup kickoff is the first requested turn after the pre-join readiness boundary. Bind
+    // its durable journal before dispatch so its first output opens an AG-UI run rather than being
+    // adopted as retained history. A still-open readiness turn remains excluded above.
+    if (!readinessTurnOpen) await ensureEventsBound();
     // Kickoff is not the only work that can arrive during that gate: a restart DM is parked until
     // this drain, or the replacement never observes it (#1440 / #910).
     if (hasDriveWork()) await drive();
