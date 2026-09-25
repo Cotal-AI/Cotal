@@ -2343,17 +2343,23 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
     const caller = this.serviceCaller();
     const resolve = async (signal = opts.signal): Promise<ResolvedService> => {
       signal?.throwIfAborted();
-      const cached = this.resolvedServices.get(endpoint);
+      const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
       if (cached) return cached;
-      const svc = await resolveService(nc, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000, signal });
-      this.resolvedServices.set(endpoint, svc);
+      const svc = await resolveService(nc, this.space, endpoint, caller, {
+        deadlineMs: opts.deadlineMs ?? 10_000,
+        signal,
+        ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
+      });
+      // A pinned resolve never enters the endpoint-only class cache. Otherwise a later unpinned call
+      // could silently inherit that instance, or a different pin could reuse the wrong manager.
+      if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
       return svc;
     };
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };

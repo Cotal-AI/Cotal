@@ -176,7 +176,7 @@ export async function describeEndpoint(
         }
       }, DESCRIBE_RETRY_MS);
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }])), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : ""} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }])), deadlineMs); });
     const { body: reply, responder } = await Promise.race([got, timeout, denialWatch.denied, cancelled]);
     if (reply.ok !== true) {
       // A responder ANSWERED with a refusal: it is rethrown under the responder's own code (which

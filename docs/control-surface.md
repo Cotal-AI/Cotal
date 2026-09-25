@@ -147,11 +147,12 @@ state, not reporting a missing one.
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
 specific manager without caring which process currently serves it. On a static or open mesh,
-an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did);
-`cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
-foreground spawn has no manager to pin and refuses the flag). There are no ordinal
+an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+`cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
+pin one instance by its exact id. A foreground CLI spawn has no manager to pin and refuses the
+flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
-the whole id, because `--on` takes nothing else.
+the whole id, because both surfaces take nothing else.
 
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
