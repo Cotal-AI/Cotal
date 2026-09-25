@@ -474,7 +474,7 @@ try {
   );
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
-    "Jcode journal fold terminal event",
+    "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity",
     () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR" && event.code === "jcode_journal_fold")) ? true : undefined,
   );
   const foldedFrames = frames.slice(foldStart);
