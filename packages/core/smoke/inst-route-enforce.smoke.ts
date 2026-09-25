@@ -150,6 +150,32 @@ try {
       verdict === arm.wantInst, { verdict, want: arm.wantInst, subject: instRow.slice(0, 90) });
   }
 
+  // ── goal-result: live pre-revoke read within TTL remains permitted; foreign UID request broker-denied ──
+  {
+    console.log("\nCELL - goal-result caller UID enforcement");
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const foreignUid = mintLifecycleUid();
+    const creds = await mintCreds(auth, id, "agent", {
+      lifecycleUid: uid,
+      capabilities: ["spawn"],
+    });
+    const rows = rowsOf(permissionsFor("agent", space,
+      { owner: DEV_OWNER, actor: id.id, connId: id.id, lifecycleUid: uid } as never,
+      { lifecycleUid: uid, capabilities: ["spawn"] } as never));
+    const goalResultRow = rows.find((r) => r.includes(".goal-result."));
+    check("agent with spawn holds goal-result row", goalResultRow !== undefined, rows);
+
+    // Live pre-revoke read within TTL remains permitted on the caller's own UID:
+    const ownVerdict = await publishAs(creds, concrete(goalResultRow!), false);
+    check("live pre-revoke read within TTL remains permitted", ownVerdict === "allowed", ownVerdict);
+
+    // Foreign UID request subject broker-denied:
+    const foreignGoalResultRow = concrete(goalResultRow!).replace(`.${uid}.`, `.${foreignUid}.`);
+    const foreignVerdict = await publishAs(creds, foreignGoalResultRow, false);
+    check("foreign UID request subject broker-denied", foreignVerdict === "denied", foreignVerdict);
+  }
+
   console.log("\nThe two arms differ in exactly one mint input, so the pin is what the broker honoured.");
 } finally {
   try { srv.kill("SIGKILL"); } catch { /* gone */ }
