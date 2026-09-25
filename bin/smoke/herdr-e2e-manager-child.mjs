@@ -44,7 +44,11 @@ registry.register({
 
 const mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "herdr", workspaceRoot });
 await mgr.start();
-const started = await mgr.startAgent({ name: "hagent", agent: "herdr-e2e", cwd: workspaceRoot });
+const started = await mgr.startAgent({ name: "hagent", agent: "herdr-e2e", cwd: workspaceRoot, events: false });
+if (!started.ok) {
+  console.error(started.error);
+  process.exit(1);
+}
 
 // The lifecycle uid is what names the creds file on disk; read it off the managed agent while it
 // is still managed. The e2e greps that real credential against herdr's records.
