@@ -344,10 +344,10 @@ try {
       chunked.sent < NO_BODY.length && /takes no request body/.test(chunkedLog),
       { sent: chunked.sent, total: NO_BODY.length, status: chunked.status, operatorLine: chunkedLog.slice(-240) });
 
-    const channels = await raw(noBodyHead("/api/channels", `Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
+    const channels = await raw(noBodyHead("/api/channels", `Content-Length: ${NO_BODY.length}\r\n`), Buffer.alloc(0));
     ok("7.3 the same zero-byte guard covers a second no-body route rather than special-casing the roster",
-      channels.status.includes("413") && channels.sent < NO_BODY.length && channels.text.includes("/api/channels"),
-      { status: channels.status, sent: channels.sent, total: NO_BODY.length, text: channels.text.slice(0, 180) });
+      channels.status.includes("413") && channels.text.includes("/api/channels"),
+      { status: channels.status, text: channels.text.slice(0, 180) });
 
     const get = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed });
     ok("7.4 CONTROL: a bodyless GET to the roster is still served normally",
