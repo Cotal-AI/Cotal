@@ -335,15 +335,16 @@ export class MeshView extends EventEmitter {
     this.dirty = true;
   }
 
-  /** Live read-only tap. Drops control/presence/trace frames (deliveryOf → null). */
+  /** Live read-only tap. Drops control/presence/trace frames (deliveryOf → null). A payload
+ *  from.name is sender-chosen display text, not identity (#1399): the roster is the only writer
+ *  of id→name, so a spoofed name can never re-key a thread or a label. */
   private ingest(subject: string, msg: CotalMessage): void {
     const kind = deliveryOf(subject);
     if (!kind) return;
     const now = Date.now();
     this.recentTs.push(now);
     this.roll(now);
-    this.bucketCounts[BUCKET_COUNT - 1]++; // count into the newest bucket
-    if (msg.from?.id && msg.from.name) this.byId.set(msg.from.id, msg.from.name); // sharpen id→name
+    this.bucketCounts[BUCKET_COUNT - 1]++;
     if (kind === "unicast") return this.coalesce(msg);
     this.push({
       id: msg.id,
@@ -477,7 +478,8 @@ export class MeshView extends EventEmitter {
   }
 
   /** Best-effort DM backlog for the roll-up — only meaningful for a god-view cred; a non-admin
-   *  observer's `dmHistory` throws (ACL), which just leaves the DM lens live-only. */
+   *  observer's `dmHistory` throws (ACL), which just leaves the DM lens live-only. A history
+   *  row's from.name is payload text, never an id→name source (#1399). */
   private async prefillDms(): Promise<void> {
     let msgs: CotalMessage[];
     try {
@@ -491,7 +493,6 @@ export class MeshView extends EventEmitter {
     const have = new Set(this.dmLog.map(key));
     for (const m of msgs) {
       if (!m.to) continue;
-      if (m.from?.id && m.from.name) this.byId.set(m.from.id, m.from.name);
       const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };
       if (have.has(key(d))) continue;
       have.add(key(d));
@@ -543,35 +544,44 @@ export class MeshView extends EventEmitter {
   }
 
   /** Group raw DMs into per-peer rows; each peer lists its counterparties (conversations).
-   *  Only pairs that actually talked — never the n² cross-product. */
+   *  Only pairs that actually talked — never the n² cross-product. Conversations key on the two
+   *  AUTHENTICATED ids; display names, roles and statuses resolve through the roster by id, so a
+   *  payload `from.name` cannot move a line into another peer's thread (#1399). */
   private rollupDms(): DmPeer[] {
-    const statusOf = (name: string): PresenceStatus =>
-      this.roster.find((p) => p.card.name === name)?.status ?? "offline";
-    const roleOf = (name: string): string | undefined =>
-      this.roster.find((p) => p.card.name === name)?.card.role;
+    const statusOf = (id: string): PresenceStatus =>
+      this.roster.find((p) => p.card.id === id)?.status ?? "offline";
+    const roleOf = (id: string): string | undefined =>
+      this.roster.find((p) => p.card.id === id)?.card.role;
 
     const conv = new Map<string, { parts: [string, string]; msgs: DmMessage[]; last: number }>();
     for (const d of this.dmLog) {
-      const a = d.from.name;
-      const b = this.nameOf(d.toId);
+      const a = d.from.id;
+      const b = d.toId;
       if (!a || !b || a === b) continue;
       const parts = [a, b].sort() as [string, string];
       const k = parts.join("\u0000");
       let c = conv.get(k);
       if (!c) conv.set(k, (c = { parts, msgs: [], last: 0 }));
-      c.msgs.push({ ts: d.ts, from: a, to: b, text: d.text });
+      c.msgs.push({ ts: d.ts, from: this.nameOf(a), to: this.nameOf(b), text: d.text });
       c.last = Math.max(c.last, d.ts);
     }
 
     const peers = new Map<string, DmPeer>();
     for (const c of conv.values()) {
       c.msgs.sort((x, y) => x.ts - y.ts);
-      for (const name of c.parts) {
-        const other = c.parts[0] === name ? c.parts[1] : c.parts[0];
-        let pe = peers.get(name);
+      for (const id of c.parts) {
+        const other = c.parts[0] === id ? c.parts[1] : c.parts[0];
+        const name = this.nameOf(id);
+        let pe = peers.get(id);
         if (!pe)
-          peers.set(name, (pe = { name, role: roleOf(name), status: statusOf(name), lastTs: 0, conversations: [] }));
-        pe.conversations.push({ with: other, role: roleOf(other), status: statusOf(other), lastTs: c.last, messages: c.msgs });
+          peers.set(id, (pe = { name, role: roleOf(id), status: statusOf(id), lastTs: 0, conversations: [] }));
+        pe.conversations.push({
+          with: this.nameOf(other),
+          role: roleOf(other),
+          status: statusOf(other),
+          lastTs: c.last,
+          messages: c.msgs,
+        });
         pe.lastTs = Math.max(pe.lastTs, c.last);
       }
     }
