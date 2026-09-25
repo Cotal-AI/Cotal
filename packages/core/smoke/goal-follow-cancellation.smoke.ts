@@ -143,8 +143,8 @@ try {
     fromPublic(followerIdentity.id),
     fromPublic(auth.account.pub),
     {
-      pub: { allow: [followerInbox, "_INBOX.>", silentSubject] },
-      sub: { allow: [followerInbox, "_INBOX.>", epGoalProgressGrantRow(space, endpoint, caller), silentSubject] },
+      pub: { allow: [silentSubject] },
+      sub: { allow: [followerInbox, epGoalProgressGrantRow(space, endpoint, caller), silentSubject] },
     },
     { signer: fromSeed(enc.encode(auth.account.signingSeed)) }
   );
@@ -415,8 +415,6 @@ try {
       { isNotExecuted, submitsCalled3, error3 }
     );
   }
-} catch (e) {
-  check("goal follow cancellation completed", false, e instanceof Error ? e.message : String(e));
 } finally {
   for (const t of trackedTimers) {
     clearTimeout(t as NodeJS.Timeout);
@@ -425,7 +423,7 @@ try {
   for (const nc of conns) await nc.close().catch(() => {});
   for (const g of gates) { g.client.destroy(); g.upstream?.destroy(); }
   if (gateServer) await new Promise<void>((resolve) => gateServer!.close(() => resolve())).catch(() => {});
-  if (broker) await killAndAwaitExit(broker, "SIGTERM").catch(() => {});
+  if (broker) await killAndAwaitExit(broker, "SIGTERM");
   if (dir) rmSync(dir, { recursive: true, force: true });
   releaseBroker?.();
 }

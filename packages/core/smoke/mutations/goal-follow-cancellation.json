@@ -2,7 +2,7 @@
   "suite": ["packages/core/smoke/goal-follow-cancellation.smoke.ts"],
   "guard": "Goal following cancellation must settle promptly during pending broker flush or submit and prevent unwanted submission.",
   "command": "pnpm exec tsx packages/core/smoke/goal-follow-cancellation.smoke.ts",
-  "completionMarker": "goal-follow-cancellation smoke:",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=5",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/goal-follow-cancellation.json",
   "mutations": [
     {
