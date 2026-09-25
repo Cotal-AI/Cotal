@@ -14,6 +14,7 @@
 import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
+import { describeEndpoint } from "@cotal-ai/core";
 
 let failures = 0, checks = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -79,6 +80,23 @@ check("instance pin reaches invokeService and requests a pinned resolve", rec?.o
 check("inspect attests the recorded pin", callsA.some((c) => c.command === "inspect" && c.args?.name === "rev"), callsA);
 check("model attestation stays on the pinned manager", callsA.find((c) => c.command === "inspect")?.opts?.instanceId === INSTANCE, callsA);
 check("recorded model rides the spawn result", pinned.ok === true && (pinned.data as { model?: string } | undefined)?.model === "sonnet", pinned);
+
+// The boundary option above must select core's exact-instance describe rail. A minimal fake NATS
+// connection records the real describeEndpoint publication and lets its short deadline expire.
+let describedSubject = "";
+let statusDone: (() => void) | undefined;
+const statusStream = {
+  [Symbol.asyncIterator]() { return this; },
+  next: () => new Promise<IteratorResult<{ type: string; error?: unknown }>>((resolve) => { statusDone = () => resolve({ done: true, value: undefined }); }),
+  stop: () => statusDone?.(),
+};
+const routeProbe = {
+  status: () => statusStream,
+  subscribe: () => ({ unsubscribe() {} }),
+  publish: (subject: string) => { describedSubject = subject; },
+} as unknown as Parameters<typeof describeEndpoint>[0];
+await describeEndpoint(routeProbe, "smoke", "manager", { owner: "local", actor: "caller", uid: "uuuuuuuuuuuuuuuuuuuuuuuuuu" }, { instanceId: INSTANCE, deadlineMs: 1 }).catch(() => undefined);
+check("core resolve pin publishes describe on the exact manager instance rail", describedSubject.includes(`.ep.inst.manager.${INSTANCE}.describe.`), describedSubject);
 
 // Name-only: agent/model/variant absent → STRIPPED before the closed input contract validates
 // (a present-but-undefined key would refuse at additionalProperties:false), so the manager
@@ -185,7 +203,7 @@ check(
   toolReply,
 );
 
-const EXPECTED_CHECKS = 32;
+const EXPECTED_CHECKS = 33;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
