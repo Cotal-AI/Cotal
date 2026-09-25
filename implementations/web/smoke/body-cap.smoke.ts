@@ -321,17 +321,20 @@ try {
     const noBodyHead = (path: string, headers: string): string =>
       `POST ${path} HTTP/1.1\r\nHost: h\r\n${COOKIE}Connection: keep-alive\r\n${headers}\r\n`;
 
+    const declared = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), Buffer.alloc(0));
+    ok("7.0 an announced 20 MB body to a no-body route is refused at its zero-byte limit before it can be accepted",
+      declared.status.includes("413") && declared.text.includes("/api/roster") && declared.text.includes("takes no request body"),
+      { status: declared.status, text: declared.text.slice(0, 180) });
+
     const beforeDeclared = log.length;
-    const declared = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
+    const cutOff = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
     await wait(200);
     const declaredLog = log.slice(beforeDeclared);
-    ok("7.0 an announced 20 MB body to a no-body route is refused at its zero-byte limit before it can be accepted",
-      declared.status.includes("413") && declared.sent < NO_BODY.length
-      && declared.text.includes("/api/roster") && declared.text.includes("takes no request body"),
-      { status: declared.status, sent: declared.sent, total: NO_BODY.length, text: declared.text.slice(0, 180) });
-    ok("7.1 ...and the operator records that no-body refusal rather than a server fault",
-      declaredLog.includes("refused") && declaredLog.includes("/api/roster") && declaredLog.includes("takes no request body")
-      && !declaredLog.includes("failed:"), declaredLog.slice(-240));
+    ok("7.1 ...and a caller sending that announced body is cut off before it finishes while the operator records a refusal rather than a server fault",
+      cutOff.sent < NO_BODY.length
+      && declaredLog.includes("refused") && declaredLog.includes("/api/roster") && declaredLog.includes("takes no request body")
+      && !declaredLog.includes("failed:"),
+      { sent: cutOff.sent, total: NO_BODY.length, operatorLine: declaredLog.slice(-240) });
 
     const beforeChunked = log.length;
     const chunked = await raw(noBodyHead("/api/roster", "Transfer-Encoding: chunked\r\n"), NO_BODY, asChunks);
