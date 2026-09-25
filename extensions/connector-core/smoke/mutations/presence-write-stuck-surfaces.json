@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/orientation.smoke.ts"
+  ],
+  "command": "pnpm smoke:orientation",
+  "mutations": [
+    {
+      "name": "O1 orientation ignores the endpoint's stuck presence writer and calls a last-known peer snapshot live",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "  const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;\n",
+      "replace": "  const writeFailure = undefined;\n",
+      "expectRed": "orientation says the peer snapshot is not live once consecutive presence failures cross one TTL"
+    },
+    {
+      "name": "O2 cotal_roster drops the stuck-writer preface and presents last-known rows as current",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;\n",
+      "replace": "        const writeFailure = undefined;\n",
+      "expectRed": "cotal_roster labels its rows as last-known while this endpoint's presence writer is stuck"
+    }
+  ]
+}

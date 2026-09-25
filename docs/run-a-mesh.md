@@ -26,6 +26,14 @@ pre-signal agent inventory was spared; those agents may have been reaped.
 - **Manager**: a detached supervisor answering the control plane, so
   `cotal spawn --detach` and the `cotal_spawn` tool work right after `up`.
 
+The file-backed presence bucket can remain open and watchable while refusing every write. A bound
+endpoint reports this as `presence-write-stuck` after one full presence TTL of consecutive failures.
+The roster is last-known while that condition is active. Restarting the broker clears nats-server's
+in-memory store latch and preserves the JetStream root. Current credentials split the required stream
+authority: the `cotal up` provisioner can create the presence stream but cannot delete it, while the
+teardown credential can delete it but cannot recreate it. Cotal therefore reports the condition but
+does not attempt an unsafe partial delete-and-recreate. Stop and restart the broker to recover.
+
 Three modes:
 
 - **Default (static auth).** JWT-authed, on by default: sender authenticity and per-agent

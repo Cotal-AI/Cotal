@@ -290,6 +290,27 @@ export type PresenceView =
   | { state: "unpopulated"; fresh: false }
   | { state: "stale"; fresh: false; staleSince: number };
 
+/** A presence bucket that has refused consecutive writes for at least one full presence TTL.
+ * The condition is non-transient: ordinary heartbeat retry has already failed for the whole
+ * liveness window, so callers should report the roster as last-known until a write succeeds. */
+export class PresenceWriteStuckError extends Error {
+  readonly code = "presence-write-stuck" as const;
+  readonly transient = false as const;
+
+  constructor(
+    readonly bucket: string,
+    readonly since: number,
+    readonly consecutiveFailures: number,
+    readonly ttlMs: number,
+    readonly lastError?: string,
+  ) {
+    super(
+      `presence writes to bucket ${JSON.stringify(bucket)} have failed ${consecutiveFailures} consecutive times for at least one TTL (${ttlMs}ms); the presence view is not live until a write succeeds or the broker store is repaired${lastError ? ` (last refusal: ${lastError})` : ""}`,
+    );
+    this.name = "PresenceWriteStuckError";
+  }
+}
+
 /** Raw NATS transport liveness for the endpoint's CURRENT connection epoch. This is deliberately
  *  separate from the `connection` event, which means the full Cotal bind is ready. */
 export interface TransportState {
@@ -528,6 +549,10 @@ export class CotalEndpoint extends EventEmitter {
   private presenceWriteFailingSince?: number;
   /** #1356: the broker's last refusal message, kept alongside the start time for diagnosis. */
   private lastPresenceWriteError?: string;
+  /** Consecutive latest-evidence refusals on the current connection epoch. A success resets it. */
+  private presenceWriteFailures = 0;
+  /** One named non-transient warning per failed run. A success re-arms it. */
+  private presenceWriteEscalated = false;
   /** #1461: monotonic per-put generation on the presence path, so a settle can tell whether it is
    *  the latest evidence on its epoch. {@link publishPresence} snapshots it at put start and every
    * settle records its generation here: a settle is the latest evidence only while no put that
@@ -5650,6 +5675,8 @@ export class CotalEndpoint extends EventEmitter {
       if (epoch === this.presenceEpoch && !this.stopped && !superseded) {
         this.presenceWriteFailingSince ??= Date.now();
         this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
+        this.presenceWriteFailures++;
+        this.escalatePresenceWriteFailureIfStuck();
       }
       throw e;
     }
@@ -5688,6 +5715,29 @@ export class CotalEndpoint extends EventEmitter {
   private clearPresenceWriteFailure(): void {
     this.presenceWriteFailingSince = undefined;
     this.lastPresenceWriteError = undefined;
+    this.presenceWriteFailures = 0;
+    this.presenceWriteEscalated = false;
+  }
+
+  /** A heartbeat retry remains recoverable inside one TTL. Once two or more consecutive writes have
+   * failed across the full window, ordinary retry has exhausted the roster's liveness budget: raise
+   * one named, non-transient warning. Later failures keep the duration/count current without flooding
+   * the operator log; the next successful write clears and re-arms the condition. */
+  private escalatePresenceWriteFailureIfStuck(): void {
+    if (
+      this.presenceWriteEscalated ||
+      this.presenceWriteFailingSince === undefined ||
+      this.presenceWriteFailures < 2 ||
+      Date.now() - this.presenceWriteFailingSince < this.ttlMs
+    ) return;
+    this.presenceWriteEscalated = true;
+    this.emitRecoverable(new PresenceWriteStuckError(
+      presenceBucket(this.space),
+      this.presenceWriteFailingSince,
+      this.presenceWriteFailures,
+      this.ttlMs,
+      this.lastPresenceWriteError,
+    ));
   }
 
   /** #1356: the presence bucket has been refusing writes since this time, or `undefined` when the
@@ -5698,13 +5748,22 @@ export class CotalEndpoint extends EventEmitter {
    *  Presence writes are the CANARY, not the scope: the broker can disable JetStream account-wide
    *  while the NATS connection stays up, so a caller must not read this as "only presence is
    *  affected". It reports what was observed, not how far the fault extends. */
-  presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+  presenceWriteFailure(): {
+    since: number;
+    forMs: number;
+    error?: string;
+    bucket: string;
+    consecutiveFailures: number;
+    stuck: boolean;
+  } | undefined {
     if (this.presenceWriteFailingSince === undefined) return undefined;
     return {
       since: this.presenceWriteFailingSince,
       forMs: Date.now() - this.presenceWriteFailingSince,
       error: this.lastPresenceWriteError,
       bucket: presenceBucket(this.space),
+      consecutiveFailures: this.presenceWriteFailures,
+      stuck: this.presenceWriteEscalated,
     };
   }
 

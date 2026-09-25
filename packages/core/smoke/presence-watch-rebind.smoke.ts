@@ -49,7 +49,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CotalEndpoint, isReachable, setupSpaceStreams } from "../src/index.js";
+import { CotalEndpoint, PresenceWriteStuckError, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
@@ -202,6 +202,51 @@ try {
     warnings.filter((w) => /rebound/.test(w)).length === 1, warnings);
 
   await sleepy.stop();
+
+  // --- STUCK WRITER: consecutive refused heartbeats cross one full TTL. ---
+  // Drive the shipped publishPresence catch while keeping the live connection and watch intact. The
+  // first failure starts the run. Time alone is insufficient, and one success must reset everything.
+  {
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS,
+      channels: [], consume: false, registerPresence: true, watchPresence: false,
+      heartbeatMs: 30_000, ttlMs: TTL_MS,
+      card: { name: "stuck-writer", kind: "endpoint", role: "manager" },
+    });
+    const warnings: string[] = [];
+    ep.on("error", () => {});
+    ep.on("warning", (error: Error) => warnings.push(error.message));
+    await ep.start();
+    const internal = ep as unknown as {
+      kv: unknown;
+      publishPresence(): Promise<void>;
+      presenceWriteFailure(): { consecutiveFailures: number; stuck: boolean } | undefined;
+    };
+    const liveKv = internal.kv;
+    internal.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
+    await internal.publishPresence().catch(() => {});
+    await wait(TTL_MS + 100);
+    ok("4.4 one refused write held past TTL does not escalate without consecutive evidence",
+      internal.presenceWriteFailure()?.stuck === false &&
+      internal.presenceWriteFailure()?.consecutiveFailures === 1,
+      internal.presenceWriteFailure());
+    await internal.publishPresence().catch(() => {});
+    const escalation = warnings.find((message) => /presence writes .* failed 2 consecutive times/.test(message));
+    ok("4.5 consecutive presence write failures crossing one TTL raise the named non-transient condition once",
+      escalation !== undefined &&
+      internal.presenceWriteFailure()?.stuck === true &&
+      new PresenceWriteStuckError("bucket", 0, 2, TTL_MS).transient === false,
+      { warnings, failure: internal.presenceWriteFailure() });
+    await internal.publishPresence().catch(() => {});
+    ok("4.6 later refused heartbeats do not flood the named stuck condition",
+      warnings.filter((message) => /presence writes .* consecutive times/.test(message)).length === 1,
+      warnings);
+    internal.kv = liveKv;
+    await internal.publishPresence();
+    ok("4.7 the next successful presence write clears the stuck condition and resets the consecutive count",
+      internal.presenceWriteFailure() === undefined, internal.presenceWriteFailure());
+    await ep.stop();
+  }
 
   // --- THE INCIDENT: the presence stream is deleted and recreated under a live connection. ---
   const errorsBefore = errors.length;
