@@ -22,6 +22,30 @@
       "replace": "    void e;",
       "expectRed": "MeshView's own warning listener reaches the model and stream event",
       "cell": "MeshView's own warning listener reaches the model and stream event"
+    },
+    {
+      "name": "ingest writes the payload from.name back into the id-to-name map, so a spoofed DM relabels the authenticated sender in every lens (#1399)",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "    // A payload from.name is sender-chosen display text, not identity (issue #1399): the roster\n    // is the only writer of id→name, so a spoofed name can never re-key a thread or a label.\n    if (kind === \"unicast\") return this.coalesce(msg);",
+      "replace": "    if (msg.from?.id && msg.from.name) this.byId.set(msg.from.id, msg.from.name);\n    if (kind === \"unicast\") return this.coalesce(msg);",
+      "expectRed": "tap spoof: nameOf keeps the roster name for the authenticated id",
+      "cell": "tap spoof: nameOf keeps the roster name for the authenticated id"
+    },
+    {
+      "name": "prefillDms writes history rows' payload from.name back into the id-to-name map, so a spoofed backlog row relabels the sender after a restart (#1399)",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "      // Same rule as ingest: a history row's from.name is payload text, never an id→name source.\n      const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };",
+      "replace": "      if (m.from?.id && m.from.name) this.byId.set(m.from.id, m.from.name);\n      const d: RawDm = { ts: m.ts, from: m.from, toId: m.to, text: bodyText(m) };",
+      "expectRed": "prefill spoof: nameOf still the roster name after dmHistory",
+      "cell": "prefill spoof: nameOf still the roster name after dmHistory"
+    },
+    {
+      "name": "rollupDms keys each conversation on the payload from.name again, so a forged name moves the line into another pair's thread (#1399)",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "      const a = d.from.id;\n      const b = d.toId;",
+      "replace": "      const a = d.from.name;\n      const b = this.nameOf(d.toId);",
+      "expectRed": "tap spoof: the forged line never lands in a carol-keyed conversation (payload name cannot re-key a thread)",
+      "cell": "tap spoof: the forged line never lands in a carol-keyed conversation (payload name cannot re-key a thread)"
     }
   ]
 }
