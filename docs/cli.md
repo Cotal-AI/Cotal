@@ -1635,6 +1635,8 @@ See [Watch a mesh](watch-a-mesh.md).
 ```bash
 cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--signer]
 cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
+cotal mint <name> --expires-in <seconds> | --expires-at <unix-seconds>
+cotal mint <name> --identity <creds> [--expires-in <seconds>]
 ```
 
 | Flag | Default | Meaning |
@@ -1647,6 +1649,9 @@ cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 | `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only** |
 | `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
 | `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
+| `--expires-in <seconds>` | unbounded | Bound the credential's lifetime: the JWT `exp` is `iat + <seconds>`. A positive integer; refused together with `--expires-at` |
+| `--expires-at <unix-seconds>` | unbounded | Bound the credential to an absolute `exp` (unix seconds). Refused together with `--expires-in` |
+| `--identity <creds>` | a fresh identity | Re-mint for the nkey carried by this creds file, keeping the principal and every durable keyed to it. The file is read by the same loader the endpoint uses; a file with no seed is refused by name |
 | `--space <s>`, `--server <url>` | the resolved mesh | Which root supplies the agent file, static trust and default credential storage; with `--provision`, also which live mesh receives the durables |
 
 Mints a NATS creds file for a space in **static** auth mode, scoped to a profile and (optionally)
@@ -1667,8 +1672,15 @@ provisioner cred is minted from the space's trust material, used, and dropped), 
 client you start yourself can receive DMs and role anycasts like a spawned seat. The command prints
 the identity's principal (its wire id) and lifecycle uid; a consuming client passes that uid as its
 `lifecycleUid`. Agent profile only; an open mesh needs none of this (peers self-create there). The
-The same resolved authority is used for both the credential and `--provision`, so the broker
+same resolved authority is used for both the credential and `--provision`, so the broker
 footprint cannot be created under a different root's trust material.
+
+The CLI-mintable profiles carry no default TTL: without a lifetime flag the credential is
+unbounded, and a standing-renewal consumer refuses it. `--expires-in <seconds>` (or
+`--expires-at`) is the door the renewal seam's own error names. `--identity <creds>` re-mints for
+the nkey the file already carries, so the new credential presents the SAME principal and every
+durable keyed to it survives; combine it with a lifetime flag to rotate an expiring credential
+without churning the identity.
 
 ## Login
 
