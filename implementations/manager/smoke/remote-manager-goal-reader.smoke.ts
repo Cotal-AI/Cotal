@@ -690,7 +690,7 @@ try {
   for (const [a, b] of [[callers[0]!, callers[1]!], [callers[1]!, callers[0]!]]) {
     const foreignResult = await invokeCommand(a.nc, space, a.service, "goal-result", { goalId: b.goalId }, { deadlineMs: 2000 });
     check("known foreign goal is absent from the querying caller's mediated view", foreignResult.reply.ok === true && (foreignResult.reply.data as { result?: unknown }).result === undefined);
-  
+
     const foreignSubject = epRequestSubject(space, { route: { mode: "inst", instanceId: b.instanceId }, endpoint: "manager", command: "describe", caller: a.caller, nonce: randomBytes(24).toString("base64url") });
     let denied = false;
     try {
@@ -735,14 +735,12 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 29;
-check("all acceptance checks passed", pass === EXPECTED_CHECKS && fail === 0, { pass, fail, expected: EXPECTED_CHECKS });
-
-const ACTUAL_COUNT_GUARD = 30;
+const EXPECTED_CHECKS = 30;
+check("all acceptance checks passed", pass === EXPECTED_CHECKS - 1 && fail === 0, { pass, fail, expected: EXPECTED_CHECKS });
 emitSentinel({ passed: pass, failed: fail, cells: pass + fail });
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 console.log("REMOTE-MANAGER-GOAL-READER COMPLETE");
 
-if (fail > 0 || pass !== ACTUAL_COUNT_GUARD) {
+if (fail > 0 || pass !== EXPECTED_CHECKS) {
   process.exit(1);
 }
