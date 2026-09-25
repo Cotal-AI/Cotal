@@ -68,6 +68,7 @@ export async function bootDeliveryDaemon(opts: {
   // A broker teardown at suite end is not a daemon fault; suites assert on their own subject.
   ep.on("error", () => {});
   await ep.start();
+  const dlvRevision = await ep.acquireDeliveryLease(0);
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
     evictPrincipal: (principal) =>
       evictDeniedPrincipalWithCreds({
@@ -76,6 +77,7 @@ export async function bootDeliveryDaemon(opts: {
       }),
     reloadStoreIdentity: () => reloadStoreIdentity,
   });
+  await ep.markDeliveryLeaseReady(0, dlvRevision);
   let stopped = false;
   return {
     ep,

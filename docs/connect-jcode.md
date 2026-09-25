@@ -197,6 +197,13 @@ journal under the seat's private home. The journal supplies a durable byte curso
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
+When the seat's mesh connection drops and the endpoint is rebuilding it, event publishing waits
+until the connection is live again and then publishes the queued records in order. The seat stays up
+through the outage. If the seat is stopped before the connection returns, the wait ends and the
+connector log records `AG-UI emitter stopped`. The unpublished records stay in the journal
+behind the stored cursor, and the next start publishes them. Any other emitter failure still stops
+the seat with exit code 1.
+
 The journal records settled message blocks rather than live deltas. Text and reasoning therefore
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
 blocks. User prompt text is not republished onto the event channel. The launcher sets
@@ -230,6 +237,14 @@ Model startup refusals are named without exposing provider output: `model_prefix
 Jcode rejected that bare id, and `model_mismatch` means a requested variant could not be tied to one
 active provider route for the selected model. `private_state` names a different step: the seat's
 private home, its credential mirror, or its short socket alias could not be prepared.
+
+Stored sessions have their own refusals. `sessions_enumeration_failed` means listing the home's
+prior sessions killed the harness. `sessions_unwritable` means the home's `sessions/` directory
+exists but will not take a write: the harness would accept the seat and die only while persisting
+its first session, so the connector refuses before that launch and names the directory and the
+errno. Fix the directory's permissions on the seat's private state and start again; the connector
+never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
+alone.
 
 `cotal models --agent jcode` reads the declared catalog from the operator Jcode home's
 `config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,

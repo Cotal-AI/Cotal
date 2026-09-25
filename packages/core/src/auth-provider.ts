@@ -7,6 +7,8 @@ import type {
   RemoteManagerAuthorityRequest,
   RemoteManagerGoalIndexScanRequest,
   RemoteManagerGoalIndexScanResult,
+  RemoteManagerMaintenanceRequest,
+  RemoteManagerMaintenanceResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
 } from "./remote-manager-authority.js";
@@ -45,6 +47,9 @@ export interface AuthProvider extends Extension {
    * trust bundle.
    */
   prepareServer(input: AuthPrepareInput): Promise<AuthPrepared>;
+  /** Read this space's already-provisioned operator-signed accounts for a whole-broker render.
+   *  A missing or invalid account on an enabled space must refuse the render, not shrink it. */
+  preloadAccounts(opts: { store: SecretStore; space: string }): Promise<Array<{ pub: string; jwt: string }>>;
   /**
    * CLIENT side: produce the connect material for a user-mode space from THIS machine's session
    * state (the login cache + the provider's space-scoped state — secrets in `store`, the rest
@@ -60,24 +65,30 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string }): Promise<{ bearer: string; sentinelCreds: string }>;
+  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string }): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }>;
   /**
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
    * the private cache. The caller supplies the product validator so an invalid candidate is never
-   * published over the last valid snapshot.
+   * published over the last valid snapshot, and the consumer's `apply`, which the provider runs
+   * under its own lock: a candidate is committed to the cache as not yet applied before the first
+   * registry mutation and marked applied after the last, so a process that dies or pauses while
+   * applying leaves a cache that says so, and the next preparation applies that snapshot again
+   * before reporting it fresh or not modified.
    */
   prepareSpaceCatalogs?(opts: {
     dir: string;
     idpUrl?: string;
     force?: boolean;
     validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+    apply(result: AuthSpaceCatalogResult): void;
   }): Promise<AuthSpaceCatalogResult[]>;
   /** Complete login-time catalog discovery while the provider alone holds the new session. */
   syncSpaceCatalogAfterLogin?(opts: {
     dir: string;
     idpUrl: string;
     validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
+    apply(result: AuthSpaceCatalogResult): void;
   }): Promise<AuthSpaceCatalogResult[]>;
   /** Whether the just-proved account advertised a catalog. Reads provider state only. */
   hasSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): boolean;
@@ -96,6 +107,13 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** Host-owned registration maintenance for a remote manager. The provider must scope eviction to
+   * the caller instance's credential family and guard reconciliation with affirmative liveness. */
+  maintainRemoteManager?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerMaintenanceRequest;
+  }): Promise<RemoteManagerMaintenanceResult>;
   /** Host-owned manager boot scan. The provider authenticates the human and returns only parsed,
    * owner-scoped manager goal-index entries. No raw records or consumer authority crosses. */
   scanRemoteManagerGoalIndex?(opts: {
@@ -158,8 +176,11 @@ export interface AuthProvider extends Extension {
    * Read-only OFFLINE introspection for status surfaces (`cotal status`): this machine's cached
    * login for the space and — where the space's ledger is locally readable — whether that login's
    * `actor` is granted. Never network-bound and never a mint; "not signed in" is a REPORTED state
-   * here, not a thrown one. Throws only when the space has no user-auth material in `store`/`dir`
-   * (there is nothing to report status about).
+   * here, not a thrown one. The IdP pins come from `dir` when the space was provisioned locally,
+   * or from the registry entry bound to that `dir` when it is a remote registration (a `meshes
+   * add --from` entry or catalog discovery) — in which case `grant` stays absent, since the ledger
+   * runs where the space was provisioned. Throws only when neither position exists (there is
+   * nothing to report status about).
    */
   userStatus(opts: { store: SecretStore; dir: string; space: string; actor: string }): Promise<UserAuthStatus>;
   /**
@@ -260,7 +281,9 @@ export interface AuthSpaceCatalogResult {
   error?: string;
 }
 
-/** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI. */
+/** Workstation consumer for provider-owned catalogs. Kept separate so auth never imports a CLI.
+ *  `apply` runs inside the provider's catalog lock and must be idempotent: an interrupted
+ *  application is applied again from the cached snapshot by the next preparation. */
 export interface SpaceCatalogConsumer extends Extension {
   readonly kind: "space-catalog-consumer";
   validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
@@ -374,6 +397,13 @@ export interface AuthServiceSpec {
   command: string;
   /** Wait until the running service is READY (every plane bound — e.g. broker subscription AND
    *  local endpoints). Resolves with the service's runtime, non-secret endpoint metadata for the
-   *  mesh registry; THROWS (with the reason) on timeout — the caller surfaces it, loudly. */
-  ready(opts: { dir: string; timeoutMs?: number }): Promise<Record<string, unknown>>;
+   *  mesh registry; THROWS (with the reason) on timeout — the caller surfaces it, loudly.
+   *
+   *  The wait may be bound to the DAEMON PROCESS, not a clock alone: pass the pid the caller
+   *  launched (or found live) and the provider waits past `timeoutMs` up to `maxWaitMs` while
+   *  that pid is provably alive, ends the wait AT ONCE when the pid is provably gone (refusing
+   *  with the exit), and still refuses at `maxWaitMs` — so a slow-but-healthy start is not
+   *  misreported dead, a dead daemon is refused immediately, and a wedged daemon can never hold
+   *  the caller open indefinitely. Either way the caller never invents ad-hoc readiness sleeps. */
+  ready(opts: { dir: string; timeoutMs?: number; pid?: number; maxWaitMs?: number }): Promise<Record<string, unknown>>;
 }

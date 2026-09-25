@@ -253,6 +253,12 @@ try {
   // Without this the guard goes vacuous the day npm moves the hidden lockfile or reshapes its keys:
   // nothing would match, zero packages would be checked, and the loop above would pass in silence.
   assert.equal(checked, needed.size, `provenance checked ${checked} workspace package(s) but the closure has ${needed.size} -- the lockfile is not being read as expected`);
+  // `update` deliberately skips boot-time connector reconciliation. Give the isolated packaged
+  // install the same seeded connector manifest an existing installation has before asking it to
+  // classify running seats; otherwise every connector is unknown and defaults to drain-only.
+  const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
+  const seed = run(process.execPath, [currentBin, "ext", "seed"], root);
+  assert.equal(seed.status, 0, `seeded packaged connectors: ${seed.stdout}\n${seed.stderr}`);
   writeFileSync(join(old, "package.json"), JSON.stringify({ name: "old-fixture", private: true }));
   assert.equal(run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "cotal-ai@0.42.0"], old).status, 0, "installed published old package");
   const oldRuntime = readFileSync(join(old, "node_modules", "@cotal-ai", "core", "dist", "runtime.js"), "utf8");
@@ -285,7 +291,6 @@ setInterval(() => {}, 1000);
   });
   assert.ok(idsRead && ids !== undefined, "published old manager started its counter seats");
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "old manager and counter child are live before update");
-  const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
   const update = spawnSync(process.execPath, [currentBin, "update", "--space", "legacy783", "--server", `nats://127.0.0.1:${port}`], { cwd: root, env: cleanEnv, encoding: "utf8", timeout: 180_000 });
   const output = `${update.stdout ?? ""}${update.stderr ?? ""}`;
   assert.notEqual(update.status, 0, output);

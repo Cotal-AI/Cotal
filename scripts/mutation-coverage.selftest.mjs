@@ -11,17 +11,18 @@ const TOOL = join(dirname(fileURLToPath(import.meta.url)), "mutation-coverage.mj
 const root = mkdtempSync(join(tmpdir(), "mutation-coverage-selftest-"));
 let pass = 0;
 let failed = 0;
-// Normally the first failing cell stops the run, which keeps a failure legible. Grading the
-// MUTANTS needs the opposite: a mutant is only proven to bite when the cell it NAMES reds, and an
-// early exit hides every cell after the first. This reports them all, and still exits non-zero.
-const CONTINUE = process.env.MUTATION_SELFTEST_REPORT_ALL === "1";
+const failedCells = [];
+// A mutant is only proven to bite when the cell it NAMES reds. Stopping at the first failure made
+// every later cell's verdict depend on the position of every cell above it: a mutant that reddens
+// an early, unrelated cell would never reach the cell it actually names, so the pinned proof graded
+// WRONG-RED for a correctly aimed mutation. Every cell always runs and reports for itself; the run
+// still fails at the end when anything failed, naming each failing cell there.
 const check = (name, condition, extra) => {
   if (!condition) {
     failed++;
+    failedCells.push(name);
     console.error(`\n  ✗ ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
-    if (CONTINUE) return;
-    rmSync(root, { recursive: true, force: true });
-    process.exit(1);
+    return;
   }
   pass++;
   console.log(`  ✓ ${name}`);
@@ -1049,12 +1050,13 @@ try {
   result = run("sweep-narrowed-constant");
   check("a narrowing against a computed constant is refused", result.status !== 0 && /REFUSED sweep-narrowed-constant/.test(result.stderr), report(result));
 
-  // ORDERING IS LOAD-BEARING, NOT COSMETIC. This cell is the first ACCEPT control that observes the
-  // `pins` default, so it must run BEFORE the other open-sweep accept controls. The self-test stops
-  // at its first failing cell unless MUTATION_SELFTEST_REPORT_ALL is set, and the real mutation
-  // proof runs WITHOUT that flag. With this cell later, inverting the default red the extension
-  // filter first and the mutant for `a guard with no rule is OPEN` was credited to a cell it does
-  // not name -- coverage that grades the wrong thing while looking green (#1627). Keep it here.
+  // #1627: this cell is the first ACCEPT control that observes the `pins` default. It used to have
+  // to run BEFORE the other open-sweep accept controls, because the self-test stopped at its first
+  // failing cell and a mutant inverting the default reddened the extension filter first, crediting
+  // `a guard with no rule is OPEN` to a cell it does not name -- coverage that graded the wrong
+  // thing while looking green. Every cell now always runs and grades independently of what ran
+  // before it, so that position-dependent credit no longer exists; this cell stays here as the
+  // first written check of the `pins` default, not because its position affects its verdict.
   // The known-open limit, and the property that makes an unenumerated spelling SAFE rather than a
   // defeat: a guard the classifier cannot classify is OPEN, so the sweep counts. Were the default
   // ever inverted, a named read would masquerade as a sweep and this cell would red.
@@ -1400,13 +1402,31 @@ try {
   // A block is a scope, and the resolver finds the FIRST matching declaration, so the decoy is
   // tested in BOTH source orders. One order alone passes against a resolver that treats a block
   // as transparent, which is how a first-match walk hides half its behaviour.
-  for (const [name, before] of [["block-decoy-before", true], ["block-decoy-after", false]]) {
-    const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+  //
+  // The two orders are NOT a textual mirror of each other, because the walk keeps the first match
+  // it finds and never revisits one already found. Pairing the decoy with a REAL declaration that
+  // sits textually after it lets "before" catch a decoy wrongly preferred over the real one, but
+  // the same real declaration textually BEFORE the decoy is found first regardless of the block
+  // guard, and no mutation of that guard could ever change which one wins — a distractor with no
+  // declaration of its own, ahead of the decoy, keeps the decoy the only candidate in EITHER slot
+  // and still lets the block guard alone decide the verdict.
+  const decoy = '  if (flag) {\n    const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n  }\n';
+  {
     const real = '  const ENTRY = join(import.meta.dirname, "..", "direct.mjs");\n  spawnSync(process.execPath, [ENTRY]);\n';
-    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${before ? decoy + real : real + decoy}}\nrun(false);\n`);
+    const name = "block-decoy-before";
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag) {\n${decoy + real}}\nrun(false);\n`);
     config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
     result = run(name);
-    check(`a binding in a block the launch is not inside cannot witness it (${before ? "decoy first" : "decoy last"})`, refusedForReach(name, result), report(result));
+    check("a binding in a block the launch is not inside cannot witness it (decoy first)", refusedForReach(name, result), report(result));
+  }
+  {
+    const distractor = '  if (other) {\n    console.log("distractor");\n  }\n';
+    const call = '  spawnSync(process.execPath, [ENTRY]);\n';
+    const name = "block-decoy-after";
+    write(`bin/smoke/${name}.smoke.ts`, `function run(flag, other) {\n${distractor + decoy + call}}\nrun(false, false);\n`);
+    config(name, { suite: [`bin/smoke/${name}.smoke.ts`], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+    result = run(name);
+    check("a binding in a block the launch is not inside cannot witness it (decoy last)", refusedForReach(name, result), report(result));
   }
   // The accept twin. Refusing every block binding closes the false accept by breaking real suites,
   // so a launch INSIDE the block, using that block's own binding, must still be witnessed.
@@ -1466,6 +1486,19 @@ try {
   config("call-before-decl", { suite: ["bin/smoke/call-before-decl.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
   result = run("call-before-decl");
   check("a launcher called before the declaration cannot witness an entrypoint launch", refusedForReach("call-before-decl", result), report(result));
+
+  // `earliestCall` finds a NAMED CALL. Handing the function to something that invokes it without
+  // ever writing that call is a real launch `evaluated()` still credits (a scan for an INVOCATION
+  // proxy, not a literal call expression), but `earliestCall`'s scan for `name(` finds nothing, so
+  // the enclosing function's position can never be established. Refusing here is a refusal this
+  // tool can back, not a guess at where the call landed.
+  write("bin/smoke/unlocatable-invocation.smoke.ts",
+    'const ENTRY = join(import.meta.dirname, "..", "entry.ts");\n' +
+    'function run() { spawnSync(process.execPath, [ENTRY]); }\n' +
+    'queueMicrotask(run);\n');
+  config("unlocatable-invocation", { suite: ["bin/smoke/unlocatable-invocation.smoke.ts"], command: seatBuild, executes: ["bin/entry.ts"], mutations: [mutation("packages/seat/src/index.ts")] });
+  result = run("unlocatable-invocation");
+  check("a launcher reached with no locatable call site cannot witness an entrypoint launch", refusedForReach("unlocatable-invocation", result), report(result));
 
   // `const A = B` beside `const B = A` is a program. A resolver without a visited set answers it
   // with a stack overflow, which is a crash rather than a verdict.
@@ -1838,14 +1871,15 @@ try {
  * smaller first number that nothing compares against. The count is the only thing that notices, so
  * it is asserted rather than reported. Raise it in the same change that adds a cell.
  */
-const EXPECTED_CELLS = 174;
-// `failed` is 0 on the normal path, because the first failure exits there. It is the real count in
-// report-all mode, where the run continues, and the exit status follows it rather than the literal.
-console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, ${failed} failed`);
-// Only meaningful for a run that reached the end. A run that exited early on a failing cell has
-// already reported why, and its partial count is not a second, different fault.
-if (failed === 0 && pass !== EXPECTED_CELLS) {
-  console.error(`\n  ✗ expected ${EXPECTED_CELLS} cells, ran ${pass}: silently skipped cells must not read as green`);
-  process.exit(1);
+const EXPECTED_CELLS = 175;
+// This is the run's completion marker (see mutation-proof.mjs's `completionMarker`): the one line
+// every run prints, whether it passed or failed, because every cell above always ran to here. A run
+// that never reaches this line did not finish, and nothing about it should be graded.
+const ran = pass + failed;
+if (ran !== EXPECTED_CELLS) {
+  console.error(`\n  ✗ expected ${EXPECTED_CELLS} cells, ran ${ran}: silently skipped cells must not read as green`);
+  failed++;
+  failedCells.push("expected cell count");
 }
+console.log(`\nMUTATION-COVERAGE SELF-TEST: ${pass} passed, ${failed} failed${failedCells.length ? ` (${failedCells.join("; ")})` : ""}`);
 if (failed > 0) process.exit(1);

@@ -694,6 +694,7 @@ async function runStartedDelivery(
     stopping = true;
     clearInterval(renew);
     clearInterval(brokerWatch);
+    stopLeaseWatch();
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
     // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
     // hung is a record that outlives its process, which is this issue's defect re-entering through
@@ -860,7 +861,94 @@ async function runStartedDelivery(
     console.error(`\u2713 delivery: serving shard ${shard} again, ${why} (space ${space})`);
   };
 
+  // ── LEASE-LOSS WATCH (#1596): the row changing hands must be FELT, not polled into view ────────
+  //
+  // Nothing below the renew interval observed the lease row, so a daemon whose shard was taken
+  // served a full renew period (~half the lease TTL, 15s at the shipped constant) before its next
+  // CAS failure told it: two processes on one shard's fan-out durable, reader and ctl.delivery
+  // responder for the whole window. A native KV watch on the daemon's own lease key — filtered to
+  // that key, the same JetStream ordered-consumer mechanism the presence and channel watchers
+  // ride — pushes the row the moment the broker applies the change, so the window is bounded by
+  // the delivery latency of that one KV update instead of by the renew period.
+  //
+  // A TRIGGER, NEVER A SECOND DECISION PATH. Every event re-runs the SAME tree a failed renew
+  // runs: quiesce, read the row, `leaseAction`/`mayServeOn` decide, re-arm only on proven
+  // ownership, exit on `taken`, repair `gone` via the atomic create. The interval stays the
+  // arbiter and the backstop — a watch event lost to a reconnect is still caught by the next
+  // tick, and the endpoint rebinds the watch itself on every rebuild.
+  //
+  // A WATCH EVENT THAT READS OUR OWN WRITE MUST NOT TRIGGER A QUIESCE, and here that needs no
+  // filtering: this daemon's writes (acquire, markReady/notReady, every renew) put a row this
+  // endpoint OWNS into the key, so the handler reads the row, recognises itself, and returns
+  // without touching Plane-3 — one extra broker read per own write, no state change, no log. Only
+  // a row that is provably NOT ours (different holder or incarnation) or a real delete starts the
+  // tree, which is exactly what the renew tick would have concluded one interval later.
+  //
+  // NO FALLBACK: the watch is part of the single-server guarantee, so a daemon that cannot
+  // establish it refuses to start, loudly (the await below throws out of start-up and the
+  // releaser gives the shard back), rather than degrade into the polled window this issue is
+  // about. The stop handle is cleared on every exit path the renew interval is: `shutdown`.
+  const stopLeaseWatch = await ep.watchDeliveryLease(shard, (info) => {
+   if (stopping) return;
+   // The row as this event states it: an event for a row we own answers ITSELF (no state
+   // change); a row we do not own, or a delete, needs the broker's word on what is there NOW
+   // before anything is unbound, so fall through to the same re-read the renew failure path
+   // performs. `undefined` here means the KV entry was DEL/PURGE'd, which is `gone`'s territory.
+   if (info !== undefined && ep.ownsDeliveryLease(info)) return;
+   void (async () => {
+     // QUIESCE FIRST, exactly as a failed renew does: across the re-read below this process
+     // does not know whether the shard is still its own, and an un-quiesced loser splits the
+     // durable with whoever took the row. Same edge announcement, same not-ready withdrawal.
+     try {
+       await ep.quiescePlane3();
+       if (revision !== undefined) {
+         try { revision = await ep.markDeliveryLeaseNotReady(shard, revision); }
+         catch { /* the row has moved on; the ownership read below is what decides */ }
+       }
+       noteQuiesce();
+     } catch (e) {
+       console.error(`! delivery: could not quiesce Plane-3 on a lease watch event (${(e as Error).message})`);
+     }
+     const reading = await readOwnLease();
+     switch (leaseAction(reading)) {
+       case "keep-serving":
+         if (mayServeOn(reading)) {
+           if (reading.kind !== "held") throw new Error(`delivery: mayServeOn admitted a "${reading.kind}" reading, which carries no revision to serve on`);
+           revision = reading.revision;
+           await resumeServing("a lease watch event re-read the key and found it still its own");
+         }
+         noteLease(
+           reading.kind === "held" ? "held-unrenewed" : "unknown",
+           reading.kind === "held"
+             ? "a lease watch event fired but the key is still its own; serving"
+             : `a lease watch event fired and the key could not be re-read (${reading.kind === "unknown" ? reading.why : ""}); staying quiet until the broker answers`,
+         );
+         return;
+       case "reacquire":
+         try {
+           revision = await ep.acquireDeliveryLease(shard);
+           await resumeServing(`it won the atomic create at revision ${revision} after a lease watch event`);
+           noteLease("held", `a lease watch event found its lease key gone and re-acquired it at revision ${revision}`);
+         } catch (e) {
+           revision = undefined;
+           console.error(
+             `✗ delivery: a lease watch event found the key gone and another daemon has taken shard ${shard} (${(e as Error).message}), exiting so the holder is single`,
+           );
+           shutdown(1);
+         }
+         return;
+       case "exit":
+         revision = undefined;
+         console.error(
+           `✗ delivery: a lease watch event read the key as held by ${reading.kind === "taken" ? reading.by : "another daemon"}, not by this process, exiting so the holder is single`,
+         );
+         shutdown(1);
+         return;
+     }
+   })().catch((e) => console.error(`! delivery: the lease watch trigger faulted (${(e as Error).message}); the renew interval remains the arbiter`));
+ });
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
+
   //
   // A FAILED RENEW IS A QUESTION, NOT A VERDICT (#1318). The shipped code exited on ANY renew
   // error, so a key that had EXPIRED under local CPU starvation, with nobody else holding it,

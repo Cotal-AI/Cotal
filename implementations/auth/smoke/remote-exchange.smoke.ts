@@ -109,9 +109,12 @@ const { deviceAuthorization } = await import("better-auth/plugins/device-authori
 const { bearer: baBearer } = await import("better-auth/plugins/bearer");
 const { toNodeHandler } = await import("better-auth/node");
 
-const { createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams, mintLifecycleUid } =
+const { createSpaceAuth, epAuthBucket, isReachable, mintCreds, newIdentity, recordSpecKey, recordStatusKey,
+  recordsBucket, RECORD_KINDS, remoteManagerActors, serverConfig, setupSpaceStreams, standaloneConnectOpts, mintLifecycleUid } =
   await import("@cotal-ai/core");
-const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { Kvm } = await import("@nats-io/kv");
+const { connect } = await import("@nats-io/transport-node");
+const { authDir, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
@@ -217,6 +220,27 @@ try {
   check("user-auth broker is reachable", up);
   const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: provCreds });
+  const putManager = async (args: { instanceId: string; principal: string; owner: string; epoch?: number; registered?: boolean; state?: "open" | "frozen" | "retired" }) => {
+    const id = newIdentity();
+    const nc = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintCreds(auth, id, "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: args.instanceId } }), tls: false }) });
+    try {
+      const kvm = new Kvm(nc);
+      const records = await kvm.open(recordsBucket(SPACE));
+      const authKv = await kvm.open(epAuthBucket(SPACE));
+      let revision = 1;
+      if (args.registered !== false) {
+        revision = await records.put(recordSpecKey(RECORD_KINDS.svc, ["manager", args.instanceId]), new TextEncoder().encode(JSON.stringify({ endpoint: "manager", owner: args.owner, clusterDigests: [`sha256:${"a".repeat(64)}`], protocol: { v: 1 } })));
+        await records.put(recordStatusKey(RECORD_KINDS.svc, ["manager", args.instanceId]), new TextEncoder().encode(JSON.stringify({ epoch: args.epoch ?? 1, state: "ready", observedSpecRevision: revision })));
+      }
+      const state = args.state ?? "open";
+      await authKv.put(`epgate.manager.${args.instanceId}`, new TextEncoder().encode(JSON.stringify({ state, generation: 1, processEpoch: args.epoch ?? 1, registrationRevision: revision, nameAuthorityRevision: 0, principal: args.principal, ...(state === "open" ? {} : { op: { opId: mintLifecycleUid(), kind: state === "retired" ? "retirement" : "takeover" } }) })));
+    } finally {
+      await nc.drain();
+    }
+  };
+  const localManagerInstanceId = mintLifecycleUid();
+  const localServe = newIdentity();
+  await putManager({ instanceId: localManagerInstanceId, principal: `local.${localServe.id}`, owner: "local" });
 
   // The daemon, started through the REAL command with the REAL public-exchange flags. `--port 0`
   // and `--exchange-public-port 0` on purpose: both faces take OS-assigned ports, which is also
@@ -285,6 +309,68 @@ try {
     parent: `${OWNER}.cli`, tokenHash: secret.tokenHash, lifecycleUid: agentLifecycleUid,
   });
   const agentBody = { owner: OWNER, actor: AGENT, actorToken: secret.actorToken };
+
+  const beforeLocalFile = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
+  check("without a persisted local manager identity and no remote gate, manager-caller refuses none",
+    beforeLocalFile.status === 401 && String(beforeLocalFile.body.error).includes("no manager candidate"), beforeLocalFile);
+  saveManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
+  check("manager-caller re-reads a newly created local identity file and selects its live manager",
+    localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);
+  const explicitLocal = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: localManagerInstanceId });
+  check("the public face serves an explicit selector naming the live co-located manager",
+    explicitLocal.status === 200 && explicitLocal.body.managerInstanceId === localManagerInstanceId, explicitLocal);
+
+  const remoteOne = mintLifecycleUid();
+  await putManager({ instanceId: remoteOne, principal: `${OWNER}.${remoteManagerActors(remoteOne).serve}`, owner: OWNER });
+  const remoteSelected = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
+  check("one live remote manager takes precedence over the local candidate",
+    remoteSelected.status === 200 && remoteSelected.body.managerInstanceId === remoteOne, remoteSelected);
+  const parentIndependent = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteOne });
+  check("the managed row's parent plays no part in manager selection", parentIndependent.status === 200, parentIndependent);
+  const remoteTwo = mintLifecycleUid();
+  await putManager({ instanceId: remoteTwo, principal: `${OWNER}.${remoteManagerActors(remoteTwo).serve}`, owner: OWNER });
+  const ambiguous = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
+  check("two live remote managers refuse and name the count",
+    ambiguous.status === 401 && String(ambiguous.body.error).includes("2 live remote manager candidates"), ambiguous);
+  const explicitRemote = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: remoteTwo });
+  check("an explicit selector chooses one live own remote manager",
+    explicitRemote.status === 200 && explicitRemote.body.managerInstanceId === remoteTwo, explicitRemote);
+  const foreign = mintLifecycleUid();
+  await putManager({ instanceId: foreign, principal: `${"u_" + "f".repeat(26)}.${remoteManagerActors(foreign).serve}`, owner: "u_" + "f".repeat(26) });
+  const foreignSelector = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: foreign });
+  check("an explicit selector outside the owner's candidate set refuses by owner",
+    foreignSelector.status === 401 && String(foreignSelector.body.error).includes("not this owner's"), foreignSelector);
+  const stopped = mintLifecycleUid();
+  await putManager({ instanceId: stopped, principal: `${OWNER}.${remoteManagerActors(stopped).serve}`, owner: OWNER, registered: false });
+  const stoppedSelector = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller", managerInstanceId: stopped });
+  check("an explicit selector naming an open but deregistered manager refuses not registered",
+    stoppedSelector.status === 401 && String(stoppedSelector.body.error).includes("not registered"), stoppedSelector);
+  const unavailableOwner = "u_" + "z".repeat(26);
+  const unavailableActor = "unavailable";
+  const unavailableSecret = newActorToken();
+  grantManagedActor(dir, { owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  const unavailableId = mintLifecycleUid();
+  await putManager({ instanceId: unavailableId, principal: `${unavailableOwner}.${remoteManagerActors(unavailableId).serve}`, owner: unavailableOwner, state: "frozen" });
+  const unavailable = await post(`${PUBLIC}/exchange`, { owner: unavailableOwner, actor: unavailableActor, actorToken: unavailableSecret.actorToken, view: "manager-caller" });
+  check("an unavailable owner remote manager refuses with the explicit-selector remedy instead of falling through local",
+    unavailable.status === 401 && String(unavailable.body.error).includes("unavailable") && String(unavailable.body.error).includes("managerInstanceId"), unavailable);
+  const wrongLocalOwner = "u_" + "y".repeat(26);
+  const wrongLocalActor = "wronglocal";
+  const wrongLocalSecret = newActorToken();
+  grantManagedActor(dir, { owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  const wrongLocalId = mintLifecycleUid();
+  await putManager({ instanceId: wrongLocalId, principal: `local.${newIdentity().id}`, owner: "local" });
+  const wrongLocal = await post(`${PUBLIC}/exchange`, { owner: wrongLocalOwner, actor: wrongLocalActor, actorToken: wrongLocalSecret.actorToken, view: "manager-caller", managerInstanceId: wrongLocalId });
+  check("a local gate under a serve id different from the persisted identity is not a candidate",
+    wrongLocal.status === 401 && String(wrongLocal.body.error).includes("not this owner's"), wrongLocal);
+
+  // Reproduction control: managed-agent secrets cannot request any existing view. This stays after
+  // manager-caller lands to prove the one narrow exception did not widen the other view names.
+  const agentView = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "channel-writer" });
+  check("a managed-agent secret asking for a non-manager view is refused 400 with the existing text",
+    agentView.status === 400 && agentView.body.error === "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange",
+    agentView);
 
   // ---------- C. the matched pair: capless public 200 vs capless loopback 401 ----------
   console.log("C) the SAME capless request: public mints, loopback still 401s");
@@ -361,6 +447,9 @@ try {
   } catch { /* checked below */ }
   check("a channel-writer view mints on the public face when the row has admin",
     writerPublic.status === 200 && writerView === "channel-writer", { status: writerPublic.status, writerView, body: writerPublic.body });
+  const humanManagerCall = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-caller", managerInstanceId: remoteOne });
+  check("the public human exchange serves manager-caller and returns the selected instance",
+    humanManagerCall.status === 200 && humanManagerCall.body.managerInstanceId === remoteOne, humanManagerCall);
 
   // ---------- F. inherited hardening holds verbatim ----------
   const ids = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((name) => [name, { id: newIdentity().id }]));
@@ -491,7 +580,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 54;
+const EXPECTED = 67;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

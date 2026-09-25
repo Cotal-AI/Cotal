@@ -82,11 +82,13 @@ export interface MembershipFeedHandle {
   /** Explicitly adopt a re-signed rw cred on conn B (D5 class-2 renewal): fetch from the source
    *  (deadline-bounded), validate the identity pin, optional fingerprint match against the renewal
    *  owner's `expected` generation, a DISPOSABLE PREFLIGHT proving the broker accepts the bytes, then
-   *  commit the proven cache and best-effort reconnect — returning the BROKER-ACCEPTED generation's
-   *  window (the resident conn-B swap is best-effort, not witnessed). Runs under the same single-flight
-   *  as the 75% timer, so the two can never interleave. THROWS when the source fetch fails
-   *  (missing/swapped cred), the fingerprint does not match `expected`, the broker refuses the
-   *  preflight, or the deadline elapses. Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
+   *  commit the proven cache and present it on conn B — reconnect when the client is still open, or
+   *  open a fresh data connection and rebind the KV handles when the client has already closed
+   *  (the expiry refusal). Returns the BROKER-ACCEPTED generation's window. Runs under the same
+   *  single-flight as the 75% timer, so the two can never interleave. THROWS when the source fetch
+   *  fails (missing/swapped cred), the fingerprint does not match `expected`, the broker refuses the
+   *  preflight, the deadline elapses, or a closed conn B cannot be revived on the proven cache.
+   *  Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
   reloadRwCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }>;
   stop(): Promise<void>;
 }
@@ -212,11 +214,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     log(why);
     throw new Error(why);
   };
-  const connB = await connect({
+  // Shared by the initial dial and by a later revive: the authenticator always presents the last
+  // BROKER-PROVEN cache, never a fresh un-preflighted source read. The 75% timer / explicit reload
+  // advance `currentRwCreds` only AFTER a disposable preflight proves the broker accepts the candidate.
+  const connectRw = () => connect({
     servers: opts.servers,
-    // Synchronous per (re)connect attempt: presents the last BROKER-PROVEN cred, never a fresh
-    // un-preflighted source read. The 75% timer / explicit reload advance `currentRwCreds` only AFTER a
-    // disposable preflight proves the broker accepts the candidate.
     authenticator: (nonce?: string) => { refuseExpiredRwCreds(); return credsAuthenticator(enc(currentRwCreds))(nonce); },
     name: "cotal-membership-rw",
     // The rw cred's sub.allow is `_INBOX_<id>.>`, so the connection's inbox prefix MUST match it — else
@@ -224,12 +226,13 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     inboxPrefix: `_INBOX_${rwSelfId}`,
     maxReconnectAttempts: -1,
   });
+  let connB = await connectRw();
   opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
 
   const kvm = new Kvm(connB);
-  const feedKv: KV = await kvm.open(membershipBucket(space));
-  const membersKv: KV = await openMembersRegistry(connB, space);
+  let feedKv: KV = await kvm.open(membershipBucket(space));
+  let membersKv: KV = await openMembersRegistry(connB, space);
 
   // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
   // Mirrors the endpoint's delivery.creds renewal (adoptFreshCreds / renewCredsOnTimer / runCredsTxn).
@@ -305,14 +308,53 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     armRwRefresh(delay);
     return credsClaims(candidate);
   };
-  // The 75%-of-lifetime renewal tick: prove + adopt + swap conn B onto the fresh cred. conn B is NOT the
-  // delivery-admin rail (that reply rides the delivery endpoint's connection), so the reconnect is inline
-  // and a failure just logs + retries while the last-proven cred stays live to its expiry.
+  // Present the proven cache on conn B. An OPEN client reconnects in place (the incidental reconnect
+  // of a live feed: nats.js re-evaluates the authenticator, scenario 2). A CLOSED client cannot
+  // reconnect — nats-core rejects with ClosedConnectionError — so open a fresh data connection and
+  // rebind the KV handles. A revive that cannot land must THROW: the explicit reload surfaces the
+  // cause, and the timer path logs it and retries. Half-bound dials are drained before the throw.
+  const presentRwCreds = async (): Promise<void> => {
+    if (rwStopped) return;
+    if (!connB.isClosed()) {
+      await connB.reconnect().catch(() => {});
+      return;
+    }
+    let next: NatsConnection;
+    try {
+      next = await connectRw();
+    } catch (e) {
+      throw new Error(`reloadRwCreds: could not open a fresh rw connection on the proven credential: ${(e as Error).message}`);
+    }
+    try {
+      const nextKvm = new Kvm(next);
+      const nextFeed = await nextKvm.open(membershipBucket(space));
+      const nextMembers = await openMembersRegistry(next, space);
+      connB = next;
+      feedKv = nextFeed;
+      membersKv = nextMembers;
+      connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
+      // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
+      // predecessor. If stop already ran, drain the fresh dial here.
+      if (rwStopped) {
+        await connB.drain().catch(() => {});
+        return;
+      }
+    } catch (e) {
+      await next.drain().catch(() => {});
+      throw new Error(`reloadRwCreds: could not rebind the feed on the fresh rw connection: ${(e as Error).message}`);
+    }
+  };
+  // The 75%-of-lifetime renewal tick: prove + adopt + present on conn B. conn B is NOT the
+  // delivery-admin rail (that reply rides the delivery endpoint's connection), so the present is inline
+  // and a failure just logs + retries while the last-proven cred stays live to its expiry (or, if
+  // conn B is already closed, the next successful present revives it).
   async function renewRwOnTimer(): Promise<void> {
     const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS; // captured before the enqueue, like the reload
     try {
-      await runRwTxn(() => adoptRwCreds({ deadline }));
-      await connB.reconnect().catch(() => {});
+      await runRwTxn(async () => {
+        await adoptRwCreds({ deadline });
+        await presentRwCreds();
+      });
     } catch (e) {
       log(`rw creds refresh failed (graph feed writer; delivery unaffected): ${(e as Error).message} - retrying; conn B dies at the current JWT's expiry if renewal keeps failing`);
       armRwRefresh(MEMBERSHIP_CREDS_RETRY_MS);
@@ -513,11 +555,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // request bound has already elapsed. The prove-then-adopt transaction runs under runRwTxn so it
       // cannot interleave with the timer; the observer conn (A) is rotation-renewed and not reloadable.
       const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS;
-      const { iat, exp } = await runRwTxn(() => adoptRwCreds({ expected, deadline }));
-      // Best-effort resident swap: the preflight was the proof, and conn B is not the reply rail, so the
-      // reconnect is inline (no strand risk) and a transient failure self-heals — the 75% timer and the
-      // broker's expiry-close both present the now-proven `currentRwCreds`.
-      await connB.reconnect().catch(() => {});
+      const { iat, exp } = await runRwTxn(async () => {
+        const claims = await adoptRwCreds({ expected, deadline });
+        await presentRwCreds();
+        return claims;
+      });
       return { identity: rwSelfId, iat, exp };
     },
     async stop() {

@@ -159,6 +159,37 @@ try {
     });
   }
 
+  // --- Failed bind clears the transport edge seeded when the dial succeeded ---
+  {
+    const endpoint = makeEndpoint();
+    endpointHandle = endpoint;
+    endpoint.on("error", () => {});
+    const transportEdges: boolean[] = [];
+    const connectionEdges: boolean[] = [];
+    endpoint.on("transport", (state) => transportEdges.push(state.connected));
+    endpoint.on("connection", (state) => connectionEdges.push(state.connected));
+    const bindMsg = "fixture post-connect bind failure";
+    (endpoint as unknown as { startPresenceWatch: () => Promise<void> }).startPresenceWatch = async () => {
+      throw new Error(bindMsg);
+    };
+    let thrownMessage = "";
+    try {
+      await endpoint.start();
+    } catch (err) {
+      thrownMessage = (err as Error).message;
+    }
+    const after = snapshot(endpoint);
+    check(
+      "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down",
+      thrownMessage === bindMsg &&
+        transportEdges.length === 2 && transportEdges[0] === true && transportEdges[1] === false &&
+        connectionEdges.length === 1 && connectionEdges[0] === false && !after.nc,
+      { thrownMessage, transportEdges, connectionEdges, nc: after.nc },
+    );
+    await endpoint.stop().catch(() => {});
+    endpointHandle = undefined;
+  }
+
   // --- Cell 2: nc.close() itself throws; the transport must still go down ---
   //
   // The stub replaces the LIVE nc.close on the connection the dial just returned, then throws

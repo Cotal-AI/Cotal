@@ -1,5 +1,103 @@
 # @cotal-ai/auth
 
+## 0.54.0
+
+### Patch Changes
+
+- b4317fd: Add a short-lived manager-caller view that binds user-auth control requests to one live manager instance on the instance rail.
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+  - @cotal-ai/workspace@0.54.0
+
+## 0.53.0
+
+### Minor Changes
+
+- 104921c: Let remote user-auth managers renew registration executors and recover stopped or frozen manager registrations through host-scoped eviction and guarded reconciliation.
+
+### Patch Changes
+
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+
+## 0.52.1
+
+### Patch Changes
+
+- 5784ec9: Bind the user-auth service readiness wait to the daemon process, not a clock alone. A same-root `cotal up` refresh run right after a broker reload killed the old auth-service daemon used to give up at a fixed 15s while the replacement daemon it launched was still binding, then a second identical `up` succeeded: a one-shot false "auth service not ready". `ensureAuthService` now passes the pid it launched (or found live) into the provider's `ready()`, which waits past the base timeout up to 60s while that pid is provably alive, ends the wait at once when the pid exits ("exited before becoming ready"), and refuses at the bound naming the live pid, the pid record, and the service log ("alive and still starting"). `AuthServiceSpec.ready` in core gains optional `pid`/`maxWaitMs` inputs; callers that pass none keep the old clock-only behavior.
+- Updated dependencies [5784ec9]
+- Updated dependencies [f17791d]
+  - @cotal-ai/core@0.52.1
+  - @cotal-ai/workspace@0.52.1
+
+## 0.52.0
+
+### Patch Changes
+
+- 50998a8: `cotal status` answers for a user-auth space whose material is a remote registry entry (a discovered space or a `meshes add --from` registration) instead of a local provisioning: the bare-status login row shows the signed-in subject from the entry's pinned IdP (grant reads as "not checkable on this machine", since the ledger runs where the space was provisioned), and `status --components` probes the manager as the signed-in login — the same credential `ps` uses — instead of minting static creds or connecting with none. A user-mode components row that cannot obtain that credential states the reason on the row (verdict `refused`), never a raw Authorization Violation. In user mode the manager row grades `serving` on the manager's own typed service answer, because the manager-lease sweep is a host credential an interactive bearer does not hold. The bare-status delivery responder axis stays `unknown` in user mode, as its comment states. Status still never static-mints on a user-auth mesh, and a signed-out machine still gets the offline "not signed in" row with the exact login command and no network round trip. Refs #1832.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- 491e923: The public user-auth exchange now mints `channel-writer` and `channel-purger` for a signed-in
+  human whose ledger row carries `admin`, so a remote owner can run `cotal channels set/default`
+  and a dashboard channel delete without a loopback capability. `admin`, `purger`, `deployer`, and
+  `manager-service` stay loopback-only. A managed-agent secret exchange still never mints a view.
+  This is not full remote channel management: `cotal web` still asks for the read-only admin view
+  at startup.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- db18070: Apply a signed-in account's space catalog to the registry under the provider's catalog lock, and
+  record in the cache whether the snapshot was applied in full. A command that dies or is stopped
+  while applying no longer leaves a partial registry that fresh and not-modified refreshes accept:
+  the next command applies the cached snapshot again first. `prepareSpaceCatalogs` and
+  `syncSpaceCatalogAfterLogin` now take the consumer's `apply`.
+- a0c8a59: Discover a signed-in account's advertised spaces lazily, cache validated snapshots, and add `cotal sync` for explicit refreshes.
+- f178611: Preload every persisted per-space auth-callout account when a shared broker starts, and refuse incomplete user-auth state before writing its resolver config.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [314a12c]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/workspace@0.51.0
+
 ## 0.50.1
 
 ### Patch Changes

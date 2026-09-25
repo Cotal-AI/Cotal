@@ -1,5 +1,80 @@
 # @cotal-ai/delivery
 
+## 0.54.0
+
+### Patch Changes
+
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+  - @cotal-ai/workspace@0.54.0
+
+## 0.53.0
+
+### Patch Changes
+
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+
+## 0.52.1
+
+### Patch Changes
+
+- Updated dependencies [5784ec9]
+- Updated dependencies [f17791d]
+  - @cotal-ai/core@0.52.1
+  - @cotal-ai/workspace@0.52.1
+
+## 0.52.0
+
+### Patch Changes
+
+- 2e7558d: `Part`'s data arm is `{ kind: "data"; data: unknown }` no longer: `data` is now the exported `JsonValue` (null, boolean, finite number, string, an array of JSON values, or a plain object of JSON values), and every publish path (`unicast`, `multicast`, `anycast`, `multicastExpecting`) refuses a non-JSON value at ANY depth at runtime with a named error that names the offending member's path (e.g. `data[2].at is not a JSON value`). Before, a value `JSON.stringify` silently rewrote could reach the wire: `undefined` became a keyless `{"kind":"data"}` row that history returned while Plane-3 durable delivery terminated it as malformed, and `NaN`, `Infinity`, `Date`s, sparse arrays, `Map`s, and `Buffer`s were rewritten to values a reader cannot distinguish from real ones; nested bigints and cycles threw from stringify instead of the named error. A `data` part carrying `null` or any other JSON value is unchanged. SPEC §5 states the rule. The delivery daemon's feedback intake keeps publishing its record as a data part with type declarations only (no runtime change). Refs #1404.
+- fe81419: The delivery daemon now watches its own shard lease key with a KV watch and quiesces at the delivery latency of that row's update instead of waiting for its next renew tick, so a takeover no longer leaves two processes serving one shard for up to a full renew period. The delivery credential gains the read-axis consumer rows on the lease bucket that the watch's ordered consumer needs.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+
+## 0.51.0
+
+### Patch Changes
+
+- ade42d5: A complete observer scan that matches no connection answers verified-gone without loading or dialling the evictor credential. A live match still requires it, and an incomplete scan stays unverified (#1808).
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [314a12c]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/workspace@0.51.0
+
 ## 0.50.1
 
 ### Patch Changes

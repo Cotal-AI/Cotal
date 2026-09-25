@@ -96,7 +96,9 @@ async function askManagerEp(
   timeoutMs?: number,
   pin?: ManagerPin,
 ): Promise<ManagerReply> {
-  const instanceId = pin?.instanceId;
+  if (pin?.instanceId !== undefined && auth.managerInstanceId !== undefined && pin.instanceId !== auth.managerInstanceId)
+    return { ok: false, error: "the manager pin differs from this credential's instance authority", code: "permission-denied" };
+  const instanceId = pin?.instanceId ?? auth.managerInstanceId;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
@@ -170,7 +172,7 @@ async function askManagerEp(
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    return epRailFailure(e, pin);
+    return epRailFailure(e, instanceId === undefined ? pin : { instanceId });
   } finally {
     // Drain waits for in-flight NATS work. A dead broker never finishes that, and
     // attach-auth-root hung here after spawn once nats-server exited.

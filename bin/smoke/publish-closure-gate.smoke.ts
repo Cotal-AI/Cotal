@@ -518,8 +518,8 @@ const fastClock = () => { let t = 0; return { now: () => (t += 1000), sleep: asy
   });
   close();
   check(
-    "fake registry: one package missing (404) -> PARTIAL (red)",
-    result.state === "partial",
+    "fake registry: one package missing with only clean 404 evidence -> UNSETTLED",
+    result.state === "unsettled" && result.why === "deadline",
     result,
   );
   check(

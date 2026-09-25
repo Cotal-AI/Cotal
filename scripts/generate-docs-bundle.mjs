@@ -4,17 +4,19 @@
 // /spec/cotal-lang.md + /spec/cotal.schema.json, stamped with the release version (bin/package.json). Run:
 // `pnpm gen:docsbundle`.
 //
-// Emits extensions/connector-core/src/docs-bundle.generated.ts as a plain typed constant
-// (a JSON.stringify'd object literal — readable, diffable, and bundler-proof: tsc copies
-// it into dist and esbuild inlines it into the OpenCode plugin bundle, where loose files
-// would be dropped). FAILS LOUD on an empty or missing source so a release can never ship
-// hollow docs.
+// Emits extensions/connector-core/src/docs-bundle.generated.ts by default, as a plain typed
+// constant (a JSON.stringify'd object literal — readable and bundler-proof: tsc copies it into
+// dist and esbuild inlines it into the OpenCode plugin bundle, where loose files would be
+// dropped). FAILS LOUD on an empty or missing source so a release can never ship hollow docs.
 //
-// `pnpm check:docsbundle` RED ON A DIRTY TREE IS NOT BUNDLE DRIFT. That target ends in
-// `git diff --exit-code -- <the generated paths>`, and git diffs against the INDEX — so if you
-// have edited a doc and not staged it, the check reports YOUR OWN unstaged work as drift even
-// though the bundle regenerated correctly. Stage the changes (or commit) and re-run before
-// concluding anything is wrong with the bundle.
+// THE OUTPUT IS A BUILD ARTIFACT, NOT A TRACKED FILE. `@cotal-ai/connector-core` runs this
+// from its own `build` and `typecheck`, and the path is gitignored. It used to be committed,
+// which made every pair of branches regenerating the same region of it conflict in a file no
+// human wrote while the source pages merged cleanly. Generating it on the way past removes
+// that class rather than automating around it.
+//
+// `--out <path>` writes somewhere else. A caller that must inspect the SHIPPED text without
+// running a build (the upgrade-section gate) regenerates into a temporary path with it.
 import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +24,18 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
 const docsDir = join(repoRoot, "docs");
-const out = join(repoRoot, "extensions", "connector-core", "src", "docs-bundle.generated.ts");
+
+// `--out <path>` overrides the destination; the default is the connector source the build
+// compiles. An `--out` with no value is a caller mistake, not a reason to silently use the
+// default and write over the connector's copy.
+const outFlag = process.argv.indexOf("--out");
+if (outFlag !== -1 && !process.argv[outFlag + 1]) {
+  throw new Error("gen:docsbundle: --out needs a path");
+}
+const out =
+  outFlag === -1
+    ? join(repoRoot, "extensions", "connector-core", "src", "docs-bundle.generated.ts")
+    : process.argv[outFlag + 1];
 
 const version = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")).version;
 if (!version) throw new Error("gen:docsbundle: no version in bin/package.json");
@@ -131,4 +144,4 @@ writeFileSync(
     ";\n",
 );
 
-console.log(`gen:docsbundle: wrote ${pages.length} pages + spec + lang + schema for Cotal v${version} → ${out.replace(repoRoot + "/", "")}`);
+console.log(`gen:docsbundle: wrote ${pages.length} pages + spec + lang + schema for Cotal v${version} → ${out.startsWith(repoRoot + "/") ? out.slice(repoRoot.length + 1) : out}`);

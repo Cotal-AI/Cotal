@@ -298,6 +298,18 @@ const SPAWN_OUTPUT_SCHEMA = {
   },
 } as const;
 
+/** Resolve a host-local spawn directory on the manager that will launch the seat. The runtime
+ * already consumes this exact closed shape; keeping it in the manager command table makes the
+ * registered contract and the served validator one source. */
+const RESOLVE_CWD_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["cwd"],
+  properties: { cwd: { type: "string", minLength: 1 } },
+} as const;
+const RESOLVE_CWD_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["cwd", "host"],
+  properties: { cwd: { type: "string" }, host: { type: "string" } },
+} as const;
+
 const GRACEFUL_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: { graceful: { type: "boolean" } },
@@ -555,6 +567,19 @@ const FINALIZE_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId", "durableCommitToken"],
   properties: { attemptId: { type: "string", minLength: 1 }, durableCommitToken: { type: "string", minLength: 1 } },
 } as const;
+const GOAL_RESULT_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 } },
+} as const;
+const GOAL_RESULT_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: {
+    goalId: { type: "string", minLength: 1 },
+    // Core validates the canonical fact before mediation; absence means no recorded terminal.
+    result: { type: "object" },
+  },
+} as const;
+
 const OPEN_OBJECT_SCHEMA = { type: "object" } as const;
 const COMMIT_RESUME_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId", "state", "durableCommitToken"],
@@ -634,6 +659,16 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           outcome: { type: "string" },
           asks: { type: "string" },
           addressee: { type: "string" },
+          answer: {
+            type: "object", additionalProperties: false, required: ["answerId"],
+            properties: {
+              answerId: { type: "string" },
+              value: {},
+              by: { type: "string" },
+              artifact: { type: "string" },
+              at: { type: "number" },
+            },
+          },
         },
       },
     },
@@ -677,6 +712,7 @@ const ROWS: CommandRow[] = [
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
+  { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
   // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
   // instrument's cross-agent reach (rev 3, the 1c admin-reach decision): the any-mode subject row
@@ -701,9 +737,10 @@ const ROWS: CommandRow[] = [
   // ride `manager.read` beside every other read.
   { name: "run-start", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runStart" },
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
-  { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: false, handler: "runAnswer" },
+  { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
   { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
+  { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
   { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
   { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
@@ -717,14 +754,48 @@ const ROWS: CommandRow[] = [
   { name: "abort-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: ATTEMPT_STATE_OUTPUT_SCHEMA, targeted: false, handler: "abortPreservation" },
 ];
 
-const cc = (root: unknown): CompiledContract => compileContract({ root: root as Record<string, unknown> });
-const COMPILED: Record<string, { input: CompiledContract; output: CompiledContract }> =
-  Object.fromEntries(ROWS.map((r) => [r.name, { input: cc(r.input), output: cc(r.output) }]));
+// WHEN THE COMPILE HAPPENS (#1323): every CLI invocation loads this module before its verb is
+// read (`bin/run.ts` self-registers the manager), and compiling the 41 distinct schema roots cost
+// ~1.8 CPU-seconds of Ajv work paid by `cotal --version`. The compile therefore runs ON FIRST
+// ACCESS, not at import: importing this module builds only the source table and its digests (pure
+// canonical JSON, no Ajv), and the first read of a contract pair — `managerCommandDefs` at serve
+// registration, or a caller hand-importing `MANAGER_CONTRACTS` — compiles then. A compile failure
+// that import used to surface at module load now surfaces at that first read, as the same
+// ContractInvalidError from the same compileContract; nothing is swallowed or retried.
+type ContractPair = { input: CompiledContract; output: CompiledContract };
+
+const COMPILED = new Map<string, ContractPair>();
+
+function pairFor(name: string): ContractPair {
+  let pair = COMPILED.get(name);
+  if (!pair) {
+    const r = ROWS.find((row) => row.name === name);
+    if (!r) throw new Error(`unknown manager command contract "${name}"`);
+    pair = { input: compileContract({ root: r.input as Record<string, unknown> }), output: compileContract({ root: r.output as Record<string, unknown> }) };
+    COMPILED.set(name, pair);
+  }
+  return pair;
+}
+
+/** The §13.7 closure digest of a self-contained schema root, WITHOUT compiling: the manifest
+ *  `{ v: 1, root, members: [] }` over the source document's artifact digest — the identical value
+ *  `compileContract` returns as `closureDigest` for a member-free closure (schema-profile's
+ *  `assertClosureProfile` derives it the same way, from the source, before any Ajv work). The
+ *  cluster document pins these, so `describe`-only readers never pay the compile. */
+function closureDigestOfSource(root: unknown): string {
+  return contractDigest({ v: 1, root: contractDigest(root), members: [] });
+}
 
 /** Per-command compiled contract pairs, exported for CALLERS (`epCall` pins the same digests the
- *  cluster document registers; the generic invoke CLI compiles these from the STORE instead). */
+ *  cluster document registers; the generic invoke CLI compiles these from the STORE instead).
+ *  LAZY: a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
 export const MANAGER_CONTRACTS: Readonly<Record<string, { input: CompiledContract; output: CompiledContract }>> =
-  Object.freeze(COMPILED);
+  new Proxy({} as Record<string, ContractPair>, {
+    has: (_, name: string) => ROWS.some((r) => r.name === name),
+    ownKeys: () => ROWS.map((r) => r.name) as Array<string | symbol>,
+    getOwnPropertyDescriptor: (_, name: string) => (ROWS.some((r) => r.name === name) ? { configurable: true, enumerable: true, get: () => pairFor(name) } : undefined),
+    get: (_, name: string | symbol) => (typeof name === "string" && ROWS.some((r) => r.name === name) ? pairFor(name) : undefined),
+  });
 
 /** Every §13.7 contract artifact the manager PUBLISHES to the EPC store at registration (P2 item
  *  1, 1c): each DISTINCT schema root plus its single-member closure manifest — the two artifacts
@@ -746,7 +817,10 @@ export function managerContractArtifactValues(): unknown[] {
 }
 
 /** The 1a `status` pair, kept as a named export (existing callers/smokes). */
-export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } = MANAGER_CONTRACTS.status;
+export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } =
+  new Proxy({} as { input: CompiledContract; output: CompiledContract }, {
+    get: (_, key: string | symbol) => pairFor("status")[key as "input" | "output"],
+  });
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
  *  surface. Revisions: 3 = the 1c any-mode despawn/attach admission; 4 = item-2's spawn-as-action;
@@ -796,7 +870,17 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  15 = manager `status` adds `classSpawn`: whether this instance takes unpinned spawn/launch
  *  on the class rail. A changed output contract is a changed described surface even though
- *  the command name is unchanged. */
+ *  the command name is unchanged.
+ *
+ *  16 = `run-answer` moves onto authz-mode `self`. The command input is unchanged; the caller's
+ *  authenticated incarnation is now part of the request form so baseline seats can hold the row
+ *  without gaining any untargeted run command.
+ *
+ *  17 = `resolve-cwd` lets a caller ask one manager instance to canonicalize an absolute existing
+ *  directory before a placed workflow spawn launches there.
+ *
+ *  18 = `goal-result` mediates a caller's own canonical terminal through the manager's trusted
+ *  goal-writer, so a result remains observable after the caller's connection is replaced. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -814,7 +898,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 15,
+    revision: 18,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -823,8 +907,8 @@ export function managerClusterDocument(): {
       targeted: r.targeted,
       ...(r.modes ? { modes: r.modes } : {}),
       capability: r.capability,
-      inputDigest: COMPILED[r.name].input.closureDigest,
-      outputDigest: COMPILED[r.name].output.closureDigest,
+      inputDigest: closureDigestOfSource(r.input),
+      outputDigest: closureDigestOfSource(r.output),
     })),
   };
 }
@@ -874,6 +958,7 @@ export interface ManagerServiceHandlers {
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
+  resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;
   despawn(ctx: EpServeContext): unknown | Promise<unknown>;
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
@@ -887,6 +972,7 @@ export interface ManagerServiceHandlers {
   runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
   runStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
+  goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
   showPersona(ctx: EpServeContext): unknown | Promise<unknown>;
@@ -903,9 +989,12 @@ export interface ManagerServiceHandlers {
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes: each command's provenance-branded compiled
  *  contracts (matching the document's pinned digests exactly) plus its handler. */
 export function managerCommandDefs(handlers: ManagerServiceHandlers): EpCommandDef[] {
+  // First use MATERIALIZES the compiled pairs (the Proxy compiles lazily; a compile failure
+  // surfaces here, at registration, exactly where serve would need the validators).
+  for (const r of ROWS) pairFor(r.name);
   return ROWS.map((r) => ({
     command: r.name,
-    contract: COMPILED[r.name],
+    contract: pairFor(r.name),
     handler: (ctx: EpServeContext) => handlers[r.handler](ctx),
   }));
 }

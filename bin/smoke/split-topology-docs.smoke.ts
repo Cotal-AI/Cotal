@@ -70,15 +70,27 @@ check(
   up.includes("No broker config is (re)written"),
 );
 
-// ── 2. up always starts a manager; split is topology, not singleton ──────────
+// ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
-  "claim 2: operator guide names the split (up then down manager, supervise --server)",
-  runAMesh.includes("There is no broker-only `up`") &&
+  "claim 2: operator guide names the split (--no-manager boot, supervise --server)",
+  runAMesh.includes("A broker-only host is a first-class `up` mode") &&
+    runAMesh.includes("cotal up --no-manager") &&
     runAMesh.includes("cotal down manager") &&
     runAMesh.includes("cotal supervise --space main --server") &&
-    cli.includes("There is no broker-only mode") &&
+    cli.includes("`--no-manager` is the broker-only mode") &&
     control.includes("Only one manager per space") &&
     control.includes("cotal supervise"),
+);
+check(
+  "claim 2: the broker-only refusal and the flag's wiring are pinned",
+  /`cotal up --no-manager` will not keep or stop one/.test(up.replace(/\\`/g, "`")) &&
+    /noManager && values\.runtime/.test(up) &&
+    /noManager && values\["max-sessions"\]/.test(up) &&
+    up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
+    deliveryProc.includes("if (o.noManager) return { running: false, responderBound: delivery.responderBound };") &&
+    !cli.includes("There is no broker-only mode") &&
+    !runAMesh.includes("There is no broker-only `up`") &&
+    !runAMesh.includes("Broker-only `up` remains a product request"),
 );
 check(
   "claim 2: wait signal is supervise post-start, not detach stdout",

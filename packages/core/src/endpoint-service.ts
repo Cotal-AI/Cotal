@@ -1225,7 +1225,7 @@ export async function freezeExpectedSet(jsm: JetStreamManager, space: string, en
  *  `svc` records, unlike the never-deleted lifecycle families, MAY be deleted on deregistration
  *  (§13.5: a deleted spec is an explicit deregistration), so a DELETE/PURGE marker is reported as
  *  `{ deleted: true }`, never a corruption throw. Absent → `undefined`; malformed → loud. */
-async function readSvcRecordLeader(
+export async function readSvcRecordLeader(
   jsm: JetStreamManager,
   space: string,
   key: string,

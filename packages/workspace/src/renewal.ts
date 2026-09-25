@@ -10,7 +10,7 @@ import {
   type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { getSpaceAuth } from "./auth-paths.js";
+import { getSpaceAuth, spaceKey } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, segmentedKey } from "./space-segmentation.js";
 
@@ -161,8 +161,8 @@ export async function remintDaemonCreds(
 }
 
 /** The renewal owner's audit record — what `cotal doctor auth` renders so "file re-signed" and
- *  "daemon adopted" are distinguishable states, per the D5 panel gate. One file, overwritten per
- *  pass: the CURRENT renewal state, not a log (history is the git/ops layer's job). */
+ *  "daemon adopted" are distinguishable states, per the D5 panel gate. One file PER SPACE, overwritten
+ *  per pass: the CURRENT renewal state, not a log (history is the git/ops layer's job). */
 export interface RenewalRecord {
   /** ISO timestamp of the renewal pass. */
   ts: string;
@@ -173,20 +173,48 @@ export interface RenewalRecord {
   adoption?: { ok: boolean; detail?: unknown; error?: string };
 }
 
-export function renewalRecordPath(root: string): string {
-  return join(root, ".cotal", "renewal.json");
+/** `.cotal/renewal.<spaceKey>.json` — the renewal record's filename, PER-SPACE. The `{space}` is
+ *  expanded with the same injective hex {@link spaceKey} the pidfiles use (`manager.<space>.pid`,
+ *  `delivery.<space>.pid` via `canonicalLocalProcessPath`), because the record is per-tenant in
+ *  meaning exactly as they are: a root-scoped `renewal.json` gave one root one adoption verdict by
+ *  filename, so a second space's clean pass overwrote the first space's refusal and every reader
+ *  (`doctor auth`, `status --components`) then answered about the wrong renewal (#1850). */
+export const RENEWAL_RECORD_FILE = "renewal.{space}.json";
+
+/** The path a renewal owner WRITES and a reader READS for one space's record (#1850).
+ *
+ *  LEGACY, LABELLED, NEVER A FALLBACK. A `.cotal/renewal.json` left by a pre-per-space build names
+ *  NO space — it may be any tenant-at-this-root's last pass — so this function never returns it and
+ *  no reader may take it as the current space's verdict. It is surfaced as a labelled fact through
+ *  {@link legacyRenewalRecord} and removed by `cotal clean`, not adopted. */
+export function renewalRecordPath(root: string, space: string): string {
+  return join(root, ".cotal", RENEWAL_RECORD_FILE.replaceAll("{space}", spaceKey(space)));
 }
 
-export function writeRenewalRecord(root: string, record: RenewalRecord): void {
+/** The root-scoped name a pre-per-space build wrote the record under — the one place that history is
+ *  spelled. A READER fact only (see {@link renewalRecordPath}); `cotal clean` removes it with the
+ *  rest of a reset. */
+export const LEGACY_RENEWAL_RECORD_FILE = "renewal.json";
+
+/** The legacy root-scoped record, when one exists and the space has none of its own — a LABELLED
+ *  FACT for a reader to surface, never a fallback verdict (a root-only `renewal.json` names no
+ *  space, so whose pass it records cannot be known; reading it as this space's adoption outcome is
+ *  the #1850 defect in its silent form). */
+export function legacyRenewalRecord(root: string): { path: string } | undefined {
+  const path = join(root, ".cotal", LEGACY_RENEWAL_RECORD_FILE);
+  return existsSync(path) ? { path } : undefined;
+}
+
+export function writeRenewalRecord(root: string, space: string, record: RenewalRecord): void {
   // REDACT the ephemeral generation token HERE, at the single persistence boundary, so no writer
   // (the manager, `doctor auth --fix`, or any future caller) can leak the stable secret-derived
-  // fingerprint to `.cotal/renewal.json`. `JSON.stringify` then omits the `undefined` field.
+  // fingerprint to `.cotal/renewal.<space>.json`. `JSON.stringify` then omits the `undefined` field.
   const redacted: RenewalRecord = { ...record, results: record.results.map((r) => ({ ...r, fingerprint: undefined })) };
-  writeSecretFile(renewalRecordPath(root), JSON.stringify(redacted, null, 2));
+  writeSecretFile(renewalRecordPath(root, space), JSON.stringify(redacted, null, 2));
 }
 
-export function readRenewalRecord(root: string): RenewalRecord | undefined {
-  const p = renewalRecordPath(root);
+export function readRenewalRecord(root: string, space: string): RenewalRecord | undefined {
+  const p = renewalRecordPath(root, space);
   if (!existsSync(p)) return undefined;
   try {
     return JSON.parse(readFileSync(p, "utf8")) as RenewalRecord;

@@ -166,6 +166,9 @@ const readTolerant = async (
 const space = `pin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const prevHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(dir, "home");
+mkdirSync(process.env.COTAL_HOME, { recursive: true });
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -203,6 +206,14 @@ try {
 
   const root1 = mkRoot("ws1"), root2 = mkRoot("ws2");
   for (const r of [root1, root2]) recordMesh({ space, server: SERVERS, root: r, mode: "auth", ts: new Date().toISOString() });
+  // Register an available connector so inspectConnectorsAtBoot enables classSpawn (keeps spawn/launch on class rail)
+  const { registry } = await import("@cotal-ai/core");
+  registry.register({
+    kind: "connector",
+    name: "claude",
+    requires: ["node"],
+    buildLaunch: () => ({ command: process.execPath, args: ["-e", "process.exit(0)"], env: {} }),
+  } as unknown as import("@cotal-ai/core").Connector);
   m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root1 });
   m2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root2 });
   /**
@@ -844,6 +855,8 @@ console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} faile
   await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  if (prevHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = prevHome;
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(fail === 0 ? 0 : 1);

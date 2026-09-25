@@ -17,6 +17,8 @@ export * from "./manager-shutdown.js";
 export * from "./flags.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";
+export * from "./join-target.js";
+export * from "./registration-policy.js";
 export * from "./broker-policy.js";
 export * from "./mesh-target.js";
 export * from "./preflight.js";

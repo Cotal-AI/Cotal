@@ -9,7 +9,15 @@
  *
  * Schemas: the shared spec carries a CLOSED Zod object; pi's `registerTool` takes a TypeBox
  * TSchema. TypeBox schemas are plain JSON Schema, so we render Zod → JSON Schema (Zod 4's
- * `toJSONSchema`, the same path the Hermes connector uses) and brand it with `Type.Unsafe`.
+ * `toJSONSchema`, the same path the Hermes connector uses) and hand pi the plain object. It is
+ * NOT branded with `Type.Unsafe`: Zod's render carries a non-enumerable `~standard` member, and
+ * `Type.Unsafe` clones through TypeBox's `Memory.Clone`, whose plain-object path rebuilds
+ * properties with assignment and drops `enumerable:false` — the brand leaked `~standard.{vendor,
+ * version}` into every JSON round-trip and strict providers refused the declarations (#1835).
+ * Measured on pi-coding-agent's own paths: its validator compiles the plain JSON Schema
+ * (`Compile(tool.parameters)` in pi-ai's validation, which never reads any brand) and the
+ * provider path serializes `parameters` as-is, so the plain render is both fully validated and
+ * the only shape that round-trips clean.
  */
 import { z } from "zod";
 import { isConcreteChannel } from "@cotal-ai/core";
@@ -23,7 +31,7 @@ import {
   type CotalToolInput,
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type, type TSchema } from "typebox";
+import type { TSchema } from "typebox";
 import { wrapped } from "./wrap.js";
 
 const PULL_INBOX_DESCRIPTION =
@@ -51,7 +59,10 @@ function toParameters(schema: CotalToolInput): TSchema {
   // the other adapters' strip. That is the point: an unmodelled `owner`/`actor` must not vanish
   // silently on any host. io:"input" stays because this describes what a caller may SEND (it is
   // what keeps a future `.default()` field optional here); it no longer decides closure.
-  return Type.Unsafe(z.toJSONSchema(schema, { io: "input" }));
+  // The render is handed over UNBRANDED: a plain JSON Schema object satisfies TSchema, and the
+  // Zod render's non-enumerable `~standard` metadata stays non-enumerable — invisible to the JSON
+  // round-trip pi's providers perform — where Type.Unsafe's clone would make it enumerable.
+  return z.toJSONSchema(schema, { io: "input" }) as TSchema;
 }
 
 /** `<label> → <target>: <text>` for a send-tool call, so the operator SEES what the model is

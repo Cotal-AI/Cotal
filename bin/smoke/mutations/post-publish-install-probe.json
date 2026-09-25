@@ -42,6 +42,30 @@
       "replace": "  return { binName: null, binRel: null, binPath: null, exists: false };",
       "expectRed": "verifyBinEntry finds the cotal bin entry",
       "cell": "verifyBinEntry finds the cotal bin entry"
+    },
+    {
+      "name": "the sibling tarball validator drops the main entry assertion",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "  if (typeof pkg.main === \"string\" && !packedTargetExists(packedFiles, pkg.main)) {\n    missing.push(pkg.main);\n  }",
+      "replace": "  if (false && typeof pkg.main === \"string\" && !packedTargetExists(packedFiles, pkg.main)) {\n    missing.push(pkg.main);\n  }",
+      "expectRed": "a sibling tarball missing main fails with the package and path",
+      "cell": "a sibling tarball missing main fails with the package and path"
+    },
+    {
+      "name": "the sibling tarball validator drops exports target assertions",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "  for (const target of collectExportTargets(pkg.exports)) {\n    if (!packedTargetExists(packedFiles, target)) missing.push(target);\n  }",
+      "replace": "  for (const target of []) {\n    if (!packedTargetExists(packedFiles, target)) missing.push(target);\n  }",
+      "expectRed": "a sibling tarball missing an exports target fails with the package and path",
+      "cell": "a sibling tarball missing an exports target fails with the package and path"
+    },
+    {
+      "name": "the sibling tarball validator rejects a package whose main is present",
+      "file": "scripts/post-publish-install-probe.mjs",
+      "find": "    pass: uniqueMissing.length === 0,",
+      "replace": "    pass: false,",
+      "expectRed": "a sibling tarball with its main entry passes",
+      "cell": "a sibling tarball with its main entry passes"
     }
   ]
 }

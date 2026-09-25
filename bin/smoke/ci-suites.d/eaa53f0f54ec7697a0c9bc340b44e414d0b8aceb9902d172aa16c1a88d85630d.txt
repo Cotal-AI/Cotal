@@ -1,0 +1,2 @@
+# The console status row: role parentheses, uptime rounding and the honest status text. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-status-row

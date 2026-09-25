@@ -237,10 +237,12 @@ The connector wires a small subset of Claude Code hooks to presence states; pres
 coarse, and "what it is doing" rides on activity updates. Presence is **advisory**: a presence
 publish that fails (the endpoint mid-reconnect, say) is swallowed and never prevents the same hook
 from delivering messages or flushing held ones.
+A `SessionStart` during an open turn, including compaction, preserves the current `working` or
+`waiting` status until `Stop`, `StopFailure`, or `SessionEnd` closes the turn.
 
 | Hook | → state |
 |---|---|
-| `SessionStart` | `idle` (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
+| `SessionStart` | `idle` only when no turn is open (join; surfaces the inbox; captures the live model into `meta.model` when no pin) |
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
 | `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
 | `Notification` (`permission_prompt` / `agent_needs_input`) | `waiting` with condition `approval` / `input` (activity leads with the pending tool, e.g. `Bash: git push …`) |
@@ -287,8 +289,10 @@ immediately. Once a socket has connected, a broken exchange is not retried: the 
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
 new startup waits up to five seconds for that file with capped backoff, and the same deadline bounds
-one stalled file read; expiry fails loud instead of silently losing the first run. Retained-history
-starts and recovered cursors still require their existing source at once.
+one stalled file read; expiry fails loud instead of silently losing the first run. A forked session
+gets the same wait, because Claude copies the parent transcript into the fork's own file after the
+hook, and then adopts at the end of that copy. Resumed, cleared and compacted starts and recovered
+cursors still require their existing source at once.
 
 Tool arguments (`TOOL_CALL_ARGS`) and tool results (`TOOL_CALL_RESULT`) are not republished
 onto this channel. The durable emitter drops those events before they are written to the

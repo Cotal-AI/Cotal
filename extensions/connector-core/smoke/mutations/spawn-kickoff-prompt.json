@@ -20,15 +20,15 @@
     {
       "name": "A1 drop the kickoff prompt at the manager command boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };",
-      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd };",
+      "find": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };",
+      "replace": "    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, events: opts?.events };",
       "expectRed": "kickoff prompt forwarded"
     },
     {
       "name": "A2 the MCP tool accepts prompt but silently omits it from MeshAgent.spawn",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt });",
-      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd });",
+      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events });",
+      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events });",
       "expectRed": "cotal_spawn tool forwards the kickoff prompt"
     },
     {

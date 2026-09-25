@@ -15,6 +15,7 @@ import {
   installJcodeDiagnosticLog,
   JcodeConnectorError,
   JcodeSessionsEnumerationFailure,
+  JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
@@ -24,6 +25,7 @@ import {
   inspectStoredSessions,
   isEmptyStoredSessionsDirectory,
   storedSessionsPath,
+  unwritableStoredSessions,
 } from "./stored-sessions.js";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
@@ -428,6 +430,8 @@ export async function runJcodeHost(): Promise<void> {
 
   let eventLock: PrincipalLock | undefined;
   let mapper: JcodeMapper | undefined;
+  /** Aborted by `shutdown()`, so an event step waiting out a rebuild window cannot hold a stop. */
+  const eventWaitStop = new AbortController();
   const events = eventsArmed
     ? new AguiEmitterHolder<PositionedJcodeJournalRecord>(
         async (journalPath: string) => {
@@ -461,6 +465,50 @@ export async function runJcodeHost(): Promise<void> {
           if (!stopping) void shutdown(1);
         },
         (runId: string) => mapper?.forgetOpenRun(runId),
+        // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
+        // that was not there and killed the seat. The holder now rides the window out on this
+        // wait instead. TWO edges are required, and the difference is measured rather than
+        // assumed: `connection` covers the Cotal bind (initial start, manual reconnect, the
+        // endpoint's own background rebuild), while `transport` covers the window INSIDE nats.js's
+        // own reconnect, where `this.nc` still exists but its `info` is already cleared, so
+        // `maxPayload` throws while every Cotal-side flag still says live. Waiting on
+        // `connection` alone resolves immediately in exactly that window (measured: the
+        // reproduced death kept `agent.connected === true`). Both getters are re-checked after
+        // the listeners are attached, so a bind landing between check and listen cannot be missed.
+        // No time bound: the endpoint's re-establish loop owns retry and backoff, and a bound here
+        // would reintroduce the terminal death under a standing outage, just slower. The one
+        // other exit is the seat stopping: `shutdown()` aborts `eventWaitStop`, and the wait
+        // rejects into the holder's terminal path so a stop during an outage is not held open.
+        // The step stays queued meanwhile — no event is dropped, reordered or duplicated, because
+        // the WAL's cursor has not moved and the chain serializes everything behind this await.
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const live = (): boolean => agent.connected && agent.transportConnected;
+            const release = (): void => {
+              agent.off("connection", onConnection);
+              agent.off("transport", onTransport);
+              eventWaitStop.signal.removeEventListener("abort", onStop);
+            };
+            const finish = (): void => {
+              release();
+              resolve();
+            };
+            const onStop = (): void => {
+              release();
+              reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the journal"));
+            };
+            const onConnection = (e: { connected: boolean }): void => {
+              if (e.connected && agent.transportConnected) finish();
+            };
+            const onTransport = (e: { connected: boolean }): void => {
+              if (e.connected && agent.connected) finish();
+            };
+            agent.on("connection", onConnection);
+            agent.on("transport", onTransport);
+            eventWaitStop.signal.addEventListener("abort", onStop);
+            if (live()) finish();
+            else if (eventWaitStop.signal.aborted) onStop();
+          }),
       )
     : undefined;
   let eventJournal: string | undefined;
@@ -787,6 +835,7 @@ export async function runJcodeHost(): Promise<void> {
   const shutdown = async (code = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    eventWaitStop.abort();
     if (fallbackTimer !== undefined) {
       clearTimeout(fallbackTimer);
       fallbackTimer = undefined;
@@ -1724,6 +1773,14 @@ export async function runJcodeHost(): Promise<void> {
         client = await launchPrivateJcode();
       }
     }
+    // The harness accepts create_session on a sessions/ it cannot write and dies only while
+    // persisting the session during the first turn, outside every guard this connector owns, so
+    // the seat renders as `startup failed (unknown)` (#1538). Ask the kernel what the harness
+    // will need, not what a readdir reports: a readable-but-unwritable directory is the same
+    // defect as an unreadable one. A missing directory is a first launch and stays untouched;
+    // permissions are never repaired or widened here — the refusal names them for the operator.
+    const unwritable = unwritableStoredSessions(stored);
+    if (unwritable) throw new JcodeSessionsUnwritableFailure(unwritable.path, unwritable.code);
     let session;
     try {
       if (prior) {

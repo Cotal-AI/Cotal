@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-opencode/smoke/agui-session-reset.smoke.ts"
   ],
-  "guard": "a second top-level session gets its own emitter, and a session it replaces that drains inside the bound is flushed and closed on the wire first",
+  "guard": "a second top-level session gets its own emitter, and a session it replaces that drains inside the bound is flushed and closed on the wire first; and the emitter waits for the mesh link before it starts, so a session created before the first bind still publishes",
   "command": "pnpm smoke:opencode-events-reset",
   "completionMarker": "opencode-events-reset smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-events-reset.json",
@@ -50,7 +50,16 @@
     "R5 GRADES THE PAIRING, not the serialization. The two are different invariants and the suite lost",
     "nothing by learning that the hard way: the swap was serialized and the session identity still",
     "changed outside it, so an ordinary event arriving in the gap was routed by the new id to the old",
-    "holder. Identity and holder have to change together, and R5 is what keeps them together."
+    "holder. Identity and holder have to change together, and R5 is what keeps them together.",
+    "",
+    "R9 IS THE BOOT RACE THIS CONNECTOR SHIPPED WITH. The shim creates the native session before the",
+    "plugin's endpoint binds, the holder starts its emitter from that first event, and `AguiEmitter.start`",
+    "refuses an endpoint that has not started. The holder is terminal on error by design, so one lost",
+    "race silenced the plane for the whole session. Measured live on a hosted mesh: the stop line landed",
+    "before the connected line on every armed OpenCode seat, with or without a boot prompt. The kill",
+    "depends on the link binding AFTER the emitter's few file operations, which a local broker's",
+    "connect (a TCP handshake, the NATS exchange and the JetStream lookups) always does by a wide margin;",
+    "measured before registration rather than assumed."
   ],
   "mutations": [
     {
@@ -110,6 +119,13 @@
       "find": "              const drained = await settleWithin(previous.settled(), SWAP_SETTLE_MS, `drain of ${previous.path}`);\n",
       "replace": "              const drained = await settleWithin(new Promise<void>(() => {}), SWAP_SETTLE_MS, `drain of ${previous.path}`);\n",
       "expectRed": "bound:a healthy drain abandons no step, so the backstop is not firing on completions"
+    },
+    {
+      "name": "R9 the emitter no longer waits for the mesh link, so the first event of the process starts it against an endpoint that has not bound",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "        await agent.whenConnected(20_000);\n",
+      "replace": "",
+      "expectRed": "boot:the first event arrives before the mesh link binds, and the emitter waits for the link instead of dying"
     }
   ]
 }

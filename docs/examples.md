@@ -17,6 +17,7 @@ README.
 | [03: Personas](../examples/03-personas/README.md) | Ten character personas join one space and talk in real time: the same primitives (presence, channels, DMs) as the worker examples, but the peers are personalities, not roles. Research drops and derived personas are gitignored; only the READMEs and the template are committed. |
 | [04: Frontier Faces](../examples/04-frontier-faces/README.md) | Panelist personas as animated 32×32 pixel-art OpenCode agents: each thinks, lip-syncs its streamed reply, and steers its own expression. Two front-ends onto the *same* live mesh (a browser studio and a tmux wall), both spawning real agents that coordinate as lateral peers. |
 | [06: Feed Agent](../examples/06-feed-agent/README.md) | A deterministic pump polls public HTTP(S) RSS/Atom and iCal feeds, labels every item as untrusted remote data, and publishes into a replayed channel. A separate control channel carries feedkeeper requests, while a curator reposts only the items worth attention. Private destinations and oversized responses are refused. |
+| [07: Issue Orchestrator](../examples/07-issue-orchestrator/README.md) | Two cotal-lang programs resolve GitHub issues as durable runs, one lane per issue: a worker reproduces and fixes in its own worktree, two reviewers from different model families grade the PR at an exact sha, and a merger merges only that sha. `pnpm check` runs four scripted outcomes with no broker. |
 
 Example 02 running, a Claude Code swarm with the live console beside it:
 

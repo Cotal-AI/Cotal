@@ -35,6 +35,7 @@ const DENIAL = `permission denied: cannot subscription "${SUBJECT}"`;
 /** A connection whose subscribe is REFUSED: the callback is handed an error and no message ever
  *  arrives, which is exactly what a broker-denied subscription looks like from inside the client. */
 const deniedConn = {
+  flush: async () => {},
   subscribe: (_subject: string, opts: { callback: (err: Error | null, m: unknown) => void }) => {
     // The REAL class the client delivers here, not a stand-in Error. The reply's diagnosis now keys
     // on it, so a fixture carrying a plain Error would assert the branch while quietly assuming the
@@ -48,6 +49,7 @@ const deniedConn = {
  *  just as dead, so this must be just as loud, but the cause and the remedy differ and the reply
  *  must not claim the broker refused a grant. */
 const brokenConn = {
+  flush: async () => {},
   subscribe: (_subject: string, opts: { callback: (err: Error | null, m: unknown) => void }) => {
     queueMicrotask(() => opts.callback(new Error("connection closed while subscribing"), undefined));
     return { unsubscribe: () => {} };
@@ -66,6 +68,7 @@ const refuseAtAccept = () => Promise.resolve({
 /** A connection whose subscribe succeeds and never delivers: the ordinary "no terminal yet" case,
  *  which must keep reporting a DEADLINE and must not be reworded by this change. */
 const silentConn = {
+  flush: async () => {},
   subscribe: (_subject: string, _opts: { callback: (err: Error | null, m: unknown) => void }) => ({ unsubscribe: () => {} }),
 };
 
@@ -134,6 +137,7 @@ console.log("D. a subscription denial NEVER manufactures an acceptance (the pre-
 console.log("E. the accepted readiness budget, not a shorter generic caller wait, bounds the follow");
 {
   const delayedTerminalConn = {
+    flush: async () => {},
     subscribe: (_subject: string, opts: { callback: (err: Error | null, m: { data: Uint8Array }) => void }) => {
       const timer = setTimeout(() => opts.callback(null, {
         data: new TextEncoder().encode(JSON.stringify({ goalId: GOAL, phase: "terminal", state: "succeeded", data: { name: "slow" } })),

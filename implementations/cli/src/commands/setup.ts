@@ -168,26 +168,27 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   markOnboarded(ONBOARD_VERSION);
   provenance.wrote("onboarded stamp", join(homeCotalDir(), "onboarded.json"));
   const cmd = displayCmd();
-  // The finale is the whole loop, minimal by default: start the mesh, talk to your one agent, stop.
-  // With --demo it names the team; without, it points at --demo (and the optional dashboard).
+  // The finale is the whole loop, minimal by default: start the mesh, talk to your one agent, watch
+  // it in the browser, stop. The browser dashboard is the first experience; the terminal console is
+  // the tail alternative. With --demo it names the team; without, it points at --demo.
   const driveLines = demo
     ? [
         `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
         `${ok("✓")} drive a session     ${dim(`${cmd} spawn me`)}`,
         `${ok("✓")} ask the experts     ${dim(`${cmd} spawn david · ${cmd} spawn sven`)}`,
-        `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
+        `${ok("✓")} watch the mesh      ${dim(`${cmd} web`)}`,
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ]
     : [
         `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
         `${ok("✓")} talk to your agent  ${dim(`${cmd} spawn`)}`,
-        `${ok("✓")} watch the mesh      ${dim(`${cmd} console`)}`,
+        `${ok("✓")} watch the mesh      ${dim(`${cmd} web`)}`,
         `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
       ];
   const tail = demo
-    ? [dim(`Visual dashboard: ${cmd} web`)]
+    ? [dim(`Terminal instead of a browser? ${cmd} console`)]
     : [
-        dim(`Want a visual dashboard? ${cmd} web`),
+        dim(`Terminal instead of a browser? ${cmd} console`),
         dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
       ];
   note(
@@ -409,7 +410,7 @@ function webInstalled(): boolean {
 
 /** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
  *  probes — displaying state is not depending on it), plus the key commands. */
-async function readyCard(cwd: string): Promise<void> {
+export async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
   const web = await webUp();
@@ -421,21 +422,29 @@ async function readyCard(cwd: string): Promise<void> {
   const personas = seedDestination();
   const hasDemo = existsSync(join(personas.dir, "david.md")); // the guided team is present ⇒ richer hint
   const line = (on: boolean, text: string) => `${on ? ok("✓") : dim("○")} ${text}`;
+  const remote = mesh.origin === "catalog" || mesh.origin === "manual";
+  const meshLine = mesh.reachable === undefined
+    ? `${mesh.server} · space ${mesh.space} · selected (not probed)`
+    : mesh.reachable
+      ? `${mesh.server} · space ${mesh.space}`
+      : remote
+        ? `${mesh.server} · space ${mesh.space} · unreachable`
+        : `down · start: ${cmd} up --detach`;
   note(
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
-      line(mesh.reachable, `mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down · start: ${cmd} up --detach`)}`),
+      line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
       line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
-      `start the mesh:  ${dim(`${cmd} up --detach`)}`,
+      ...(remote ? [] : [`start the mesh:  ${dim(`${cmd} up --detach`)}`]),
       // Match the hint to what's actually on disk: the guided team (with --demo) vs the one default agent.
       hasDemo
         ? `drive it:        ${dim(`${cmd} spawn me`)}   ${dim("(or david / sven)")}`
         : `drive it:        ${dim(`${cmd} spawn`)}   ${dim("(talk to your agent · guided team: " + cmd + " setup --demo)")}`,
-      `watch it:        ${dim(`${cmd} console`)}   ${dim("(live TUI in this terminal)")}`,
-      `more:            ${dim(`${cmd} web · ${cmd} down · ${cmd} feedback "<msg>" · ${cmd} --help`)}`,
+      `watch it:        ${dim(`${cmd} web`)}   ${dim("(browser dashboard)")}`,
+      `more:            ${dim(`${cmd} console · ${cmd} down · ${cmd} feedback "<msg>" · ${cmd} --help`)}`,
     ].join("\n"),
     brandBold("cotal · status"),
   );

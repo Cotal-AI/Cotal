@@ -268,6 +268,7 @@ function mustHaveRun(r: Run, what: string): void {
 }
 const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
+let stoppedCleanly = false;
 try {
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -633,8 +634,21 @@ try {
 
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
-  await mgr.stop();
+  // WITH agents, and nothing less (#1712). `stop()` without the flag is the DETACHED mode: it
+  // releases only this manager's local custody handle and exits, which tells no custodian
+  // anything. Every seat this suite spawned survived that as a live detached custodian holding
+  // ~65 MB, and the CI shard's leak check failed the suite for it (all cells green). `withAgents`
+  // hard-stops each child and AWAITS the runtime's exit proof, so the custodians settle and remove
+  // their own records before this process exits - the same teardown every sibling suite that
+  // spawns pty seats already uses.
+  await mgr.stop({ withAgents: true });
+  stoppedCleanly = true;
 } finally {
+  // A cell that threw never reached the stop above, and this suite still holds live seats it
+  // spawned. Stop them best-effort so a FAILING run does not also leak custodians (the CI shard
+  // kills them, but this suite reaps its own); caught so the original failure is what the run
+  // reports, exactly as a cell's own error must not be masked by teardown noise.
+  if (!stoppedCleanly) await mgr.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

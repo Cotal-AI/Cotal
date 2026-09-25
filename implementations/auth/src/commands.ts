@@ -7,7 +7,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
-import { CotalEndpoint, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { assertLifecycleToken, CotalEndpoint, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
@@ -104,8 +104,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     }
     if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
       const consumer = resolveSpaceCatalogConsumer();
-      const catalog = await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate });
-      catalog?.forEach(consumer.apply);
+      await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate, apply: consumer.apply });
     }
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
@@ -320,6 +319,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
   const v = args.values as {
     dir?: string; space?: string; owner?: string; actor?: string;
     "token-file"?: string; "health-file"?: string; "exchange-url"?: string;
+    "manager-call"?: boolean; "manager-instance"?: string;
   };
   const { dir, space, owner, actor } = v;
   const tokenFile = v["token-file"];
@@ -328,7 +328,14 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
   // Every attempt's outcome lands in the manager-composed health file (core's AgentAuthHealth) —
   // the `ps` window into a detached agent's bearer life. Best-effort: health reporting must never
   // turn a successful exchange into a failure.
+  const managerCall = v["manager-call"] === true;
+  if (v["manager-instance"] !== undefined && !managerCall)
+    throw new Error("agent-bearer: --manager-instance requires --manager-call");
+  const managerInstance = v["manager-instance"] === undefined
+    ? undefined
+    : assertLifecycleToken(v["manager-instance"], "manager instance");
   const health = (state: "ok" | "failed", reason?: string) => {
+    if (managerCall) return;
     const path = v["health-file"];
     if (!path) return;
     try {
@@ -381,7 +388,12 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         method: "POST",
         headers,
         redirect: "manual",
-        body: JSON.stringify({ owner, actor, actorToken }),
+        body: JSON.stringify({
+          owner,
+          actor,
+          actorToken,
+          ...(managerCall ? { view: "manager-caller", ...(managerInstance !== undefined ? { managerInstanceId: managerInstance } : {}) } : {}),
+        }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
@@ -461,6 +473,8 @@ const authCommands: Command[] = [
       { name: "actor", type: "string", value: "<a>", description: "the agent's actor token" },
       { name: "token-file", type: "string", value: "<path>", description: "0600 file holding the spawn-time agent secret" },
       { name: "health-file", type: "string", value: "<path>", description: "write each attempt's outcome here (read by the manager's ps)" },
+      { name: "manager-call", type: "boolean", description: "mint a token bound to one manager instance" },
+      { name: "manager-instance", type: "string", value: "<id>", description: "select the manager instance for --manager-call" },
     ],
     run: (args) => legibly(() => runAgentBearer(args)),
   },

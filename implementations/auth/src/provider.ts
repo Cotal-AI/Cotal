@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -40,6 +40,15 @@ import {
 } from "./store.js";
 
 const READY_TIMEOUT_MS = 15_000;
+/** The pid-bound extension of the readiness wait (#1931): while the daemon the caller LAUNCHED
+ *  (or found live) is provably alive, the wait continues past READY_TIMEOUT_MS up to this bound.
+ *  The daemon's startup is bounded work (a plane open that resolves, two listener binds, one
+ *  discovery write), so a start still unfinished here is a wedge (an open that never returns),
+ *  and the wait must end in a loud refusal rather than following the daemon forever. A full
+ *  minute is 4x the base budget with no daemon startup step anywhere near it on a healthy
+ *  machine; the pre-2.0 era when 15s also served as the sole budget keeps its role for callers
+ *  that pass no pid. */
+const READY_MAX_WAIT_MS = 60_000;
 
 /** Present only if PROVEN present. `probeLiveness` resolves EPERM (another user's process) to
  *  `alive`, which is the defect this fixes: the old two-state probe called that dead. `unknown`
@@ -52,9 +61,14 @@ function pidAlive(pid: number): boolean {
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  async preloadAccounts({ store, space }) {
+    const callout = await loadCalloutAuth(store, space);
+    if (!callout) throw new Error(`space "${space}" has user auth enabled but its callout account is missing - restore it from backup before starting the broker`);
+    return [{ pub: callout.account.pub, jwt: callout.account.jwt }];
+  },
   prepareSpaceCatalogs: prepareIdpSpaceCatalogs,
-  syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate }) => {
-    const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate });
+  syncSpaceCatalogAfterLogin: async ({ dir, idpUrl, validate, apply }) => {
+    const results = await prepareIdpSpaceCatalogs({ dir, idpUrl, force: true, validate, apply });
     const failed = results.find((r) => r.state === "failed");
     if (failed) throw new Error(`space catalog for ${idpUrl} failed after login: ${failed.error}`);
     return results;
@@ -92,11 +106,25 @@ export const cotalAuthProvider: AuthProvider = {
       service: {
         command: "auth-service",
         // Readiness = the daemon wrote its discovery file (which it does only after the callout SUB
-        // is flushed AND the HTTP listener is bound) and /health answers. Poll until timeoutMs, then
-        // THROW with the reason — the caller (`up`) surfaces it loudly (U5), never records a usable
-        // user mesh on a half-started service.
-        async ready({ dir: stateDir, timeoutMs = READY_TIMEOUT_MS }) {
-          const deadline = Date.now() + timeoutMs;
+        // is flushed AND the HTTP listener is bound) and /health answers. Poll until timeoutMs,
+        // then THROW with the reason — the caller (`up`) surfaces it loudly (U5), never records a
+        // usable user mesh on a half-started service. With `pid`, the wait is bound to the daemon
+        // PROCESS (#1931): the clock alone misreported a same-root refresh's live, still-binding
+        // daemon as dead at a fixed 15s. Past timeoutMs the wait continues while THAT pid is
+        // provably alive, up to maxWaitMs (a wedged daemon still ends in a loud refusal); the
+        // moment the pid is provably gone the wait ends at once with the exit, so a dead daemon
+        // is never waited on.
+        async ready({ dir: stateDir, timeoutMs = READY_TIMEOUT_MS, pid, maxWaitMs = READY_MAX_WAIT_MS }) {
+          // `pid` is the daemon process the CALLER launched (or found live): 0/absent means the
+          // caller cannot name one (a yielded slot, a spawn failure) and the wait is clock-only.
+          // A value that claims to name a process but cannot be one is a caller bug; polling the
+          // discovery file to the bound would silently disable the process binding it exists for.
+          if (pid !== undefined && pid !== 0 && !(Number.isSafeInteger(pid) && pid > 0))
+            throw new Error(`auth service readiness was given a pid that cannot name a process (${pid})`);
+          const daemonPid = pid === undefined || pid === 0 ? undefined : pid;
+          // Process-bound: the base clock is the floor, the bound the ceiling — a live daemon
+          // extends the wait past the old fixed 15s, and nothing extends it past the bound.
+          const deadline = Date.now() + (daemonPid === undefined ? timeoutMs : Math.max(timeoutMs, maxWaitMs));
           let lastReason = "the auth service has not written its discovery file yet";
           while (Date.now() < deadline) {
             try {
@@ -121,8 +149,20 @@ export const cotalAuthProvider: AuthProvider = {
             } catch (e) {
               lastReason = e instanceof Error ? e.message : String(e);
             }
+            // The process-bound half of the contract: a daemon that EXITED can never become
+            // ready, so the wait ends AT ONCE (not at the clock) and the refusal says so.
+            if (daemonPid !== undefined && probeLiveness(daemonPid) === "dead")
+              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);
             await new Promise((r) => setTimeout(r, 200));
           }
+          if (daemonPid !== undefined && probeLiveness(daemonPid) === "alive")
+            // The bound, and the daemon is STILL alive: name both facts. The daemon did not die,
+            // it never finished starting — a plane open that never returns is the wedge case, and
+            // this is where the wait stops following it. The pidfile and the service log (which
+            // the caller's wrapper appends) are where the operator looks next.
+            throw new Error(
+              `auth service not ready after ${maxWaitMs}ms - the process (pid ${daemonPid}) is alive and still starting (${lastReason}); a start this slow is wedged, not slow - stop it with \`cotal down\` and check the service log`,
+            );
           // No log-path guess here — the CALLER owns the daemon's log location and appends it.
           throw new Error(`auth service not ready after ${timeoutMs}ms (${lastReason})`);
         },
@@ -133,13 +173,13 @@ export const cotalAuthProvider: AuthProvider = {
   /** Client side: this machine's login session → a fresh IdP JWT → the local auth service's
    *  exchange → the Cotal bearer, plus the space's sentinel creds. NO fallback anywhere; each
    *  failure is one sentence with the exact operator action (U1/U10/U11 acceptance strings). */
-  async userCredentials({ store, dir, space, actor, view }: { store: SecretStore; dir: string; space: string; actor: string; view?: string }) {
+  async userCredentials({ store, dir, space, actor, view, managerInstanceId }: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string }) {
     const idp = loadPinnedIdp(dir);
     const callout = await loadCalloutAuth(store, space);
     // No local material: this machine may still hold a REMOTE registration (\`cotal meshes add
     // --from\`), whose registry entry pinned the IdP + public exchange at registration time. The
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
-    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view);
+    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view, managerInstanceId);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
@@ -162,7 +202,7 @@ export const cotalAuthProvider: AuthProvider = {
       res = await fetch(`${info.url}/exchange`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
-        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}) }),
+        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}) }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
@@ -178,10 +218,10 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string };
+    const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
-    return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+    return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
@@ -222,6 +262,43 @@ export const cotalAuthProvider: AuthProvider = {
     if (!res.ok)
       throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
     return body as RemoteManagerAuthorityMaterial;
+  },
+
+  async maintainRemoteManager({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerMaintenanceRequest }): Promise<RemoteManagerMaintenanceResult> {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, request.space);
+    let idpUrl: string;
+    let endpoint: string;
+    let authorization: string | undefined;
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${request.space}" is not running - restart it with \`cotal up\` before requesting manager maintenance`);
+      idpUrl = idp.url;
+      endpoint = `${info.url}/manager-service-authority`;
+      authorization = `Bearer ${info.cap}`;
+    } else {
+      const entry = findMesh(request.space);
+      const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+      if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+        throw new Error(`space "${request.space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${request.space} --from <url>\``);
+      idpUrl = ua.idp.url;
+      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);
+    }
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+      body: JSON.stringify({ idpToken: idpJwt, request }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch((error) => { throw new Error(`the manager maintenance endpoint for space "${request.space}" did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+    if (response.status >= 300 && response.status < 400)
+      throw new Error(`the manager maintenance endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`signed in, but manager maintenance was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    return body as RemoteManagerMaintenanceResult;
   },
 
   async scanRemoteManagerGoalIndex({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerGoalIndexScanRequest }): Promise<RemoteManagerGoalIndexScanResult> {
@@ -452,22 +529,32 @@ export const cotalAuthProvider: AuthProvider = {
 
   /** Offline status read: the pinned IdP, this machine's cached login, and (when the local ledger
    *  has material) the actor's grant row. No IdP round trip, no service call, no mint — `cotal
-   *  status` must be able to say "not signed in" without becoming a connect. */
+   *  status` must be able to say "not signed in" without becoming a connect.
+   *
+   *  A space with no LOCAL pin may still be a REMOTE registration (a `meshes add --from` entry, or
+   *  catalog discovery): its IdP pins live in the registry entry itself, exactly where
+   *  {@link remoteUserCredentials} reads them. The remote arm answers the same offline questions
+   *  from the entry — with `grant` absent, because the ledger that holds the row runs where the
+   *  space was provisioned, and the renderer already says "grant not checkable on this machine
+   *  (no local ledger)" for that shape. No entry either is the one state that stays a refusal. */
   async userStatus({ store, dir, space, actor }) {
     const idp = loadPinnedIdp(dir);
-    if (!idp)
+    const ua = idp ? undefined : remoteUserAuthEntry(dir, space);
+    if (!idp && !ua)
       throw new Error(
-        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space`,
+        `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space, or where the discovered/registered entry for it lives`,
       );
-    const session = loadIdpSession(homeCotalDir(), idp.url);
-    if (!session?.sub) return { idpUrl: idp.url };
+    const idpUrl = idp ? idp.url : ua!.idp.url;
+    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    if (!session?.sub) return { idpUrl };
     const login = { sub: session.sub, expiresAt: session.expiresAt };
+    if (!idp) return { idpUrl, login };
     const secret = await loadOwnerSecret(store, space);
-    if (!secret) return { idpUrl: idp.url, login };
+    if (!secret) return { idpUrl, login };
     const owner = deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
     const row = findInteractiveActor(dir, owner, actor);
     return {
-      idpUrl: idp.url,
+      idpUrl,
       login,
       owner,
       grant: row
@@ -599,6 +686,25 @@ function managerAuthorityUrl(base: string, space: string): string {
   return u.toString();
 }
 
+/** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
+ *  way {@link remoteUserCredentials} binds it: `dir` derives from the resolved target's root, so an
+ *  entry for the same space under a different root must not answer for it. `undefined` when the
+ *  registry holds no such remote entry. This is the ONE read of the entry's pins — connect and the
+ *  offline status read consume the same trust position, so they cannot drift. */
+function remoteUserAuthEntry(
+  dir: string,
+  space: string,
+): (UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) | undefined {
+  const entry = findMesh(space);
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  const bound =
+    ua?.remote === true &&
+    typeof ua.endpoints?.url === "string" &&
+    typeof ua.sentinelCredsPath === "string" &&
+    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
+  return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
+}
+
 /** Client side of a REMOTE user mesh: the registry entry `cotal meshes add --from` recorded is
  *  the whole trust position (IdP pins, public exchange URL, sentinel path) - registration pinned
  *  it, connect consumes it, nothing is discovered here. The flow mirrors the local arm exactly
@@ -611,21 +717,13 @@ async function remoteUserCredentials(
   space: string,
   actor: string,
   view?: string,
-): Promise<{ bearer: string; sentinelCreds: string }> {
-  const entry = findMesh(space);
-  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
-  // Bind the registry entry to the CALLER'S state dir: `dir` was derived from the target's root,
-  // so an entry for the same space under a different root must not answer for it.
-  const bound =
-    ua?.remote === true &&
-    typeof ua.endpoints?.url === "string" &&
-    typeof ua.sentinelCredsPath === "string" &&
-    resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
-  if (!bound)
+  managerInstanceId?: string,
+): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }> {
+  const remote = remoteUserAuthEntry(dir, space);
+  if (!remote)
     throw new Error(
       `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\` and sign in with \`cotal login --idp <idp-url>\``,
     );
-  const remote = ua as UserAuthInfo & { endpoints: { url: string }; sentinelCredsPath: string };
   let sentinelCreds: string;
   try {
     sentinelCreds = readFileSync(remote.sentinelCredsPath, "utf8");
@@ -648,7 +746,7 @@ async function remoteUserCredentials(
       // NO Authorization header: the public face is capless by design - the idpToken in the body
       // is the whole credential, and the loopback capability never leaves the daemon's machine.
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}) }),
+      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}) }),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
@@ -665,8 +763,8 @@ async function remoteUserCredentials(
       `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
     );
   }
-  const out = (await res.json().catch(() => ({}))) as { token?: string };
+  const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
-  return { bearer: out.token, sentinelCreds };
+  return { bearer: out.token, sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
 }

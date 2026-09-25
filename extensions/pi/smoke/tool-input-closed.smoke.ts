@@ -16,6 +16,8 @@
  * WHAT THIS FILE ASSERTS, against the parameters handed to the real `pi.registerTool`:
  *   1. tools with arguments are actually registered   <- the control
  *   2. every one of them carries `additionalProperties: false`
+ *   3. a JSON round-trip of every tool's parameters carries only JSON Schema keywords
+ *      (no `~standard` brand or other vendor member survives stringify — #1835)
  *
  * WHAT IT DOES NOT COVER: the refusal itself. pi's validator is pi's, not ours, and it is not in
  * this process — this grades what we hand it, which is the half we own. The refusal is graded at the
@@ -74,6 +76,48 @@ check("tools with arguments AND zero-argument tools are both registered, so neit
 const open = registered.filter((d) => d.parameters.additionalProperties !== false);
 check(`EVERY pi tool is registered CLOSED, zero-argument ones included (${registered.length} tools, ${zeroArg.length} zero-argument)`,
   open.length === 0, { open: open.map((d) => d.name) });
+
+// JSON Schema keywords at any depth (draft 2020-12 plus the common applicator/validation
+// vocabulary). Everything else in a JSON round-trip is a stray brand or vendor member a strict
+// provider refuses the whole declaration for (#1835: `~standard.{vendor,version}`).
+const SCHEMA_KEYWORDS = new Set([
+  "$schema", "$id", "$ref", "$defs", "$comment", "$anchor", "$dynamicRef", "$dynamicAnchor",
+  "type", "properties", "required", "additionalProperties", "items", "prefixItems", "unevaluatedItems",
+  "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "dependentSchemas", "propertyNames",
+  "enum", "const", "multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum",
+  "maxLength", "minLength", "pattern", "maxItems", "minItems", "uniqueItems", "maxContains",
+  "minContains", "maxProperties", "minProperties", "patternProperties", "title", "description",
+  "default", "deprecated", "readOnly", "writeOnly", "examples", "format", "contentEncoding",
+  "contentMediaType", "contentSchema", "contains", "dependentRequired", "definitions",
+]);
+
+/** Every path at every depth of the round-tripped value whose key is not a JSON Schema keyword.
+ *  Walks only where JSON Schema itself nests (arrays and keyword values): a stray member's OWN
+ *  children (e.g. `~standard.jsonSchema`) are artifacts of the stray, not additional strays, and
+ *  `properties` keys are property NAMES, which JSON Schema does not constrain. */
+function strayKeys(value: unknown, path: string): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((v, i) => strayKeys(v, `${path}[${i}]`));
+  }
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value);
+    const here = keys.filter((k) => !SCHEMA_KEYWORDS.has(k)).map((k) => `${path}.${k}`);
+    const nested = keys.filter((k) => SCHEMA_KEYWORDS.has(k) && k !== "properties" && k !== "patternProperties" && k !== "dependentSchemas");
+    return [...here, ...nested.flatMap((k) => strayKeys((value as Record<string, unknown>)[k], `${path}.${k}`))];
+  }
+  return [];
+}
+
+const strays: string[] = [];
+for (const d of registered) {
+  // The round-trip is the measurement: JSON.stringify is exactly where a non-enumerable member
+  // either stays hidden (zod's raw render) or leaks (after an enumerable copy), so the cell grades
+  // what pi's registry would hand a provider, not the in-memory descriptor.
+  const roundTripped = JSON.parse(JSON.stringify(d.parameters ?? {}));
+  strays.push(...strayKeys(roundTripped, `parameters(${d.name})`));
+}
+check(`a JSON round-trip of every tool's parameters carries ONLY JSON Schema keywords (${registered.length} tools)`,
+  strays.length === 0, { strays });
 
 console.log(`\n${failures === 0 ? "PI-TOOL-CLOSED SMOKE OK ✅" : "PI-TOOL-CLOSED SMOKE FAILED"}  (${failures} failed)`);
 process.exit(failures === 0 ? 0 : 1);

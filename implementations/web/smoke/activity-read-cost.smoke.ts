@@ -803,10 +803,45 @@ try {
       ok("8.1 and the page is the newest LIMIT, not a truncated remnant",
         rows.length === Math.min(LIMIT, WIDE), { rows: rows.length, limit: LIMIT });
       // The route, not just the method: a kill on the method alone would not show the feed recovers.
+      //
+      // WHY THIS CELL IS DEADLINE-RELATIVE (#1463). 8.0 above reads through `multiChannelHistory`
+      // with NO deadline, and this one reads the same corpus through `activityBackfill`, whose clock
+      // is the shipped 8000ms. On a loaded host the wide read can outlive that clock — measured in
+      // the field at 9798ms — and the honest answer then is the partial page the route ships: no
+      // entries, `partial: true`, `chat` named missing. That answer is not a defect, so asserting
+      // bare `entries > 0` here reddened 8.2/8.3 while 8.0 stayed green, and only under load. The
+      // guarantee this section owns is the PAIR: a read that finished carries chat, and a read the
+      // deadline beat says so. The REFUSAL arm below shrinks the deadline through the same
+      // parameter the route-defaulted call uses, so both halves run on every host, idle or loaded.
+      // A page that is neither whole-in-chat nor honestly-partial fails, so the cell still bites.
       const page = await activityBackfill(ep as unknown as ActivitySource, LIMIT);
-      ok("8.2 the activity feed itself carries chat entries at this channel count",
-        page.entries.length > 0, { entries: page.entries.length, partial: page.partial, missing: page.missing });
-      ok("8.3 and does not name chat missing", !page.missing.includes("chat"), page.missing);
+      const chatWhole = page.entries.some((e) => e.mode === "chat");
+      ok("8.2 the activity feed carries chat entries at this channel count, or names chat missing on a page the deadline cut",
+        (chatWhole && !page.missing.includes("chat")) || (page.partial && page.entries.length === 0
+          && page.missing.includes("chat") && page.missing.length === 1),
+        { entries: page.entries.length, partial: page.partial, missing: page.missing });
+      ok("8.3 and a read that answered never names chat missing", !page.missing.includes("chat") || page.partial,
+        { entries: page.entries.length, partial: page.partial, missing: page.missing });
+      {
+        // The deadline for the refusal arm is MEASURED, not a constant: it must beat the wide read
+        // (which does an order of magnitude more broker work than the list) while still letting the
+        // channel list through, and a constant small enough for the first is hostage to a slow list
+        // on a loaded host — measured, deadline 1ms refuses at the list and throws, which is a
+        // different ending than the one this cell pins. So: time the list, then give the backfill
+        // the list's own time plus a cushion far below any measured wide read (682ms here idle,
+        // 3645ms under load, 9798ms in the field; the list is single-digit milliseconds of it).
+        const tList = Date.now();
+        await ep.listChannels();
+        const cutMs = Date.now() - tList + 100;
+        let cut: ActivityPage | undefined;
+        let cutErr: Error | undefined;
+        try { cut = await activityBackfill(ep as unknown as ActivitySource, LIMIT, cutMs); }
+        catch (e) { cutErr = e as Error; }
+        ok("8.3b CONTROL: a deadline that cannot be met is named, not silently short",
+          cut !== undefined && cut.partial && cut.entries.length === 0 && cut.missing.includes("chat")
+            && cut.read < cut.of,
+          { cutMs, entries: cut?.entries.length, partial: cut?.partial, missing: cut?.missing, err: cutErr?.message });
+      }
 
       // ── 8.4 THE BATCHED READ SELECTS WHAT THE SINGLE CREATE SELECTED ──────────────────────────
       // Batching is only safe if re-cutting the union by stream sequence reproduces the single
