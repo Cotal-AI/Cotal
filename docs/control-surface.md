@@ -160,6 +160,21 @@ readiness budget does not depend on the short-lived control credential. The foll
 progress subscription with the broker before submitting on the separate connection. A caller still
 checks the resolved instance and epoch, and never retries an ambiguous mutation outcome.
 
+The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads
+only the authenticated caller's owner, actor and lifecycle through the manager's separate trusted
+goal-writer connection. The caller receives an attributed reply, never a raw JetStream reader
+grant. Each read is admitted by the connection's broker-enforced command grant. A live user-auth
+connection remains bounded by its bearer expiry after revocation; a renewed connection is checked
+against fresh authority. There is no separate per-read ledger check. An absent `result` means no
+terminal is recorded; it does not prove the goal is running or permit another submission. The existing trusted goal-writer's leader-served EPF read is
+space-wide at the broker; the handler confines it to this endpoint and caller triple.
+
+A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
+the manager, issuer and client together before using that recovery path. Reloading an issuer alone
+cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
+epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
+acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
+
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a
 manager you then stop with `cotal down manager` after `✓ manager up` in

@@ -2953,6 +2953,15 @@ export class Manager {
         const data = unwrap(await this.opModels(args(ctx)));
         return { catalogs: Array.isArray(data) ? data : [data] };
       }),
+      goalResult: (ctx) => this.serveGated(ctx, async () => {
+        const gw = this.goalWriter;
+        if (!gw || gw.nc.isClosed()) throw new EpEnvelopeError("unavailable", "the manager goal-reader connection is not standing; the accepted goal is unaffected");
+        const goalId = args(ctx).goalId as string;
+        // Only the broker-authenticated caller's full incarnation can name this read. The
+        // trusted goal-writer keeps the raw EPF authority; serveEndpoint derives the reply rail.
+        const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));
+        return { goalId, ...(result === undefined ? {} : { result }) };
+      }),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
