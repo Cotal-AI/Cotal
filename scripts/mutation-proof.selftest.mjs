@@ -690,6 +690,62 @@ r = runTool([
 check("an anchored progress pattern counts per LINE, not once per transcript",
   r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
 
+// 7i. With no pattern given, a mark is a `✓` that opens its line (#1348). `start-model-preflight`
+// names a cell "dead-on-arrival spawn reported as failure (not ✓ started)", and counting the glyph
+// wherever it stood made that label one more passed check on every run, green or red. Four real
+// marks here: plain, coloured, one whose label carries a second glyph, and one after the guard.
+writeFileSync(
+  join(root, "labelled.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "console.log('  ✓ admits a small value');",
+    "console.log('  \\u001b[32m✓\\u001b[0m a coloured mark still counts');",
+    "console.log('  ✓ the refusal is reported as a failure (not ✓ admitted)');",
+    "if (admit(50) !== false) process.exit(0);",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+// Its red twin: the labelled cell prints `✗` with the same label when the guard is gone.
+writeFileSync(
+  join(root, "labelled-red.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "console.log('  ✓ admits a small value');",
+    "if (admit(50) !== false) { console.log('  ✗ the refusal is reported as a failure (not ✓ admitted)'); process.exit(1); }",
+    "console.log('  ✓ the refusal is reported as a failure (not ✓ admitted)');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm labelled", { cwd: root });
+
+// The floor at the true pass count, 4, and a mutant that exits 0 after three real marks. Counting
+// the label's glyph made that run four marks and let it clear the floor.
+r = runTool([
+  "--command", `${process.execPath} labelled.mjs`,
+  "--min-ticks", "4",
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "admits a small value",
+]);
+check("the default progress count reads line-initial marks, not a ✓ inside a label",
+  r.stdout.includes("baseline green") && r.stdout.includes("(4 progress marks)"), r.stdout.slice(0, 300));
+check("...so a run one real check short of a floor at the true pass count does not clear it",
+  verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("reached only 3 progress marks (expected ≥ 4)"),
+  r.stdout.slice(-400));
+
+// Green and red differ by that cell's pass mark alone: the `✗` line leaves no glyph behind.
+r = runTool([
+  "--command", `${process.execPath} labelled-red.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the refusal is reported as a failure",
+]);
+check("a failed cell whose label carries a ✓ counts no mark",
+  verdictIs(r.stdout, "KILLED") && r.stdout.includes("1 marks (baseline 2)"), r.stdout.slice(-400));
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });
