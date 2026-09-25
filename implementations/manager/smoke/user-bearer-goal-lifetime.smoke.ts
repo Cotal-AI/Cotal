@@ -94,7 +94,8 @@ async function outcomeError(call: Promise<EpAttributedReply>) {
 }
 
 async function main() {
-  const originalEnv = { ...process.env };
+  // Restoration state is not a child-process environment.
+  const originalEnv = new Map(Object.entries(process.env));
   const temporaryBase = tmpdir();
   const SEAT_ROOT = mkdtempSync(join(temporaryBase, "s-"));
   const TEST_DIR = mkdtempSync(join(temporaryBase, `${SMOKE_BROKER_TOKEN}u-`));
@@ -157,8 +158,8 @@ async function main() {
       rmSync(SEAT_ROOT, { recursive: true, force: true });
       releaseBroker();
     }
-    for (const k of Object.keys(process.env)) if (!(k in originalEnv)) delete process.env[k];
-    for (const [k, v] of Object.entries(originalEnv)) {
+    for (const k of Object.keys(process.env)) if (!originalEnv.has(k)) delete process.env[k];
+    for (const [k, v] of originalEnv) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
     if (errors.length) throw new AggregateError(errors, "lifetime fixture cleanup failed; storage preserved");

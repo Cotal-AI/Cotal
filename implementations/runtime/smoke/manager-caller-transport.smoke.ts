@@ -106,7 +106,7 @@ const c = (name: string, pass: boolean, extra?: unknown) => {
 };
 
 // Scrubbed isolated environment roots: remove ALL inherited COTAL_ and JCODE_COTAL_ variables
-const origEnv = { ...process.env };
+const origEnv = new Map(Object.entries(process.env));
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("COTAL_") || key.startsWith("JCODE_COTAL_")) {
     delete process.env[key];
@@ -508,11 +508,11 @@ try {
 
   // Restore environment variables: delete keys added during run and restore all originals
   for (const k of Object.keys(process.env)) {
-    if (!(k in origEnv)) {
+    if (!origEnv.has(k)) {
       delete process.env[k];
     }
   }
-  for (const [k, v] of Object.entries(origEnv)) {
+  for (const [k, v] of origEnv) {
     if (v === undefined) {
       delete process.env[k];
     } else {

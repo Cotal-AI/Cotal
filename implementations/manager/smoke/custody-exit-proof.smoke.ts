@@ -36,7 +36,8 @@ import { identityVerdict, type SeatRecord } from "@cotal-ai/seat";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const STUB = join(here, "e2e-stub.mjs");
-const savedEnv = { ...process.env };
+// Restoration state is not a child-process environment.
+const savedEnv = new Map(Object.entries(process.env));
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("COTAL_") || key.startsWith("JCODE_COTAL_")) delete process.env[key];
 }
@@ -304,8 +305,10 @@ try {
   await killAndAwaitExit(srv, "SIGKILL");
   if (srv.exitCode === null && srv.signalCode === null) cleanupErrors.push(new Error("fixture broker exit is unproven"));
   releaseBroker();
-  for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
-  Object.assign(process.env, savedEnv);
+  for (const key of Object.keys(process.env)) if (!savedEnv.has(key)) delete process.env[key];
+  for (const [key, value] of savedEnv) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
   if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "fixture cleanup failed; storage preserved");
   rmSync(dir, { recursive: true, force: true });
   rmSync(seatRoot, { recursive: true, force: true });

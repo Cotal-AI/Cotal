@@ -104,7 +104,8 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   else fail++;
 }
 
-const savedEnv = { ...process.env };
+// Restoration state is not a child-process environment.
+const savedEnv = new Map(Object.entries(process.env));
 const envAllowlist = new Set(["PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "HOME", "TMPDIR"]);
 for (const key of Object.keys(process.env)) if (!envAllowlist.has(key)) delete process.env[key];
 
@@ -963,8 +964,10 @@ try {
 
 } finally {
   try { await doTeardown(); } finally {
-    for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
-    Object.assign(process.env, savedEnv);
+    for (const key of Object.keys(process.env)) if (!savedEnv.has(key)) delete process.env[key];
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 }
 
