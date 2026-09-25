@@ -440,6 +440,16 @@ async function runStartedDelivery(
   // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
   // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
   const tls = v.tls !== undefined || registered?.tlsRequired === true;
+  // SAY THE DIAL TARGET before anything can refuse on it, in every workstation shape: an operator
+  // (and a cell) can then assert WHAT the daemon dialed even when the default port is live on the
+  // host and the run gets past the reachability refusal. The hosted (injected-store) daemon learns
+  // its target from argv and stays silent here.
+  if (store === undefined)
+    console.error(
+      registered !== undefined
+        ? `• delivery: space "${space}" is registered at ${server} (meshes entry) - dialing it${tls ? " with TLS required" : ""}`
+        : `• delivery: no meshes entry for "${space}" - dialing ${server}${v.server !== undefined ? " (--server)" : " (the local default)"}${tls ? " with TLS required" : ""}`,
+    );
   if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
     // The refusal names the URL actually dialed, and — when that URL came from a registry record —
     // the remedy that fits the record's origin, in the same wording render.ts uses for preflight

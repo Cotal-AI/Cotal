@@ -9,13 +9,13 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, mintMembershipObserverCreds, serverConfig, newIdentity, setupSpaceStreams, idFromCreds, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER, provisionAgent, mintLifecycleUid, deliveryBucket, leaseKey } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { spaceMaterialDir } from "@cotal-ai/workspace";
+import { spaceMaterialDir, recordMesh, spaceSegment } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -82,20 +82,149 @@ try {
     { mode: 0o600 },
   );
 
-  // Spawn the real daemon with a SHORT broker-gone window so the test is fast. stderr is CAPTURED so
-  // an exit can be attributed to the reason the daemon gave rather than merely counted: "it exited"
-  // and "it exited because the broker was gone" are different claims, and only the second is the
-  // guarantee. `tsx` directly rather than `pnpm cotal` keeps the exit code the daemon's own.
+  // The child env is built ONCE, before every daemon child this suite spawns: the R cells below
+  // and the broker-coupling subject after them run the same real CLI against the same scratch
+  // COTAL_HOME, so a registry record one cell writes is exactly what the next child resolves.
+  // The short broker-gone window is set only where it is the subject, never on an R cell: an R
+  // daemon that comes up would otherwise be reaped 2s in and read as a startup refusal.
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
   env.XDG_CONFIG_HOME = join(dir, "xdg");
   env.COTAL_HOME = join(dir, "cotal-home");
   env.COTAL_SKIP_CONNECTOR_SEED = "1";
-  env.COTAL_DELIVERY_BROKER_GONE_MS = "2000";
+
+  // ── R. THE DIAL TARGET COMES FROM THE MESH REGISTRY, NOT THE LOOPBACK DEFAULT (#756) ─────────
+  //
+  // `runStartedDelivery` used to take `v.server ?? DEFAULT_SERVER` with no registry lookup, so a
+  // registered space whose record named a non-default broker was dialed at `127.0.0.1:4222` and the
+  // refusal named that wrong URL with a remedy that is wrong for a hand-registered record. These
+  // cells stage a record under the suite's scratch COTAL_HOME and grade the daemon's dial/refusal
+  // behavior through the real CLI binary, exactly as an operator typing `cotal deliver` would.
+  // Each cell spawns its own daemon child and waits for it to exit (or come up) before the next;
+  // none of them needs the broker killed, so they run before the broker-kill subject below.
+  // `recordMesh` writes under the CALLING process's COTAL_HOME (`homeCotalDir()` reads the env at
+  // call time), so the suite points its own COTAL_HOME at the scratch home for the duration of the
+  // write and restores it after: the record lands in the scratch registry the daemon child reads,
+  // never in the operator's. (First draft called it without the override and the record silently
+  // landed in the real registry while every cell graded a no-record default.) The children's `env`
+  // was snapshotted above and is unaffected.
+  const writeRecord = (entry: { server: string; root: string; origin?: "up" | "manual" }): void => {
+    const prev = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = join(dir, "cotal-home");
+    try {
+      recordMesh({ space, mode: "auth", ts: new Date().toISOString(), ...entry });
+    } finally {
+      if (prev === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = prev;
+    }
+  };
+  const meshRecordFile = join(dir, "cotal-home", "meshes", `${spaceSegment(space)}.json`);
+  const clearRecord = (): void => { rmSync(meshRecordFile, { force: true }); };
+  const spawnDaemon = (args: string[], cwd: string) => {
+    const d = spawn(
+      join(repoRoot, "node_modules", ".bin", "tsx"),
+      [join(repoRoot, "bin", "cotal.ts"), "deliver", ...args],
+      { cwd, stdio: ["ignore", "pipe", "pipe"], env },
+    );
+    let log = "";
+    const sink2 = (b: Buffer) => { log += b.toString(); };
+    d.stdout?.on("data", sink2);
+    d.stderr?.on("data", sink2);
+    return {
+      proc: d,
+      log: () => log,
+      done: async (): Promise<string> => {
+        for (let i = 0; i < 120; i++) {
+          if (d.exitCode !== null) return log;
+          await wait(250);
+        }
+        d.kill("SIGKILL");
+        return log;
+      },
+    };
+  };
+
+  // CELL ORDER: the refusal cells (R2-R4) must run while NO daemon this suite spawned has ever
+  // held the lease row on the suite broker: each of them exits before binding, so the broker's row
+  // stays virgin until R1. R1 IS the suite's subject daemon below — a record naming this broker and
+  // root with no `--server` is exactly the registry-resolved dial the fix exists for, so the
+  // subject's own "comes up + stays running" cell grades it (the same readiness the suite already
+  // waited for) instead of a second daemon racing the subject for the singleton lease.
+
+  // R2: a record naming a port nothing listens on, no --server: the refusal must name THAT URL
+  // (not 127.0.0.1:4222), and for a `manual` record it must not prescribe `Run: cotal up`.
+  const deadPort = await pickFreePort();
+  const deadServer = `nats://127.0.0.1:${deadPort}`;
+  writeRecord({ server: deadServer, root: wsRoot, origin: "manual" });
+  let r2 = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
+  let r2Log = await r2.done();
+  check(
+    "R2 an unreachable RECORDED broker is refused naming that URL (not the loopback default), without `Run: cotal up` for a manual record",
+    r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") && !r2Log.includes("Run: cotal up"),
+    r2Log,
+  );
+
+  // R3: an explicit --server that DIFFERS from the record: refused BEFORE any dial, naming both.
+  writeRecord({ server: deadServer, root: wsRoot });
+  let r3 = spawnDaemon(["--space", space, "--server", `nats://127.0.0.1:${PORT}`, "--creds", credsPath], wsRoot);
+  let r3Log = await r3.done();
+  check(
+    "R3 an explicit --server differing from the record is refused before any dial, naming both URLs",
+    r3Log.includes(`--server nats://127.0.0.1:${PORT} does not match registered space "${space}" at ${deadServer}`) && !/can't reach NATS|no broker answered|no mesh running/.test(r3Log),
+    r3Log,
+  );
+
+  // R4: a record whose ROOT is a different scratch directory: refused before any dial, naming both.
+  // The daemon names the workspace root as ITS process sees it — Node's `process.cwd()` (what
+  // `findCotalRoot` walks up from) resolves through symlinks, and this suite's scratch dir sits
+  // behind one on a sandboxed host, so the served-root half of the assertion compares the REALPATH.
+  const otherRoot = join(dir, "other-ws");
+  mkdirSync(join(otherRoot, ".cotal"), { recursive: true });
+  writeRecord({ server: SERVERS, root: otherRoot });
+  let r4 = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
+  let r4Log = await r4.done();
+  check(
+    "R4 a record for a different workspace root is refused before any dial, naming both roots",
+    r4Log.includes(otherRoot) && r4Log.includes(realpathSync(wsRoot)) && !/can't reach NATS|no broker answered|no mesh running/.test(r4Log),
+    r4Log,
+  );
+
+  // R5 CONTROL: no record and no --server keeps today's bare default. The default port may be LIVE
+  // on this host (another lane's broker), and `isReachable` with creds answers true even on an auth
+  // rejection, so unreachability is not assertable there. The cell always grades the DIAL TARGET the
+  // daemon prints (the banner exists precisely so this is observable in both worlds), and asserts
+  // the unchanged refusal line only when a credless probe finds 4222 dead.
+  clearRecord();
+  const defaultLive = await isReachable("nats://127.0.0.1:4222"); // credless INFO probe, silent
+  let r5 = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
+  let r5Log = await r5.done();
+  check(
+    "R5 CONTROL (dial target): no record + no --server dials the bare default 127.0.0.1:4222",
+    r5Log.includes(`no meshes entry for "${space}" - dialing nats://127.0.0.1:4222 (the local default)`) &&
+      !r5Log.includes("is registered at"),
+    r5Log,
+  );
+  if (!defaultLive)
+    check(
+      "R5 CONTROL: 4222 dead here, so the refusal keeps today's line",
+      r5Log.includes("can't reach NATS at nats://127.0.0.1:4222. Run: cotal up"),
+      r5Log,
+    );
+  if (r5.proc.exitCode === null) { try { r5.proc.kill("SIGKILL"); } catch { /* gone */ } }
+  clearRecord();
+
+  // R1 + THE SUBJECT: a record naming this suite's broker and workspace root, and the daemon
+  // spawned with NO `--server` — the exact registry-resolved dial the fix exists for. The subject's
+  // own cells below then grade it (comes up + stays, exits when the broker dies, names the reason),
+  // so this is the same readiness the suite always waited for, now through the registry. The
+  // SHORT broker-gone window stays on the subject only. stderr is CAPTURED so an exit can be
+  // attributed to the reason the daemon gave rather than merely counted.
+  writeRecord({ server: SERVERS, root: wsRoot });
+  const subjectEnv = { ...env, COTAL_DELIVERY_BROKER_GONE_MS: "2000" };
   daemon = spawn(
     join(repoRoot, "node_modules", ".bin", "tsx"),
-    [join(repoRoot, "bin", "cotal.ts"), "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath],
-    { cwd: wsRoot, stdio: ["ignore", "pipe", "pipe"], env },
+    [join(repoRoot, "bin", "cotal.ts"), "deliver", "--space", space, "--creds", credsPath],
+    { cwd: wsRoot, stdio: ["ignore", "pipe", "pipe"], env: subjectEnv },
   );
   const sink = (b: Buffer) => { daemonLog += b.toString(); };
   daemon.stdout?.on("data", sink);
@@ -106,6 +235,11 @@ try {
   // (runDelivery process.exit), so "still alive after the startup window" means it came up and is serving.
   await wait(5000);
   check("the daemon comes up + stays running against a live broker", !daemonExited, daemonLog);
+  check(
+    "R1 the subject daemon dialed the RECORDED broker (banner), no --server given",
+    daemonLog.includes(`is registered at ${SERVERS} (meshes entry)`),
+    daemonLog,
+  );
 
   // Kill the broker. The daemon should give up reconnecting after the short window and EXIT.
   srv.kill("SIGKILL");
