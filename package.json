@@ -205,6 +205,7 @@
     "smoke:user-bearer-goal-lifetime": "tsx implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts",
     "smoke:user-manager-transport": "tsx extensions/connector-core/smoke/user-manager-transport.smoke.ts",
     "smoke:custody-exit-proof": "tsx implementations/manager/smoke/custody-exit-proof.smoke.ts",
+    "smoke:remote-manager-goal-reader": "COTAL_OWNER_NATIVE_ACCEPTANCE=1 tsx implementations/manager/smoke/remote-manager-goal-reader.smoke.ts",
     "smoke:turn-intake": "tsx extensions/connector-core/smoke/turn-intake.smoke.ts",
     "smoke:claude-turn-frames": "tsx extensions/connector-claude-code/smoke/turn-frames.smoke.ts",
     "smoke:transport-liveness": "tsx extensions/connector-core/smoke/transport-liveness.smoke.ts",
