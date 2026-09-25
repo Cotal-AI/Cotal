@@ -356,7 +356,34 @@ const SEAMS: Seam[] = [
   // writer validates what it writes and a marker the reader CANNOT read has to be created past it.
   // That is what lets `run ps` be graded on the `unchecked` path, where the marker is unreadable
   // rather than absent. It states `tls` explicitly, so the seam itself is unchanged.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 157, untypecheckedSites: 117 },
+  // 157/117 -> 161/119: instance-pinned user control adds two typechecked calls, the user's
+  // control connection in extensions/connector-core/src/manager-call.ts (#1940) and its generated
+  // Hermes sidecar copy, both carrying the resolved transport decision; instance binding for user
+  // seats adds two smoke-side calls (implementations/auth/smoke/remote-agent-bearer.smoke.ts,
+  // implementations/auth/smoke/remote-exchange.smoke.ts), the second already-enrolled actor and
+  // the instance-bound executor dial the pin must refuse. All state `tls` explicitly.
+  // 161/119 -> 162/120: the manager instance caller gap reproduction
+  // (packages/core/smoke/inst-route-enforce.smoke.ts) adds one smoke-side instance-scoped
+  // executor connection. It states `tls: false`.
+  // 162/120 -> 166/123: remote manager registration recovery (#1960) adds one typechecked call,
+  // the one-shot reconciliation executor dial in implementations/auth/src/service.ts, and three
+  // smoke-side calls in implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts
+  // (readiness, eviction and reconciliation executor connections). All state `tls` explicitly.
+  // 166/123 -> 169/125: the managed-seat answer path (#1901, #1877) adds one typechecked call,
+  // the managed seat's connection in implementations/runtime/src/run-command.ts, and two
+  // smoke-side calls in bin/smoke/run-host-live.smoke.ts, the addressed baseline seat's answer
+  // connection and the run-operator read connection grading it. All state `tls` explicitly.
+  // 169/125 -> 175/131: caller-scoped goal mediation and its proof add six smoke-side calls:
+  // the user-callout pre-revoke read (implementations/auth/smoke/deny-new.smoke.ts), the foreign
+  // caller the mediated result refuses (implementations/manager/smoke/manager-service-invoke.smoke.ts),
+  // and four in implementations/manager/smoke/remote-manager-goal-reader.smoke.ts (provisioner,
+  // executors, responder, bearer read). All state `tls: false`.
+  // 175/131 -> 193/149: the goal-follow and manager-caller transport landings add eighteen
+  // smoke-side calls across five suites: manager-caller-transport.smoke.ts five,
+  // goal-follow-cancellation.smoke.ts three, goal-submit-order.smoke.ts two,
+  // user-bearer-goal-lifetime.smoke.ts one (the bearer rebind after a rebuild), and
+  // user-manager-transport.smoke.ts seven. All state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 193, untypecheckedSites: 149 },
 ];
 
 /**
