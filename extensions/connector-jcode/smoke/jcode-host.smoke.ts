@@ -401,7 +401,7 @@ try {
       FAKE_JCODE_APPEND_RECORDS: "1",
       FAKE_JCODE_TURN_DELAY_MS: "250",
       FAKE_JCODE_FOLD_AFTER_RECORD: "1",
-      FAKE_JCODE_FOLD_DELAY_MS: "1000",
+      FAKE_JCODE_FOLD_DELAY_MS: "5000",
       FAKE_JCODE_FOLD_ON_CONTENT: "JCODE-JOURNAL-FOLD-1984",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
@@ -468,6 +468,10 @@ try {
         : undefined,
   );
   await waitFor("Jcode journal fold scheduling", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_fold_scheduled") ? true : undefined);
+  await waitFor(
+    "Jcode journal fold run",
+    () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED")) ? true : undefined,
+  );
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "Jcode journal fold terminal event",
