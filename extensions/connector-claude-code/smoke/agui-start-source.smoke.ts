@@ -15,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent } from "@cotal-ai/connector-core";
-import { createClaudeTranscriptSource, readStartupTranscriptWhenReady } from "../src/agui-source.js";
+import { createClaudeTranscriptSource, createBoundClaudeTranscriptSource, readStartupTranscriptWhenReady } from "../src/agui-source.js";
+import { JsonlFileSource } from "@cotal-ai/connector-core";
 import { createClaudeHandle } from "../src/hooks.js";
 
 const line = (id: number): string => `${JSON.stringify({ id })}\n`;
@@ -178,6 +179,48 @@ try {
     forkMissing?.message,
   );
 
+  // `createBoundClaudeTranscriptSource` captures the adopt boundary BEFORE the caller's mesh wait
+  // (see `mcp.ts`'s holder factory), so anything the session writes in that window is published on
+  // the first real read instead of being silently dropped by an ordinary lazy adopt.
+  const window = file("bound-window");
+  writeFileSync(window, line(50) + line(51));
+  const boundWindow = await createBoundClaudeTranscriptSource(window, "resume");
+  // Simulates the window between boundary capture and the first read: the mesh wait, WAL open,
+  // subject frontier, etc. all happen here in the real holder before the emitter's first read.
+  appendFileSync(window, line(52));
+  const windowRead = await boundWindow.read(undefined);
+  check(
+    "bound:a-record-appended-in-the-adopt-to-first-read-window-is-published-for-retained-history",
+    windowRead.records.map((r) => r.value.id).join(",") === "52",
+    windowRead.records.map((r) => r.value.id),
+  );
+
+  // `startup` already reads from byte zero, so the bound wrapper must be a no-op for it.
+  const boundStartupFile = file("bound-startup");
+  writeFileSync(boundStartupFile, line(60) + line(61));
+  const boundStartup = await createBoundClaudeTranscriptSource(boundStartupFile, "startup");
+  const boundStartupRead = await boundStartup.read(undefined);
+  check(
+    "bound:a-startup-source-still-reads-from-the-beginning-through-the-bound-wrapper",
+    boundStartupRead.records.map((r) => r.value.id).join(",") === "60,61",
+    boundStartupRead.records.map((r) => r.value.id),
+  );
+
+  // A cursor already on the log (a recovered WAL, persisted by a prior run BEFORE this capture) is
+  // the honest position and must pass straight through, never overridden by the captured boundary.
+  const boundResumeFile = file("bound-resume-cursor");
+  writeFileSync(boundResumeFile, line(40) + line(41));
+  const priorCursor = (await new JsonlFileSource(boundResumeFile).read(undefined)).cursor;
+  appendFileSync(boundResumeFile, line(42));
+  const boundResume = await createBoundClaudeTranscriptSource(boundResumeFile, "resume"); // boundary is now after id=42
+  appendFileSync(boundResumeFile, line(43));
+  const boundResumeRead = await boundResume.read(priorCursor);
+  check(
+    "bound:a-log-that-already-carries-a-cursor-resumes-from-it-and-ignores-the-boundary",
+    boundResumeRead.records.map((r) => r.value.id).join(",") === "42,43",
+    boundResumeRead.records.map((r) => r.value.id),
+  );
+
   // Crash recovery: a startup-labelled process can restart with an existing WAL. The defined cursor
   // is the authority; replay-from-zero applies only to an actually virgin frontier.
   const recovery = file("recovery");
@@ -258,7 +301,7 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 24, { ran: pass + fail, expected: 24 });
+  check("every cell ran", pass + fail === 27, { ran: pass + fail, expected: 27 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {

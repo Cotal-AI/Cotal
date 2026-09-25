@@ -64,6 +64,35 @@
       "find": "          timer = setTimeout(() => reject(timeout()), beforeRead);",
       "replace": "          timer = setTimeout(() => reject(timeout()), opts.waitMs * 10);",
       "expectRed": "startup:one-stalled-file-read-cannot-outlive-the-bounded-wait"
+    },
+    {
+      "name": "S7 BoundStartSource drops the substitution and never seeds a virgin read with the captured boundary",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "    return this.inner.read(cursor ?? this.start);",
+      "replace": "    return this.inner.read(cursor);",
+      "expectRed": "bound:a-record-appended-in-the-adopt-to-first-read-window-is-published-for-retained-history",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-start-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "The smoke resolves @cotal-ai/connector-core through dist, so this mutation builds the changed source before grading and rebuilds the restored source afterwards, same as S4."
+    },
+    {
+      "name": "S8 BoundStartSource substitutes the captured boundary even when the caller already carries a real cursor",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "    return this.inner.read(cursor ?? this.start);",
+      "replace": "    return this.inner.read(this.start);",
+      "expectRed": "bound:a-log-that-already-carries-a-cursor-resumes-from-it-and-ignores-the-boundary",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-start-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "S9 BoundStartSource recomputes the boundary from the log's current end at the first real read instead of using the one captured before the mesh wait",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
+      "replace": "  async read(cursor: string | undefined): Promise<SourceRead<T>> {\n    if (cursor !== undefined) return this.inner.read(cursor);\n    const now = await this.inner.read(undefined);\n    return this.inner.read(now.cursor);\n  }",
+      "expectRed": "bound:a-record-appended-in-the-adopt-to-first-read-window-is-published-for-retained-history",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-start-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "Captures late instead of early: the boundary is re-read against the log's state AFTER the simulated mesh-wait window, so the appended record reads as already-consumed, the same silent drop the issue describes, reached from a different line than S7."
     }
   ]
 }

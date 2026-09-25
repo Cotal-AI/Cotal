@@ -274,9 +274,10 @@ session with no launch material and no required-policy fallback keeps the generi
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
-`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the current transcript
-boundary and do not republish retained history. Crash recovery follows the cursor already stored in
-the event write-ahead log, regardless of the new process's startup label.
+`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the transcript boundary
+captured at that adopt, before the mesh link connects, so nothing Claude appends while the connector
+is still starting up lands behind the cursor and is silently dropped. Crash recovery follows the
+cursor already stored in the event write-ahead log, regardless of the new process's startup label.
 
 Claude starts each hook in its own process, so a prompt or stop relay can reach Cotal before the
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`

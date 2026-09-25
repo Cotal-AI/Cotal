@@ -22,6 +22,7 @@ import {
   type OpenCodeMessageWithParts,
   type OpenCodePart,
 } from "../src/agui-source.js";
+import { BoundStartSource } from "@cotal-ai/connector-core";
 
 let pass = 0;
 let fail = 0;
@@ -192,6 +193,49 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   c("removal:and reported ONCE, not once per read, so it cannot bury the next one", seen.length === 1, seen.length);
 }
 
+// ---------------------------------------------------------------------------- the bound start
+{
+  // `BoundStartSource` captures the adopt boundary BEFORE the caller's mesh wait (see `plugin.ts`'s
+  // `newEventHolder`), so a part appended in that window is published on the first real read instead
+  // of being silently dropped by an ordinary lazy adopt.
+  let data = [assistant("msg_1", [text("prt_1", "msg_1")], 9)];
+  const session = new OpenCodeSessionSource({ read: async () => data });
+  const boundary = await session.read(undefined);
+  const bound = new BoundStartSource(session, boundary.cursor);
+  // Simulates the window between boundary capture and the first read: the mesh wait, WAL open,
+  // subject frontier, etc. all happen here in the real holder before the emitter's first read.
+  data = [...data, assistant("msg_2", [text("prt_2", "msg_2")], 9)];
+  const first = await bound.read(undefined);
+  c("bound:a-part-appended-in-the-adopt-to-first-read-window-is-published",
+    first.records.map((r) => r.value.part.id).join(",") === "prt_2", first.records.map((r) => r.value.part.id));
+}
+{
+  // A session with no prior history yet (OpenCode's equivalent of Claude's `startup`: nothing to
+  // adopt past) captures the empty boundary and still reads everything written after it, the same
+  // as an ordinary unbound adopt would.
+  let data: OpenCodeMessageWithParts[] = [];
+  const empty = new OpenCodeSessionSource({ read: async () => data });
+  const emptyBoundary = await empty.read(undefined);
+  const boundEmpty = new BoundStartSource(empty, emptyBoundary.cursor);
+  data = [assistant("msg_1", [text("prt_1", "msg_1")], 9)];
+  const startupLike = await boundEmpty.read(undefined);
+  c("bound:a-session-with-no-prior-history-still-adopts-at-the-empty-boundary-and-reads-what-follows",
+    startupLike.records.map((r) => r.value.part.id).join(",") === "prt_1", startupLike.records.length);
+}
+{
+  // A cursor already on the log (a resume persisted by a prior run BEFORE this capture) is the
+  // honest position and must pass straight through, never overridden by the captured boundary.
+  const data = [assistant("msg_1", [text("prt_1", "msg_1"), text("prt_2", "msg_1")], 9)];
+  const priorCursor = "msg_1:prt_1"; // as if a prior run's WAL already recorded this position
+  const session = new OpenCodeSessionSource({ read: async () => data });
+  const boundary = await session.read(undefined); // boundary lands after prt_2, well past priorCursor
+  const bound = new BoundStartSource(session, boundary.cursor);
+  const resumed = await bound.read(priorCursor);
+  c("bound:a-cursor-already-on-the-log-resumes-from-it-and-ignores-the-boundary",
+    resumed.records.map((r) => r.value.part.id).join(",") === "prt_2",
+    resumed.records.map((r) => r.value.part.id));
+}
+
 // ---------------------------------------------------------------------------- the real session
 {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -209,7 +253,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
     all.cursor === cursorOf({ part: last.parts.at(-1)!, message: last.info }), all.cursor);
 }
 
-const EXPECTED = 28;
+const EXPECTED = 31;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`agui-opencode-source smoke: ${pass} passed, ${fail} failed`);
