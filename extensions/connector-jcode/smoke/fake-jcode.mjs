@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
@@ -146,7 +146,7 @@ const foldJournal = () => {
   if (!journalPath || existsSync(`${journalPath}.folded`)) return;
   for (const path of sessionJournalPaths("fake-session")) {
     const records = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    writeFileSync(`${path}.json`, JSON.stringify({ messages: records }));
+    writeFileSync(join(dirname(path), `${basename(path, ".journal.jsonl")}.json`), JSON.stringify({ messages: records }));
     writeFileSync(path, "");
   }
   writeFileSync(`${journalPath}.folded`, "1");

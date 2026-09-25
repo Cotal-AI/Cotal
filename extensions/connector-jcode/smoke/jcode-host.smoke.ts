@@ -292,6 +292,7 @@ try {
   });
   let peerId: string | undefined;
   let foldPeerId: string | undefined;
+  const foldStatuses: string[] = [];
   let busyPeerId: string | undefined;
   let busyActivity = "";
   const announced = new Set<string>();
@@ -299,7 +300,10 @@ try {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
     if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
-    if (event.presence.card.name === "foldpeer") foldPeerId = event.presence.card.id;
+    if (event.presence.card.name === "foldpeer") {
+      foldPeerId = event.presence.card.id;
+      foldStatuses.push(event.presence.status ?? "");
+    }
     if (event.presence.card.name === "busypeer") {
       busyPeerId = event.presence.card.id;
       busyActivity = event.presence.activity ?? "";
@@ -397,7 +401,7 @@ try {
       FAKE_JCODE_APPEND_RECORDS: "1",
       FAKE_JCODE_TURN_DELAY_MS: "250",
       FAKE_JCODE_FOLD_AFTER_RECORD: "1",
-      FAKE_JCODE_FOLD_DELAY_MS: "100",
+      FAKE_JCODE_FOLD_DELAY_MS: "1000",
       FAKE_JCODE_FOLD_ON_CONTENT: "JCODE-JOURNAL-FOLD-1984",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
@@ -426,6 +430,7 @@ try {
   const foldStart = frames.length;
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
+  const foldStatusStart = foldStatuses.length;
   await waitFor(
     "Jcode journal fold priming turn",
     () =>
@@ -447,6 +452,10 @@ try {
   await waitFor(
     "Jcode journal fold priming event",
     () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED")) ? true : undefined,
+  );
+  await waitFor(
+    "Jcode journal fold priming idle",
+    () => foldStatuses.slice(foldStatusStart).includes("idle") ? true : undefined,
   );
   await operator.unicast(foldPeerId!, foldMarker);
   await waitFor(
