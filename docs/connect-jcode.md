@@ -197,6 +197,11 @@ journal under the seat's private home. The journal supplies a durable byte curso
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
+If Jcode folds the journal into its snapshot, the connector detects the replacement and emits a
+terminal `RUN_ERROR` with code `jcode_journal_fold` for the open event run. The seat remains up,
+but records lost during the fold are not reconstructed or republished. A missing journal without a
+fold snapshot remains an emitter failure and stops the seat with exit code 1.
+
 When the seat's mesh connection drops and the endpoint is rebuilding it, event publishing waits
 until the connection is live again and then publishes the queued records in order. The seat stays up
 through the outage. If the seat is stopped before the connection returns, the wait ends and the
