@@ -16,9 +16,9 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
@@ -425,6 +425,59 @@ try {
         && empty.out.includes("No selected mutation fixtures are assigned to shard ")
         && !empty.out.includes("no fixture config, suite, or guarded source intersects the diff"),
       empty?.out ?? "neither probe found an empty shard");
+  }
+
+  // Git may refresh and lock an index even for a status read. The scanner has to pass the guard to
+  // every git child, rather than relying on a caller's environment. The probe delegates to the real
+  // Git binary through its original PATH, so this is a shipped scanner invocation rather than a mock.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "console.log('green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
+          suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs",
+          mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "red" }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "README.md"), "unrelated\n"),
+    );
+    const probeBin = mkdtempSync(join(tmpdir(), "mutation-reproof-git-probe-"));
+    repos.push(probeBin);
+    const probe = join(probeBin, "git.env");
+    const originalPath = childEnv().PATH ?? "";
+    const wrapper = join(probeBin, "git");
+    writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "${"${GIT_OPTIONAL_LOCKS-ABSENT}"}" >> "$GIT_OPTIONAL_LOCKS_PROBE"\nPATH=${JSON.stringify(originalPath)} exec git "$@"\n`);
+    chmodSync(wrapper, 0o755);
+    const run = scan(root, base, head, {
+      ...childEnv(), PATH: `${probeBin}${delimiter}${originalPath}`, GIT_OPTIONAL_LOCKS_PROBE: probe,
+    });
+    const observed = existsSync(probe) ? readFileSync(probe, "utf8").trim().split("\n") : [];
+    check("git children receive GIT_OPTIONAL_LOCKS=0 through a real scanner invocation",
+      run.status === 0 && observed.length > 0 && observed.every((value) => value === "0"),
+      JSON.stringify({ status: run.status, observed, out: run.out }),
+    );
+  }
+
+  // The optional-lock guard must preserve the dirty-root refusal and its diagnostics.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "console.log('green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
+          suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs",
+          mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "red" }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "README.md"), "unrelated\n"),
+    );
+    writeFileSync(join(root, "dirty.txt"), "dirty\n");
+    const run = scan(root, base, head);
+    check("the dirty-root refusal output is unchanged",
+      run.status === 1 && run.out === "mutation reproof: UNMEASURED — root must be clean and checked out at the requested head before comparison\n?? dirty.txt\n",
+      JSON.stringify({ status: run.status, out: run.out }),
+    );
   }
 
   // #1582: the base the selector diffs from, under the ref CI actually checks out.

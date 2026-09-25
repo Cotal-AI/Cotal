@@ -1,0 +1,17 @@
+{
+  "name": "@cotal-ai/example-07-issue-orchestrator",
+  "version": "0.0.4",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "check": "tsx src/check.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cotal-ai/lang": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}

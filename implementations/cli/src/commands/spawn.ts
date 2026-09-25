@@ -57,6 +57,7 @@ import {
   spaceFlag,
   userAuthStateDir,
   workspaceSecretStore,
+  refreshRegistrationPolicy,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -390,7 +391,14 @@ async function spawnDetached(
     "control-caller-privileged",
     on,
   );
-  const eventsRequired = t.policy?.events === "required";
+  let policy: typeof t.policy;
+  try {
+    policy = await refreshRegistrationPolicy(t);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  const eventsRequired = policy?.events === "required";
   if (eventsRequired && events === false) {
     console.error(c.red(`✗ space "${t.space}" requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
@@ -564,7 +572,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
   // selected `current` mesh, a local project, or the registry's only running mesh.
   const target = await resolveTargetOrExit({ server: values.server, space: values.space });
-  const eventsRequired = target.policy?.events === "required";
+  let policy: typeof target.policy;
+  try {
+    policy = await refreshRegistrationPolicy(target);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
+  const eventsRequired = policy?.events === "required";
   if (eventsRequired && values["no-events"]) {
     console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
@@ -678,6 +693,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // durables and ledger row are keyed on ITS uid — a locally minted one can never match them.
   let lifecycleUid = mintLifecycleUid();
   let userAuth: LaunchOpts["userAuth"];
+  // Which user-auth arm produced `userAuth`: the REMOTE provisioning path (an enrollment or the
+  // advertised endpoint) or the local provider. The departure sentence below names what THAT arm's
+  // cleanup actually does (#1837): the local arm's cleanup revokes the row, the remote arm's
+  // shreds only this machine's credential files and leaves the mesh-side grant standing.
+  let remoteUserAuth = false;
   let userCleanup: (() => Promise<void>) | undefined;
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
@@ -738,6 +758,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl });
     userAuth = remote.userAuth;
     userCleanup = remote.cleanup;
+    remoteUserAuth = true;
     if (remote.material.subscribe) subscribe = remote.material.subscribe;
     if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
     if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
@@ -746,6 +767,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     const remote = await provisionRemoteUserForeground(target, name, { provisioningUrl: remoteProvisioningUrl });
     userAuth = remote.userAuth;
     userCleanup = remote.cleanup;
+    remoteUserAuth = true;
     // The mesh's grant is the authority on what this agent may read and post; the launch forwards
     // it verbatim so the session's runtime set matches the credentials it was actually issued.
     // A local --subscribe that the mesh did not grant would be a lie told to the connector.
@@ -906,7 +928,17 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(
       `spawning ${name}${role ? ` (${role})` : ""} on the mesh${connector.launchHint ? ` - ${connector.launchHint}` : ""}`,
     );
-    if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
+    if (userAuth) {
+      // The sentence names its own arm's departure (#1837). The LOCAL arm's cleanup revokes the
+      // row (provisionUserForeground → provider.revokeAgent), so "revoked automatically" is true
+      // there. The REMOTE arm's cleanup shreds only the local token/sentinel/health files; the
+      // grant lives in the mesh's ledger, where this machine holds no authority to revoke it, so
+      // the sentence says what does happen and names the one route that revokes it.
+      const revokeNote = remoteUserAuth
+        ? "(actor granted by the mesh; local credential files are removed when this process exits, and the grant stays until the mesh operator revokes it)"
+        : "(actor granted; revoked automatically when this process exits)";
+      console.error(c.dim(`  running as you: ${userAuth.owner}.${name} ${revokeNote}`));
+    }
     child = spawnProcess(spec.command, spec.args, {
       stdio: "inherit",
       // P3: only the connector-declared env (OS allow-list + identity + named model key) — never

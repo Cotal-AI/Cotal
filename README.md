@@ -85,7 +85,8 @@ server-side delivery daemon for durable delivery). `cotal up --open` gives you a
 live-only mesh with no auth.
 
 Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
-session you drive); then `cotal spawn david` and watch with `cotal console`.
+session you drive); then `cotal spawn david` and watch with `cotal web` (or `cotal console`
+in a terminal).
 
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent

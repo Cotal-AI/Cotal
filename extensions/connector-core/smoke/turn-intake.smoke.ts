@@ -242,8 +242,8 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     text.includes("the run context") && text.includes("at step /ask:size#0") && text.includes("estimate: number, tags: array") && text.includes("attempt 2 of 3"),
     text.slice(0, 400));
   check("the previous refusal is shown, so the seat knows what to fix", text.includes('refused: "estimate" wants number'), text.slice(0, 400));
-  check("the answer command names the run, the step and this seat",
-    text.includes("cotal run answer r1 /ask:size#0 --by seat --value"), text.slice(0, 400));
+  check("the answer command is the hosted form the manager accepts: run, step, value, and no caller-chosen `--by`",
+    text.includes("cotal run answer r1 /ask:size#0 --value") && !text.includes("--by"), text.slice(0, 400));
 }
 
 // ── 6b) an escalated checkpoint rides the same relay: the seat is shown the question it was asked ──
@@ -269,8 +269,8 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     text.includes("the run context") && text.includes("Ship it?") && text.includes("/checkpoint:approve#0") && text.includes("escalated to you"),
     text.slice(0, 400));
   check("the schema, when the checkpoint carries one, is shown as the record wanted", text.includes("approved: boolean"), text.slice(0, 400));
-  check("the answer command names the run, the step and this seat",
-    text.includes("cotal run answer r1 /checkpoint:approve#0 --by seat --value"), text.slice(0, 400));
+  check("the escalation answer command is the hosted form too, with no caller-chosen `--by`",
+    text.includes("cotal run answer r1 /checkpoint:approve#0 --value") && !text.includes("--by"), text.slice(0, 400));
 }
 
 // ── a pull that stops answering is SAID, once ────────────────────────────────────────────────

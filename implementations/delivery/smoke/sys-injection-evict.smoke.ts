@@ -26,6 +26,8 @@
  *   6  evict a principal that is not connected             → idempotent no-op (kicked:0, verifiedGone)
  *   7  observer + evictor from DIFFERENT system accounts   → torn-rotation refusal, BOTH paths
  *   8  no `$SYS` files and no `membership.json` on disk    → asserted before and after cells 1-2
+ *   9  observer only, zero live matches                    → verifiedGone, evictor key unread;
+ *      the same absent key against a LIVE match           → refuses, victim stays live
  *
  * POSITIVE CONTROLS (F4's discipline). Cells 3, 4, 5 and 7 each assert a REFUSAL, and a refusal is
  * also what a broken harness produces. Every one of them therefore restores the correct material and
@@ -419,6 +421,30 @@ try {
   const c6 = await evict(principalKey(DEV_OWNER, newIdentity().id).key);
   check("cell 6: evicting a not-live principal is an idempotent verified no-op (kicked:0, verifiedGone, complete scan)",
     c6.ok === true && c6.ev.kicked === 0 && c6.ev.verifiedGone === true && c6.ev.scanComplete === true, JSON.stringify(c6));
+
+  // ---------- CELL 9: observer present, evictor absent, zero live connections ----------
+  // A complete scan that matches nothing is verified-gone on its own. The evictor key is not read.
+  await storeA.delete(EVICTOR_KEY_A);
+  const readsBeforeZero = storeA.reads;
+  const c9 = await evict(principalKey(DEV_OWNER, newIdentity().id).key);
+  check("cell 9: an observer-only zero-match answers verified-gone under a complete scan",
+    c9.ok === true && c9.ev.kicked === 0 && c9.ev.verifiedGone === true && c9.ev.scanComplete === true, JSON.stringify(c9));
+  check("cell 9: the zero-match does not read the missing evictor key",
+    storeA.reads === readsBeforeZero + 1, { before: readsBeforeZero, after: storeA.reads });
+  // The live-match sibling of cell 4, stated on this same absent key: a match still refuses and
+  // the victim stays live. Restoring the key is the positive control.
+  const id9 = newIdentity();
+  const v9 = await connectVictim(await mintCreds(authA, id9, "operator"), id9.id);
+  const principal9 = principalKey(DEV_OWNER, id9.id).key;
+  const c9live = await evict(principal9);
+  check("cell 9: an observer-only LIVE match still refuses naming the evictor key",
+    c9live.ok === false && (c9live.error ?? "").includes(CONNECTION_EVICTOR_CREDS_KIND) && (c9live.error ?? "").includes(EVICTOR_KEY_A), JSON.stringify(c9live));
+  check("cell 9: that victim is STILL LIVE (a missing evictor never kills)", !v9.closed());
+  await storeA.put(EVICTOR_KEY_A, evictorA);
+  const c9ok = await evict(principal9);
+  check("cell 9 CONTROL: with the evictor key restored, the SAME live eviction succeeds and kicks",
+    c9ok.ok === true && (c9ok.ev.kicked ?? 0) >= 1 && c9ok.ev.verifiedGone === true, JSON.stringify(c9ok));
+  check("cell 9 CONTROL: that victim's connection actually dropped", await until(() => v9.closed(), 5000));
 
   // ---------- CELL 7: a TORN rotation — the two $SYS creds from different system accounts ----------
   // Closing this on the eviction path is one of the changes under test: the check used to live only

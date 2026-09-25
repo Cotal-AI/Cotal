@@ -310,7 +310,13 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
 
     const sendResize = () =>
       transport.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
-    const onInput = (d: Buffer) => {
+    const onInput = (data: Buffer | string) => {
+      // Under the console, Ink has called `stdin.setEncoding("utf8")`, and an encoding persists on
+      // the stream after Ink releases raw mode, so data arrives as a STRING there (the standalone
+      // command gets Buffers). Normalize first: the one-byte detach compare below would otherwise
+      // silently never match (a one-character string is not the number 0x1d), Ctrl-] would just
+      // forward to the child, and detaching from a console attach would be impossible.
+      const d = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
       if (d.length === 1 && d[0] === detach.byte) {
         clearWheel();
         transport.close();

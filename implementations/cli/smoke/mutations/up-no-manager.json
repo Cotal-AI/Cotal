@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "bin/smoke/up-stack-live.smoke.ts"
+  ],
+  "guard": "`cotal up --no-manager` brings up the broker and, in auth mode, the delivery daemon, and no manager: no manager pidfile is written, no manager process exists, while the broker and the delivery daemon answer. A refresh of a mesh whose manager is live under the flag refuses with the exact `cotal down manager` remedy instead of silently keeping or stopping one (#1417)",
+  "command": "pnpm smoke:up-stack:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-no-manager.json",
+  "why": [
+    "The suite drives the shipped binary (`tsx bin/cotal.ts`) on real JWT-authed brokers with pidfile + process liveness checks, so a mutant that re-adds `ensureManager` on the broker-only path is observed as a live manager process and its pidfile, not inferred from a source string.",
+    "The mutation removes exactly the broker-only early return in `ensureControlPlane`, leaving the delivery half and every refusal untouched, so a red must come from the no-manager cells: the summary line without `manager`, the absent pidfile, or the down path — each names what it asserts."
+  ],
+  "mutations": [
+    {
+      "name": "drop the flag's effect in ensureControlPlane (ensureManager runs anyway)",
+      "file": "implementations/cli/src/lib/delivery-proc.ts",
+      "find": "  if (o.noManager) return { running: false, responderBound: delivery.responderBound };\n",
+      "replace": "",
+      "expectRed": "broker-only up reports the exact running component set (no manager)",
+      "cell": "broker-only up reports the exact running component set (no manager)",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "With the early return gone, `ensureControlPlane` falls through to `ensureManager` under the flag too, so the section-4 boot spawns a live manager. The FIRST cell that can notice is the summary line — `✓ running in the background` then lists `manager`, so the exact-component-set cell named by expectRed throws on its regex — followed by `broker-only boot writes no manager pidfile` and `broker-only down leaves no manager pidfile behind` on the same cause (the throw aborts before they run; named here so the verdict cannot be argued from them). The refresh-refusal cells stay green under this mutant by design: the refusal reads the manager record BEFORE the control plane is ensured, so it proves the refresh guard, not the omission."
+    }
+  ]
+}

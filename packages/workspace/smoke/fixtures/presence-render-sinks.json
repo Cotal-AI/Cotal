@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 314,
-    "honest-text": 32,
+    "total": 387,
+    "honest-text": 34,
     "presence-only-glyph/count": 41,
     "command-ack": 10,
-    "non-render/control": 231
+    "non-render/control": 302
   },
   "renderers": [
     {
@@ -51,8 +51,29 @@
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "return r;",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "\"working\"",
+      "anchor": "ry {\n      if (prev !== \"working\" && status === \"working\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "\"working\" && status === \"working\") await this.ep.setCondi",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "one.\n      if (prev === \"working\" && status === \"idle\") t",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -78,7 +99,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -89,7 +110,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -109,12 +130,12 @@
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
-      "anchor": "`  \u2022 status: ${honestStatus(o.status)} \u00b7 attention: ${o.attention}`",
+      "anchor": "`  • status: ${honestStatus(o.status)} · attention: ${o.attention}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -125,46 +146,57 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "string {\n  return s === \"working\" ? \"\u25cf\" : s === \"waiting\"",
+      "anchor": "string {\n  return s === \"working\" ? \"●\" : s === \"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "\"working\" ? \"\u25cf\" : s === \"waiting\" ? \"\u25d0\" : s === \"idle\" ? ",
+      "anchor": "\"working\" ? \"●\" : s === \"waiting\" ? \"◐\" : s === \"idle\" ? ",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "\"waiting\" ? \"\u25d0\" : s === \"idle\" ? \"\u25cb\" : \"\u00b7\";\n}\n\n/** One",
+      "anchor": "\"waiting\" ? \"◐\" : s === \"idle\" ? \"○\" : \"·\";\n}\n\n/** One",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "progress = p.status === \"working\" ? \"working \u00b7 progress u",
+      "anchor": "progress = p.status === \"working\" ? `working${condition} ",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`${statusGlyph(p.status)} ${who} \u2014 ${progress}${p.activity ? `: ${p.activity}` : \"\"}${attn}${me}${mutedHint}${id}`",
+      "anchor": "`${p.status}${condition}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/src/tool-specs.ts",
-        "anchor": "const progress = p.status === \"working\" ? \"working \u00b7 progress unknown\" : p.status;"
+        "anchor": "const progress = p.status === \"working\" ? `working${condition} · progress unknown` : `${p.status}${condition}`;"
+      }
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : \"\"}${attn}${me}${mutedHint}${id}`",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "extensions/connector-core/src/tool-specs.ts",
+        "anchor": "const progress = p.status === \"working\" ? `working${condition} · progress unknown` : `${p.status}${condition}`;"
       }
     },
     {
@@ -177,14 +209,14 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`  \u2022 ${c.name}${c.role ? `/${c.role}` : \"\"} (${c.status}) \u2014 id: ${c.id}`",
+      "anchor": "`  • ${c.name}${c.role ? `/${c.role}` : \"\"} (${c.status}) — id: ${c.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`\"${e.target}\" is ambiguous \u2014 ${e.candidates.length} peers share that name. ` +\n                `Re-send cotal_dm with the exact instance id as \"to\":\\n${who}`",
+      "anchor": "`\"${e.target}\" is ambiguous — ${e.candidates.length} peers share that name. ` +\n                `Re-send cotal_dm with the exact instance id as \"to\":\\n${who}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -238,13 +270,6 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
-      "kind": "derived-output",
-      "anchor": "return r;",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
       "anchor": "`Couldn't yield: ${reply.error ?? \"manager refused\"}`",
@@ -254,16 +279,23 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`Turn yielded (${status}${to ? ` \u2192 ${to}` : \"\"}) \u2014 the run continues.`",
+      "anchor": "`Turn yielded (${status}${to ? ` → ${to}` : \"\"}) — the run continues.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "implementations/cli/src/commands/agents.ts",
+      "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "c.yellow(r.status) + c.dim(\" \" + fmtUptime(r.uptimeMs))",
+      "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
+      "class": "non-render/control",
+      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
@@ -273,7 +305,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working \u00b7 progress unknown/.test(ps.out), ps.out.slice(-1200));"
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
       }
     },
     {
@@ -291,13 +323,20 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working \u00b7 progress unknown/.test(ps.out), ps.out.slice(-1200));"
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
       }
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": "g\"\n          ? c.yellow(\"waiting\")\n          : c.cyan(r.m",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "c.yellow(r.status) + c.dim(\" \" + fmtUptime(r.uptimeMs))",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -314,6 +353,20 @@
       "anchor": "`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"}); agents will still be spared`",
+      "class": "non-render/control",
+      "rationale": "Manager control-path failure while gathering the best-effort pre-stop inventory, not a rendered agent presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`  ${facts.join(\"  ·  \")}`",
+      "class": "non-render/control",
+      "rationale": "Spared-agent inventory row containing lifecycle metadata and optional manager-reported process state, not an observed work-progress claim."
     },
     {
       "path": "implementations/cli/src/commands/down.ts",
@@ -353,7 +406,7 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "`\u2713 preserved state for \"${mesh.space}\"`",
+      "anchor": "`✓ preserved state for \"${mesh.space}\"`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -367,12 +420,12 @@
     {
       "path": "implementations/cli/src/commands/endpoints.ts",
       "kind": "derived-output",
-      "anchor": "`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${activity}`",
+      "anchor": "`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${condition}${activity}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -383,7 +436,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -410,12 +463,12 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "c.green(`\u2192 ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status)",
+      "anchor": "c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -426,7 +479,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -439,12 +492,12 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`${c.dim(\"\u2022\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity) : \"\"}`",
+      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -455,7 +508,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -466,7 +519,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -477,7 +530,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -488,8 +541,15 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "kind": "status-token",
+      "anchor": "dgedStatus = status === \"working\" ? \"working · progress u",
+      "class": "command-ack",
+      "rationale": "The working-only acknowledgement label explicitly distinguishes presence from unavailable progress observation."
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
@@ -506,7 +566,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -517,7 +577,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -526,13 +586,6 @@
       "anchor": "\"idle\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/join.ts",
-      "kind": "status-token",
-      "anchor": "dgedStatus = status === \"working\" ? \"working \u00b7 progress u",
-      "class": "command-ack",
-      "rationale": "The working-only acknowledgement label explicitly distinguishes presence from unavailable progress observation."
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
@@ -558,21 +611,14 @@
     {
       "path": "implementations/cli/src/commands/meshes-add.ts",
       "kind": "derived-output",
-      "anchor": "`\u2717 ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get(\"location\") ?? \"\")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`",
+      "anchor": "`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/meshes-add.ts",
       "kind": "derived-output",
-      "anchor": "`\u2717 the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/meshes-add.ts",
-      "kind": "derived-output",
-      "anchor": "`\u2717 the pinned exchange at ${base} answered /jwks with ${res.status}`",
+      "anchor": "`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -586,14 +632,14 @@
     {
       "path": "implementations/cli/src/commands/meshes.ts",
       "kind": "derived-output",
-      "anchor": "`\u2717 ${disco} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get(\"location\") ?? \"\")}) - a redirect can move the fetch onto plaintext or onto another host, so it is refused rather than followed; publish the discovery document at the URL you pass`",
+      "anchor": "`✗ ${disco} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get(\"location\") ?? \"\")}) - a redirect can move the fetch onto plaintext or onto another host, so it is refused rather than followed; publish the discovery document at the URL you pass`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/meshes.ts",
       "kind": "derived-output",
-      "anchor": "`\u2717 ${disco} answered ${res.status} - no discovery document there`",
+      "anchor": "`✗ ${disco} answered ${res.status} - no discovery document there`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -626,16 +672,422 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "implementations/cli/src/commands/setup.ts",
+      "path": "implementations/cli/src/commands/service.ts",
       "kind": "derived-output",
-      "anchor": "`mesh     ${dim(mesh.reachable ? `${mesh.server} \u00b7 space ${mesh.space}` : `down \u00b7 start: ${cmd} up --detach`)}`",
+      "anchor": "`cotal-manager@${spaceKey(mesh)}.service`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`ai.cotal.manager.${spaceKey(mesh)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "status(values)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`cotal-manager@${spaceKey(mesh)}.env`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`COTAL_SPACE=${mesh}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "return path;",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ry)\n    throw new Error(`no mesh named \"${mesh}\" is registered - bring it up (\\`cotal up\\`) or register it (\\`cotal meshes add\\`) before \\`cotal service install\\``);\n  const dir = join(st",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`${spaceSegment(mesh)}.json`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ry)\n    throw new Error(`no mesh named \"${mesh}\" is registered - bring it up (\\`cotal up\\`) or register it (\\`cotal meshes add\\`) before \\`cotal service install\\``);\n  const root = entry.",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`a manager for mesh \"${mesh}\" is already running (pid ${incumbent.pid}, started by \\`cotal up\\` or by hand) - stop it first: \\`cotal down manager\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`the recorded manager for mesh \"${mesh}\" cannot be attributed (${incumbent.state}) - resolve \\`${localProcessPath(MANAGER_PIDFILE, { root, space: mesh })}\\` before installing the service`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`# cotal-mesh: ${mesh}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`# cotal-root: ${root}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`Description=Cotal manager for mesh ${mesh}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`WorkingDirectory=${escapeSystemdSpecifiers(root)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`EnvironmentFile=${escapeSystemdSpecifiers(envFile)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "\", `# ${MARKER}`).marked)\n      throw new Error(`${path} already exists and was not written by \\`cotal service install\\` - remove it by hand if you want this command to own it`);\n    writeFileSync(path, body);\n    systemctl(",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`enabling ${unit} failed: ${started.output}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "c.green(`✓ service installed: ${unit}`) + c.dim(` - manager for mesh \"${mesh}\" under ${root} (env ${envFile})`)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`✓ service installed: ${unit}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "` - manager for mesh \"${mesh}\" under ${root} (env ${envFile})`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": " const path = join(dir, `${label}.plist`);\n    const stateDir = ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`<!-- cotal-mesh: ${mesh} -->`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`<!-- cotal-root: ${root} -->`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`  <key>Label</key><string>${label}</string>`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`  <key>WorkingDirectory</key><string>${esc(root)}</string>`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "esc(root)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`    <key>COTAL_SPACE</key><string>${esc(mesh)}</string>`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "esc(mesh)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`    <key>COTAL_SERVER</key><string>${esc(server)}</string>`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "esc(server)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`    <key>COTAL_HOME</key><string>${esc(stateDir)}</string>`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "esc(stateDir)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`    <key>XDG_CONFIG_HOME</key><string>${esc(join(stateDir, \"config\"))}</string>`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "- ${MARKER} -->`).marked)\n      throw new Error(`${path} already exists and was not written by \\`cotal service install\\` - remove it by hand if you want this command to own it`);\n    writeFileSync(path, body);\n    void envFi",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`loading ${path} failed: ${loaded.output}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "c.green(`✓ service installed: ${label}`) + c.dim(` - manager for mesh \"${mesh}\" under ${root}`)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`✓ service installed: ${label}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "` - manager for mesh \"${mesh}\" under ${root}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "serUnitDir(), unit);\n    if (!existsSync(path)) return out;\n    const fields = readUnitFields(path, \"# cota",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ")\n      throw new Error(`${path} carries no recorded mesh - it was not written by \\`cotal service install\\`; reinstall it under the mesh it should serve before removing or reading it as a service`);\n    const state = sys",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "join(launchAgentsDir(), `${label}.plist`);\n    if (!existsSync(p",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ", `${label}.plist`);\n    if (!existsSync(path)) return out;\n    const fields = readUnitFields(path, \"<!-- c",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ")\n      throw new Error(`${path} carries no recorded mesh - it was not written by \\`cotal service install\\`; reinstall it under the mesh it should serve before removing or reading it as a service`);\n    const listed = ru",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`  service not installed for mesh \"${s.mesh}\" - install with: cotal service install --mesh ${s.mesh}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`no service unit for mesh \"${mesh}\" at ${path} - nothing installed by \\`cotal service install\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ")\n      throw new Error(`${path} was not written by \\`cotal service install\\` (no provenance header) - this command refuses to remove operator-managed units`);\n    // Provenance key",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "al.\n    if (!fields.mesh)\n      throw new Error(`${path} carries no recorded mesh - it was not written by \\`cotal service install\\` (the marker alone is not ownership); this command refuses to remove it`);\n    if (fields.mesh !== mesh)\n      throw new",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ")\n      throw new Error(`${path} was installed for mesh \"${fields.mesh}\", not \"${mesh}\" - uninstall the unit under its own mesh name: \\`cotal service uninstall --mesh ${fields.mesh}\\``);\n    const stopped = s",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`disabling ${unit} failed: ${stopped.output}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`✓ service removed: ${unit}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": " const path = join(dir, `${label}.plist`);\n    if (!existsSync(p",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`no launchd agent for mesh \"${mesh}\" at ${path} - nothing installed by \\`cotal service install\\``",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ")\n      throw new Error(`${path} was not written by \\`cotal service install\\` (no provenance header) - this command refuses to remove operator-managed units`);\n    // Same mesh-pinn",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "on.\n    if (!fields.mesh)\n      throw new Error(`${path} carries no recorded mesh - it was not written by \\`cotal service install\\` (the marker alone is not ownership); this command refuses to remove it`);\n    if (fields.mesh !== mesh)\n      throw new",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ")\n      throw new Error(`${path} was installed for mesh \"${fields.mesh}\", not \"${mesh}\" - uninstall the unit under its own mesh name: \\`cotal service uninstall --mesh ${fields.mesh}\\``);\n    const unloaded = ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`unloading ${path} failed: ${unloaded.output}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`✓ service removed: ${label}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/setup.ts",
       "kind": "derived-output",
-      "anchor": "`${mesh.server} \u00b7 space ${mesh.space}`",
+      "anchor": "`mesh     ${dim(mesh.reachable ? `${mesh.server} · space ${mesh.space}` : `down · start: ${cmd} up --detach`)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "`${mesh.server} · space ${mesh.space}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -649,12 +1101,12 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "derived-output",
-      "anchor": "`    ${statusBadge(p.status)}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : \"\"}`",
+      "anchor": "`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -665,7 +1117,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -769,7 +1221,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              wide={!narrow}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canWrite ? handleKill : undefined}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
+      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              wide={!narrow}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -818,14 +1270,56 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "d={mesh.feed}\n          agents={mesh.agents}\n          variant={topo",
+      "anchor": "d={mesh.feed}\n          agents={mesh.agents}\n          membership={m",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": ".feed}\n          agents={mesh.agents}\n          variant={topo",
+      "anchor": ".feed}\n          agents={mesh.agents}\n          membership={m",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "membership={mesh.membership}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh.membership}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "channels={mesh.channels}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh.channels}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "nameOf={mesh.nameOf}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh.nameOf}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -854,6 +1348,20 @@
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.endpoints}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "harness={harness}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{harness}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -895,7 +1403,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : palette.active ? (\n        <CommandPalette\n          active={palette.active}\n          query={palette.query}\n          snapshot={mesh}\n          canWrite={!!canWrite}\n          width={size.cols}\n          onChange={(q) => setPalette((p) => ({ ...p, query: q }))}\n          onRun={runPaletteLine}\n          onCancel={() => setPalette({ active: false, query: \"\" })}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
+      "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : palette.active ? (\n        <CommandPalette\n          active={palette.active}\n          query={palette.query}\n          snapshot={mesh}\n          canWrite={!!canWrite}\n          canControl={!!canControl}\n          width={size.cols}\n          onChange={(q) => setPalette((p) => ({ ...p, query: q }))}\n          onRun={runPaletteLine}\n          onCancel={() => setPalette({ active: false, query: \"\" })}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -970,6 +1478,24 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
+      "path": "implementations/cli/src/console/commands.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/commands.ts",
+      "kind": "derived-output",
+      "anchor": "`${a.name}${role} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${mesh} · up ${Math.round(a.uptimeMs / 60000)}m`",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/cli/smoke/console-status-row.smoke.ts",
+        "anchor": "check(\"a working seat renders `mesh working · progress unknown`\", working.includes(\"mesh working · progress unknown\"), working);"
+      }
+    },
+    {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "indexed-map",
       "anchor": "STATUS[status]",
@@ -993,23 +1519,23 @@
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "derived-output",
-      "anchor": "{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}",
+      "anchor": "{s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")}",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Detail.tsx",
-        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}</Text>"
+        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")}</Text>"
       }
     },
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "derived-output",
-      "anchor": "s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")",
+      "anchor": "s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Detail.tsx",
-        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}</Text>"
+        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")}</Text>"
       }
     },
     {
@@ -1043,7 +1569,7 @@
     {
       "path": "implementations/cli/src/console/ui/Dm.tsx",
       "kind": "indexed-map",
-      "anchor": "              {\"  \u21b3 \" + STATUS[c.status].dot + \" \" + c.with + ro",
+      "anchor": "              {\"  ↳ \" + STATUS[c.status].dot + \" \" + c.with + ro",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1089,14 +1615,14 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{(isAgent ? s.dot : \"\u2699\") + \" \" + p.card.name + kind + act + \"  \" + age}",
+      "anchor": "{(isAgent ? s.dot : \"⚙\") + \" \" + p.card.name + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "(isAgent ? s.dot : \"\u2699\") + \" \" + p.card.name + kind + act + \"  \" + age",
+      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + p.card.name + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1117,7 +1643,7 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{isAgent ? s.dot : \"\u2699\"}",
+      "anchor": "{isAgent ? s.dot : \"⚙\"}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1205,21 +1731,21 @@
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.connected ? \"\u25cf \" : \"\u2a2f \"}",
+      "anchor": "{status.connected ? \"● \" : \"⨯ \"}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s\"}",
+      "anchor": "{status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s\"",
+      "anchor": "status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1324,7 +1850,7 @@
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
       "kind": "indexed-map",
-      "anchor": "n.role : \"\";\n    return STATUS[n.status ?? \"offline\"].dot + \" \" + trunc(n.nam",
+      "anchor": "iber (> / *)\n    return STATUS[n.status ?? \"offline\"].dot + \" \" + trunc(n.nam",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1334,6 +1860,20 @@
       "anchor": "turn STATUS[n.status ?? \"offline\"].dot + \" \" + trunc(n.na",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "status-token",
+      "anchor": "| (agentNode?.status ?? \"offline\") === \"offline\";\n    con",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "status-token",
+      "anchor": "tatus ?? \"offline\") === \"offline\";\n    const row = hubRow",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
@@ -1450,7 +1990,7 @@
     {
       "path": "implementations/cli/src/console/ui/topo/model.ts",
       "kind": "derived-output",
-      "anchor": "src.key + \"\u2192\" + dst.key",
+      "anchor": "src.key + \"→\" + dst.key",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1469,6 +2009,13 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
+      "path": "implementations/cli/src/lib/seat-restore.ts",
+      "kind": "derived-output",
+      "anchor": "`seat ${seat.name}: the restored tree reports a different status than the checkpoint recorded\\n  recorded: ${JSON.stringify(seat.checkpoint.repository.status)}\\n  restored: ${JSON.stringify(status)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
       "anchor": "`nats-server (pid ${status.pid})`",
@@ -1478,7 +2025,7 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`\u2713 running in the background: ${components.join(\", \")} - stop with: cotal down`",
+      "anchor": "`✓ running in the background: ${components.join(\", \")} - stop with: cotal down`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1504,7 +2051,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -1515,7 +2062,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -1526,7 +2073,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -1537,7 +2084,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -1548,7 +2095,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -1559,7 +2106,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"\u25cf working \u00b7 progress unknown\");"
+        "anchor": "return c.green(\"● working · progress unknown\");"
       }
     },
     {
@@ -1670,14 +2217,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`<div class=\"peer ${p.status}${nav}\"${attrs}>\n    <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cb\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\">\n        <span class=\"name\">${esc(p.name)}</span>\n        ${p.harness ? harnessBadge(p.harness, { compact: true }) : \"\"}\n        ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n        ${attentionChip(p.attention, { compact: true })}\n        ${p.tag ? `<span class=\"tag\">${esc(p.tag)}</span>` : \"\"}\n      </div>\n      ${p.act ? `<div class=\"act\" title=\"${esc(p.act)}\">${esc(p.act)}</div>` : \"\"}\n    </div>\n  </div>`",
+      "anchor": "`<div class=\"peer ${p.status}${nav}\"${attrs}>\n    <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\">\n        <span class=\"name\">${esc(p.name)}</span>\n        ${p.harness ? harnessBadge(p.harness, { compact: true }) : \"\"}\n        ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n        ${attentionChip(p.attention, { compact: true })}\n        ${p.tag ? `<span class=\"tag\">${esc(p.tag)}</span>` : \"\"}\n      </div>\n      ${p.act ? `<div class=\"act\" title=\"${esc(p.act)}\">${esc(p.act)}</div>` : \"\"}\n    </div>\n  </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "indexed-map",
-      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cb\"}</span>\n    <div",
+      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n    <div",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1698,28 +2245,28 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "  return r ? r.status : \"offline\";\n}\n// id\u2192name resolutio",
+      "anchor": "  return r ? r.status : \"offline\";\n}\n// id→name resolutio",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`<div class=\"dm${expanded ? \" sel\" : \"\"}\" data-dm=\"${esc(p.id)}\">\n    <span class=\"caret\">${expanded ? \"\u25be\" : \"\u25b8\"}</span>\n    <span class=\"l\">\n      <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cb\"}</span>\n      <span class=\"nm\">${esc(p.name)}</span>\n      ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n    </span>\n    ${p.unread ? `<span class=\"mention\">${p.unread}</span>` : \"\"}\n    ${expanded ? \"\" : `<span class=\"threads\">${plural(p.threads, \"thread\")}</span>`}\n  </div>`",
+      "anchor": "`<div class=\"dm${expanded ? \" sel\" : \"\"}\" data-dm=\"${esc(p.id)}\">\n    <span class=\"caret\">${expanded ? \"▾\" : \"▸\"}</span>\n    <span class=\"l\">\n      <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n      <span class=\"nm\">${esc(p.name)}</span>\n      ${p.role ? `<span class=\"role\">${esc(p.role)}</span>` : \"\"}\n    </span>\n    ${p.unread ? `<span class=\"mention\">${p.unread}</span>` : \"\"}\n    ${expanded ? \"\" : `<span class=\"threads\">${plural(p.threads, \"thread\")}</span>`}\n  </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "indexed-map",
-      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cb\"}</span>\n      <s",
+      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"○\"}</span>\n      <s",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`<div class=\"dm sub${sel ? \" sel\" : \"\"}\" data-dm=\"${esc(peer)}${SEP}${esc(c.with)}\">\n    <span class=\"ln\">\u21b3</span>\n    <span class=\"l\">\n      <span class=\"dot ${c.status}\">${GLYPH[c.status] ?? \"\u25cb\"}</span>\n      <span class=\"nm\">${esc(c.withName ?? c.with)}</span>\n      ${c.role ? `<span class=\"role\">${esc(c.role)}</span>` : \"\"}\n    </span>\n    ${c.unread ? `<span class=\"mention\">${c.unread}</span>` : \"\"}\n  </div>`",
+      "anchor": "`<div class=\"dm sub${sel ? \" sel\" : \"\"}\" data-dm=\"${esc(peer)}${SEP}${esc(c.with)}\">\n    <span class=\"ln\">↳</span>\n    <span class=\"l\">\n      <span class=\"dot ${c.status}\">${GLYPH[c.status] ?? \"○\"}</span>\n      <span class=\"nm\">${esc(c.withName ?? c.with)}</span>\n      ${c.role ? `<span class=\"role\">${esc(c.role)}</span>` : \"\"}\n    </span>\n    ${c.unread ? `<span class=\"mention\">${c.unread}</span>` : \"\"}\n  </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1733,14 +2280,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"\u25cf\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>${m.role ? `<span class=\"role\">${esc(m.role)}</span>` : \"\"}</div>\n      ${bodyBlock(m.body)}\n      ${m.thread ? `<span class=\"thread\">${esc(m.thread)}</span>` : \"\"}\n    </div>\n  </div>`",
+      "anchor": "`<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>${m.role ? `<span class=\"role\">${esc(m.role)}</span>` : \"\"}</div>\n      ${bodyBlock(m.body)}\n      ${m.thread ? `<span class=\"thread\">${esc(m.thread)}</span>` : \"\"}\n    </div>\n  </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "indexed-map",
-      "anchor": "<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"\u25cf\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>",
+      "anchor": "<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.who)}</span>",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1754,14 +2301,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "$(\"center\").innerHTML = `\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">\ud83d\udc65 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">\u2726 summarize</span><span class=\"chip static\" title=\"demo only\">\ud83d\udd15 mute</span>` : \"\"}\n          ${isDemo ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">\ud83d\uddd1 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
+      "anchor": "$(\"center\").innerHTML = `\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">\ud83d\udc65 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">\u2726 summarize</span><span class=\"chip static\" title=\"demo only\">\ud83d\udd15 mute</span>` : \"\"}\n          ${isDemo ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">\ud83d\uddd1 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
+      "anchor": "`\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1775,14 +2322,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"\u25cf\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m.who)}</span><span class=\"dir\">\u2192 ${esc(to)}</span></div>\n      <div class=\"body md\">${MD.render(m.body)}</div>\n    </div>\n  </div>`",
+      "anchor": "`<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m.who)}</span><span class=\"dir\">→ ${esc(to)}</span></div>\n      <div class=\"body md\">${MD.render(m.body)}</div>\n    </div>\n  </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "indexed-map",
-      "anchor": "<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"\u25cf\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m",
+      "anchor": "<div class=\"cmsg\">\n    <span class=\"ts\">${esc(m.ts)}</span>\n    <span class=\"dot ${m.status}\">${GLYPH[m.status] ?? \"●\"}</span>\n    <div class=\"c\">\n      <div class=\"l1\"><span class=\"who\">${esc(m.whoName ?? m",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1810,7 +2357,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`${esc(progress)} \u00b7 heartbeat ${esc(ago(p.ts))} ago`",
+      "anchor": "`${esc(progress)} · heartbeat ${esc(ago(p.ts))} ago`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1824,14 +2371,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`\n    <div class=\"detail${waiting ? \" amber\" : \"\"}\">\n      <div class=\"d-head\">\n        <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cf\"}</span>\n        <span class=\"d-status\">${esc(waiting ? \"WAITING\" : p.status)}</span>\n        <span class=\"d-age\">${since}</span>\n      </div>\n      <div class=\"d-who\">${who}</div>\n      ${badges ? `<div class=\"d-badges\">${badges}</div>` : \"\"}\n      ${desc}\n      ${blocked}\n      ${sec(\"Channel attention\", channelModes)}\n      ${sec(\"Tags\", tags)}\n      ${sec(\"Skills\", skills)}\n      ${sec(\"Metadata\", metaKv)}\n      <div class=\"d-foot\"><span class=\"d-foot-item id\">${esc(card.id)}</span>${proto}</div>\n    </div>`",
+      "anchor": "`\n    <div class=\"detail${waiting ? \" amber\" : \"\"}\">\n      <div class=\"d-head\">\n        <span class=\"dot ${p.status}\">${GLYPH[p.status] ?? \"●\"}</span>\n        <span class=\"d-status\">${esc(waiting ? \"WAITING\" : p.status)}</span>\n        <span class=\"d-age\">${since}</span>\n      </div>\n      <div class=\"d-who\">${who}</div>\n      ${badges ? `<div class=\"d-badges\">${badges}</div>` : \"\"}\n      ${desc}\n      ${blocked}\n      ${sec(\"Channel attention\", channelModes)}\n      ${sec(\"Tags\", tags)}\n      ${sec(\"Skills\", skills)}\n      ${sec(\"Metadata\", metaKv)}\n      <div class=\"d-foot\"><span class=\"d-foot-item id\">${esc(card.id)}</span>${proto}</div>\n    </div>`",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "indexed-map",
-      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"\u25cf\"}</span>\n        ",
+      "anchor": "ass=\"dot ${p.status}\">${GLYPH[p.status] ?? \"●\"}</span>\n        ",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -1880,14 +2427,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "8\", who: \"bob\", status: \"working\", body: \"on it \u2014 grabbin",
+      "anchor": "8\", who: \"bob\", status: \"working\", body: \"on it — grabbin",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": ", who: \"alice\", status: \"waiting\", body: \"\ud83d\ude4f thanks \u2014 I'l",
+      "anchor": ", who: \"alice\", status: \"waiting\", body: \"🙏 thanks — I'l",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1901,7 +2448,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": ", who: \"alice\", status: \"waiting\", body: \"yes please \u2014 a ",
+      "anchor": ", who: \"alice\", status: \"waiting\", body: \"yes please — a ",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1922,7 +2469,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "\", who: \"dave\", status: \"working\", body: \"ty \u2014 running th",
+      "anchor": "\", who: \"dave\", status: \"working\", body: \"ty — running th",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1950,7 +2497,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": "ole: \"builder\", status: \"working\", act: \"writing tests \u00b7 ",
+      "anchor": "ole: \"builder\", status: \"working\", act: \"writing tests · ",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1964,7 +2511,7 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "status-token",
-      "anchor": ": \"researcher\", status: \"idle\", act: \"\u2014\", harness: \"op",
+      "anchor": ": \"researcher\", status: \"idle\", act: \"—\", harness: \"op",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -2251,37 +2798,37 @@
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">\u2715</span>\n        <div class=\"d-kind\">channel</div>\n        <div class=\"d-who\">#${esc(sel.name)}</div>\n        ${sel.desc ? `<div class=\"d-block\">${esc(sel.desc)}</div>` : \"\"}\n        <div class=\"d-rows\">\n          <div class=\"d-row\"><span class=\"k\">subscribers</span><span class=\"v\">${hiddenOff ? `${mem.length} shown <span style=\"color:var(--faint)\">+${hiddenOff} offline hidden</span>` : `${mem.length} agent${mem.length === 1 ? \"\" : \"s\"}`}</span></div>\n          <div class=\"d-row\"><span class=\"k\">messages</span><span class=\"v\">${sel.msgs || 0}</span></div>\n          ${deliveryRow}\n          ${replayRow}\n        </div>\n        <div class=\"d-section\"><div class=\"d-label\">members</div>${memberList}</div>\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.chan === sel.name)}</div></div>`",
+      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">channel</div>\n        <div class=\"d-who\">#${esc(sel.name)}</div>\n        ${sel.desc ? `<div class=\"d-block\">${esc(sel.desc)}</div>` : \"\"}\n        <div class=\"d-rows\">\n          <div class=\"d-row\"><span class=\"k\">subscribers</span><span class=\"v\">${hiddenOff ? `${mem.length} shown <span style=\"color:var(--faint)\">+${hiddenOff} offline hidden</span>` : `${mem.length} agent${mem.length === 1 ? \"\" : \"s\"}`}</span></div>\n          <div class=\"d-row\"><span class=\"k\">messages</span><span class=\"v\">${sel.msgs || 0}</span></div>\n          ${deliveryRow}\n          ${replayRow}\n        </div>\n        <div class=\"d-section\"><div class=\"d-label\">members</div>${memberList}</div>\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.chan === sel.name)}</div></div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "`<span class=\"x\" id=\"dx\">\u2715</span>\n        <div class=\"d-kind\">channel</div>\n        <div class=\"d-who\">#${esc(sel.name)}</div>\n        ${sel.desc ? `<div class=\"d-block\">${esc(sel.desc)}</div>` : \"\"}\n        <div class=\"d-rows\">\n          <div class=\"d-row\"><span class=\"k\">subscribers</span><span class=\"v\">${hiddenOff ? `${mem.length} shown <span style=\"color:var(--faint)\">+${hiddenOff} offline hidden</span>` : `${mem.length} agent${mem.length === 1 ? \"\" : \"s\"}`}</span></div>\n          <div class=\"d-row\"><span class=\"k\">messages</span><span class=\"v\">${sel.msgs || 0}</span></div>\n          ${deliveryRow}\n          ${replayRow}\n        </div>\n        <div class=\"d-section\"><div class=\"d-label\">members</div>${memberList}</div>\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.chan === sel.name)}</div></div>`",
+      "anchor": "`<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">channel</div>\n        <div class=\"d-who\">#${esc(sel.name)}</div>\n        ${sel.desc ? `<div class=\"d-block\">${esc(sel.desc)}</div>` : \"\"}\n        <div class=\"d-rows\">\n          <div class=\"d-row\"><span class=\"k\">subscribers</span><span class=\"v\">${hiddenOff ? `${mem.length} shown <span style=\"color:var(--faint)\">+${hiddenOff} offline hidden</span>` : `${mem.length} agent${mem.length === 1 ? \"\" : \"s\"}`}</span></div>\n          <div class=\"d-row\"><span class=\"k\">messages</span><span class=\"v\">${sel.msgs || 0}</span></div>\n          ${deliveryRow}\n          ${replayRow}\n        </div>\n        <div class=\"d-section\"><div class=\"d-label\">members</div>${memberList}</div>\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.chan === sel.name)}</div></div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">\u2715</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
+      "anchor": "el.innerHTML = `<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/web/src/web/graph.js",
-        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : sel.status)}</div>"
+        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>"
       }
     },
     {
       "path": "implementations/web/src/web/graph.js",
       "kind": "derived-output",
-      "anchor": "`<span class=\"x\" id=\"dx\">\u2715</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
+      "anchor": "`<span class=\"x\" id=\"dx\">✕</span>\n        <div class=\"d-kind\">agent</div>\n        <div class=\"d-who\">${esc(sel.name)}${sel.role ? `<span class=\"role\">${esc(sel.role)}</span>` : \"\"}</div>\n        <div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>\n        ${descBlock}\n        <div class=\"d-section\"><div class=\"d-label\">activity</div><div class=\"d-block ${sel.activity ? \"\" : \"muted\"}\">${esc(sel.activity || \"no current activity\")}</div></div>\n        ${(harnessRow || modelRow || attRow) ? `<div class=\"d-rows\">${harnessRow}${modelRow}${attRow}</div>` : \"\"}\n        <div class=\"d-section\"><div class=\"d-label\">subscribes</div>${subs}</div>\n        ${modesSection}\n        ${tagsSection}\n        <div class=\"d-section\"><div class=\"d-label\">recent</div><div class=\"d-msgs\">${recentRows((m) => m.from === sel.name || m.to === sel.name)}</div></div>`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/web/src/web/graph.js",
-        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working \u00b7 progress unknown\" : sel.status)}</div>"
+        "anchor": "<div class=\"d-status ${sel.status}\"><span class=\"dot\"></span>${esc(sel.status === \"working\" && sel.progress?.kind === \"unknown\" ? \"working · progress unknown\" : sel.status)}</div>"
       }
     },
     {
@@ -2318,34 +2865,6 @@
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "extensions/connector-core/src/tool-specs.ts",
-      "kind": "derived-output",
-      "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
-      "class": "non-render/control",
-      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
-    },
-    {
-      "path": "extensions/connector-core/src/tool-specs.ts",
-      "kind": "derived-output",
-      "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
-      "class": "non-render/control",
-      "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/down.ts",
-      "kind": "derived-output",
-      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"}); agents will still be spared`",
-      "class": "non-render/control",
-      "rationale": "Manager control-path failure while gathering the best-effort pre-stop inventory, not a rendered agent presence status."
-    },
-    {
-      "path": "implementations/cli/src/commands/down.ts",
-      "kind": "derived-output",
-      "anchor": "`  ${facts.join(\"  ·  \")}`",
-      "class": "non-render/control",
-      "rationale": "Spared-agent inventory row containing lifecycle metadata and optional manager-reported process state, not an observed work-progress claim."
     }
   ]
 }

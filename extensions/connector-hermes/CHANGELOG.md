@@ -1,5 +1,20 @@
 # @cotal-ai/connector-hermes
 
+## 0.54.0
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
 ## 0.50.1
 
 ### Patch Changes

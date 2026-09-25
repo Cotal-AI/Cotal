@@ -122,7 +122,7 @@ try {
 
   console.log("1. the run instrument spawns a seat on the auth mesh, and it joins presence under its minted credential");
   const spawnGoal = "spawn-seat".padEnd(43, "s");
-  const spawned = await call("spawn", { name: "seat", agent: "turn-stub", cwd: repoRoot }, { id: spawnGoal }).then((r) => r.reply, asValue);
+  const spawned = await call("spawn", { name: "seat", agent: "turn-stub", cwd: repoRoot, events: false }, { id: spawnGoal }).then((r) => r.reply, asValue);
   const readiness = await resultOf(spawnGoal, 60_000);
   check("the seat started (its spawn goal succeeded on a real presence join)",
     (spawned as { ok?: boolean }).ok === true && readiness?.state === "succeeded", { spawned, readiness });

@@ -35,8 +35,11 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  information the daemon can do without: it cannot derive the transport itself (see the note at
  *  the argv site), and omitting it leaves a standing-credential daemon connecting
  *  plaintext-capable to a TLS broker while looking entirely healthy.
- *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number };
+ *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager.
+ *  `noManager` (#1417) is broker-only mode: ensure the delivery daemon and NOT the manager. The
+ *  caller that sets it has already refused it against a live manager (a refresh under the flag
+ *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either. */
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean };
 
 /** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
@@ -378,7 +381,11 @@ export async function stopDelivery(
  *  (auth only, fails closed on a live old manager) → manager (lifecycle, writes the delivery-aware
  *  marker). The manager no longer depends on the daemon (it hosts no Plane-3), so the daemon is started
  *  first only to close the old-manager double-bind window and so freshly-spawned agents find the
- *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only). */
+ *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only).
+ *  `noManager` (#1417) stops after the daemon: a broker-only host gets delivery (auth mode) and no
+ *  manager, so there is no manager pidfile to leave stale and no slot to strand. The preflight still
+ *  runs above it — an old Plane-3-hosting manager must not double-bind the daemon's durables even on a
+ *  host that wants no manager of its own. */
 export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean; responderBound?: boolean }> {
   // One space for all three steps. The preflight used to resolve its own from the cwd while the two
   // ensures took `o.space`; with per-space records that would preflight one tenant's manager and then
@@ -390,6 +397,7 @@ export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boole
   // dependency every spawn/retirement/join needs had not come up — the boot line inside
   // `ensureDelivery` was the only trace, and it read as a progress note.
   const delivery = await ensureDelivery({ ...o, space });
+  if (o.noManager) return { running: false, responderBound: delivery.responderBound };
   const manager = await ensureManager({ ...o, space });
   return { ...manager, responderBound: delivery.responderBound };
 }

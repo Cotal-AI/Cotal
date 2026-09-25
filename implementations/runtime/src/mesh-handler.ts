@@ -2404,6 +2404,18 @@ export class MeshHandler {
       ]);
     } finally {
       wait.over = true;
+      // THE PUMP IS DRAINED BEFORE THE SETTLE RETURNS (#1460). The race above has already decided
+      // — the fact, the failure, or the cancellation is this call's answer — but the pump's
+      // in-flight `takeFire` is a journal replay under the run's takeover id, created, read and
+      // deleted inside one `replayRunJournal` call with nothing serialising it across two
+      // authorities for the same run and lease. A settle that returned past it let a completed
+      // `driveRun` hold the replay open after it resolved, and the next reader under the same
+      // takeover hit `RunJournalReplayRaced` about a driver that did not exist. So only the RETURN
+      // is delayed, until the pump has ended: `wait.over` stops it after its current `takeFire`
+      // without starting another, and awaiting it here means no pump fire is left in flight on any
+      // exit. A pump that FAILED raises through this await on its way out, exactly as it did
+      // through the race; the settle's own answer is decided either way and is what this returns.
+      await pump;
     }
   }
 
@@ -2431,6 +2443,12 @@ export class MeshHandler {
   private async pumpFires(ref: CheckpointRef, wait: { over: boolean }): Promise<void> {
     while (!wait.over) {
       await this.takeFire(ref);
+      // THE FLAG IS RE-READ AFTER THE FIRE, before the poll sleeps (#1460): `takeFire` is a journal
+      // replay under the run's takeover id, so the wait can have ENDED while this one was in
+      // flight — and a pump that slept another poll on a wait that is over keeps exactly one more
+      // fire in flight past the drain `settleOnce` awaits. Checked here, the pump ends right after
+      // its current fire without starting another.
+      if (wait.over) break;
       // Unrefed: the loop is ended by the flag, not by this timer, and a wait that is already over
       // must not hold the process open for one more poll on its way out.
       await new Promise((r) => setTimeout(r, FIRE_POLL_MS).unref());

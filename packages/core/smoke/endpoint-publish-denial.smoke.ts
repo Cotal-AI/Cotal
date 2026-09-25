@@ -1,7 +1,8 @@
 /**
  * A broker publish violation on an instance-pinned rail must surface as
- * `permission-denied` naming the refused subject, not as an unanswered deadline.
- * Covers describe AND invoke/`epCall`. Does not mint `ep.inst.*` grants.
+ * `permission-denied` naming the refused subject, not as an unanswered deadline, a successful
+ * cast, or a silent `unknown`. Covers describe, invoke/`epCall`, `epCast`, and
+ * `epProbeInstanceInterest`. Does not mint `ep.inst.*` grants.
  *
  * Run: pnpm smoke:ep-publish-denial:auth
  */
@@ -9,11 +10,11 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { connect, PermissionViolationError } from "@nats-io/transport-node";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import {
-  compileContract, createSpaceAuth, describeEndpoint, DEV_OWNER, EpEnvelopeError, epCall,
-  invokeCommand, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig,
+  compileContract, createSpaceAuth, describeEndpoint, DEV_OWNER, EpEnvelopeError, epCall, epCast,
+  epProbeInstanceInterest, invokeCommand, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig,
   standaloneConnectOpts, unansweredRequest, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -32,7 +33,7 @@ const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(srv, dir);
+const releaseBroker = teardownOnSignal(srv);
 const IID = "i".repeat(26);
 const empty = compileContract({ root: { type: "null" } });
 const DEADLINE_MS = 800;
@@ -116,14 +117,58 @@ try {
   console.log(`   listeners before=${before} after ${ROUNDS} denied invokes=${after}`);
   check(`${ROUNDS} denied invokes leave the listener count where they found it`, after === before, { before, after });
 
+  console.log("4. the same rule on cast and liveness probe: a refused publish is a refusal, never success or silence");
+  // An INDEPENDENT status iterator on the same connection records what the broker actually said,
+  // so the cells assert against observed truth rather than against the verbs' own reports.
+  const violations: string[] = [];
+  const seen = nc.status();
+  void (async () => { for await (const s of seen) if (s.type === "error" && s.error instanceof PermissionViolationError) violations.push(`${s.error.subject}`); })().catch(() => {});
+
+  const cast = await caught(() => epCast(nc, space, { mode: "inst", instanceId: IID }, {
+    endpoint: "manager", command: "status", contract: { input: empty, output: empty }, caller,
+  }, { deadlineMs: DEADLINE_MS }));
+  const castAllowed = await caught(() => epCast(nc, space, { mode: "one" }, {
+    endpoint: "manager", command: "status", contract: { input: empty, output: empty }, caller,
+  }));
+  check("a denied cast is permission-denied naming the refused subject, not success",
+    cast.code === "permission-denied" && cast.message.includes(`.ep.inst.manager.${IID}.status.`), cast);
+  check("the broker DID refuse the cast publish (independent iterator saw the subject)",
+    violations.some((s) => s.includes(`.ep.inst.manager.${IID}.status.`)), violations);
+
+  const probe = await caught(() => epProbeInstanceInterest(nc, space, "manager", IID, caller, { deadlineMs: DEADLINE_MS }));
+  check("a denied probe is permission-denied naming the refused subject, not unknown",
+    probe.code === "permission-denied" && probe.message.includes(`.ep.inst.manager.${IID}.describe.`), probe);
+  check("a denied probe settles well inside its budget (a masquerade waits it out)",
+    probe.elapsed < DEADLINE_MS / 2, probe.elapsed);
+  check("the broker DID refuse the probe publish (independent iterator saw the subject)",
+    violations.some((s) => s.includes(`.ep.inst.manager.${IID}.describe.`)), violations);
+  seen.stop();
+  await wait(50); // let the repro iterator's own teardown finish, so it cannot pollute the baseline below
+
+  check("an ALLOWED cast on the class rail still resolves void (the watch adds no refusal of its own)",
+    castAllowed.code === "ok", castAllowed);
+
+  console.log("5. the cast's and probe's permission watches do not leak a status listener per call");
+  const before2 = listeners();
+  for (let i = 0; i < ROUNDS; i++) {
+    await epCast(nc, space, { mode: "inst", instanceId: IID }, {
+      endpoint: "manager", command: "status", contract: { input: empty, output: empty }, caller,
+    }, { deadlineMs: DEADLINE_MS }).catch(() => {});
+    await epProbeInstanceInterest(nc, space, "manager", IID, caller, { deadlineMs: DEADLINE_MS }).catch(() => {});
+  }
+  const after2 = listeners();
+  console.log(`   listeners before=${before2} after ${ROUNDS} denied casts and ${ROUNDS} denied probes=${after2}`);
+  check(`${ROUNDS} denied casts and ${ROUNDS} denied probes leave the listener count where they found it`, after2 === before2, { before: before2, after: after2 });
+
   await nc.drain().catch(() => nc.close());
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
-  srv.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();
+  if (srv.exitCode === null && srv.signalCode === null) throw new Error("broker exit unproven; storage preserved");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\nENDPOINT PUBLISH DENIAL SMOKE ${fail === 0 ? "OK ✅" : "FAILED"}  (${pass} passed, ${fail} failed)`);

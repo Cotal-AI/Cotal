@@ -1,0 +1,34 @@
+{
+  "suite": [
+    "extensions/connector-codex/smoke/codex-host.smoke.ts"
+  ],
+  "guard": "an operator interrupt dismisses the surfaced batch instead of redelivering it, and an unknown terminal status stays un-acked rather than being folded into interrupted",
+  "command": "pnpm --filter @cotal-ai/connector-codex... build && pnpm smoke:codex-host",
+  "mutations": [
+    {
+      "name": "M1 restores the un-acked outcome for an operator interrupt, redelivering the dismissed batch",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      const dismissed = status === \"completed\" || (status === \"interrupted\" && !shuttingDown);",
+      "replace": "      const dismissed = status === \"completed\";",
+      "expectRed": "interrupted turn's batch is dismissed, not redelivered",
+      "cell": "interrupted turn's batch is dismissed, not redelivered"
+    },
+    {
+      "name": "M2 folds an unknown terminal status back into interrupted",
+      "file": "extensions/connector-codex/src/app-server.ts",
+      "find": "        const status: TurnStatus =\n          turn.status === \"completed\" || turn.status === \"failed\" || turn.status === \"interrupted\"\n            ? turn.status\n            : \"unknown\";",
+      "replace": "        const status: TurnStatus =\n          turn.status === \"completed\" || turn.status === \"failed\" || turn.status === \"interrupted\"\n            ? turn.status\n            : \"interrupted\";",
+      "expectRed": "unknown terminal status leaves the batch un-acked",
+      "cell": "unknown terminal status leaves the batch un-acked"
+    },
+    {
+      "name": "M3 lets presence writes race: a turn's start-clear can land after its failure condition",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "  const inOrder = (write: () => Promise<void>): Promise<void> => {\n    const next = presenceChain.then(write, write);\n    presenceChain = next.catch(() => {});\n    return next;\n  };",
+      "replace": "  const inOrder = (write: () => Promise<void>): Promise<void> => {\n    const next = write();\n    presenceChain = next.catch(() => {});\n    return next;\n  };",
+      "expectRed": "failed turn relays Codex's native error as a rate-limit condition",
+      "cell": "failed turn relays Codex's native error as a rate-limit condition",
+      "note": "The fake ends the FAIL turn in the frame it started it, so the host handles the start and the failure in one tick; without the chain the start's clear and the failure's condition can leave the host in either order, and the cell grades the record that stands after the boundary. The losing order is a microtask race, so this mutant can survive a single quiet run; prove it over three runs or under concurrent load."
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts"
+  ],
+  "guard": "the continuity refusal carries the workspace renderer's remedy, and several running meshes are each reported before the install",
+  "command": "pnpm smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/update-continuity-all.json",
+  "why": [
+    "#1879. With two meshes running and the shell outside both roots, update printed the resolver's bare `multiple meshes running: …` and exited 1 before writing anything. Two defects shared that line: the refusal dropped the remedy every other command renders, and a global install that every running manager shares was reported for one manager or none.",
+    "M1 restores the bare `message(e)` text. The refusal cell names the remedy sentence, so it goes red on that assertion while a non-target error still prints unchanged.",
+    "M2 removes the enumeration and rethrows. The several-managers cell observes both managers being read, so it goes red on the first read of the second manager.",
+    "M3 stops the loop at the first legacy verdict. The cell asserts both managers are still observed, which is #1620 for all of them rather than just the first."
+  ],
+  "mutations": [
+    {
+      "name": "M1 print the resolver's bare text instead of the rendered remedy",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "  return isWorkspaceTargetError(e)\n    ? renderWorkspaceError({ kind: \"target\", error: e }).replace(/^✗ /, \"\")\n    : message(e);",
+      "replace": "  return message(e);",
+      "expectRed": "the standing refusal carries the workspace renderer's remedy sentence",
+      "cell": "#1879: the continuity refusal carries the workspace renderer's remedy",
+      "note": "The result stays a string and every other error prints identically; only the MeshTargetError arm loses the recovery copy, which is the defect as reported."
+    },
+    {
+      "name": "M2 refuse an ambiguous target instead of reporting each running manager",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "    const selected = [\"space\", \"server\", \"creds\"].some((name) => typeof flags[name] === \"string\");\n    const spaces = selected ? undefined : runningSpaces(e);\n    if (!spaces) throw e;",
+      "replace": "    throw e;",
+      "expectRed": "every running manager is read, in turn",
+      "cell": "#1879: several running meshes report each manager's continuity in turn",
+      "note": "Restores the original refusal: any ambiguous target rethrows, so no manager past the resolver is ever observed. The selected-target cells still pass, since a selected target never entered this arm."
+    },
+    {
+      "name": "M3 stop at the first legacy verdict instead of observing every manager",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "      if (await readOne({ ...flags, space }) === \"legacy\") verdict = \"legacy\";\n      else console.log(c.dim(\"  manager custody carries this update\"));",
+      "replace": "      if (await readOne({ ...flags, space }) === \"legacy\") return \"legacy\";\n      else console.log(c.dim(\"  manager custody carries this update\"));",
+      "expectRed": "a legacy verdict does not stop the remaining managers being observed",
+      "cell": "#1879: several running meshes report each manager's continuity in turn",
+      "note": "Still returns legacy for the whole run, so the verdict assertions survive. It reintroduces the partial answer from the other direction: the managers after the first legacy one are never observed, which the alpha-legacy pass catches."
+    }
+  ]
+}

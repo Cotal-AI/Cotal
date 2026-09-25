@@ -130,6 +130,8 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
     ? ["supervisor", "executor"]
     : r.operation === "activate"
       ? ["serve", "goalWriter", "sessionLedger"]
+      : r.operation === "renew"
+        ? ["supervisor", "executor"]
       : r.operation === "session"
         ? ["sessionServing"]
         : r.operation === "retire"

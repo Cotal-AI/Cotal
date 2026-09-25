@@ -148,6 +148,15 @@ export type RunJournalRow =
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
       readonly addressee?: string;
+      /** The accepted answer named by a settled pause result. Absent when the journal does not
+       * name one, including open and expired pauses and ordinary steps. */
+      readonly answer?: {
+        readonly answerId: string;
+        readonly value?: unknown;
+        readonly by?: string;
+        readonly artifact?: string;
+        readonly at?: number;
+      };
     };
 
 export interface RunStatusView {
@@ -159,7 +168,12 @@ export interface RunStatusView {
 }
 
 export type RunValidation =
-  | { readonly ok: true }
+  | {
+      readonly ok: true;
+      /** Explicit manager instances a validated program may place a spawn on. The host uses this
+       * only to mint the existing per-instance placement rows before the program starts. */
+      readonly placements?: readonly { readonly endpoint: string; readonly instanceId: string }[];
+    }
   /** The runtime's own error records, one per problem, opaque here and handed on verbatim. */
   | { readonly ok: false; readonly errors: readonly Record<string, unknown>[] };
 

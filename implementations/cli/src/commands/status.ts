@@ -18,9 +18,10 @@ import {
   resolveAuthProvider,
   type FlagValues,
   type ParsedArgs,
+  type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -31,6 +32,7 @@ import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { listPersonas } from "../lib/personas.js";
 import { c, statusBadge } from "../ui.js";
+import { preparedCatalogDiagnostics } from "./sync.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` remains a broad, recovery-oriented diagnostic and keeps exit 0; this explicit mode is for
@@ -384,6 +386,15 @@ async function printRegistry(): Promise<void> {
   );
   if (current && !meshes.some((m) => m.space === current))
     console.log(c.dim(`  note: current mesh "${current}" is not recorded`));
+
+  const catalogs = preparedCatalogDiagnostics();
+  if (catalogs.length) {
+    section("Space Catalog Accounts");
+    for (const result of catalogs) {
+      const detail = result.state === "failed" ? `: ${result.error ?? "refresh failed"}` : "";
+      console.log(`  ${result.account.idpUrl}  ${result.state}${detail}`);
+    }
+  }
 }
 
 async function printTarget(selected: Selected, cmd: string, responder: DeliveryResponderState = "unknown"): Promise<void> {
@@ -728,22 +739,82 @@ function processVerdict(record: ReturnType<typeof processRecord>): ComponentVerd
 
 /** A manager's only control claim is its service rail: a pid, a lease, or a registration is not a
  * serving answer.  The generic manager `status` command is the manager-owned health surface and is
- * deliberately called only after we establish that its local process record remains alive. */
-async function componentEp(target: MeshTarget): Promise<{ ep: CotalEndpoint; close(): Promise<void> }> {
+ * deliberately called only after we establish that its local process record remains alive.
+ *
+ *  USER MODE (the #1832 fix): the flip forbids static-minting on a user-auth mesh, and a
+ *  credential-less probe of an authenticated broker is the raw `Authorization Violation` this used
+ *  to print. So a user-mode target connects as the machine's signed-in login — the SAME credential
+ *  `ps` and the bare-status live snapshot use (`userCredentials`, which also serves discovered
+ *  spaces through the registry entry). When that credential cannot be had (not signed in, service
+ *  down, exchange refused), the components pass says so on the row instead of probing bare: a
+ *  refused probe would be reporting the broker's answer to a question nobody asked. */
+type ComponentCredential =
+  | { kind: "static"; auth: SpaceAuth | undefined }
+  | { kind: "user"; bearer: string; sentinelCreds: string; caller: { owner: string; actor: string; uid: string } }
+  | { kind: "unavailable"; reason: string };
+
+/** The `(owner, actor, lifecycleUid)` a user bearer is bound to, read client side the same way the
+ *  workspace connect layer reads it (the JWT payload without verification; the broker verifies).
+ *  The service caller triple is part of the manager's authenticated control surface, so the probe's
+ *  triple must be the bearer's own — a random actor would turn an authorized manager into a false
+ *  no-answer, the same trap the static arm's mint comment below names. */
+function principalFromBearer(bearer: string): { owner: string; actor: string; uid: string } {
+  const mid = bearer.split(".")[1];
+  if (!mid) throw new Error("not a compact JWS");
+  const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as {
+    sub?: string;
+    act?: { actor?: string; lifecycleUid?: string };
+  };
+  if (typeof payload.sub !== "string" || !payload.sub || typeof payload.act?.actor !== "string" || !payload.act.actor)
+    throw new Error("missing sub/act.actor");
+  if (typeof payload.act.lifecycleUid !== "string" || !payload.act.lifecycleUid)
+    throw new Error("missing act.lifecycleUid (lifecycle-bound bearers are the v0.4 hard cut)");
+  return { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
+}
+
+/** The probe credential for the components pass, per target mode. Static/open meshes keep the exact
+ *  mint they had; a user-mode target gets the signed-in login's bearer, or the one-sentence reason
+ *  it cannot be had. */
+async function componentCredential(target: MeshTarget): Promise<ComponentCredential> {
+  if (target.mode !== "user") return { kind: "static", auth: target.auth };
+  try {
+    const { bearer, sentinelCreds } = await resolveAuthProvider().userCredentials({
+      store: workspaceSecretStore(target.root),
+      dir: userAuthStateDir(target.root, target.space),
+      space: target.space,
+      actor: CLI_USER_ACTOR,
+    });
+    return { kind: "user", bearer, sentinelCreds, caller: principalFromBearer(bearer) };
+  } catch (e) {
+    return { kind: "unavailable", reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function componentEp(
+  target: MeshTarget,
+  credential: { kind: "static"; auth: SpaceAuth | undefined } | { kind: "user"; bearer: string; sentinelCreds: string },
+): Promise<{ ep: CotalEndpoint; close(): Promise<void> }> {
   const id = newIdentity();
-  const creds = target.auth ? await mintCreds(target.auth, id, "deployer") : undefined;
+  const user = credential.kind === "user";
   const ep = new CotalEndpoint({
     space: target.space,
     servers: target.server,
     tls: target.tlsRequired,
-    creds,
-    lifecycleUid: target.auth ? mintLifecycleUid() : undefined,
+    // Static/open: mint exactly as before. User: the signed-in login's bearer + sentinel; no
+    // lifecycleUid mint exists on this path (the bearer carries its own lifecycle claim).
+    ...(user
+      ? { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds }
+      : {
+          creds: credential.auth ? await mintCreds(credential.auth, id, "deployer") : undefined,
+          lifecycleUid: credential.auth ? mintLifecycleUid() : undefined,
+        }),
     channels: [],
     consume: false,
     registerPresence: false,
     watchPresence: false,
     watchChannels: false,
-    card: { id: id.id, name: "status-components", kind: "endpoint" },
+    // A bearer-source endpoint derives its id from the principal; only the minted path names one.
+    card: user ? { name: "status-components", kind: "endpoint" } : { id: id.id, name: "status-components", kind: "endpoint" },
   });
   ep.on("error", () => {});
   // Same one-shot policy as renderSnapshot: the command grades the awaited service reply itself.
@@ -756,9 +827,21 @@ async function componentEp(target: MeshTarget): Promise<{ ep: CotalEndpoint; clo
 /** A service registration is the health target itself.  Calling its `status` command through a
  * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
  * rail; a one-shot standalone caller does. */
+/** The static arm's one-shot service instrument, unchanged from before the user-mode fix: a fresh
+ *  identity, its minted deployer credential, and the caller triple on the SAME identity — a
+ *  mismatched random actor would turn an authorized manager into a false no-answer. */
+async function staticServiceAuth(auth: SpaceAuth | undefined): Promise<{ creds?: string; caller: { owner: string; actor: string; uid: string } }> {
+  const serviceIdentity = newIdentity();
+  const serviceUid = mintLifecycleUid();
+  return {
+    creds: auth ? await mintCreds(auth, serviceIdentity, "deployer", { lifecycleUid: serviceUid }) : undefined,
+    caller: { owner: "local", actor: serviceIdentity.id, uid: serviceUid },
+  };
+}
+
 async function managerServiceHealth(
   target: MeshTarget,
-  auth: { creds?: string; caller: { owner: string; actor: string; uid: string } },
+  auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } },
 ): Promise<{
   instanceId?: unknown;
   runtime?: unknown;
@@ -769,7 +852,13 @@ async function managerServiceHealth(
 }> {
   const nc = await dialerFor(target.server)({
     servers: target.server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: target.tlsRequired } : { tls: target.tlsRequired }),
+    ...standaloneConnectOpts(
+      "bearer" in auth
+        ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: target.tlsRequired }
+        : auth.creds
+          ? { creds: auth.creds, tls: target.tlsRequired }
+          : { tls: target.tlsRequired },
+    ),
     maxReconnectAttempts: 0,
   });
   try {
@@ -790,7 +879,7 @@ async function managerServiceHealth(
   }
 }
 
-async function managerHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
+async function managerHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
   const record = processRecord(localProcessPath(MANAGER_PIDFILE, context));
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
@@ -804,23 +893,41 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
 
   let close: (() => Promise<void>) | undefined;
   try {
-    const component = await componentEp(target);
+    if (credential.kind === "unavailable") {
+      // USER MODE without a usable login credential: say what is missing instead of probing bare.
+      // A bare probe of an authenticated broker reports an Authorization Violation that describes
+      // our own missing credential, not the manager's health. `refused` (not absent): the pass
+      // could not read this component's control surface, which is exactly what that verdict means.
+      facts.push("static reconciliation not reported by this manager build");
+      facts.push(`probe needs the signed-in login: ${credential.reason}`);
+      return { name: "manager", verdict: "refused", facts };
+    }
+    const component = await componentEp(target, credential);
     close = component.close;
-    const lease = await component.ep.readManagerLease();
-    if (lease) facts.push(`lease holder ${lease.holder}`, `lease pid ${lease.pid}`);
-    else facts.push("lease absent");
+    // The lease sweep needs manager-bucket STREAM.INFO rows an interactive ledger bearer does not
+    // hold (provision.ts grants those to the manager/supervisor credentials only; the agent-view
+    // comment in core says exactly this). In user mode the SERVICE probe is the whole verdict, so
+    // the row says the lease axis is not checkable rather than reporting a refusal the broker
+    // makes about our own credential's shape.
+    let lease: Awaited<ReturnType<CotalEndpoint["readManagerLease"]>> | undefined;
+    if (credential.kind === "user") {
+      facts.push("lease not checkable as the signed-in login (manager-bucket read is a host credential)");
+    } else {
+      lease = await component.ep.readManagerLease();
+      if (lease) facts.push(`lease holder ${lease.holder}`, `lease pid ${lease.pid}`);
+      else facts.push("lease absent");
+    }
     // The service caller triple is part of the manager's own authenticated control surface.  Keep
     // the minted credential and the subject caller on the SAME identity; a mismatched random actor
     // would turn an authorized manager into a false no-answer on static meshes.
-    const serviceIdentity = newIdentity();
-    const serviceUid = mintLifecycleUid();
-    const serviceCreds = target.auth
-      ? await mintCreds(target.auth, serviceIdentity, "deployer", { lifecycleUid: serviceUid })
-      : undefined;
-    const served = await managerServiceHealth(target, {
-      creds: serviceCreds,
-      caller: { owner: "local", actor: serviceIdentity.id, uid: serviceUid },
-    });
+    // User mode: the SAME bearer the probe connected with answers the service rail, and the caller
+    // triple is the bearer's own principal (the comment above the triple read). Static/open: a
+    // fresh one-shot instrument, exactly as before.
+    const serviceAuth =
+      credential.kind === "user"
+        ? { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller }
+        : await staticServiceAuth(credential.auth);
+    const served = await managerServiceHealth(target, serviceAuth);
     facts.push(`service instance ${served.instanceId ?? "unreported"}`);
     facts.push(`runtime ${served.runtime ?? "unreported"}`);
     const reconcile = served.staticReconciliation;
@@ -836,8 +943,12 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
     }
     facts.push("serve reachable");
     // A manager service without its own liveness lease is a contradicted component surface, not a
-    // healthy one. It still reports reachability, but cannot claim the required lease holder.
-    return { name: "manager", verdict: lease ? "serving" : "not-serving", facts };
+    // healthy one. It still reports reachability, but cannot claim the required lease holder. In
+    // USER MODE neither local axis is checkable from a participant machine (no pidfile under a
+    // discovered root, no manager-bucket read), so the manager's own typed service answer carries
+    // the verdict alone — reaching this line means it answered, which is the same single answer
+    // `ps` grades a user-mode manager by.
+    return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
     facts.push("static reconciliation not reported by this manager build");
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
@@ -857,14 +968,16 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
 /** Delivery owns two answers: its ready lease is its liveness/control surface; its latest explicit
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
-async function deliveryHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
+async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
   const record = processRecord(localProcessPath(DELIVERY_PIDFILE, context));
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
-  const renewalPath = join(context.root, ".cotal", "renewal.json");
+  // The renewal record is PER-SPACE (#1850): read THIS space's record through the workspace seam
+  // (`renewalRecordPath` — the same keyed spelling the pidfiles use), never a hand-composed
+  // root-only path: a co-resident space's pass must not color this row.
   let renewal: { adoption?: { ok: boolean; error?: string } } | undefined;
   try {
-    if (existsSync(renewalPath)) renewal = JSON.parse(readFileSync(renewalPath, "utf8")) as { adoption?: { ok: boolean; error?: string } };
+    renewal = readRenewalRecord(context.root, context.space) as { adoption?: { ok: boolean; error?: string } } | undefined;
   } catch (e) {
     facts.push(`renewal record unreadable: ${(e as Error).message}`);
     return { name: "delivery", verdict: "refused", facts };
@@ -880,7 +993,13 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext):
 
   let close: (() => Promise<void>) | undefined;
   try {
-    const component = await componentEp(target);
+    if (credential.kind === "unavailable") {
+      // Same user-mode discipline as the manager row: never probe an authenticated broker bare.
+      facts.push("lease probe needs the signed-in login");
+      facts.push(credential.reason);
+      return { name: "delivery", verdict: "refused", facts };
+    }
+    const component = await componentEp(target, credential);
     close = component.close;
     const lease = await component.ep.readDeliveryLease(0);
     // ONE classifier for both surfaces (#1576). `--components` was already right here and bare
@@ -1011,9 +1130,13 @@ async function printComponentHealth(cwd: string, values: FlagValues<typeof statu
     throw e;
   }
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
+  // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
+  // static shape is just the target's own auth material), shared by the manager and delivery
+  // probes so the two rows cannot disagree about whose credential they probed with.
+  const credential = await componentCredential(target);
   const components = await Promise.all([
-    managerHealth(target, context),
-    deliveryHealth(target, context),
+    managerHealth(target, context, credential),
+    deliveryHealth(target, context, credential),
     webHealth(context),
     brokerHealth(target),
   ]);

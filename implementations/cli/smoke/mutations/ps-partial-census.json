@@ -1,0 +1,14 @@
+{
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-on-instance",
+  "mutations": [
+    {
+      "name": "A refused manager instance restores the clean exit code",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    process.exitCode = 1;",
+      "replace": "    process.exitCode = 0;",
+      "expectRed": "partial census attempt",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ],
+  "suite": ["implementations/manager/smoke/cli-on-instance-live.smoke.ts"]
+}

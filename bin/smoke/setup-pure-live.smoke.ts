@@ -153,6 +153,18 @@ const extManifest = JSON.parse(readFileSync(join(configHome, "cotal", "extension
 ok("web extension installed in sandboxed config", extManifest.extensions?.some((e: { commands?: { name?: string }[] }) => e.commands?.some((c) => c.name === "web")) === true);
 ok("provenance announces default persona write", /→ wrote default persona: .*default\.md/.test(first.stderr), first.stderr.slice(-500));
 ok("provenance announces the onboarded stamp", /→ wrote onboarded stamp/.test(first.stderr));
+// The finale leads with the browser dashboard: `cotal web` is the watch step in the loop, and the
+// terminal console appears only as the alternative line after it. The command prefix is whatever
+// `displayCmd()` resolves to under the stripped PATH (here `cotal`), so the cells pin the step and
+// its order, not the prefix.
+{
+  const out = first.stdout + first.stderr;
+  const watch = out.match(/watch the mesh\s+.*web/);
+  const alt = out.match(/Terminal instead of a browser\?\s+.*console/);
+  ok("finale: the watch step in the loop is the browser dashboard", watch !== null, out.slice(-600));
+  ok("finale: the terminal console is the alternative named after it",
+    watch !== null && alt !== null && out.indexOf(alt[0]) > out.indexOf(watch[0]), out.slice(-600));
+}
 
 // D — `--demo` on an already-configured machine adds the guided team without launching anything.
 const demo = cotal(["setup", "--demo"], proj);
@@ -167,6 +179,15 @@ ok("demo setup still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFIL
 const second = cotal(["setup"], proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
 ok("repeat run shows the status card", /cotal · status/.test(second.stdout + second.stderr), (second.stdout + second.stderr).slice(-300));
+// The card's watch hint matches the finale's order: `cotal web` is the watch step, the terminal
+// console sits in the `more:` line as the alternative.
+{
+  const out = second.stdout + second.stderr;
+  const cardWatch = out.match(/watch it:\s+.*web\s+\(browser dashboard\)/);
+  const more = out.match(/more:\s+.*console/);
+  ok("status card: the watch hint is the browser dashboard", cardWatch !== null, out.slice(-600));
+  ok("status card: the terminal console is in the more line", more !== null, out.slice(-600));
+}
 ok("repeat run still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
 // F — removed surface fails loud.

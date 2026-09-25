@@ -2,57 +2,17 @@ import { join } from "node:path";
 import { mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   clearCurrent,
-  findCotalRoot,
   findMesh,
   getCurrent,
   homeCotalDir,
   loadMeshes,
-  meshesForRoot,
   recordMesh,
   removeMesh,
   userAuthStateDir,
   type MeshEntry,
 } from "@cotal-ai/workspace";
-import { checkUserBundle, pinnedFetch, type UserBundle } from "./meshes-add.js";
+import { checkUserBundle, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
-
-function sameRegistrationTrust(entry: MeshEntry, bundle: UserBundle): boolean {
-  const ua = entry.userAuth;
-  return entry.mode === "user" && ua !== undefined &&
-    entry.space === bundle.space && entry.server === bundle.server && (entry.tlsRequired === true) === bundle.tlsRequired &&
-    ua.idp.url === bundle.userAuth.idp.url && ua.idp.issuer === bundle.userAuth.idp.issuer &&
-    ua.idp.audience === bundle.userAuth.idp.audience && ua.endpoints?.url === bundle.userAuth.endpoints?.url;
-}
-
-export const POLICY_FRESH_MS = 5_000;
-
-async function refreshManualPolicy(entry: MeshEntry): Promise<void> {
-  if (entry.origin !== "manual" || entry.mode !== "user" || entry.policy || !entry.userAuth?.endpoints?.url) return;
-  const checkedAt = entry.policyCheckedAt ? Date.parse(entry.policyCheckedAt) : Number.NaN;
-  if (Number.isFinite(checkedAt) && Date.now() - checkedAt < POLICY_FRESH_MS) return;
-  let base: URL;
-  try {
-    base = new URL(entry.userAuth.endpoints.url);
-  } catch {
-    throw new Error(`manual registration for "${entry.space}" has an invalid pinned exchange URL`);
-  }
-  base.pathname = `${base.pathname.replace(/\/$/, "")}/.well-known/cotal-mesh`;
-  base.search = "";
-  base.hash = "";
-  let response: Response;
-  try {
-    response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
-  } catch (error) {
-    throw new Error((error as Error).message.replace(/^✗ /, ""));
-  }
-  if (!response.ok)
-    throw new Error(`manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url} answered HTTP ${response.status}`);
-  const checked = checkUserBundle(await response.text());
-  if (!checked.ok) throw new Error(`manual registration "${entry.space}" policy refresh: ${checked.message.replace(/^✗ /, "")}`);
-  if (!sameRegistrationTrust(entry, checked.value))
-    throw new Error(`manual registration "${entry.space}" policy refresh returned different space, broker, transport, or user-auth trust pins`);
-  recordMesh({ ...entry, ...(checked.value.policy ? { policy: checked.value.policy } : {}), policyCheckedAt: new Date().toISOString() });
-}
 
 export interface CatalogSpace {
   id: string;
@@ -194,10 +154,33 @@ function sameEntry(a: MeshEntry, b: MeshEntry): boolean {
   return JSON.stringify(clean(a)) === JSON.stringify(clean(b));
 }
 
+const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] });
+
+/** One account can be applied twice in one preparation: a repair of an interrupted application,
+ * then the refreshed snapshot. Report each slug against the registry the command started from, so
+ * the first classification of a slug stands. */
+function mergeDiff(prior: CatalogDiff | undefined, next: CatalogDiff): CatalogDiff {
+  if (!prior) return next;
+  const lists = ["added", "changed", "removed", "unchanged"] as const;
+  const seen = new Set(lists.flatMap((k) => prior[k]));
+  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort() };
+  for (const k of lists) merged[k] = [...prior[k], ...next[k].filter((s) => !seen.has(s))].sort();
+  if (!merged.selectionInvalidated && next.selectionInvalidated) merged.selectionInvalidated = next.selectionInvalidated;
+  return merged;
+}
+
+/** Reconcile the registry with one account's result. The provider calls this under its catalog
+ * lock, so no other preparation reads or writes discovered entries while it runs, and it is
+ * idempotent: the provider applies a cached snapshot again when an earlier application never
+ * finished. An unforced fresh or not-modified result is already applied and writes nothing. */
+function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
+  return result.state === "updated" || result.state === "failed" || force ? applyResult(result) : emptyDiff();
+}
+
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
   const before = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
   const priorByName = new Map(before.map((m) => [m.space, m]));
-  const diff: CatalogDiff = { added: [], changed: [], removed: [], unchanged: [], collisions: [] };
+  const diff = emptyDiff();
   if (result.state === "failed") {
     for (const old of before)
       recordMesh({ ...old, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: result.error ?? "refresh failed" });
@@ -207,6 +190,14 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
   validateCatalogSnapshot(result.snapshot, result.account);
   const snapshot = result.snapshot;
   const nextSlugs = new Set(snapshot.spaces.map((s) => s.slug));
+  // Invalidate the selection BEFORE the first registry write. Once an entry is removed, a later
+  // application (after a death here) can no longer tell that the selected name belonged to this
+  // account, and the selection would outlive its entry.
+  const current = getCurrent();
+  if (current && priorByName.has(current) && !nextSlugs.has(current)) {
+    clearCurrent();
+    diff.selectionInvalidated = current;
+  }
   for (const old of before) {
     if (nextSlugs.has(old.space)) continue;
     removeMesh(old.space);
@@ -226,11 +217,6 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
     else diff.changed.push(row.slug);
   }
-  const current = getCurrent();
-  if (current && diff.removed.includes(current)) {
-    clearCurrent();
-    diff.selectionInvalidated = current;
-  }
   for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions]) list.sort();
   return diff;
 }
@@ -239,79 +225,64 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
+  const applied = new Map<string, CatalogDiff>();
   const results = await provider.prepareSpaceCatalogs({
     dir: homeCotalDir(),
     ...(opts.idpUrl ? { idpUrl: opts.idpUrl } : {}),
     ...(opts.force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
+    apply: (result) => void applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force)))),
   });
-  if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined))
-    return { results, diffs: results.map(() => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] })) };
-  const diffs = results.map((result) => result.state === "updated" || result.state === "failed" || opts.force
-    ? applyResult(result)
-    : { added: [], changed: [], removed: [], unchanged: [], collisions: [] });
-  return { results, diffs };
+  return { results, diffs: results.map((result) => applied.get(result.account.ownerKey) ?? emptyDiff()) };
 }
 
-/** Shared once-per-command preparation. A named manual/local entry never depends on discovery.
- * Unknown names force one refresh even inside the freshness window. `status` keeps a failed stale
- * snapshot only as timestamped diagnostics; operational commands refuse before target resolution. */
+let catalogDiagnostics: AuthSpaceCatalogResult[] = [];
+
+/** The account results prepared by the dispatcher immediately before `status` renders. */
+export function preparedCatalogDiagnostics(): readonly AuthSpaceCatalogResult[] {
+  return catalogDiagnostics;
+}
+
+/** Shared once-per-command preparation. Every target-resolving call gives each signed-in account a
+ * chance to refresh inside the provider's freshness window. An operational catalog target scopes
+ * that work to its own account and treats its failure as fatal. Other targets warn per account;
+ * diagnostics retain every result for `status` and never refuse the command. Unknown names force a
+ * refresh even inside the freshness window. */
 export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = false, command?: "meshes" | "use"): Promise<void> {
+  catalogDiagnostics = [];
   const values = args.values as { space?: string };
   const requested = values.space ?? (command === "use" ? args.positionals[0] : undefined);
   const named = requested ? findMesh(requested) : undefined;
-  if (named && named.origin === "manual") {
-    if (command === "meshes") return;
-    await refreshManualPolicy(named);
-    return;
-  }
-  if (named && named.origin !== "catalog") return;
-  if (!requested && command !== "meshes") {
-    const current = getCurrent();
-    const selected = current ? findMesh(current) : undefined;
-    if (selected?.origin === "manual") {
-      await refreshManualPolicy(selected);
-      return;
-    }
-    if (selected && selected.origin !== "catalog") return;
-    const local = meshesForRoot(findCotalRoot()).filter((m) => m.origin !== "catalog");
-    const localManual = local.find((m) => m.origin === "manual");
-    if (localManual) {
-      await refreshManualPolicy(localManual);
-      return;
-    }
-    if (local.length > 0) return;
-    const registered = loadMeshes();
-    if (registered.length === 1 && registered[0].origin === "manual") {
-      await refreshManualPolicy(registered[0]);
-      return;
-    }
-    if (registered.length === 1 && registered[0].origin !== "catalog") return;
-  }
+  const current = !requested && command !== "meshes" ? getCurrent() : undefined;
+  const selected = current ? findMesh(current) : undefined;
+  const target = named ?? selected;
+  const targetCatalog = !diagnostics && target?.origin === "catalog" ? target : undefined;
   const force = Boolean(requested && !named);
   if (registry.all<AuthProvider>("auth-provider").length === 0) return;
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs) return;
+  const diffs: CatalogDiff[] = [];
   const results = await provider.prepareSpaceCatalogs({
     dir: homeCotalDir(),
-    ...(named?.origin === "catalog" && named.userAuth?.idp.url ? { idpUrl: named.userAuth.idp.url } : {}),
+    ...(targetCatalog?.userAuth?.idp.url ? { idpUrl: targetCatalog.userAuth.idp.url } : {}),
     ...(force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
+    apply: (result) => void diffs.push(consume(result, force)),
   });
+  catalogDiagnostics = results;
   if (results.every((r) => r.state === "no-catalog" && r.snapshot === undefined)) return;
-  const diffs = results.map((result) => result.state === "updated" || result.state === "failed" || force
-    ? applyResult(result)
-    : { added: [], changed: [], removed: [], unchanged: [], collisions: [] });
   const vanished = diffs.map((d) => d.selectionInvalidated).filter((s): s is string => Boolean(s));
   if (vanished.length) {
     const message = `selected space "${vanished.join("\", \"")}" vanished from its account catalog; no default mesh is selected`;
     if (diagnostics) console.error(c.yellow(message));
     else throw new Error(message);
   }
-  if (diagnostics) return;
   const failures = results.filter((r) => r.state === "failed");
-  if (failures.length)
+  if (diagnostics) return;
+  if (targetCatalog && failures.length)
     throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "));
+  for (const failure of failures)
+    console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}`));
 }
 
 export async function sync(args: ParsedArgs): Promise<void> {
@@ -339,7 +310,7 @@ const spaceCatalogConsumer: SpaceCatalogConsumer = {
   kind: "space-catalog-consumer",
   name: "workspace",
   validate: validateCatalogSnapshot,
-  apply: (result) => void applyResult(result),
+  apply: (result) => void consume(result, true),
 };
 
 registry.register(spaceCatalogConsumer);

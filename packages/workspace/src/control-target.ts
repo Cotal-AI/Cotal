@@ -17,14 +17,14 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, endpointAuth, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { pruneStaleMeshes } from "./preflight.js";
 
 /** Endpoint auth material for one control call: a static/raw cred OR a user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's caller triple when the static
  *  mint produced one. */
-export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller; tls?: boolean };
+export type ControlAuth = { creds?: string; bearer?: string; sentinelCreds?: string; epCaller?: EpCaller; managerInstanceId?: string; tls?: boolean };
 
 export interface ControlTarget {
   space: string;
@@ -52,7 +52,7 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
 
 /**
  * Resolve the control target for `flags`, minting `profile` as the caller's instrument on a static
- * mesh (user mode rides the logged-in bearer and mints nothing; an open mesh connects bare).
+ * mesh (user-mode manager calls borrow an instance-bound view; an open mesh connects bare).
  *
  * `instanceId` (`--on <instanceId>`) is forwarded to the instrument mint so the one-shot credential
  * carries the exact `ep.inst.…` rows for that instance; a credential cannot gain a rail after it is
@@ -66,13 +66,13 @@ export async function resolveControlTarget(
   flags: ConnectFlags,
   profile: Profile,
   instanceId?: string,
-  opts: { onRefusal?: "exit" | "throw" } = {},
+  opts: { onRefusal?: "exit" | "throw"; endpoint?: string } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
-  // USER MODE: the ledger-scoped bearer is the control surface; there is no instrument mint.
+  // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
   //
@@ -98,10 +98,20 @@ export async function resolveControlTarget(
     }
     if (mode === "user") {
       const conn = await connectUserControlOrExit(withSpace);
+      const manager = (opts.endpoint === undefined || opts.endpoint === "manager") &&
+          (profile === "control-caller-privileged" || profile === "control-caller-admin")
+        ? await userViewAuth(conn, "manager-caller", instanceId === undefined ? {} : { managerInstanceId: instanceId })
+        : undefined;
       return {
         space: conn.space,
         server: conn.server,
-        auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+        auth: manager ? {
+          bearer: manager.bearer,
+          sentinelCreds: manager.sentinelCreds,
+          tls: conn.tls,
+          epCaller: { owner: manager.owner, actor: manager.actor, uid: manager.lifecycleUid },
+          managerInstanceId: manager.managerInstanceId,
+        } : { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
         ...(conn.root !== undefined ? { root: conn.root } : {}),
         ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
         ...(conn.policy ? { policy: conn.policy } : {}),

@@ -21,22 +21,22 @@
     {
       "name": "S1 treat startup like a generic adopt, recreating the live skipped-run-opener defect",
       "file": "extensions/connector-claude-code/src/agui-source.ts",
-      "find": "    case \"startup\":\n      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS);",
+      "find": "    case \"startup\":\n      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS, \"from-beginning\");",
       "replace": "    case \"startup\":\n      return file;",
       "expectRed": "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart"
     },
     {
-      "name": "S2 replay retained history by treating resume/fork/clear/compact as startup",
+      "name": "S2 replay retained history by treating resume/clear/compact as startup",
       "file": "extensions/connector-claude-code/src/agui-source.ts",
-      "find": "    case \"resume\":\n    case \"fork\":\n    case \"clear\":\n    case \"compact\":\n      return file;",
-      "replace": "    case \"resume\":\n    case \"fork\":\n    case \"clear\":\n    case \"compact\":\n      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS);",
+      "find": "    case \"resume\":\n    case \"clear\":\n    case \"compact\":\n      return file;",
+      "replace": "    case \"resume\":\n    case \"clear\":\n    case \"compact\":\n      return new StartupClaudeTranscriptSource(file, opts.startupFileWaitMs ?? STARTUP_TRANSCRIPT_WAIT_MS, \"from-beginning\");",
       "expectRed": "resume:retained-history-is-not-replayed-and-the-next-record-is-still-readable",
-      "note": "Also reds the fork, clear and compact cells; the blast radius is four named retained-history checks."
+      "note": "Also reds the clear and compact cells; the blast radius is three named retained-history checks. The fork arm has its own wait and is graded by the fork cells."
     },
     {
       "name": "S3 make the startup wrapper use generic adopt-at-end on a virgin cursor",
       "file": "extensions/connector-claude-code/src/agui-source.ts",
-      "find": "return cursor === undefined ? this.readFromBeginningWhenReady() : this.file.read(cursor);",
+      "find": "return cursor === undefined ? this.readWhenReady() : this.file.read(cursor);",
       "replace": "return this.file.read(cursor);",
       "expectRed": "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart"
     },

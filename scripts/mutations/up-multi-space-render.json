@@ -3,7 +3,7 @@
     "implementations/cli/smoke/up-multi-space-render-live.smoke.ts"
   ],
   "grades": "suite",
-  "guard": "`cotal up` renders server.conf from the whole validated tenant inventory, and refuses to render while any account record is unreadable",
+  "guard": "`cotal up` renders the whole tenant inventory and every persisted callout account, refusing unreadable records",
   "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",
   "progressPattern": "✓",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/up-multi-space-render.json",
@@ -20,10 +20,20 @@
   ],
   "mutations": [
     {
+      "name": "the render drops persisted sibling callout accounts",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  const enabled = userAuthSpacesOnDisk(dir);",
+      "replace": "  const enabled = prepared ? [space] : [];",
+      "expectRed": "the second render preloads EVERY sibling callout account",
+      "cell": "the second render preloads EVERY sibling callout account",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",
+      "afterRestore": "pnpm build"
+    },
+    {
       "name": "the render goes back to the one space being booted",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "serverConfig(auth, preloadSpaceAccounts(dir, auth)",
-      "replace": "serverConfig(auth, [auth]",
+      "find": "  const spaces = preloadSpaceAccounts(dir, auth);",
+      "replace": "  const spaces = [auth];",
       "expectRed": "server.conf preloads the SIBLING tenant's account",
       "cell": "server.conf preloads the SIBLING tenant's account (not evicted by a boot that never named it)",
       "command": "pnpm build >/dev/null && pnpm smoke:up-multi-space-render:live",

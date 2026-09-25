@@ -64,7 +64,7 @@ function args(argv) {
 }
 
 function git(root, argv) {
-  return execFileSync("git", argv, { cwd: root, encoding: "utf8" });
+  return execFileSync("git", argv, { cwd: root, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
 }
 
 function runCommand(command, cwd, env) {

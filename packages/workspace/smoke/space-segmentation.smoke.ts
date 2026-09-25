@@ -41,7 +41,10 @@ import {
   MANAGER_LOGFILE, MANAGER_PIDFILE,
 } from "../src/local-process.js";
 import { createBrokerAuth, createSpaceAccountAuth, type SecretStore } from "@cotal-ai/core";
-import { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceFromSegment, spaceSegment } from "../src/auth-paths.js";
+import { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceFromSegment, spaceKey, spaceSegment } from "../src/auth-paths.js";
+import {
+  legacyRenewalRecord, readRenewalRecord, renewalRecordPath, writeRenewalRecord,
+} from "../src/renewal.js";
 import {
   assertNoUnsegmentedLegacyMaterial, assertSpaceMaterialReapable, CONNECTION_EVICTOR_CREDS_KIND,
   connectionEvictorCredsKey, cotalDir, DELIVERY_CREDS_KIND, deliveryCredsKey, MEMBERSHIP_CONFIG_KIND,
@@ -405,6 +408,30 @@ try {
       .every((k) => partial.removed.includes(`.cotal/${segmentedKey(k, "alpha")}`)) &&
     partial.removed.some((r) => r.startsWith(`.cotal/${spaceSegment("alpha")} `)) &&
     !existsSync(spaceMaterialDir(reapFail, "alpha")), partial.removed);
+
+  // #1850: THE RENEWAL RECORD IS PER-SPACE, keyed the way the pidfiles are. Two spaces at one root
+  // keep two records; a read for one space never returns the other's verdict; a root-only legacy
+  // `renewal.json` (the pre-per-space spelling) is a labelled fact, never a fallback verdict.
+  const renewRoot = await makeRoot("renewal-per-space", ["alpha", "beta"]);
+  roots.push(renewRoot);
+  writeRenewalRecord(renewRoot, "alpha", { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: false, error: "broker refused (alpha)" } });
+  writeRenewalRecord(renewRoot, "beta", { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true } });
+  check("#1850: two spaces at one root keep two renewal records",
+    renewalRecordPath(renewRoot, "alpha") !== renewalRecordPath(renewRoot, "beta") &&
+    renewalRecordPath(renewRoot, "alpha").endsWith(`renewal.${spaceKey("alpha")}.json`),
+    renewalRecordPath(renewRoot, "alpha"));
+  check("#1850: a read for one space never returns the other's verdict",
+    readRenewalRecord(renewRoot, "alpha")?.adoption?.ok === false &&
+    readRenewalRecord(renewRoot, "beta")?.adoption?.ok === true,
+    { alpha: readRenewalRecord(renewRoot, "alpha")?.adoption, beta: readRenewalRecord(renewRoot, "beta")?.adoption });
+  check("#1850: the record's path keys by the same injective hex the pidfiles use",
+    renewalRecordPath(renewRoot, "alpha") === canonicalLocalProcessPath(MANAGER_PIDFILE, { root: renewRoot, space: "alpha" }).replace(/manager\.[0-9a-f]+\.pid$/, `renewal.${spaceKey("alpha")}.json`),
+    renewalRecordPath(renewRoot, "alpha"));
+  writeFileSync(join(cotalDir(renewRoot), "renewal.json"), JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [], adoption: { ok: false, error: "legacy" } }));
+  check("#1850: a root-only legacy renewal record is never returned as any space's record",
+    readRenewalRecord(renewRoot, "alpha")?.adoption?.ok === false &&
+    legacyRenewalRecord(renewRoot)?.path === join(cotalDir(renewRoot), "renewal.json"),
+    legacyRenewalRecord(renewRoot));
 
   // The banner is printed on BOTH outcomes and names the suite, which is what lets the mutation
   // config declare it as a completion marker: a mutant run that stops early is then INCONCLUSIVE

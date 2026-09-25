@@ -1,26 +1,35 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
-import { classifyJoinTarget, isLoopbackHost, type DialPolicy, type JoinTarget } from "../lib/join-target.js";
 import {
+  assertPinnedFetchUrl,
   authDir,
+  checkUserBundle,
+  classifyJoinTarget,
   findCotalRoot,
   findMesh,
   getCurrent,
   homeCotalDir,
   listSpaceAccounts,
   loadSpaceAuth,
-  assertUserAuthInfo,
   personaDir,
+  pinnedFetch,
   preflightTarget,
   recordMesh,
   setCurrent,
   userAuthStateDir,
+  type Check,
+  type DialPolicy,
+  type JoinTarget,
   type MeshEntry,
   type MeshTarget,
   type PreflightFailure,
-  type UserAuthInfo,
+  type UserBundle,
 } from "@cotal-ai/workspace";
+// The bundle validator and the pinned fetch live in the workspace package so a manager start can
+// run the same policy refresh a launch does. Re-exported here because registration is where the
+// CLI's callers and the consumer-contract smokes look for them.
+export { assertPinnedFetchUrl, checkUserBundle, pinnedFetch, pinnedFetchProbe, type Check, type UserBundle } from "@cotal-ai/workspace";
 
 /**
  * The rules behind `cotal meshes add`, as decisions rather than side effects.
@@ -32,9 +41,6 @@ import {
  * drift this file exists to prevent, so each rule lives here once, returns a {@link Check}, and the
  * front ends decide only how to *present* a failure: exit with the sentence, or offer a way out.
  */
-
-/** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal. */
-export type Check<T> = { ok: true; value: T } | { ok: false; message: string };
 
 const bad = (message: string): Check<never> => ({ ok: false, message });
 
@@ -221,134 +227,6 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
 /** What a remote user-auth registration supplies: the pins nothing on this machine could derive.
  *  Exported where the mesh runs; carried by `--user-auth-file`, or served at the space's
  *  `/.well-known/cotal-mesh` for `--from`. */
-export interface UserBundle {
-  space: string;
-  server: string;
-  tlsRequired: boolean;
-  userAuth: UserAuthInfo;
-  /** Closed registration policy. No other key or value is accepted. */
-  policy?: { events: "required" };
-  /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
-   *  the entry's root and records the PATH; the registry document never carries the blob. */
-  sentinelCreds: string;
-}
-
-export function registrationEventsRequired(bundle: UserBundle): boolean {
-  return bundle.policy?.events === "required";
-}
-
-/** Validate a user-auth bundle, fail-loud on every missing pin. The `userAuth` arm goes through
- *  {@link assertUserAuthInfo} — the same boundary every provider blob crosses — and additionally
- *  requires the pinned exchange URL: for a remote entry the endpoints are a trust position, not a
- *  convenience, because no local `up` exists to re-derive them. */
-export function checkUserBundle(raw: string): Check<UserBundle> {
-  let doc: Partial<UserBundle> & { userAuth?: unknown };
-  try {
-    doc = JSON.parse(raw) as never;
-  } catch {
-    return bad("✗ the user-auth bundle is not JSON - export it where the mesh runs and pass the file unmodified");
-  }
-  if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
-  if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
-  if (typeof doc.server !== "string" || !doc.server) return bad("✗ the user-auth bundle names no broker server");
-  if (typeof doc.tlsRequired !== "boolean") return bad("✗ the user-auth bundle must state tlsRequired explicitly (true or false) - transport strictness is part of what the export pins");
-  let policy: UserBundle["policy"];
-  if ((doc as { policy?: unknown }).policy !== undefined) {
-    const value = (doc as { policy?: unknown }).policy;
-    if (value === null || typeof value !== "object" || Array.isArray(value))
-      return bad("✗ the user-auth bundle policy must be an object with exactly policy.events = \"required\"");
-    const fields = Object.keys(value as Record<string, unknown>);
-    const extra = fields.find((key) => key !== "events");
-    if (extra) return bad(`✗ the user-auth bundle policy has unsupported field \"policy.${extra}\"`);
-    if ((value as { events?: unknown }).events !== "required")
-      return bad('✗ the user-auth bundle policy.events must be exactly "required"');
-    policy = { events: "required" };
-  }
-  let userAuth: UserAuthInfo;
-  try {
-    userAuth = assertUserAuthInfo(doc.userAuth);
-  } catch (e) {
-    return bad(`✗ user-auth bundle: ${(e as Error).message}`);
-  }
-  if (!userAuth.endpoints?.url)
-    return bad("✗ the user-auth bundle pins no exchange endpoint (userAuth.endpoints.url) - for a remote registration that URL is trust, and it must come from the export, never be guessed");
-  if (userAuth.endpoints.agentProvisioningUrl !== undefined) {
-    // The provisioning endpoint receives the login bearer, so it rides the same pinned-fetch
-    // scheme rule as every other trust URL in this bundle: https, or a loopback http LITERAL.
-    let pu: URL;
-    try {
-      pu = new URL(userAuth.endpoints.agentProvisioningUrl);
-    } catch {
-      return bad("✗ the user-auth bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl) is not a URL");
-    }
-    const refusal = assertPinnedFetchUrl(pu, "the bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl)");
-    if (refusal) return bad(refusal);
-  }
-  if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
-    return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");
-  return good({ space: doc.space, server: doc.server, tlsRequired: doc.tlsRequired, userAuth, ...(policy ? { policy } : {}), sentinelCreds: doc.sentinelCreds });
-}
-
-/** Budget for the exchange trust probe — same posture as the mode probe above: run once, at
- *  registration, where patience is cheaper than a wrong record. */
-const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
-
-/**
- * Fetch that CANNOT be walked off HTTPS.
- *
- * `fetch` follows redirects by default and will happily follow `https://` → `http://`, so a
- * 302 from anyone on the path turns a pinned, encrypted fetch into a plaintext one — and the
- * document being fetched IS the trust being adopted. `redirect: "manual"` stops the hop here;
- * a redirect is then reported as the refusal it is, rather than silently followed.
- *
- * Loopback `http://` stays usable for tests and for an exchange on this machine (nothing leaves
- * the box), which is also what keeps the suites honest without a TLS fixture. Everything else
- * must be `https:`.
- */
-export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
-  if (u.protocol === "https:") return undefined;
-  // The loopback exception is decided by PARSING the host as an address, never by how the text
-  // begins: `/^127\./` also matched `127.evil.com`, `127.0.0.1.nip.io` and `127.com`, which anyone
-  // can register, and it missed real spellings like `0177.0.0.1`. `isLoopbackHost` is the one
-  // authority for the question, canonicalization included. A name that does not parse as an IP is
-  // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
-  // a poisoned lookup can point it anywhere.
-  if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
-  // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
-  // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
-  return (
-    `✗ ${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
-    (u.protocol === "http:"
-      ? `. Plain http is accepted only for a loopback LITERAL (127.0.0.1, ::1), where nothing leaves this machine - "${u.hostname}" is a name, and a hosts entry or a poisoned lookup could point it anywhere, so use the literal`
-      : "")
-  );
-}
-
-/** The pinned-fetch policy's verdict for ONE url, as data — so a suite can assert WHY a fetch was
- *  refused rather than only that something failed. A cert error, a timeout and a refused redirect
- *  are all "it did not work"; only this distinguishes them. Test seam, no production caller. */
-export async function pinnedFetchProbe(target: string): Promise<{ refused: boolean; message: string }> {
-  try {
-    await pinnedFetch(target, "the pinned exchange");
-    return { refused: false, message: "" };
-  } catch (e) {
-    return { refused: true, message: (e as Error).message };
-  }
-}
-
-/** One hop, no downgrade, no redirect-following. */
-export async function pinnedFetch(target: string, what: string): Promise<Response> {
-  const u = new URL(target);
-  const bad = assertPinnedFetchUrl(u, what);
-  if (bad) throw new Error(bad);
-  const res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(EXCHANGE_PROBE_TIMEOUT_MS) });
-  if (res.status >= 300 && res.status < 400)
-    throw new Error(
-      `✗ ${what} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move a pinned fetch onto plaintext or onto another host, so it is refused rather than followed; publish the document at the pinned URL itself`,
-    );
-  return res;
-}
-
 /** The issuer a space's exchange answers /health with — the auth daemon's own token issuer, a
  *  stable URN derived from the space (auth's `spaceIssuer`), deliberately NOT the IdP issuer:
  *  the IdP names who vouches for humans, this names the exchange minting for the space. The cli

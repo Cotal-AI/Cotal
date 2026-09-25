@@ -32,7 +32,11 @@
     "FIRST-ADOPT CONTEXT IS A SEPARATE GUARANTEE. Claude's SessionStart source arrives on the hook",
     "call and must reach the connector-owned source factory without a shared mutable slot. H2 drops",
     "that context at the one call site; the direct context cell reddens while the existing start-once",
-    "cells remain controls for the holder lifecycle around it."
+    "cells remain controls for the holder lifecycle around it.",
+    "",
+    "WAIT-LIVE (#1868) IS THE HOLDER'S HALF OF THE REBUILD-WINDOW FIX. H3 makes the wait a no-op, which restores",
+    "the pre-fix terminal path: a flush pumps immediately while the endpoint has no connection. The",
+    "`waitlive:` cells that hold a pending wait go red. The jcode suite grades the seat-level outcome."
   ],
   "mutations": [
     {
@@ -50,6 +54,14 @@
       "replace": "this.emitter = await this.startEmitter(path, undefined);",
       "expectRed": "context:the-FIRST-adopt-context-reaches-the-start-factory",
       "note": "This is the one mechanism carrying Claude's SessionStart source through the generic holder; a later adopt remains unable to replace it."
+    },
+    {
+      "name": "H3 the queued step never waits for the endpoint to be live",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (!this.waitLive) return Promise.resolve();\n",
+      "replace": "    return Promise.resolve();\n",
+      "expectRed": "waitlive:a-pending-wait-HOLDS-the-pump",
+      "note": "Also reds `waitlive:a-closeRun-is-HELD-by-a-pending-wait` and the rejecting-wait and shared-wait cells, since the wait is skipped for every step."
     }
   ]
 }

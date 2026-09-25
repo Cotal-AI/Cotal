@@ -1,0 +1,48 @@
+{
+  "suite": ["implementations/cli/smoke/console-managed-rows.smoke.ts"],
+  "guard": "a partial ps poll keeps a silent manager's seats, replaces an answering manager's rows wholesale, drops a manager that is neither, and never applies two reads out of order",
+  "command": "pnpm smoke:console-managed-rows",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/console-managed-rows.json",
+  "why": [
+    "The suite imports control.ts from src through tsx, so a mutation is seen without a build and needs no rebuild after the restore.",
+    "Each mutation is compile-clean and its anchor occurs exactly once in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "M1 a silent manager's seats are dropped instead of kept",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "    if (!reply.answered.some((a) => a.instanceId === id) && !reply.silent.includes(id)) next.delete(id);",
+      "replace": "    if (!reply.answered.some((a) => a.instanceId === id) && reply.silent.includes(id)) next.delete(id);",
+      "expectRed": "...while the SILENT manager's seat is kept",
+      "cell": "...while the SILENT manager's seat is kept",
+      "note": "A manager that simply did not answer this tick would have its seats vanish from the console, which is the failure the partial-poll fold exists to prevent."
+    },
+    {
+      "name": "M2 an answering manager's rows are merged rather than replaced",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "  for (const a of reply.answered) next.set(a.instanceId, a.rows);",
+      "replace": "  for (const a of reply.answered) next.set(a.instanceId, [...(next.get(a.instanceId) ?? []), ...a.rows]);",
+      "expectRed": "A's rows keep being replaced across repeated partial polls",
+      "cell": "A's rows keep being replaced across repeated partial polls",
+      "note": "Merging pins stale rows forever: a despawned seat never leaves the list."
+    },
+    {
+      "name": "M3 a reachable manager failure is retained as if it were silent",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "        byInstance = foldManagedRows(byInstance, r);",
+      "replace": "        byInstance = foldManagedRows(byInstance, { ...r, silent: [...r.silent, ...r.failed.map((f) => f.instanceId)] });",
+      "expectRed": "a reachable manager error drops its previous rows instead of retaining them as silent",
+      "cell": "a reachable manager error drops its previous rows instead of retaining them as silent",
+      "note": "Treating a reachable error as silence retains stale launch facts even though that manager did answer and rejected the read."
+    },
+    {
+      "name": "M4 a prior silence suppresses the later manager error notice",
+      "file": "implementations/cli/src/console/control.ts",
+      "find": "        if ((r.silent.length || r.failed.length) && partialKey !== announcedPartial) {",
+      "replace": "        if ((r.silent.length || r.failed.length) && announcedPartial === \"\") {",
+      "expectRed": "...and a later reachable error replaces the silence notice",
+      "cell": "...and a later reachable error replaces the silence notice",
+      "note": "Announce-once must key on the partial state, not on whether any partial was announced before, or a new reachable failure stays hidden behind an older silence warning."
+    }
+  ]
+}

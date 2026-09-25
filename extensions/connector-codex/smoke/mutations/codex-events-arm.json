@@ -23,11 +23,11 @@
       "expectRed": "the connector DECLARES an event plane"
     },
     {
-      "name": "A4 an unarmed launch is armed anyway, so events are no longer opt-in",
+      "name": "A4 an opted-out launch is armed anyway, overriding the explicit opt-out",
       "file": "extensions/connector-codex/src/extension.ts",
-      "find": "    if (opts.events === true) {",
-      "replace": "    if (opts.events !== undefined || true) {",
-      "expectRed": "an unarmed launch does NOT set COTAL_EVENTS"
+      "find": "    if (opts.events !== false) {",
+      "replace": "    if (opts.events !== false || true) {",
+      "expectRed": "--no-events does NOT set COTAL_EVENTS"
     }
   ],
   "suite": [

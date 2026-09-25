@@ -282,6 +282,11 @@ as described in §11:
 - `{ "kind": "artifact", "name": string, "mediaType": string, "digest": string, "size": number }`
 - `{ "kind": "<reverse-DNS extension kind>", ... }`
 
+A `data` part's `data` MUST be a JSON value at every depth; a publisher MUST refuse the part
+rather than serialize a value JSON cannot represent, naming the offending member's path (a
+top-level `undefined` serializes to a keyless `{"kind":"data"}` object, and `NaN`, a `Date`,
+or a class instance would be silently rewritten rather than refused).
+
 An `artifact` part REFERENCES bytes held outside the message. `digest` MUST be
 `sha256:<lowercase hex>` over the raw bytes and is the artifact's identity; the part carries no
 location, so resolution is the receiver's. `name`, `mediaType`, and `size` are the publisher's
@@ -621,7 +626,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
@@ -759,13 +764,18 @@ CAS re-exports the SAME id on the next exchange (that id IS the incarnation's li
 is nothing unobserved to revoke); the only pre-release crash window is a durable active-but-
 unstamped row, which the head-equality check denies. Rotating an incarnation's root credential is
 exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry a server-authored
-**view** claim, minted only by the deployment's signed-in human exchange (never accepted from the
-client or from a managed agent-secret exchange) and re-authorized against the live grant ledger at
-every connect: the callout then mints the connection as the named elevated profile (Appendix B:
-`admin`, or a scoped host profile such as `purger`, `channel-writer`, `deployer`) instead of `agent`.
-On a public exchange face, only `channel-writer` and `channel-purger` MAY be issued, still
-re-authorized against ledger scope `admin`; `admin`, `purger`, `deployer`, and `manager-service`
-MUST remain loopback-only. A managed-agent secret exchange MUST still refuse every view.
+**view** claim, selected only by the exchange and re-authorized against the live grant ledger at
+every connect. The callout then mints the connection as that closed profile instead of `agent`.
+Elevated views such as `admin`, `purger`, `channel-writer`, and `deployer` remain human-only. The
+narrowing `manager-caller` view MAY be minted by either the human or managed-agent exchange and is
+served on both exchange faces. It adds no capability. Its required `act.managerInstanceId` binds
+every manager request to one exact live registered instance and is valid with no other view. The
+exchange selects from read-only observations of manager issuance gates and service registrations.
+It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
+rather than falling through to a co-located manager. An explicit selector must name a live candidate.
+On a public exchange face, `channel-writer`, `channel-purger`, and `manager-caller` MAY be issued.
+`admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A managed-agent
+secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
 
@@ -1191,6 +1201,25 @@ confer the space signer, callout signer, owner secret, static provisioner creden
 stream/KV authority, or authority over another instance's gate, records, contracts, or
 credentials. A manager-service credential is ledgered and gated exactly as this section requires;
 its `holderPrincipal` is the derived-owner/fixed-actor principal, never the endpoint name.
+
+The typed protocol includes two host-owned registration-maintenance operations. An
+`evict-family-principal` request names one principal, but the host MUST enumerate the authenticated
+caller instance's `epcred.manager.<instanceId>.*` family and refuse unless that principal is one of
+its holders. The host, using its signer, then mints the bounded delivery-admin caller, requests
+`evictPrincipal`, and returns the closed `EvictionResult`; a garbled, foreign, or contradictory
+result MUST NOT authorize. The participant never receives that credential. A
+`reconcile-registration` request MAY name another manager instance in the same space only to clear
+an abandoned governance-slot holder. The host MUST observe that target's frozen registration gate,
+prove the freeze-holder `gone` under a complete liveness sweep, run the normal registration repair
+with verified eviction, and refuse live, unknown, incomplete, unestablishable, or non-registration
+states. There is no force path. A participant credential still gains no direct authority over the
+target gate, records, family, or delivery-admin rail.
+
+The bounded executor returned by `prepare` is renewable through `renew` for the same public nkey and
+current open registration. A remote manager MUST obtain a fresh executor before maintenance or clean
+deregistration when its retained credential is not healthy. A restart MUST drive family eviction
+through the host operation before advancing its epoch. A registration blocked by a foreign frozen
+manager governance slot MAY request guarded host reconciliation and retry exactly once.
 
 The host, not the participant, issues every data-account credential requiring the account signing
 key. The only remote path is the lifecycle- and instance-bound typed protocol of §13.6; a broader
@@ -1873,7 +1902,11 @@ facts.
 - **cast**, the same subjects and grants (`replyExpected: false`): fire-and-forget,
   at-most-once, the responder MUST NOT reply and the caller never reads the rail (the nonce
   is present but unused). A cast to a journaled command is `class-mismatch`; journaled work
-  goes through submissions.
+  goes through submissions. In the NATS binding a publish violation is asynchronous — the
+  publish call returns normally while the broker refuses — so a caller-side cast
+  implementation MUST watch the connection status for a violation on the cast's own subject
+  and raise `permission-denied` naming that subject, exactly as a call does; a cast
+  implementation MUST NOT resolve as though a refused publish had been cast.
 - **watch**; observe a record (KV watch; fell-behind ⇒ re-read, §13.4) or an event topic
   (live subscription within the read grant plus filtered replay from the event stream).
   Per-key and per-goal subjects carry read containment; a watch grant names the exact subtree.
@@ -1929,7 +1962,12 @@ facts.
   all-expected-replied or deadline, in which case the result is explicitly partial with
   `missing` / `churn` / `unexpected` / `duplicate` / `late` classifications (a churned slot
   reports as `churn`, not `missing`). An empty or unreadable registry is
-  `failed-precondition`, not an empty success. Deadline mandatory.
+  `failed-precondition`, not an empty success. Deadline mandatory. A per-instance liveness
+  probe that asks the broker about an instance's own rail is such a cast, and a refused
+  probe publish MUST surface as that same `permission-denied` refusal naming the refused
+  subject, never as a liveness verdict: only the broker's no-responders answer is a
+  liveness fact, and a refusal licenses nothing (a caller that swallowed it into `unknown`
+  would read a permission problem as "no verdict" and pay the full budget for it).
 
 ### 13.6 Composites
 
@@ -3022,6 +3060,12 @@ set additionally includes a **maximum-command serve credential** (a 12-command e
 per-command rows, below); the §13.12 operator assertion uses the largest encoded CONNECT
 line in the set.
 
+The agent baseline includes the self-targeted manager command `run-answer`. Its grant is only the
+`self` request form. The manager MUST authorize a baseline managed seat only when an open `ask` or
+escalated checkpoint is named by a pending relay addressed to that exact caller incarnation, and
+MUST refuse every other run or pause. A caller holding the explicit `run` capability may use the
+same self-targeted form for ordinary run answers. The request never carries the answerer's name.
+
 **Serve grants.** Serving is granted authority, dual to calling. On the **subscribe side**
 an instance's credential binds its registered service name, stable instance id, and
 **registered command set**, one queue-qualified subscribe row per registered command
@@ -3131,9 +3175,19 @@ re-authorized caller and never proxies to an arbitrary subject; raw
 consumer/`DIRECT.GET`/`STREAM.MSG.GET`
 authority stays with trusted single-purpose infra principals (canonicalizer, commit
 principal, record writer, timer writer, the read mediator, the auth path) that deliver to
-themselves. This contract fixes the boundary; untrusted callers never hold raw reads; reads
-are mediated onto confined caller rails, and leaves the read-command wire shape (batching,
-cursors, flow control) to the reference implementation.
+themselves. A registered endpoint MAY also mediate its own callers' goal-result reads through
+its separate trusted commit/read connection. Each request MUST be authorized by the requesting
+connection's broker-enforced command grant on its authenticated caller triple. User-auth revocation
+has the same bearer-lifetime bound as other live endpoint commands; renewal requires a fresh
+exchange and connect that re-authorize the caller. This read does not claim a per-request ledger
+check. The endpoint and full caller triple MUST come from the broker-authenticated request
+subject; caller input supplies only the goal id. The response MUST
+use the derived attribution-pinned caller reply rail, never a caller-supplied destination. This
+hosting choice grants no raw read to the endpoint's serve credential or to its callers. The
+existing trusted reader's body-selected, space-wide leader-read residual MUST remain documented.
+This contract fixes the boundary; untrusted callers never hold raw reads; reads are mediated onto
+confined caller rails, and leaves the read-command wire shape (batching, cursors, flow control) to
+the reference implementation.
 **Subject convention:**
 application subjects in rows are written relative and are prefixed `cotal.<space>.` on the
 wire; **JetStream API tails (extended-create filter tails and `DIRECT.GET` subject
@@ -3209,7 +3263,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only, and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
 | Canonical decisions + quarantine + goal-bind | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>`, `epf.<endpoint>.quar.>`, and `epf.<endpoint>.goal.*.*.*.*.bind` (the per-goal first-wins bind, §13.4, create-only CAS per subject; the `.bind` leaf is disjoint from the commit principal's `goal….result`/status writes, so no writer overlap) | mediated |
 | Canonicalizer CAS-winner + terminal read | the endpoint's canonicalizer principal | leader-served `$JS.API.STREAM.MSG.GET.EPF_<space>` (body-selected `last_by_subj`; these reads are FENCING, read service above, so the follower-served `$JS.API.DIRECT.GET.EPF_<space>.…` form is NOT granted; the body-selected form is the broker-confinement-for-profile-trust trade above) over exactly its families: `epf.<endpoint>.dec.>` + `epf.<endpoint>.quar.>` (observes the winning fact on redelivery, §13.4) + `epf.<endpoint>.wrk.>` (READ-ONLY: the reconciliation predicate's terminal probe, §13.6; `wrk` writes stay with the commit principal, row below) + `epf.<endpoint>.goal.*.*.*.*.bind` (the goal-bind CAS winner: on a lost `.bind` create the canonicalizer reads the existing bind to decide same-fingerprint retry vs. `conflict`, §13.4) | mediated |
-| Caller durable reads (decisions, goal results, receipts, event catch-up, record reads/watches) | the **read mediator** owns the reader consumers; the **caller** holds only its own reply rail | **Mediated (normative above).** The caller holds NO consumer/`DIRECT.GET` grant on EPF/EPE/EPC/records. It issues a read command and receives its own caller-scoped facts (`dec`/`goal…result`/`receipt` under its triple, §13.2), event catch-up, and record snapshots over its attribution-pinned reply rail `ep.reply.…<cO>.<cA>.<cUid>.<nonce>`; the mediator re-authorizes each read against the caller's current grants before delivering. Live progress is the caller's own core subscription to granted `epe` subtrees within `sub.allow` (bytes land only on its own sub). Reader consumers (`decD`/`goalD`/`eveD`/`recD`) are owned and bound by the mediator, never the caller | mediated read; confined to the caller's own rails |
+| Caller durable reads (decisions, goal results, receipts, event catch-up, record reads/watches) | the **read mediator** owns the reader consumers; a registered endpoint MAY mediate its own callers' goal results through its separate trusted commit/read connection; the **caller** holds only its own reply rail | **Mediated (normative above).** The caller holds NO consumer/`DIRECT.GET` grant on EPF/EPE/EPC/records. It issues a read command and receives its own caller-scoped facts (`dec`/`goal…result`/`receipt` under its triple, §13.2), event catch-up, and record snapshots over its attribution-pinned reply rail `ep.reply.…<cO>.<cA>.<cUid>.<nonce>`; the read mediator re-authorizes each read against the caller's current grants before delivering; registered-endpoint goal reads use the connection-grant authorization and bearer-lifetime bounds specified above. Live progress is the caller's own core subscription to granted `epe` subtrees within `sub.allow` (bytes land only on its own sub). Reader consumers (`decD`/`goalD`/`eveD`/`recD`) are owned and bound by the mediator, never the caller | mediated read; confined to the caller's own rails |
 | Accepted-fact consume (effects) | every instance's serve credential, on the endpoint's ONE shared durable | **bind-only** on the provisioner-pre-created pull durable `effD = eff_<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.>`, `AckExplicit`): `$JS.API.CONSUMER.INFO.EPF_<space>.<effD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>`; instances **pull-compete on the shared durable** so each accepted decision is delivered to exactly one live instance (at-least-once): a per-instance consumer over the class-wide decision subtree would be broadcast, and every instance would duplicate the external effect. Effects consume canonical facts, never raw submissions (§13.4); a rejected/quarantined decision is ack-skipped, and so is any acceptance whose `route` is a pool (§13.4, the pool's worker path executes it; effects MUST NOT). **Ack barrier:** an effecting instance MUST ack a `dec` message ONLY after its effect is durably recorded, for an action command the terminal `goal….result` fact; for a **non-action `route:"effects"` journal command** a generic per-request **effect fact** `epf.<endpoint>.eff.<cO>.<cA>.<cUid>.<id>` (create-only CAS, written by the effecting instance's commit path before ack; every `route:"effects"` acceptance has exactly this durable effect-complete marker), never before; an ack-before-effect would let a crash drop journal work the at-least-once contract promised. A crash before the ack redelivers the decision to another competing instance, which observes the existing terminal fact (idempotent) or effects it | direct read, endpoint-scoped, work-shared |
 | Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.*.*.*.*.result` (the goal terminal result; the `.bind` leaf under `goal.>` is the canonicalizer's, row above), `epf.<endpoint>.eff.>` (per-request effect-complete fact for non-action `route:"effects"` commands, create-only CAS, §13.9 ack barrier), `epf.<endpoint>.receipt.>` (caller-scoped subjects, §13.2), `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back is FENCING (read service above: it gates create-only CAS emission and idempotent re-commit decisions), leader-served `$JS.API.STREAM.MSG.GET.EPF_<space>` (body-selected `last_by_subj` over exactly these five families; the follower-served per-family `DIRECT.GET` form is NOT granted) | mediated |
 | Live event progress (caller) | capability holder (per read capability) | a caller-owned **core subscription** to the granted `epe` subtrees (fully-qualified `cotal.<space>.epe.…` in `sub.allow`, Appendix B), incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>`; safe because a core sub delivers only to the caller's own subscription, never a caller-chosen subject; durable catch-up/replay is the mediated read above, not a self-bound consumer | direct read; own subscription only |
@@ -3754,6 +3808,12 @@ program from part of a run's history is a **fork**, and a fork is a new run unde
 record names its parent (§14.3). A run has exactly one **authoritative appender** at a time; §14.4
 is what makes that true.
 
+A user-auth run's durable actions MUST use the owner established by its authenticated admission.
+The trusted host derives the run-stable actor and lifecycle uid from the run id and retains that
+owner on resume. Grant construction and effect dispatch MUST use the same triple. A supplied
+owner token is not admission evidence. The existing static/local path retains its `local` owner.
+These identity rules do not authorize exporting host mediator or operator credentials to a driver.
+
 ### 14.2 The language and its version
 
 Programs, values, primitives, the step key grammar, the input hash, the request id and the entry
@@ -3877,7 +3937,9 @@ characters**, which is an id token by construction. The reference implementation
   `{ token, by, value: value ?? null, artifact: artifact ?? null }`, so a retry of the same answer
   lands on the same key with the same bytes and two different answers race on the settle, which is
   what the settle is for. `by` is the answerer as the run's own authorization knows them, never the
-  presenting principal (the driver, for every answer).
+  presenting principal (the driver, for every answer) and never a field in the answer request. A
+  baseline managed seat reaches the answer door only through the self-targeted row above, after the
+  manager has matched its exact caller incarnation to the pending relay for this open pause.
 - **`notice`**, `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, split: spec `{ v: 1, run,
   step, addressee, fact, at }` (create-only; `fact` is the language's bounded decision record and
   is checked against its bound BEFORE any record is written), status `{ v: 1, consumedAt, by,
@@ -4042,7 +4104,8 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
 - endpoint request forms per minted capability (§13.9): every agent gets the baseline set
   (`describe` on all endpoints; the delivery endpoint's durable join/leave/list commands;
-  self-targeted lifecycle commands with authz-mode `self`); the `spawn` capability adds the
+  self-targeted manager commands with authz-mode `self`, including `run-answer`, which the manager
+  narrows to an ask or escalation pending on that exact seat incarnation); the `spawn` capability adds the
   manager endpoint's lifecycle commands with authz-mode `owner`; `child`/`ledger` forms and
   wider target patterns only per explicitly minted capability. The caller triple
   `<owner>.<actor>.<uid>` is pinned in every granted form

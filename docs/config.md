@@ -93,7 +93,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_EVENTS_REQUIRED` | hand-driven user-mode connector | Trusted registration says events are mandatory; arms the plane and refuses if the session grant omits its event channel. Launcher-managed sessions carry this in launch material instead | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin) | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
-| `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works | off |
+| `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works. `agent-bearer` skips the gate by name, no flag needed | off |
 | `COTAL_ALLOW_CHECKOUT_SEED` | seed store | Permit a source-checkout CLI to write the operator-global seed store (`1`) after isolating `$XDG_CONFIG_HOME`. Used by in-tree seed smokes that spawn the checkout-shaped `bin/` CLI into a scratch config. Any other value is ignored. The checkout refusal does not name this variable. | off |
 | `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (`ctrl-<char>` / `^<char>`) | `ctrl-]` |
 | `COTAL_FEEDBACK_KEY` | `feedback`, connector | Beta feedback key → keyed intake | none (public intake) |
@@ -117,6 +117,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | Variable | Purpose |
 |---|---|
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
+| `COTAL_MANAGER_INSTANCE` | Stable instance id of the launching manager. User-auth managed calls request a separate control view for this instance; the issuer authorizes the selection. It carries no credential or grant. An unbound session uses the issuer's unique authorized selection |
 | `COTAL_ENVIRONMENT` | Opaque provider-issued environment reference published in presence. Read once when the endpoint is constructed; omitted when the launcher sets none |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |

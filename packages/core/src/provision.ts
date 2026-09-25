@@ -73,8 +73,8 @@ import {
   INBOX_READER_DURABLE,
 } from "./subjects.js";
 import {
-  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
-  operatorInstrumentCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
+  epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
+  operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
@@ -97,6 +97,7 @@ import {
 /** Cred profiles. Each profile has an explicit permission arm and a D5 lifetime classification. */
 export type Profile =
   | "agent"
+  | "manager-caller"
   | "observer"
   | "admin"
   | "supervisor"
@@ -213,6 +214,7 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
  * credential-death behavior instead of silently inheriting non-expiring static creds. */
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
   agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
+  "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
@@ -540,6 +542,8 @@ export interface MintOpts {
    *  caller's own reply-rail read row. Requires {@link MintOpts.lifecycleUid} — the rows pin
    *  the full caller triple. Default-deny when absent. */
   endpointCapabilities?: EpCapability[];
+  /** `manager-caller` profile only: the one manager instance every request row pins. */
+  managerInstanceId?: string;
   /** The caller's lifecycle UID (SPEC §13.1), minted by the managing authority BEFORE the
    *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
    *  forge-locks it as the third caller token. */
@@ -1029,6 +1033,7 @@ export function permissionsFor(
   if (opts.issued && !ISSUABLE_PROFILES.has(profile))
     throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
+  if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon (closure (ii) gate)
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority (closure (ii))
@@ -1473,6 +1478,35 @@ export function permissionsFor(
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...subChat, ...epSub] } };
 }
 
+/** One seat's manager control view. It carries no agent messaging or delivery surface, and every
+ * manager request, including describe, is pinned to one exact registered instance. */
+function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
+  if (!pr.lifecycleUid)
+    throw new Error("permissionsFor(manager-caller): a lifecycleUid is required");
+  const instanceId = opts.managerInstanceId === undefined
+    ? (() => { throw new Error("permissionsFor(manager-caller): managerInstanceId is required"); })()
+    : assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
+  const caps = opts.capabilities ?? [];
+  const ordinary = [
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe" },
+    ...baselineCallerCapabilities().filter((cap) => cap.endpoint === BASELINE_LIFECYCLE_ENDPOINT),
+    ...(caps.includes("spawn") ? spawnCallerCapabilities(pr.owner) : []),
+    ...(caps.includes("run") ? runCallerCapabilities(pr.owner) : []),
+    ...(caps.includes("admin") ? operatorInstrumentCapabilities("admin", pr.owner) : []),
+  ];
+  const caller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) }, opts);
+  const rows = epCallerGrantRows(space, instanceOnlyManagerCapabilities(ordinary, instanceId), caller);
+  return {
+    pub: {
+      allow: [
+        `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+        ...rows.pub,
+      ],
+    },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...rows.sub] },
+  };
+}
+
 /** The long-lived SUPERVISOR permission set (closure (ii), residual 2) — the always-on manager daemon
  *  (`manager.ts` `this.ep`), carved down from the former allow-all `manager`. THIS is the cred whose
  *  STANDING breadth was the residual-2 gate: tightening it removes the always-on DM/DLV body-read AND the
@@ -1488,6 +1522,7 @@ export function permissionsFor(
  *  actor, provision, purge, or tamper with a stream. */
 function supervisorPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, MKV = `KV_${managerBucket(space)}`;
+  const SUP_DLVKV = `KV_${deliveryBucket(space)}`;
   // 1d: the supervisor no longer serves the manager control tiers — the manager's control surface
   // is its v0.4 `service` endpoint, served on a SEPARATE connection under its own `endpoint-serve`
   // credential (its rails are that credential's grant, not the supervisor's). The supervisor now
@@ -1521,6 +1556,18 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
         // files it requests `reloadCreds` here so adoption is an explicit, auditable event. Self-scoped
         // request subject (its own owner+actor slots), bounded reply subtree in sub.allow below.
         controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, pr.owner, pr.actor),
+        // #1694: a POINT READ of the delivery lease row, so the store-identity challenge can verify
+        // that the process which answered the queue-grouped admin rail is the holder that actually
+        // reloads the standing credentials. Without it the challenge can only report what some
+        // responder sent, and a non-holder's store stands in for the reloading process's.
+        //
+        // READ ONLY, and that is the half that matters: a credential able to WRITE this row could
+        // manufacture the very fact the challenge reads, which would put the determination back in
+        // the hands of a participant. No `$KV.${deliveryBucket(space)}` publish, no watch consumer,
+        // no STREAM.DELETE or PURGE.
+        `$JS.API.STREAM.INFO.${SUP_DLVKV}`,
+        `$JS.API.STREAM.MSG.GET.${SUP_DLVKV}`,
+        `$JS.API.DIRECT.GET.${SUP_DLVKV}.>`,
       ],
     },
     sub: {
@@ -2485,8 +2532,17 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     ...kvRead(PKV), ...kvRead(CHKV), ...kvRead(MKV), ...kvRead(AKV),
     // Members-KV WRITE — the daemon is the durable-membership authority (join/leave/activate/catch-up).
     `$KV.${membersBucket(space)}.>`,
-    // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys.
+    // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys. The
+    // CONSUMER.* rows are kv.watch's ordered consumer for the lease-loss watch (#1596) — the same
+    // read axis the other kvRead buckets carry, on the bucket this cred already reads point-wise:
+    // a watch is a READ of the row's changes, never a write. CONSUMER.DELETE rides with it for the
+    // same reason it does on every watched bucket: an ordered consumer rebuilds by deleting its
+    // predecessor, and a refused delete strands consumers on every rebuild (measured on the
+    // presence bucket; the comment there carries the full story).
     `$JS.API.STREAM.INFO.${DKV}`, `$JS.API.STREAM.MSG.GET.${DKV}`,
+    `$JS.API.CONSUMER.CREATE.${DKV}.>`,
+    `$JS.API.CONSUMER.INFO.${DKV}.>`,
+    `$JS.API.CONSUMER.DELETE.${DKV}.>`,
     `$KV.${deliveryBucket(space)}.lease.*`,
     // The timer writer (SPEC 13.2): the daemon hosts the pump that turns `.schedule` requests into
     // the authoritative `.armed` publishes — without it no workflow pause on the space ever
@@ -2680,6 +2736,9 @@ export function openServerConfig(opts: {
   port?: number;
   host?: string;
   storeDir: string;
+  /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
+   *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
+  maxFileStore?: number;
   transport: BrokerTransport;
 }): string {
   const port = opts.port ?? 4222;
@@ -2688,8 +2747,17 @@ export function openServerConfig(opts: {
 host: ${host}
 port: ${port}
 max_control_line: 65536
-${renderTlsBlock(opts.transport)}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
 `;
+}
+
+/** The one place the `jetstream{}` block is produced, shared by both broker renderers. An unset
+ *  cap renders the bare `store_dir` block; a set cap must be a positive integer byte count. */
+function renderJetStreamBlock(renderer: string, storeDir: string, maxFileStore: number | undefined): string {
+  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;
+  if (!Number.isSafeInteger(maxFileStore) || maxFileStore <= 0)
+    throw new Error(`${renderer}: maxFileStore must be a positive integer number of bytes (got ${String(maxFileStore)})`);
+  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore} }`;
 }
 
 /** The one place a `tls{}` block is produced, shared by both broker renderers.
@@ -2715,6 +2783,9 @@ export function serverConfig(
     port?: number;
     host?: string;
     storeDir: string;
+    /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
+     *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
+    maxFileStore?: number;
     /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
      *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
     extraAccounts?: Array<{ pub: string; jwt: string }>;
@@ -2765,7 +2836,7 @@ export function serverConfig(
 host: ${host}
 port: ${port}
 max_control_line: 65536
-${tlsBlock}jetstream { store_dir: ${JSON.stringify(opts.storeDir)} }
+${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
 resolver: MEMORY

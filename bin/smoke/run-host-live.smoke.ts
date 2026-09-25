@@ -14,8 +14,9 @@
  *
  * Needs nats-server on PATH. Run: pnpm smoke:run-host-live
  */
-import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile as execFileProc, spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,7 +32,7 @@ const {
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
   openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
-  issuedPermitsSubject, issuedPermitsPattern, chatSubject,
+  issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel,
 } = await import("@cotal-ai/core");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -40,16 +41,22 @@ type ReplyT = import("@cotal-ai/core").EndpointReply;
 type RunStatusViewT = import("@cotal-ai/core").RunStatusView;
 type RunListRowT = import("@cotal-ai/core").RunListRow;
 type RunJournalRowT = import("@cotal-ai/core").RunJournalRow;
+type ConnectorT = import("@cotal-ai/core").Connector;
+type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
+type LaunchSpecT = import("@cotal-ai/core").LaunchSpec;
 const { authDir, saveSpaceAuth, recordMesh, removeMesh, userAuthStateDir } = await import("@cotal-ai/workspace");
+const { agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const { Manager, RunHosting } = await import("@cotal-ai/manager");
 // Importing the runtime is what registers the `cotal-lang` run host the manager resolves.
 const { runWorkflow } = await import("@cotal-ai/runtime");
+const { MeshAgent } = await import("@cotal-ai/connector-core");
 const { bootBroker } = await import("../../implementations/manager/smoke/_boot-broker.js");
 // The delivery daemon: the liveness oracle a manager restart on an auth mesh verify-evicts through
 // (SPEC 13.1), and the timer writer a checkpoint's deadline schedule is armed by.
 const { bootDeliveryDaemon } = await import("../../implementations/manager/smoke/_boot-delivery.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const execFile = promisify(execFileProc);
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
     const s = createServer();
@@ -74,7 +81,13 @@ const until = async <T>(read: () => Promise<T | undefined>, ms: number): Promise
 
 const PURE = 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n';
 const CHECKPOINT = 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n';
+const ASK_TWO = 'const asked = await spawn("asked");\nconst other = await spawn("other");\nconst v = await ask(asked, { name: "size", schema: { estimate: "number" }, deadline: "2m" });\nlog("resolved", v.estimate, other.agent);\n';
 const BROKEN = 'log("unclosed"\n';
+const COMPUTED_PLACEMENT = 'const id = "abcdefghijklmnopqrstuvwxyz"; await spawn("a", { placement: { endpoint: "manager", instanceId: id } });\n';
+const TRAILING_SPREAD_PLACEMENT = 'const extra = { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; await spawn("a", { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" }, ...extra });\n';
+const CONDITIONAL_OPTIONS_PLACEMENT = 'const which = true; await spawn("a", which ? { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } } : { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" } });\n';
+const VARIABLE_OPTIONS_PLACEMENT = 'let opts = { placement: { endpoint: "manager", instanceId: "abcdefghijklmnopqrstuvwxyz" } }; opts = { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; await spawn("a", opts);\n';
+const FUNCTION_OPTIONS_PLACEMENT = 'function options() { return { placement: { endpoint: "other", instanceId: "zzzzzzzzzzzzzzzzzzzzzzzzzz" } }; } await spawn("a", options());\n';
 
 const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
@@ -88,6 +101,23 @@ const wsA = mkdtempSync(join(tmpdir(), "cotal-runhost-wsA-"));
 scratch.push(wsA);
 mkdirSync(join(wsA, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(wsA), auth);
+for (const name of ["asked", "other"])
+  writeFileSync(join(wsA, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\nagent: run-answer-stub\ncapabilities: []\n---\n`);
+const stub = resolve("implementations/manager/smoke/e2e-stub.mjs");
+const envFor = (o: LaunchOptsT): Record<string, string> => ({
+  COTAL_SPACE: o.space,
+  COTAL_SERVERS: String(o.servers ?? brokerA.servers),
+  COTAL_CREDS: String(o.creds),
+  COTAL_ID: String(o.id),
+  COTAL_NAME: o.name,
+  PATH: process.env.PATH ?? "",
+  ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+});
+const runAnswerStub: ConnectorT = {
+  kind: "connector", name: "run-answer-stub", requires: ["node"], eventChannel,
+  buildLaunch: (o): LaunchSpecT => ({ command: "node", args: [stub], env: envFor(o) }),
+};
+registry.register(runAnswerStub);
 
 let mgr: InstanceType<typeof Manager> | undefined;
 let mgrB: InstanceType<typeof Manager> | undefined;
@@ -95,6 +125,7 @@ let nc: Awaited<ReturnType<typeof connect>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: brokerA.servers, space: spaceA, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
   delivery = await bootDeliveryDaemon({
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
@@ -115,7 +146,10 @@ try {
   nc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const service = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
-    (await invokeCommand(nc!, spaceA, service, command, args, { deadlineMs: 30_000, currentEpoch: async () => 0 })).reply;
+    (await invokeCommand(nc!, spaceA, service, command, args, {
+      deadlineMs: 30_000, currentEpoch: async () => 0,
+      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+    })).reply;
   const status = async (runId: string): Promise<RunStatusViewT | undefined> => {
     const r = await call("run-status", { runId });
     return r.ok ? r.data as RunStatusViewT : undefined;
@@ -124,6 +158,8 @@ try {
   type StepRow = Extract<RunJournalRowT, { kind: "step" }>;
   const pending = (v: RunStatusViewT | undefined, asks: string): StepRow | undefined =>
     v?.journal.find((r): r is StepRow => r.kind === "step" && r.state === "pending" && r.asks === asks);
+  const pendingStep = (v: RunStatusViewT | undefined, step: string): StepRow | undefined =>
+    v?.journal.find((r): r is StepRow => r.kind === "step" && r.state === "pending" && r.step === step);
 
   console.log("A1. a program that does not validate is refused with the language's own records");
   {
@@ -137,6 +173,42 @@ try {
       wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+  }
+
+  console.log("A1a. hosted placement authority must be literal before credential minting");
+  {
+    const computed = await call("run-start", { source: COMPUTED_PLACEMENT, file: "computed-placement.cotal.js" });
+    const details = ((computed.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+    c("run-start refuses a computed placement before hosted credential minting",
+      computed.ok === false && computed.error?.code === "bad-request"
+        && details.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("manager must mint")), computed.error);
+    const ps = await call("run-ps");
+    c("the computed placement recorded no run",
+      ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
+
+    const spread = await call("run-start", { source: TRAILING_SPREAD_PLACEMENT, file: "trailing-spread-placement.cotal.js" });
+    const spreadDetails = ((spread.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+    c("run-start refuses a trailing option spread that can replace literal placement before hosted credential minting",
+      spread.ok === false && spread.error?.code === "bad-request"
+        && spreadDetails.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("spreads its option bag")), spread.error);
+    const spreadPs = await call("run-ps");
+    c("the trailing option spread recorded no run",
+      spreadPs.ok === true && (spreadPs.data as RunListRowT[]).length === 0, spreadPs.data);
+
+    for (const [kind, source] of [
+      ["conditional", CONDITIONAL_OPTIONS_PLACEMENT],
+      ["variable", VARIABLE_OPTIONS_PLACEMENT],
+      ["function-returned", FUNCTION_OPTIONS_PLACEMENT],
+    ] as const) {
+      const nonLiteral = await call("run-start", { source, file: `${kind}-options-placement.cotal.js` });
+      const nonLiteralDetails = ((nonLiteral.error as { details?: unknown } | undefined)?.details ?? []) as Array<{ kind?: string; code?: string; cause?: string }>;
+      c(`run-start refuses a ${kind} option bag before hosted credential minting`,
+        nonLiteral.ok === false && nonLiteral.error?.code === "bad-request"
+          && nonLiteralDetails.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND && d.code === "L3048" && String(d.cause).includes("cannot inspect")), nonLiteral.error);
+    }
+    const nonLiteralPs = await call("run-ps");
+    c("the non-literal option bags recorded no runs",
+      nonLiteralPs.ok === true && (nonLiteralPs.data as RunListRowT[]).length === 0, nonLiteralPs.data);
   }
 
   console.log("A1b. a legacy-rail caller holding the same capability is refused run-start by name");
@@ -234,6 +306,99 @@ try {
     c("and the hosted run completes", stateOf(done) === "completed", done?.status);
   }
 
+  {
+    console.log("A3b. a baseline seat answers only the ask relayed to its own incarnation");
+    const r = await call("run-start", { source: ASK_TWO, file: "ask-two.cotal.js" });
+    const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+    c("the hosted ask program starts", r.ok === true && runId !== "", r);
+    const parked = await until(async () => {
+      const v = await status(runId);
+      return pendingStep(v, "/ask:size#0") ? v : undefined;
+    }, 30_000);
+    c("the ask parks after both baseline seats are spawned", pendingStep(parked, "/ask:size#0") !== undefined, parked?.journal);
+    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string } }> };
+    const seatCall = async (name: string, command: string, args?: Record<string, unknown>, self = true) => {
+      const a = managed.agents.get(name)!;
+      const creds = readFileSync(agentLifecycleSecretFilePaths(wsA, spaceA, name, a.lifecycleUid).creds, "utf8");
+      const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, ...(a.issued ? { generation: a.issued.generation } : {}) } as EpCallerT;
+      const seatNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+      try {
+        const seatService = await resolveService(seatNc, spaceA, "manager", caller, { deadlineMs: 10_000 });
+        return (await invokeCommand(seatNc, spaceA, seatService, command, args, {
+          ...(self ? { target: { mode: "self" as const } } : {}), deadlineMs: 30_000, currentEpoch: async () => seatService.responder.epoch,
+        })).reply;
+      } catch (e) {
+        return { ok: false as const, error: { code: (e as { code?: string }).code, message: String((e as Error).message) } };
+      } finally { await seatNc.drain().catch(() => seatNc.close()); }
+    };
+    const startDenied = await seatCall("asked", "run-start", { source: PURE, file: "forbidden.cotal.js" }, false);
+    c("the same baseline seat is still refused run-start by the broker", startDenied.ok === false && /REFUSED BY THE BROKER/.test(String(startDenied.error?.message)), startDenied.error);
+    const other = await seatCall("other", "run-answer", { runId, stepKey: "/ask:size#0", value: { estimate: 3 } });
+    c("a different baseline seat is refused the ask addressed to asked", other.ok === false && other.error?.code === "permission-denied" && String(other.error.message).includes("none is pending"), other.error);
+    const cp = await call("run-start", { source: CHECKPOINT, file: "seat-forbidden-cp.cotal.js" });
+    const cpRun = (cp.data as { runId?: string } | undefined)?.runId ?? "";
+    await until(async () => { const v = await status(cpRun); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
+    const unrelated = await seatCall("asked", "run-answer", { runId: cpRun, stepKey: "/checkpoint:approve#0", value: "no" });
+    c("a baseline seat is refused an unrelayed checkpoint on another run", unrelated.ok === false && unrelated.error?.code === "permission-denied" && String(unrelated.error.message).includes("is not that pause"), unrelated.error);
+    const asked = managed.agents.get("asked")!;
+    const askedCredsPath = agentLifecycleSecretFilePaths(wsA, spaceA, "asked", asked.lifecycleUid).creds;
+    const askedCreds = readFileSync(askedCredsPath, "utf8");
+    const seat = new MeshAgent({
+      space: spaceA, servers: brokerA.servers, name: "asked", id: asked.id, lifecycleUid: asked.lifecycleUid,
+      acceptedToken: asked.issued?.acceptedToken, creds: askedCreds, subscribe: [], allowSubscribe: [],
+      allowPublish: [], capabilities: [], kind: "agent", tls: false,
+    });
+    let renderedForm: { ok: true; token: string; answerId: string } | { ok: false; error: string } = { ok: false, error: "the seat rendered no pending ask" };
+    try {
+      await seat.start();
+      await (seat as unknown as { pollTurns(): Promise<void> }).pollTurns();
+      const surfaced = await until(async () => seat.peekPendingTurns(), 10_000);
+      const line = surfaced?.text.split("\n").find((s) => s.startsWith("Answer with: "))?.slice("Answer with: ".length);
+      const command = line?.replace("'<json record>'", "'{\"estimate\":4}'");
+      if (command !== undefined) {
+        const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];
+        const [binary, ...args] = parts;
+        if (binary === "cotal") {
+          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args], {
+            cwd: wsA,
+            env: {
+              ...process.env,
+              COTAL_HOME: home,
+              COTAL_SKIP_CONNECTOR_SEED: "1",
+              COTAL_NAME: "asked",
+              COTAL_ID: asked.id,
+              COTAL_LIFECYCLE_UID: asked.lifecycleUid,
+              COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
+            },
+          }).then(({ stdout }) => {
+            const reply = JSON.parse(stdout) as { token?: unknown; answerId?: unknown };
+            return typeof reply.token === "string" && typeof reply.answerId === "string"
+              ? { ok: true as const, token: reply.token, answerId: reply.answerId }
+              : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
+          }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
+        } else renderedForm = { ok: false, error: `unexpected rendered command ${String(command)}` };
+      }
+    } finally {
+      await seat.stop();
+    }
+    let recordedBy: string | undefined;
+    if (renderedForm.ok) {
+      const readNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: "manager", runId, takeoverId: newTakeoverId() } }), tls: false }), maxReconnectAttempts: 0 });
+      try {
+        recordedBy = (await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", renderedForm.token, renderedForm.answerId))?.by;
+      } finally { await readNc.drain().catch(() => readNc.close()); }
+    }
+    c("the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
+    const answered = await until(async () => {
+      const v = await status(runId);
+      return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;
+    }, 15_000);
+    c("the addressed baseline seat answers through self-targeted run-answer", answered?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state !== "pending") === true, answered?.journal);
+    await call("run-answer", { runId: cpRun, stepKey: "/checkpoint:approve#0", value: "cleanup" });
+    const done = await until(async () => { const v = await status(runId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
+    c("the ask settles on the checkpoint plane and the hosted run completes", stateOf(done) === "completed", done?.status);
+  }
+
   console.log("A4. resume refusals name the fact");
   {
     const missing = await call("run-resume", { runId: "run-" + "0".repeat(32) });
@@ -259,7 +424,10 @@ try {
     const serviceB = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
     // The successor serves at epoch 1; a currency read pinned at 0 would reject its every reply.
     callB = async (command: string, args?: Record<string, unknown>): Promise<ReplyT> =>
-      (await invokeCommand(nc!, spaceA, serviceB, command, args, { deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch })).reply;
+      (await invokeCommand(nc!, spaceA, serviceB, command, args, {
+        deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch,
+        ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+      })).reply;
     const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 2 ? v : undefined; }, 15_000);
     c("the successor takes the parked run back: still running, now under epoch 2, the pause still open",
       taken?.status?.epoch === 2 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
@@ -499,7 +667,7 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 51;
+const EXPECTED_CELLS = 67;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  assertLifecycleToken,
   instancePinnedInstrumentCapabilities,
   isReachable,
   mintCreds,
@@ -150,6 +151,7 @@ export interface UserViewAuth {
   /** The bearer's ledger lifecycle claim - with (owner, actor) the v0.4 caller triple the
    *  callout-minted instrument-view rows pin (1c.2c). */
   lifecycleUid: string;
+  managerInstanceId?: string;
   source: () => Promise<string>;
 }
 
@@ -159,7 +161,7 @@ export interface UserViewAuth {
  *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
  *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
  *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string): Promise<UserViewAuth> {
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string } = {}): Promise<UserViewAuth> {
   if (!conn.bearer || !conn.userAuth || !conn.root)
     throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
   const ua = conn.userAuth;
@@ -173,10 +175,33 @@ export async function userViewAuth(conn: Connection, view: string): Promise<User
   }
   const dir = userAuthStateDir(conn.root, conn.space);
   const store = workspaceSecretStore(conn.root);
-  const mint = () => provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR, view });
+  if (opts.managerInstanceId !== undefined) {
+    if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
+    assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
+  }
+  const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
+  const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
+  const mint = async () => {
+    const result = await provider.userCredentials(request);
+    if (original) {
+      const { owner, actor, lifecycleUid } = principalFromBearer(result.bearer);
+      const payload = JSON.parse(Buffer.from(result.bearer.split(".")[1]!, "base64url").toString("utf8"));
+      if (owner !== original.owner || actor !== original.actor || lifecycleUid !== original.lifecycleUid ||
+          payload.act?.owner !== owner || payload.act?.view !== view ||
+          !(payload.aud === conn.space || (Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === conn.space)) ||
+          typeof payload.act?.managerInstanceId !== "string")
+        throw new Error("manager control exchange returned different space, principal, lifecycle or view coordinates");
+      const instanceId = assertLifecycleToken(payload.act.managerInstanceId, "managerInstanceId");
+      if (request.managerInstanceId !== undefined && instanceId !== request.managerInstanceId)
+        throw new Error("manager control exchange selected a different manager instance");
+      request.managerInstanceId = instanceId;
+    }
+    return result;
+  };
   const { bearer, sentinelCreds } = await mint();
   const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
-  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source: () => mint().then((r) => r.bearer) };
+  const managerInstanceId = request.managerInstanceId;
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
 }
 
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */

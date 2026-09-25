@@ -38,7 +38,7 @@
     {
       "name": "the seat baseline carries self stop alone",
       "file": "packages/core/src/endpoint-grants.ts",
-      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\"] as const);",
+      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\", \"run-answer\"] as const);",
       "replace": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\"] as const);",
       "expectRed": "the seat's minted credential is SERVED its pending turn, never broker-dropped",
       "cell": "the seat's minted credential is SERVED its pending turn, never broker-dropped",
@@ -48,8 +48,8 @@
     {
       "name": "the seat baseline pulls but cannot yield",
       "file": "packages/core/src/endpoint-grants.ts",
-      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\"] as const);",
-      "replace": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\"] as const);",
+      "find": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"turn-yield\", \"run-answer\"] as const);",
+      "replace": "export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze([\"stop\", \"turn-pending\", \"run-answer\"] as const);",
       "expectRed": "the seat's yield is served and completes the goal with its live currency",
       "cell": "the seat's yield is served and completes the goal with its live currency",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

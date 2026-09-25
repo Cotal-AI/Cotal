@@ -17,6 +17,7 @@ import {
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
+  legacyRenewalRecord,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
   migrateLegacyCotalMaterial,
@@ -100,7 +101,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   // the doctor reports what IS, never what it hopes the fix did.
   if (values.fix && problems.some((r) => isRemintable(r.kind))) {
     console.log(c.dim("\n--fix: re-signing the remintable daemon creds…"));
-    const prior = readRenewalRecord(root);
+    const prior = readRenewalRecord(root, auth.space);
     const results = await remintDaemonCreds(root, auth.space); // validate the signer against THIS folder's space
     // A local re-sign is NOT a broker proof: `--fix` has no live admin rail to adopt through, it
     // relies on the daemon's 75% renewal timer. So it must NEVER erase a KNOWN broker refusal to
@@ -112,21 +113,21 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     const adoption = prior?.adoption?.ok === false
       ? { ok: false, error: "re-signed locally by `doctor auth --fix`, but the previous renewal was refused by the broker and the re-signed generation is not yet broker-proven - start the mesh's manager (the renewal owner) so it proves and adopts it" }
       : undefined;
-    writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption });
+    writeRenewalRecord(root, auth.space, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption });
     for (const r of results.filter((x) => !x.ok && !x.skipped)) console.error(c.red(`  ✗ ${r.file}: ${r.error}`));
     reports = inventory(root, auth.space, auth.sys.pub);
     problems = reports.filter((r) => r.problem);
   }
 
   render("Daemon creds (manager-reminted - class 2)", reports.filter((r) => isRemintable(r.kind)));
-  renderRenewalRecord(root);
+  renderRenewalRecord(root, auth.space);
   render("$SYS creds (rotation-renewed - never remintable from disk)", reports.filter((r) => r.kind === "membership-observer" || r.kind === "connection-evictor"));
   render("Agent creds (static, pre-flip)", reports.filter((r) => r.kind === "agent"));
 
   // A broker-REFUSED renewal is a first-class problem for the final verdict + exit status, not just a
   // warning line. Cred-file health alone is not enough: a structurally-valid JWT the broker rejected
   // must never let `auth: healthy` / exit 0 stand (the whole point of the renewal-honesty slice).
-  const rec = readRenewalRecord(root);
+  const rec = readRenewalRecord(root, auth.space);
   const adoptionRefused = rec?.adoption?.ok === false;
   // Superseded leftovers are reported but never block `healthy` (#1576). An operator whose fleet is
   // fine must be told so in one word; the leftovers are a tidy-up, and burying that in an `auth: 15
@@ -410,11 +411,15 @@ function render(title: string, reports: CredReport[]): void {
 /** Render the renewal owner's audit record (written by the manager's pass / doctor --fix): when the
  *  last pass ran, who ran it, and whether the daemon EXPLICITLY adopted — the "file re-signed" vs
  *  "daemon adopted" distinction the D5 panel required. Absence is informational (a mesh started
- *  before the renewal owner existed, or an open mesh). */
-function renderRenewalRecord(root: string): void {
-  const rec = readRenewalRecord(root);
+ *  before the renewal owner existed, or an open mesh). The record is PER-SPACE (`renewal.<spaceKey>.json`);
+ *  a root-only `renewal.json` left by a pre-per-space build names no space, so it is never read as
+ *  this space's verdict — it is named as a leftover, with the exact next command. */
+function renderRenewalRecord(root: string, space: string): void {
+  const rec = readRenewalRecord(root, space);
   if (!rec) {
     console.log(c.dim("    no renewal record yet (written by the manager's renewal pass)"));
+    const legacy = legacyRenewalRecord(root);
+    if (legacy) console.log(c.yellow(`    ⚠ ${legacy.path} is a pre-per-space renewal record that names no space - not read as this space's verdict; remove it with \`cotal clean all --force\` when resetting this root`));
     return;
   }
   const resigned = rec.results.filter((r) => r.ok).map((r) => r.file);

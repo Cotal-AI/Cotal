@@ -66,7 +66,26 @@ process exit reopens that session with the same Cotal identity, lifecycle UID, c
 inbox. Three restarts are allowed in a rolling two-minute window; a fourth is a crash loop and retires
 the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
 
+## Event plane
+
+A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
+boundaries to `events.<owner>.<actor>`. The thread id is Pi's native session id. Pi's native
+session JSONL is the durable source; extension hooks only wake the reader after persistence.
+The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
+A registration that requires events arms the plane independently of the environment flag, and
+the seat must hold the channel's publish grant. An event-enabled launch needs a stable
+workspace root for its write-ahead log.
+
+Text is published at **completed-message granularity**, not as live token deltas. Pi emits
+live text updates before writing the assistant record, so those deltas cannot be recovered
+after a crash. Tool arguments and results, reasoning, usage, branch and compaction entries
+are not published. User text is never published: Pi's native user record cannot separate
+peer-authored content from human-authored content. A reload keeps the same native session
+and event frontier. A new, resumed or forked session gets its own thread and log on the same
+principal channel.
+
 ## Host boundaries
+
 
 - With no mesh identity the extension is inert, even if `COTAL_HOME` or `COTAL_DEFAULT_AGENT` exists.
 - A partial managed control endpoint fails loudly; cooperative stop uses connector-core's existing

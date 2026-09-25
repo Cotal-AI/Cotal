@@ -207,6 +207,16 @@ importers:
         specifier: ^4.22.4
         version: 4.23.0
 
+  examples/07-issue-orchestrator:
+    dependencies:
+      '@cotal-ai/lang':
+        specifier: workspace:*
+        version: link:../../packages/lang
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/cmux:
     devDependencies:
       '@cotal-ai/core':
@@ -388,6 +398,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@earendil-works/pi-ai':
         specifier: 0.79.10
         version: 0.79.10(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)

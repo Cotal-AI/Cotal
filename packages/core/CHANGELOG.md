@@ -1,5 +1,105 @@
 # @cotal-ai/core
 
+## 0.54.0
+
+### Minor Changes
+
+- 34beea1: Route user-auth manager calls through a short-lived, instance-bound control credential. Discovery and invocation address the same authorized manager while the agent's standing connection, credentials and conversation remain unchanged. Managed launches retain their manager selection across launch and resume. Static and open mesh routing is unchanged. Confirm the standing goal-progress subscription at the broker before submitting on the separate control connection, so fast terminal events cannot outrun the subscription. Recover accepted goal results through the manager's caller-scoped `goal-result` command after connection replacement, without repeating the mutation or granting clients raw JetStream reads. Followed calls now require a compatible manager before submission; update the issuer, participant manager and client together. Stopping a caller cancels its observation without cancelling the accepted goal. Retain Linux custody records across clean child exit so retirement can prove process identity and finish cleanup even after the custodian removes its file; socket loss alone never frees the alias.
+
+### Patch Changes
+
+- e6badb8: Bind the delivery daemon's store-identity answer to the process that reloads
+
+  The delivery-admin rail is queue-grouped, so the `reloadStoreIdentity` challenge is served by
+  whichever bound responder the broker picks, while only the holder of the space's delivery lease
+  actually reloads the standing credentials. The reply was a bare store identity and named no
+  process, so a non-holder answering with a matching store let a manager conclude the stores were
+  shared and remint into a store the reloading daemon never reads.
+
+  The reply now carries the answering endpoint's identity and its own lease claim. The manager reads
+  the delivery lease row itself, under its own credential, and requires the answerer to be the
+  recorded holder. The answerer's claim is kept as a cross-check that must agree, so an honest
+  non-holder is refused by its own admission and the operator-facing reason says which responder
+  answered and who holds the lease. An unreadable lease row is undetermined and refuses, consistent
+  with the existing convention that a hung rail fails closed.
+
+  The supervisor credential gains a read-only point read of the delivery lease bucket, which is what
+  lets the manager establish the holder itself rather than take a responder's word for it. It gains
+  no write, delete or purge on that bucket: a credential able to write the row could manufacture the
+  fact the challenge reads.
+
+  A manager newer than its delivery daemon receives the old reply shape. That is refused with a
+  message naming the mismatch rather than silently accepted, and each daemon's own renewal timer
+  remains the adoption backstop.
+
+  A rail that reports no responder is no longer read as an absent daemon on its own. The manager
+  settles that outcome from the lease row too: a row naming a holder while the rail answers
+  nothing is undetermined and refuses (a live daemon went unanswered, which must not certify a
+  remint), a row the manager cannot read refuses the same fail-closed way, and only an absent or
+  holderless row reads absent, the state that lets a manager without a bound daemon still take
+  renewal ownership.
+
+- b4317fd: Add a short-lived manager-caller view that binds user-auth control requests to one live manager instance on the instance rail.
+
+## 0.53.0
+
+### Minor Changes
+
+- 104921c: Let remote user-auth managers renew registration executors and recover stopped or frozen manager registrations through host-scoped eviction and guarded reconciliation.
+
+### Patch Changes
+
+- 83617ab: Allow trusted workflow hosts to bind the run-stable caller and mediator grants to an authenticated owner. Preserve existing static/local callers and keep driver grants confined to their run. This prepares the owner-binding primitive; user-auth workflow execution remains unavailable until admission and remote mediation are integrated.
+
+## 0.52.1
+
+### Patch Changes
+
+- 5784ec9: Bind the user-auth service readiness wait to the daemon process, not a clock alone. A same-root `cotal up` refresh run right after a broker reload killed the old auth-service daemon used to give up at a fixed 15s while the replacement daemon it launched was still binding, then a second identical `up` succeeded: a one-shot false "auth service not ready". `ensureAuthService` now passes the pid it launched (or found live) into the provider's `ready()`, which waits past the base timeout up to 60s while that pid is provably alive, ends the wait at once when the pid exits ("exited before becoming ready"), and refuses at the bound naming the live pid, the pid record, and the service log ("alive and still starting"). `AuthServiceSpec.ready` in core gains optional `pid`/`maxWaitMs` inputs; callers that pass none keep the old clock-only behavior.
+
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 2e7558d: `Part`'s data arm is `{ kind: "data"; data: unknown }` no longer: `data` is now the exported `JsonValue` (null, boolean, finite number, string, an array of JSON values, or a plain object of JSON values), and every publish path (`unicast`, `multicast`, `anycast`, `multicastExpecting`) refuses a non-JSON value at ANY depth at runtime with a named error that names the offending member's path (e.g. `data[2].at is not a JSON value`). Before, a value `JSON.stringify` silently rewrote could reach the wire: `undefined` became a keyless `{"kind":"data"}` row that history returned while Plane-3 durable delivery terminated it as malformed, and `NaN`, `Infinity`, `Date`s, sparse arrays, `Map`s, and `Buffer`s were rewritten to values a reader cannot distinguish from real ones; nested bigints and cycles threw from stringify instead of the named error. A `data` part carrying `null` or any other JSON value is unchanged. SPEC §5 states the rule. The delivery daemon's feedback intake keeps publishing its record as a data part with type declarations only (no runtime change). Refs #1404.
+- 5b2c19f: Let hosted workflow runs resolve an existing absolute working directory on the selected manager and launch the placed seat in its canonical path.
+- b3db3a2: `channelHistory`, `dmHistory`, and `multiChannelHistory` return `HistoryMessage[]` instead of `CotalMessage[]` (`HistoryMessage` is a checked-row alias of `CotalMessage`, so existing consumers compile unchanged). Checked before a row is returned: a usable string `id`, a full `from` (`id`/`name` strings, `role` a string when present), a finite `ts`, a string `space`, `parts` whose every member is an object with a string `kind`, `mentions` an array of strings when present, `replyTo` and `contextId` strings when present. One member is deliberately not held to the full shape: a `parts` member is checked readable, not validated by the Plane-3 part guard, so a pre-#1404 keyless `{kind:"data"}` row is still surfaced. Before, the drain's gate checked only that a stored row was an object with a usable string `id` and an object `from`, so a row like `{"id":"...","from":{"id":"..."}}` on a valid subject with a matching sender came back as a `CotalMessage` with `ts`, `space`, and `parts` undefined and `from.name` undefined, and consumers reading those fields (`partsToText(msg.parts)`, `new Date(msg.ts)`, `msg.from.name`) failed after a successful history call. Now such a row is dropped, never returned with a member silently `undefined`: the drain checks a full `from` (`name`, and `role` only when a string), a finite `ts`, a string `space`, and `parts` the drain could read (an array — held to readable, not to the Plane-3 `isCotalMessage` guard, so a pre-#1404 keyless `{kind:"data"}` row is still surfaced). The type the drain establishes internally is its own `HistoryDrainEnvelope`, which says only what the drain checked. Refs #1413.
+
+### Patch Changes
+
+- d69aefd: Surface a broker-refused cast or liveness probe as `permission-denied` naming the refused subject. `epCast` resolved as success and `epProbeInstanceInterest` expired into `unknown` when the broker refused their publish, because a NATS publish violation is asynchronous while the publish call returns normally. Both verbs now watch the connection status with the shared publish-denial watch, registered before the publish and released on every path, so a refusal never reads as a cast that was sent or as a verdict-less probe that consumed its whole budget. The healthy paths are unchanged: an allowed cast settles on its flush round-trip, and only the broker's no-responders answer remains an affirmative `gone`.
+- c44aaf8: Show a settled workflow pause's accepted answer and attribution in the run journal.
+- fe81419: The delivery daemon now watches its own shard lease key with a KV watch and quiesces at the delivery latency of that row's update instead of waiting for its next renew tick, so a takeover no longer leaves two processes serving one shard for up to a full renew period. The delivery credential gains the read-axis consumer rows on the lease bucket that the watch's ordered consumer needs.
+- 93b42cd: Revive the membership feed's data connection when a later adoption proves a fresh rw credential after the client has closed conn B. Refs #1558.
+- a069948: Order same-epoch presence evidence by settle, not start: a settle (success or refusal) is the latest evidence only while no put that started after it has already settled, and a newer put merely in flight supersedes nothing. An earlier put that settles after a later put settled no longer speaks, so a late success cannot erase a newer refusal record and a record can no longer outlive a write the bucket accepted. The cross-epoch fence is unchanged. Refs #1461.
+- ab0808c: `cotal up --max-file-store <bytes>` sets the broker's JetStream file storage cap. Before, the rendered broker config carried only `store_dir`, so nats-server always sized its store at start as three quarters of the free disk and an operator on a shared disk had no supported way to bound it. `serverConfig` and `openServerConfig` take an optional `maxFileStore` byte count and render `max_file_store` inside the `jetstream{}` block; left unset, the rendered config is byte-identical to before, and a zero, negative or non-integer value throws naming the option. The cap is recorded on the mesh entry, carried through `down --preserve-state` into the resume, and rendered again by the bare `cotal up` that resumes it. A resume or a refresh of a running mesh that asks for a different cap is refused, because nats-server fixes the cap at start and refuses a reload that changes it. The flag is refused with `-f`. Fixes #1888.
+
+## 0.51.0
+
+### Minor Changes
+
+- db18070: Apply a signed-in account's space catalog to the registry under the provider's catalog lock, and
+  record in the cache whether the snapshot was applied in full. A command that dies or is stopped
+  while applying no longer leaves a partial registry that fresh and not-modified refreshes accept:
+  the next command applies the cached snapshot again first. `prepareSpaceCatalogs` and
+  `syncSpaceCatalogAfterLogin` now take the consumer's `apply`.
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- ade42d5: A complete observer scan that matches no connection answers verified-gone without loading or dialling the evictor credential. A live match still requires it, and an incomplete scan stays unverified (#1808).
+- 4f153ab: Report transport and connection down when a post-connect endpoint bind fails and closes its partial connection. Fixes #1449.
+- eb65c9b: Add the hosted environment provider contract types, validated HTTPS bearer sources, bounded nonsecret environment records, checkpoint read-out shapes, lifetime extension capabilities, and host enrollment facts. The provider facts type carries no engine (host enrollment facts are authoritative for it) and leaves volumeId optional, absent meaning the provider did not report it.
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- a0c8a59: Discover a signed-in account's advertised spaces lazily, cache validated snapshots, and add `cotal sync` for explicit refreshes.
+- c18c055: A manager whose boot inventory has no available connector no longer takes unpinned `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this instance's `inst` rail, so a sibling that can launch them can win the queue, and a caller that pins this instance still gets a named harness refusal. `describe` still lists the commands. Manager `status` reports `classSpawn` for that skip (cluster revision 15). A partial inventory keeps the class rail; a harness refusal there names `--on`, because the standing serve credential cannot read sibling inventories.
+- f178611: Preload every persisted per-space auth-callout account when a shared broker starts, and refuse incomplete user-auth state before writing its resolver config.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+
 ## 0.50.1
 
 ### Patch Changes

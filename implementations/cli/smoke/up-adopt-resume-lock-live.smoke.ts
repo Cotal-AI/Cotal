@@ -25,6 +25,11 @@
  *     journal. It must NOT fail on a maintenance-lock refusal: that exact refusal is the finding,
  *     so it is asserted against by name rather than left to a bare non-zero exit.
  *
+ * The same resume carries the broker's JetStream store cap (`--max-file-store`, #1888): the fresh
+ * boot renders it and nats-server applies it, the cut journals it, a resume asking for a different
+ * cap is refused before anything starts, the bare resume re-renders it, and the adopted mesh record
+ * keeps it.
+ *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-adopt-resume-lock:live
@@ -57,6 +62,22 @@ const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
+const openConfPath = join(root, ".cotal", "server-open.conf");
+// Above the per-space reservations (the artifact object store alone reserves 4 GiB), so the cap is
+// honored without refusing provisioning.
+const CAP = 17179869184;
+const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(root, ".cotal", "nats"))}, max_file_store: ${CAP} }`;
+const openConfJetStream = (): string =>
+  existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
+const recordedCap = (space: string): unknown => {
+  const dir = join(home, "meshes");
+  for (const f of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
+    const entry = JSON.parse(readFileSync(join(dir, f), "utf8")) as { space?: string; maxFileStore?: unknown };
+    if (entry.space === space) return entry.maxFileStore;
+  }
+  return undefined;
+};
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -116,8 +137,13 @@ try {
   const space = "adopt_alpha";
 
   console.log("1) CONTROL: an interrupted resume leaves a committed journal and a LIVE listener");
-  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space]);
+  const first = runSync(["up", "--detach", "--open", "--server", server, "--space", space, "--max-file-store", String(CAP)]);
   ok("the ordinary boot exited 0", first.status === 0, `${first.stdout ?? ""}${first.stderr ?? ""}`.slice(-1200));
+  ok("the fresh boot renders --max-file-store into the jetstream block", openConfJetStream() === cappedBlock, openConfJetStream());
+  const natsLog = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
+  ok("…and nats-server starts with that cap", /\[INF\]\s+Max Storage:\s+16\.00 GB$/m.test(natsLog),
+    natsLog.split("\n").filter((l) => l.includes("Max Storage")));
+  ok("…and the mesh record keeps the cap", recordedCap(space) === CAP, recordedCap(space));
 
   // The cut describes the manager over the ep rails, so it must not be taken until the manager has
   // finished registering there. `up --detach` returns ~2s BEFORE that registration lands (measured,
@@ -135,6 +161,15 @@ try {
 
   const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, `${cut.stdout ?? ""}${cut.stderr ?? ""}`.slice(-1200));
+  const resumeLaunch = (JSON.parse(readFileSync(resumeDocPath, "utf8")) as { launch?: { maxFileStore?: unknown } }).launch;
+  ok("the cut journals the store cap in the preserved launch", resumeLaunch?.maxFileStore === CAP, resumeLaunch);
+
+  const mismatched = runSync(["up", "--detach", "--server", server, "--space", space, "--max-file-store", String(CAP * 2)]);
+  const mismatchLog = `${mismatched.stdout ?? ""}${mismatched.stderr ?? ""}`;
+  ok("a resume asking for a different --max-file-store is refused",
+    mismatched.status !== 0 && mismatchLog.includes(`--max-file-store ${CAP * 2} is not the preserved launch cap (${CAP})`),
+    { status: mismatched.status, log: mismatchLog.slice(-1200) });
+  ok("…and leaves the preserved state ready", journal().state === "ready", journal().state);
 
   // Stop the resume right after the manager commit. The listener it spawned is detached, so it
   // outlives this interrupted driver - which is precisely what makes the next `up` ADOPT rather
@@ -152,6 +187,7 @@ try {
     committed.managerCommit);
   const boundPid = committed.listenerProof?.processOwner?.pid;
   ok("…and its bound listener is ALIVE (the adopt precondition)", alive(boundPid), { boundPid });
+  ok("the bare resume re-renders the preserved store cap", openConfJetStream() === cappedBlock, openConfJetStream());
 
   console.log("\n2) SUBJECT: the recovering `cotal up` ADOPTS that live listener under the inherited lock");
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
@@ -163,6 +199,7 @@ try {
     { status: recovered.status, log: log.slice(-2000) });
   ok("the adopting resume exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
   ok("…and the finalized resume consumed its maintenance journal", !existsSync(journalPath), journal());
+  ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
 
   runSync(["down"]);
   console.log(`\nUP ADOPT RESUME LOCK SMOKE OK ✅  (${pass} passed)`);
