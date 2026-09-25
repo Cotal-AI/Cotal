@@ -126,7 +126,7 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
       const messages = await this.snapshotMessageCount();
       if (messages > this.snapshotMessages) {
         try {
-          const cursor = (await this.file.readFromBeginning()).cursor;
+          const cursor = await this.file.cursorAtBeginning();
           this.snapshotMessages = messages;
           return cursor;
         } catch (error) {
