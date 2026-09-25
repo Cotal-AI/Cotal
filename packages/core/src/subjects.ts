@@ -19,6 +19,8 @@
  *                                     control surface as v0.4 endpoints on the ep.* rails.
  *   cotal.<space>.ep.<one|all|inst|reply>.…
  *                                     v0.4 endpoint control surface; SPEC.md §13.2 defines each rail
+ *   cotal.<space>.ep.v1.<one|all|inst|reply>.…
+ *                                     the same rails for an issued caller (SPEC.md §13.15)
  *   cotal.<space>.trace.<instance>    ambient lifecycle trace (later)
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
