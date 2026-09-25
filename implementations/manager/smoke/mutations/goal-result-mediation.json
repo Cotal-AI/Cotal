@@ -40,7 +40,7 @@
       "name": "M4 forward canonical result to untrusted native reply destination",
       "file": "packages/core/src/endpoint-serve.ts",
       "find": "const replySubject = deriveReplySubject(space, parsed, identity);",
-      "replace": "const replySubject = (msg as { reply?: string }).reply ?? deriveReplySubject(space, parsed, identity);",
+      "replace": "const replySubject = (msg as { reply?: string }).reply || deriveReplySubject(space, parsed, identity);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-service-invoke",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "goal-result ignores a caller-chosen reply destination and returns only to its caller",
