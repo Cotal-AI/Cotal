@@ -108,7 +108,7 @@ try {
     stdio: "ignore",
     env: brokerEnv,
   });
-  releaseBroker = teardownOnSignal(broker, dir);
+  releaseBroker = teardownOnSignal(broker);
 
   gateServer = createServer((client) => {
     const row = new OrderedGate(client);
@@ -424,8 +424,11 @@ try {
   for (const g of gates) { g.client.destroy(); g.upstream?.destroy(); }
   if (gateServer) await new Promise<void>((resolve) => gateServer!.close(() => resolve())).catch(() => {});
   if (broker) await killAndAwaitExit(broker, "SIGTERM");
-  if (dir) rmSync(dir, { recursive: true, force: true });
   releaseBroker?.();
+  if (broker && broker.exitCode === null && broker.signalCode === null) {
+    throw new Error("fixture broker exit is unproven; storage preserved");
+  }
+  if (dir) rmSync(dir, { recursive: true, force: true });
 }
 
 const totalCells = pass + fail;

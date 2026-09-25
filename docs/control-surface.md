@@ -85,6 +85,14 @@ names the inspected `name`, the failed `record` (`slot`, `head`, or `slot-or-hea
 cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows,
 so their inspect misses remain live-map reads.
 
+For Linux custodied seats, retirement requires the runtime's process-exit evidence before
+freeing the alias or deleting its credentials and delivery state. Socket loss alone is not
+proof of exit. The runtime retains the record captured at launch or adoption so a clean
+custodian exit can unlink its file without losing the recorded boot and process identities.
+If the file is missing, reaping uses that retained record and the existing kernel identity
+checks. An unknown reference without either record refuses cleanup. Reused process ids
+are never signalled on the strength of the old record.
+
 ## Spawn is a goal
 
 Long-running commands are **actions** ([SPEC §13.6](../SPEC.md#136-composites)): the caller

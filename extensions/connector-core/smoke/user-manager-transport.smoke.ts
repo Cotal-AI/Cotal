@@ -104,6 +104,10 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   else fail++;
 }
 
+const savedEnv = { ...process.env };
+const envAllowlist = new Set(["PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "HOME", "TMPDIR"]);
+for (const key of Object.keys(process.env)) if (!envAllowlist.has(key)) delete process.env[key];
+
 // Short scratch directory under tmpdir to avoid AF_UNIX length limits
 const scratchBase = mkdtempSync(join(tmpdir(), "c-umt-"));
 
@@ -958,7 +962,10 @@ try {
   check("Real user-mode Manager and producer agent stopped cleanly", true);
 
 } finally {
-  await doTeardown();
+  try { await doTeardown(); } finally {
+    for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+    Object.assign(process.env, savedEnv);
+  }
 }
 
 const EXPECTED_CHECKS = 47;
