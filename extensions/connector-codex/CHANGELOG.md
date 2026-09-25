@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.54.0
+
+### Patch Changes
+
+- cf0e1da: Dismiss a Codex turn's batch on an operator interrupt instead of redelivering it, and stop folding an unknown terminal status into "interrupted". Presence writes from the Codex host go out in call order, so a turn that fails or asks for approval in the tick it started no longer loses its condition to its own start.
+
 ## 0.53.0
 
 ## 0.52.1

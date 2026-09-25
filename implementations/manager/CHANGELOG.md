@@ -1,5 +1,51 @@
 # @cotal-ai/manager
 
+## 0.54.0
+
+### Minor Changes
+
+- 34beea1: Route user-auth manager calls through a short-lived, instance-bound control credential. Discovery and invocation address the same authorized manager while the agent's standing connection, credentials and conversation remain unchanged. Managed launches retain their manager selection across launch and resume. Static and open mesh routing is unchanged. Confirm the standing goal-progress subscription at the broker before submitting on the separate control connection, so fast terminal events cannot outrun the subscription. Recover accepted goal results through the manager's caller-scoped `goal-result` command after connection replacement, without repeating the mutation or granting clients raw JetStream reads. Followed calls now require a compatible manager before submission; update the issuer, participant manager and client together. Stopping a caller cancels its observation without cancelling the accepted goal. Retain Linux custody records across clean child exit so retirement can prove process identity and finish cleanup even after the custodian removes its file; socket loss alone never frees the alias.
+
+### Patch Changes
+
+- e6badb8: Bind the delivery daemon's store-identity answer to the process that reloads
+
+  The delivery-admin rail is queue-grouped, so the `reloadStoreIdentity` challenge is served by
+  whichever bound responder the broker picks, while only the holder of the space's delivery lease
+  actually reloads the standing credentials. The reply was a bare store identity and named no
+  process, so a non-holder answering with a matching store let a manager conclude the stores were
+  shared and remint into a store the reloading daemon never reads.
+
+  The reply now carries the answering endpoint's identity and its own lease claim. The manager reads
+  the delivery lease row itself, under its own credential, and requires the answerer to be the
+  recorded holder. The answerer's claim is kept as a cross-check that must agree, so an honest
+  non-holder is refused by its own admission and the operator-facing reason says which responder
+  answered and who holds the lease. An unreadable lease row is undetermined and refuses, consistent
+  with the existing convention that a hung rail fails closed.
+
+  The supervisor credential gains a read-only point read of the delivery lease bucket, which is what
+  lets the manager establish the holder itself rather than take a responder's word for it. It gains
+  no write, delete or purge on that bucket: a credential able to write the row could manufacture the
+  fact the challenge reads.
+
+  A manager newer than its delivery daemon receives the old reply shape. That is refused with a
+  message naming the mismatch rather than silently accepted, and each daemon's own renewal timer
+  remains the adoption backstop.
+
+  A rail that reports no responder is no longer read as an absent daemon on its own. The manager
+  settles that outcome from the lease row too: a row naming a holder while the rail answers
+  nothing is undetermined and refuses (a live daemon went unanswered, which must not certify a
+  remint), a row the manager cannot read refuses the same fail-closed way, and only an absent or
+  holderless row reads absent, the state that lets a manager without a bound daemon still take
+  renewal ownership.
+
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+  - @cotal-ai/workspace@0.54.0
+  - @cotal-ai/seat@0.54.0
+
 ## 0.53.0
 
 ### Minor Changes
