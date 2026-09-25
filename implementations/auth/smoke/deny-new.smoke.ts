@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator, type NatsConnection, type ConnectionOptions } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, NoRespondersError, PermissionViolationError, type NatsConnection, type ConnectionOptions } from "@nats-io/transport-node";
 import { createSpaceAuth, isReachable, serverConfig, standaloneConnectOpts, mintLifecycleUid } from "@cotal-ai/core";
 import {
   calloutPermissions, createCalloutAuth, createUserTokenIssuer, deriveOwnerToken, generateSigningKey,
@@ -163,36 +163,28 @@ try {
 
   // ---- live pre-revoke read within TTL on same connection remains permitted ----
   const ownGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${uid1}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-  let ownErr: (Error & { cause?: { name?: string; constructor?: { name?: string }; subject?: string } }) | undefined;
+  let ownErr: unknown;
   try {
     await liveNc.request(ownGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
   } catch (e) {
-    ownErr = e as Error;
+    ownErr = e instanceof NoRespondersError ? e : (e as Error).cause;
   }
-  const isNoResponders = ownErr?.cause?.name === "NoResponders"
-    || ownErr?.cause?.constructor?.name === "NoRespondersError"
-    || /no responders/i.test(ownErr?.message ?? "");
   check("live pre-revoke read within TTL remains permitted",
-    isNoResponders && (ownErr?.cause?.subject === ownGoalResultSubj || ownErr?.message?.includes(ownGoalResultSubj)),
-    ownErr?.cause ?? ownErr?.message);
+    ownErr instanceof NoRespondersError && ownErr.subject === ownGoalResultSubj,
+    ownErr);
 
   // ---- foreign UID request subject broker-denied (capturing native policy event) ----
   const foreignUid = mintLifecycleUid();
   const foreignGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${foreignUid}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-  let foreignErr: (Error & { cause?: { name?: string; constructor?: { name?: string }; subject?: string; operation?: string } }) | undefined;
+  let foreignErr: unknown;
   try {
     await liveNc.request(foreignGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
   } catch (e) {
-    foreignErr = e as Error;
+    foreignErr = e instanceof PermissionViolationError ? e : (e as Error).cause;
   }
-  const isPermissionViolation = foreignErr?.cause?.name === "PermissionViolationError"
-    || foreignErr?.cause?.constructor?.name === "PermissionViolationError"
-    || /Permissions Violation/i.test(foreignErr?.message ?? "");
-  const matchesForeignSubject = foreignErr?.cause?.subject === foreignGoalResultSubj
-    || foreignErr?.message?.includes(foreignGoalResultSubj);
   check("foreign UID request subject broker-denied",
-    isPermissionViolation && matchesForeignSubject,
-    foreignErr?.cause ?? foreignErr?.message);
+    foreignErr instanceof PermissionViolationError && foreignErr.operation === "publish" && foreignErr.subject === foreignGoalResultSubj,
+    foreignErr);
 
   // ---- the R1 takeover gap: a same-alias re-grant at a NEW uid refuses the exchange loudly ----
   const uid2 = mintLifecycleUid();

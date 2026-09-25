@@ -4,7 +4,7 @@
  * Run: pnpm smoke:goal-submit-order
  */
 import { spawn } from "node:child_process";
-import { createServer, connect as tcpConnect, type Socket } from "node:net";
+import { createServer, connect as tcpConnect, type Socket, type AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ import {
   submitAndFollowGoal,
   type EpAttributedReply,
 } from "../src/index.js";
-import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const space = `ord${mintLifecycleUid().slice(0, 8)}`;
 const endpoint = "manager";
@@ -40,15 +40,18 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const enc = new TextEncoder();
 const auth = await createSpaceAuth(space);
-const brokerPort = 20000 + Math.floor(Math.random() * 20000);
-const gatePort = brokerPort + 1;
+const brokerPort = await new Promise<number>((resolve, reject) => {
+  const probe = createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const port = (probe.address() as AddressInfo).port;
+    probe.close((err) => err ? reject(err) : resolve(port));
+  });
+});
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}goal-order-`));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], {
   host: "127.0.0.1", port: brokerPort, storeDir: join(dir, "js"), transport: { kind: "plaintext" },
 }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, dir);
-const exited = new Promise<void>((resolve) => broker.once("exit", () => resolve()));
 const followerIdentity = newIdentity();
 const followerCreds = await mintCreds(auth, followerIdentity, "agent", {
   principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: caller.uid,
@@ -59,6 +62,10 @@ const publisherJwt = await encodeUser("goal-order-publisher", fromPublic(publish
   pub: { allow: epServePublishRows(space, endpoint, instanceId, epoch) }, sub: { allow: ["_INBOX.>"] },
 }, { signer: fromSeed(enc.encode(auth.account.signingSeed)) });
 const publisherCreds = new TextDecoder().decode(fmtCreds(publisherJwt, fromSeed(enc.encode(publisherIdentity.seed))));
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], {
+  stdio: "ignore", env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir },
+});
+const releaseBroker = teardownOnSignal(broker, dir);
 
 class OrderedGate {
   held: Buffer[] = [];
@@ -91,23 +98,29 @@ const gate = createServer((client) => {
 function releaseHeld(): void {
   for (const row of gates) row.release();
 }
-await new Promise<void>((resolve) => gate.listen(gatePort, "127.0.0.1", resolve));
 const conns: NatsConnection[] = [];
 const subject = (goal: string) => epeSubject(space, endpoint, instanceId, epoch, goalProgressTopic({ endpoint, caller, goalId: goal }));
-const accepted = (goal: string): EpAttributedReply => ({ reply: { ok: true, data: { goalId: goal, readinessDeadlineMs: 0 } }, responder: { instanceId, epoch } }) as EpAttributedReply;
+const accepted = (goal: string): EpAttributedReply => ({ reply: { v: 1, id: goal, ok: true, data: { goalId: goal, readinessDeadlineMs: 0 } }, responder: { endpoint, instanceId, epoch } });
 const body = (goal: string, name: string) => enc.encode(JSON.stringify({ phase: "terminal", goalId: goal, state: "succeeded", data: { name } }));
 let watch: NodeJS.Timeout | undefined;
+let barrierTimer: NodeJS.Timeout | undefined;
 
 try {
+  await new Promise<void>((resolve, reject) => {
+    gate.once("error", reject);
+    gate.listen(0, "127.0.0.1", resolve);
+  });
+  const gatePort = (gate.address() as AddressInfo).port;
   let up = false;
   const servers = `nats://127.0.0.1:${brokerPort}`;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(servers); if (!up) await new Promise((r) => setTimeout(r, 100)); }
   check("disposable broker reachable", up);
   const publisher = await connect({ servers, ...standaloneConnectOpts({ creds: publisherCreds, tls: false }), maxReconnectAttempts: 0, timeout: 4000 });
+  conns.push(publisher);
   const follower = await connect({ servers: `nats://127.0.0.1:${gatePort}`, ...standaloneConnectOpts({ creds: followerCreds, tls: false }), maxReconnectAttempts: 0, timeout: 4000 });
-  conns.push(publisher, follower);
+  conns.push(follower);
   const violations: string[] = [];
-  void (async () => { for await (const s of publisher.status()) if (String(s.type) === "error") violations.push(JSON.stringify(s.data)); })().catch(() => {});
+  void (async () => { for await (const s of publisher.status()) if (s.type === "error") violations.push(String(s.error)); })().catch(() => {});
 
   const open = await submitAndFollowGoal(follower, space, endpoint, caller, 2000, async () => {
     publisher.publish(subject(goalId), body(goalId, "seat"));
@@ -134,7 +147,7 @@ try {
   const beforeRelease = await Promise.race([
     blockedBytes.then(() => "blocked"),
     raced.then(() => "submitted"),
-    new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 1000)),
+    new Promise<string>((resolve) => { barrierTimer = setTimeout(() => resolve("timed-out"), 1000); }),
   ]);
   if (watch) clearInterval(watch);
   check("standing bytes block before borrowed submit", beforeRelease === "blocked" && submits === 0, { beforeRelease, submits });
@@ -144,18 +157,17 @@ try {
 } catch (e) {
   check("goal submit order completed", false, e instanceof Error ? e.message : String(e));
 } finally {
+  if (barrierTimer) clearTimeout(barrierTimer);
   if (watch) clearInterval(watch);
   releaseHeld();
   for (const nc of conns) await nc.close().catch(() => {});
   for (const row of gates) { row.client.destroy(); row.upstream?.destroy(); }
   await new Promise<void>((resolve) => gate.close(() => resolve()));
-  if (broker.exitCode === null) broker.kill("SIGTERM");
-  await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);
-  if (broker.exitCode === null) broker.kill("SIGKILL");
-  await exited;
+  await killAndAwaitExit(broker);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
 }
+if (pass + fail !== 4) throw new Error(`goal-submit-order executed ${pass + fail} cells, expected 4`);
 console.log(`goal-submit-order smoke: ${pass} passed, ${fail} failed`);
-emitSentinel({ passed: pass, failed: fail, cells: 4 });
+emitSentinel({ passed: pass, failed: fail });
 process.exit(fail === 0 ? 0 : 1);
