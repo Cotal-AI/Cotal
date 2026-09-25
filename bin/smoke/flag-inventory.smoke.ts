@@ -56,6 +56,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "rotate-sys:boolean",
       // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
       "max-file-store:string",
+      // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
+      "no-manager:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -231,18 +233,24 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
+  // `--manager-call` / `--manager-instance` (2026-09): mint a token bound to one manager instance.
   "agent-bearer": {
-    flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    flags: [
+      "actor:string", "dir:string", "exchange-url:string", "health-file:string", "manager-call:boolean",
+      "manager-instance:string", "owner:string", "space:string", "token-file:string",
+    ],
     positionals: false,
   },
   // `run` (2026-09): the workflow-run operator surface from @cotal-ai/runtime. The run id is
   // minted by the driver (the records table forbids a caller-supplied id), so `start` takes no id
   // flag; resume/journal/answer name an existing run positionally.
+  // `--adopt` / `--release` / `--discard-approvals` (2026-09, #1863): what a `migrate` commit does
+  // with an orphan or a recorded decision; the checking verb refuses them.
   run: {
     flags: [
-      "admit-publish:string", "admit-read:string", "artifact:string", "by:string", "creds:string",
-      "endpoint:string", "file:string:f", "local:boolean", "reason:string", "server:string", "space:string",
-      "timeout:string", "value:string",
+      "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
+      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "local:boolean",
+      "reason:string", "release:string", "server:string", "space:string", "timeout:string", "value:string",
     ],
     positionals: true,
   },
