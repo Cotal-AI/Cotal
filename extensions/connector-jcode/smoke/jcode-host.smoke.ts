@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function freePort(): Promise<number> {
@@ -35,6 +35,8 @@ const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-host-`));
 // Control sockets are AF_UNIX. Keep them under a short root so long case names cannot put the path
 // over sun_path (104/107) and replace the startup outcome under test with a control-listen error.
 const sockRoot = mkdtempSync(join("/tmp", "cjh-"));
+// The socket root is not under `root`, so it needs its own removal, and its own signal backstop.
+const releaseSockRoot = teardownPathOnSignal(sockRoot);
 const controlSock = (name: string): string => join(sockRoot, name);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -1540,6 +1542,9 @@ try {
     await sleep(50);
   }
   rmSync(root, { recursive: true, force: true });
+  rmSync(sockRoot, { recursive: true, force: true });
+  check("teardown: the control socket root is gone", !existsSync(sockRoot), { sockRoot });
+  releaseSockRoot();
 }
 
 console.log(`\nJCODE HOST SMOKE: ${pass} passed, 0 failed`);
