@@ -152,10 +152,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
     space,
     "--server",
     o.server ?? DEFAULT_SERVER,
-    // Propagate the broker's transport decision. The daemon cannot derive it: it learns everything
-    // from argv by design - it is a pre-minted scoped-cred client, injectable behind a SecretStore,
-    // and making it read the machine-local mesh registry to pick a transport would couple a
-    // hosted-composable daemon to a workstation artifact. So the launcher, which DOES know, tells it.
+    // Propagate the broker's transport decision. The daemon cannot derive it: an INJECTED-store
+    // (hosted) daemon learns everything from argv and the store by design, and a workstation daemon
+    // resolves the recorded mesh itself (#756) without a transport-requirement API of its own - so
+    // the launcher, which DOES know, tells it in both compositions.
     //
     // Without this the daemon connects plaintext-capable to a TLS broker and nothing looks wrong,
     // because it still upgrades on the server's INFO. It holds a STANDING credential and reconnects

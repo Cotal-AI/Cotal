@@ -79,7 +79,10 @@ systemd unit does not put those lines in that unit's journal.
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
-too, and a record written only by the launcher goes stale the moment any of those restarts it. The
+too, and a record written only by the launcher goes stale the moment any of those restarts it. Typed
+by hand on the workstation, the daemon dials the broker recorded for the space in the mesh registry
+(a mismatching `--server` is refused before any dial); with no record for the space it uses the
+local mesh default, and a daemon with an injected store never consults the registry at all. The
 write happens once the daemon holds the single-flight lease, because that is the point at which it is
 the space's daemon: one that loses the lease refuses to bind and exits, and must not overwrite the
 live holder's record on its way out.
