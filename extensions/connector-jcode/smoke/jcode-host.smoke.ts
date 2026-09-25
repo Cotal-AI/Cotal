@@ -409,7 +409,7 @@ try {
       COTAL_WORKSPACE_ROOT: root,
       COTAL_JCODE_TUI: "0",
       COTAL_EVENTS: "1",
-      COTAL_JCODE_PROMPT: "JCODE-JOURNAL-FOLD-1984",
+      COTAL_JCODE_PROMPT: "JCODE-JOURNAL-PRIME-1984",
       COTAL_CONTROL_SOCKET: controlSock("fold-control.sock"),
       COTAL_CONTROL_TOKEN: "fold-control-token",
     },
@@ -421,21 +421,17 @@ try {
   const foldPrincipal = parsePrincipalKey(foldPeerId!);
   assert.ok(foldPrincipal, `foldpeer presence has no principal id: ${foldPeerId}`);
   const foldEventsChannel = eventChannel(foldPrincipal);
+  const foldStart = frames.length;
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
-  const foldStart = frames.length;
   await waitFor(
-    "Jcode journal fold kickoff",
+    "Jcode journal fold priming event",
     () =>
-      readJsonLines(foldLog).find(
-        (entry) => entry.ev === "request" &&
-          (entry.frame as { req?: string; no_reply?: boolean; content?: string }).req === "send_message" &&
-          !(entry.frame as { no_reply?: boolean }).no_reply &&
-          String((entry.frame as { content?: string }).content).includes(foldMarker),
-      )
+      frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED"))
         ? true
         : undefined,
   );
+  await operator.unicast(foldPeerId!, foldMarker);
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "Jcode journal fold terminal event",
