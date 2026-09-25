@@ -22,7 +22,7 @@
       "name": "M2 return a dead handle from production adopt",
       "file": "implementations/manager/src/runtime/custodial-pty.ts",
       "find": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat,",
-      "replace": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat, status: () => \"exited\" as const,",
+      "replace": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat, pid: -1, status: () => \"exited\" as const,",
       "expectRed": "production adopt returns a live proxy",
       "cell": "production adopt returns a live proxy",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
