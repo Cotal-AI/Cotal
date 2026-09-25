@@ -86,7 +86,7 @@
       "name": "the diagnosis stops discriminating, so a transport failure is reported as a grant refusal",
       "file": "packages/core/src/endpoint-invoke.ts",
       "find": "    if (!terminal && subError) return subError instanceof PermissionViolationError",
-      "replace": "    if (!terminal && subError) return true",
+      "replace": "    if (!terminal && subError) return Boolean(subError)",
       "expectRed": "is not mislabelled a grant refusal",
       "cell": "...and is not mislabelled a grant refusal",
       "note": "A confidently wrong remedy is worse than a vague one: this mutation makes a closed connection report that the BROKER REFUSED A GRANT and that the fix is to grant a row, which sends an operator to the ACLs for a fault that is not there. Measured on the real class before the narrowing landed: a genuine transport error was labelled permission-denied.",
