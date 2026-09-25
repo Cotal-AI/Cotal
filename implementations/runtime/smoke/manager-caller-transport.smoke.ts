@@ -17,13 +17,15 @@
  *   2. Synthetic Instance Responder: A lightweight NATS responder test double responds on
  *      the instance rail (`ep.inst.manager.<IID>.describe.>` and `run-ps.>`) instead of running
  *      a full daemonized Manager process.
+ *   3. Actor-Ledger / Gate Authorizer: The actor-ledger and gate authorizer in startAuthCallout
+ *      are fixture no-ops (`authorizeActor: () => {}`), not a production authorization proof.
  * - Scoped Permissions: No broad wildcard grants (`sub.allow: [>]` or `pub.allow: [>]`). The
  *   callout grants only exact instance publish routes.
  *
  * Run: pnpm exec tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -102,22 +104,43 @@ const c = (name: string, pass: boolean, extra?: unknown) => {
   }
 };
 
-// Scrubbed isolated environment roots
+// Scrubbed isolated environment roots: remove ALL inherited COTAL_ and JCODE_COTAL_ variables
 const origEnv = { ...process.env };
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("COTAL_") || key.startsWith("JCODE_COTAL_")) {
+    delete process.env[key];
+  }
+}
+
 const isolatedRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mgr-caller-`));
 const isolatedHome = join(isolatedRoot, "home");
 const isolatedCotalHome = join(isolatedRoot, "cotal-home");
 const isolatedCotalRoot = join(isolatedRoot, "cotal-root");
 const isolatedTmp = join(isolatedRoot, "tmp");
 const isolatedJs = join(isolatedRoot, "js");
+const isolatedXdgConfig = join(isolatedRoot, "xdg-config");
+const isolatedXdgCache = join(isolatedRoot, "xdg-cache");
+const isolatedXdgData = join(isolatedRoot, "xdg-data");
+const isolatedXdgState = join(isolatedRoot, "xdg-state");
+
+mkdirSync(isolatedHome, { recursive: true });
+mkdirSync(isolatedCotalHome, { recursive: true });
+mkdirSync(isolatedCotalRoot, { recursive: true });
+mkdirSync(isolatedTmp, { recursive: true });
+mkdirSync(isolatedJs, { recursive: true });
+mkdirSync(isolatedXdgConfig, { recursive: true });
+mkdirSync(isolatedXdgCache, { recursive: true });
+mkdirSync(isolatedXdgData, { recursive: true });
+mkdirSync(isolatedXdgState, { recursive: true });
 
 process.env.HOME = isolatedHome;
 process.env.COTAL_HOME = isolatedCotalHome;
 process.env.COTAL_ROOT = isolatedCotalRoot;
 process.env.TMPDIR = isolatedTmp;
-delete process.env.COTAL_CREDS;
-delete process.env.COTAL_SPACE;
-delete process.env.COTAL_SERVERS;
+process.env.XDG_CONFIG_HOME = isolatedXdgConfig;
+process.env.XDG_CACHE_HOME = isolatedXdgCache;
+process.env.XDG_DATA_HOME = isolatedXdgData;
+process.env.XDG_STATE_HOME = isolatedXdgState;
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -278,7 +301,12 @@ try {
     } as any,
   });
 
-  // Setup synthetic instance responder double on broker
+  // Setup synthetic instance responder double on broker with call tracking and caller verification
+  let describeCalls = 0;
+  let lastDescribeCaller: EpCaller | undefined;
+  let runPsCalls = 0;
+  let lastRunPsCaller: EpCaller | undefined;
+
   const responderId = newIdentity();
   const responderJwt = await encodeUser(
     "manager-instance-responder",
@@ -298,6 +326,8 @@ try {
       if (err || !msg) return;
       const parsed = parseEpSubject(msg.subject);
       if (!parsed || parsed.plane !== "request") return;
+      describeCalls++;
+      lastDescribeCaller = parsed.caller;
       const req = JSON.parse(new TextDecoder().decode(msg.data));
       const replySubj = deriveReplySubject(space, parsed as any, { instanceId: TARGET_IID, epoch: 1 });
       const resp = {
@@ -322,6 +352,8 @@ try {
       if (err || !msg) return;
       const parsed = parseEpSubject(msg.subject);
       if (!parsed || parsed.plane !== "request") return;
+      runPsCalls++;
+      lastRunPsCaller = parsed.caller;
       const req = JSON.parse(new TextDecoder().decode(msg.data));
       const replySubj = deriveReplySubject(space, parsed as any, { instanceId: TARGET_IID, epoch: 1 });
       const resp = {
@@ -337,14 +369,16 @@ try {
   // CELL 1: Execute shipped runWorkflow (exercises askHost -> resolveService -> invokeCommand)
   // When mutated (omitting managerInstanceId), askHost receives broker permission denial and calls process.exit(1).
   let runWorkflowFailed = false;
-  let runWorkflowError: string | undefined;
+  let runWorkflowDiagnostic: string | undefined;
+
+  const capturedErr: string[] = [];
+  console.error = (...args: unknown[]) => {
+    capturedErr.push(args.map((a) => String(a)).join(" "));
+  };
 
   process.exit = ((code?: number | string | null) => {
     throw new ProcessExited(code);
   }) as typeof process.exit;
-
-  // Silence standard error during the command invocation so expected denials don't pollute logs
-  console.error = () => {};
 
   try {
     await runWorkflow({
@@ -354,13 +388,27 @@ try {
     });
   } catch (e: any) {
     runWorkflowFailed = true;
-    runWorkflowError = e instanceof ProcessExited ? `exited with code ${e.code}` : String(e?.message ?? e);
+    runWorkflowDiagnostic = e instanceof ProcessExited
+      ? `exited with code ${e.code}${capturedErr.length > 0 ? `: ${capturedErr.join(" | ")}` : ""}`
+      : String(e?.message ?? e);
   } finally {
     process.exit = origExit;
     console.error = origErr;
   }
 
-  c("runtime askHost connects to instance-scoped manager with valid managerInstanceId", !runWorkflowFailed, runWorkflowError);
+  const callerVerified =
+    !runWorkflowFailed &&
+    describeCalls >= 1 &&
+    runPsCalls >= 1 &&
+    lastRunPsCaller?.owner === OWNER &&
+    lastRunPsCaller?.actor === CLI_USER_ACTOR &&
+    lastRunPsCaller?.uid === callerUid;
+
+  if (!callerVerified && !runWorkflowDiagnostic) {
+    runWorkflowDiagnostic = `broker calls or caller triple mismatch: describeCalls=${describeCalls}, runPsCalls=${runPsCalls}, caller=${JSON.stringify(lastRunPsCaller)}`;
+  }
+
+  c("runtime askHost connects to instance-scoped manager with valid managerInstanceId", callerVerified, runWorkflowDiagnostic);
 
   // CELL 2: Broker rejects class route (ep.one) publishes for manager-caller credentials
   let classRouteRefused = false;
@@ -407,9 +455,13 @@ try {
 } finally {
   process.exit = origExit;
   console.error = origErr;
-  for (const [k, v] of Object.entries(origEnv)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  // Restore original environment by deleting keys not originally present and restoring originals
+  for (const k of Object.keys(process.env)) {
+    if (!(k in origEnv)) {
+      delete process.env[k];
+    } else {
+      process.env[k] = origEnv[k];
+    }
   }
   await killAndAwaitExit(broker);
   rmSync(isolatedRoot, { recursive: true, force: true });
