@@ -2025,14 +2025,23 @@ export async function runJcodeHost(): Promise<void> {
     // not just a busy agent, because the thrown code is `internal` for every one of them.
     // drive() is gated on initialized. Leave that false until this notice has been attempted so a
     // turn_done from the still-open proof cannot dispatch the spawn kickoff first (#1440).
-    try {
-      await client.sendMessage(
-        sessionId,
-        `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
-        { noReply: true },
-      );
-    } catch (notice) {
-      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+    const joinNotice = `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
+    if (bootPrompt) {
+      try {
+        await client.sendMessage(sessionId, joinNotice, { noReply: true });
+      } catch (notice) {
+        writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+      }
+    } else {
+      // No spawn prompt means nothing else schedules a turn after join: a persona that subscribes
+      // to nothing would otherwise sit on this notice as an unread append forever, never woken
+      // except by a directed mesh message (#1199). Route it through the same pendingKickoff/
+      // drive() dispatch boundary the spawn prompt uses instead of a noReply append, so it gets
+      // exactly one scheduled turn under the same one-shot rule (consumed at the request, never
+      // retried on an ambiguous error) and the same initialized gate and steering rules. A resumed
+      // session that is legitimately busy at this moment fails this turn the same way any other
+      // turn fails (drive()'s own catch logs it and schedules a retry) rather than killing the seat.
+      pendingKickoff = joinNotice;
     }
     initialized = true;
     // Kickoff is not the only work that can arrive during that gate: a restart DM is parked until

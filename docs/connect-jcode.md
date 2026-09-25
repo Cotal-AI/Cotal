@@ -170,14 +170,23 @@ solely because `turn_done` has not arrived. The manager's wait can still report 
 join itself is slow after a passing proof; that is not a cleanup verdict, and it is not the same
 as a host `readiness_timeout`. Use `cotal attach <name>` or `cotal ps` to inspect an `uncertain`
 launch. The
-host then waits for the mesh connection and presence bind to complete before it adds a no-reply
-notice that the bootstrap orientation predates the join and that a new orientation is live
-context. During a broker outage, it stays waiting and sends no connected notice.
+host then waits for the mesh connection and presence bind to complete before it delivers a notice
+that the bootstrap orientation predates the join and that a new orientation is live context. During
+a broker outage, it stays waiting and sends no connected notice.
 
-A refused post-join notice is logged without ending the joined session. The startup prompt stays
-pending while the native session is busy or its bridge reconnects. Once the host invokes the request,
-it consumes that prompt and does not retry it after an ambiguous error or close. This prevents a
-second submission; it cannot prove whether the first request executed.
+A seat launched with a spawn `--prompt` gets that notice as a no-reply append; the prompt is still
+the seat's first driven turn. A seat launched with no spawn `--prompt` has nothing else to schedule
+a turn after join, so the notice is delivered as the seat's first driven turn instead of a no-reply
+append: the same dispatch boundary and one-shot rule the startup prompt uses, so the seat's final
+startup state is never an unread append.
+
+A refused post-join notice sent as a no-reply append is logged without ending the joined session.
+When the notice is instead the startup turn (no spawn prompt), a refusal on that turn is handled
+the same way any other startup-prompt failure is: logged and retried, never fatal to the seat. The
+startup prompt (or, with no spawn prompt, the notice standing in for it) stays pending while the
+native session is busy or its bridge reconnects. Once the host invokes the request, it consumes
+that prompt and does not retry it after an ambiguous error or close. This prevents a second
+submission; it cannot prove whether the first request executed.
 
 The startup prompt excludes the automatic inbox. Messages buffered before it run in the following
 turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic remains available only
