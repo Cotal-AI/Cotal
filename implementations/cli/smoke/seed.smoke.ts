@@ -120,8 +120,12 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   };
   const generationTraversal = craftedGeneration("../../escaped");
   check("seed generation: reconcile input refuses a traversal version before any write", /not plausible semver/.test(generationTraversal) && generationTraversal.includes("package.json"), generationTraversal);
-  const generationBuildTraversal = craftedGeneration("0.36.0+../../../escaped");
-  check("seed generation: reconcile input refuses a semver build-metadata separator", /path separator/.test(generationBuildTraversal), generationBuildTraversal);
+  const generationDotSegment = craftedGeneration("0.36.0+../escaped");
+  check("seed generation: reconcile input refuses a semver build-metadata dot segment", /"\.\." segment/.test(generationDotSegment), generationDotSegment);
+  const generationSeparator = craftedGeneration("0.36.0+safe/escaped");
+  check("seed generation: reconcile input refuses a semver build-metadata separator", /path separator/.test(generationSeparator), generationSeparator);
+  const generationWindowsSeparator = craftedGeneration("0.36.0+safe\\escaped");
+  check("seed generation: reconcile input refuses a Windows build-metadata separator", /path separator/.test(generationWindowsSeparator), generationWindowsSeparator);
   writeJson(join(craftedRoot, "package.json"), { name: "cotal-ai", version: "0.36.0" });
   check("seed generation: normal version remains accepted", seedGeneration() === "0.36.0");
   process.argv[1] = priorArgv;
