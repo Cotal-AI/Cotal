@@ -578,10 +578,17 @@ try {
     8_000,
   ).catch(() => undefined);
   check("mesh DM becomes a Harness API turn", Boolean(turn) && JSON.stringify(turn).includes("mesh-wake"), turn);
-  const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
+  const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("Call the cotal_orientation tool exactly once"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
-  const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
-  check("post-join context supersedes the pre-join orientation card", Boolean(joinNotice), joinNotice);
+  // This launch has no COTAL_JCODE_PROMPT (#1199): the post-join notice is the seat's first driven
+  // turn (through pendingKickoff/drive()), not a noReply append, so it is a real send_message with
+  // no_reply false.
+  const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
+  check(
+    "a no-prompt seat's post-join notice is delivered as a driven turn, not a noReply append",
+    Boolean(joinNotice),
+    joinNotice,
+  );
   const requests = entries().filter((entry) => entry.ev === "request");
   const effortAt = requests.findIndex((entry) => (entry.frame as { req?: string }).req === "set_reasoning_effort");
   const effortFrame = effortAt < 0 ? undefined : (requests[effortAt].frame as { effort?: string; session_id?: string });
@@ -875,7 +882,7 @@ try {
   race.stderr?.on("data", (chunk: Buffer) => (raceErr += chunk.toString()));
   await Promise.race([once(race, "exit"), sleep(20_000)]);
   const raceEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(raceLog);
-  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
   check("a first-turn MCP snapshot race recovers on one bounded retry", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns, stderr: raceErr });
   await stopHostTree(race, "SIGTERM");
   check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
@@ -1070,7 +1077,7 @@ try {
   const absentCode = absent.exitCode;
   await stopHostTree(absent, "SIGKILL");
   const absentEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(absentLog);
-  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
   check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
@@ -1292,7 +1299,6 @@ try {
       (entry) =>
         entry.ev === "request" &&
         entry.frame?.req === "send_message" &&
-        entry.frame?.no_reply &&
         String(entry.frame.content).includes("earlier cotal_orientation result was captured before this join"),
     );
   check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });

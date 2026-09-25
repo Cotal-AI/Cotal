@@ -12,8 +12,8 @@
     {
       "name": "the refused post-join notice is fatal to the launch again",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n    }",
-      "replace": "    } catch (notice) {\n      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n      throw notice;\n    }",
+      "find": "      } catch (notice) {\n        writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n      }",
+      "replace": "      } catch (notice) {\n        writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\\n`);\n        throw notice;\n      }",
       "expectRed": "idle completion delivers the startup kickoff without any inbox wake",
       "cell": "idle completion delivers the startup kickoff without any inbox wake"
     }
