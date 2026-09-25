@@ -224,7 +224,7 @@ try {
     const out = strip(r.out);
     // Say WHICH failure it was: a describe timeout here is the exact shipped defect and deserves
     // its name, not a bare "exit 1".
-    const timedOutOnDescribe = /no describe reply from manager within/i.test(out);
+    const timedOutOnDescribe = /no describe reply from manager( instance \S+)? within/i.test(out);
     check(`ps --on ${label} SUCCEEDS`, r.status === 0,
       timedOutOnDescribe
         ? { defect: "describe timed out on the pinned rail; the mint did not receive the instance (this is the 0.17.0 regression)", tail: out.slice(-300) }
@@ -266,7 +266,7 @@ try {
   check("it FAILS rather than being answered by whichever manager won the class queue",
     ghost.status !== 0, { status: ghost.status, tail: ghostOut.slice(-300) });
   check("...and fails as an unanswered pinned describe (the no-fallbacks shape, not some other error)",
-    /no describe reply from manager within/i.test(ghostOut), ghostOut.slice(-300));
+    /no describe reply from manager( instance \S+)? within/i.test(ghostOut), ghostOut.slice(-300));
   // WHAT THE HEADLINE SAYS. Two live managers answered `ps` seconds earlier; the operator typed an
   // instance that is not there. The CLI wrapper used to prefix EVERY ep-rail failure with "no
   // manager reachable", so a typo in `--on` read as an empty mesh and sent the operator to the
@@ -297,7 +297,7 @@ try {
   // four sites. That it then reaches the MINT is cell 3, once, on the shared tail. Together those
   // cover the whole chain; neither covers it alone.
   console.log("\n5. every OTHER `--on` site forwards it too (spawn/stop/attach have their own)");
-  const pinnedDescribeDeadline = /no describe reply from manager within/i;
+  const pinnedDescribeDeadline = /no describe reply from manager( instance \S+)? within/i;
   const sites: ReadonlyArray<{ what: string; argv: string[] }> = [
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the

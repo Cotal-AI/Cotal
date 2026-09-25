@@ -67,7 +67,7 @@ const spawnNames = new Set(spawnFlags.map((f) => f.name));
 for (const f of launchFlags) {
   assert.ok(spawnNames.has(f.name), `spawn is missing launch flag --${f.name}`);
 }
-const launchNames = new Set(launchFlags.map((f) => f.name));
+const launchNames: Set<string> = new Set(launchFlags.map((f) => f.name));
 assert.ok(spawnNames.has("on"), "spawn must expose the manager routing flag --on");
 assert.ok(!launchNames.has("on"), "--on routes a spawn request and must not enter the launch grammar");
 
