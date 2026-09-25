@@ -183,7 +183,9 @@ The follower owns its subscription, timers and read cancellation signal. Reconci
 before the wait deadline, and late read completions cannot settle an expired observation. Its read
 callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
 commands and control connections use that signal. An in-flight dial that finishes after cancellation
-closes without publishing. Request cancellation does not revoke or resubmit the accepted operation.
+closes without publishing. A local reply-subscription failure prevents publication and is observed
+by the same request promise, including when the transport is closing or draining. Request
+cancellation does not revoke or resubmit the accepted operation.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a

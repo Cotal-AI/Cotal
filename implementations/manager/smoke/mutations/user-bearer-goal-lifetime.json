@@ -2,7 +2,7 @@
   "suite": ["implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts"],
   "guard": "accepted goals survive native bearer expiry and missed progress without repeat submission, unbounded waits, foreign results or invented refusal provenance",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=61",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=63",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/user-bearer-goal-lifetime.json",
   "why": [
     "A real Manager and signed user callout exercise a terminal after connection replacement and a canonical terminal recorded while renewal is deliberately held.",
@@ -128,6 +128,15 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FACT: digest-inconsistent terminal does not authorize",
       "cell": "FACT: digest-inconsistent terminal does not authorize"
+    },
+    {
+      "name": "M14 publish outside the owned reply setup promise",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      opts.signal?.throwIfAborted();\n      nc.publish(req.subject, req.body, { reply: noRespReplyTo });\n    });",
+      "replace": "      opts.signal?.throwIfAborted();\n    });\n    nc.publish(req.subject, req.body, { reply: noRespReplyTo });",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "CLOSED: failed subscription leaves no unhandled rejection",
+      "cell": "CLOSED: failed subscription leaves no unhandled rejection"
     }
   ]
 }

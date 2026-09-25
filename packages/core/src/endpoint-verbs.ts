@@ -419,6 +419,10 @@ export async function epCall(
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
+    // Register denial observation before publishing. Keep subscription and publication in the
+    // same promise executor: a closed/draining connection must not strand a rejected reply wait.
+    denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
+      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "call");
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
         callback: (err, msg) => {
@@ -436,13 +440,9 @@ export async function epCall(
           resolve({ subject: msg.subject, data: msg.data });
         },
       });
+      opts.signal?.throwIfAborted();
+      nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     });
-    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. See
-    // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
-    // from an unanswered call.
-    denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
-      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "call");
-    nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
     const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);

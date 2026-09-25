@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { NatsConnection } from "@nats-io/transport-node";
+import { ClosedConnectionError, type NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
 import {
   CotalEndpoint,
@@ -341,6 +341,20 @@ async function main() {
     check("COMPAT: exactly zero mutation submits occurred", mutationSubmits === 0, { mutationSubmits });
     check("COMPAT: preserves not-executed outcome", compatError?.outcome === "not-executed");
     await epCompat.stop();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    let closedCallError: unknown;
+    let closedPublishes = 0;
+    const closedPublish = compatNc.publish.bind(compatNc);
+    compatNc.publish = (subject, data, options) => { closedPublishes++; closedPublish(subject, data, options); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      try { await invokeCommand(compatNc, SPACE, realService, "status", undefined, { deadlineMs: 100 }); }
+      catch (e) { closedCallError = e; }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally { process.removeListener("unhandledRejection", onUnhandled); compatNc.publish = closedPublish; }
+    check("CLOSED: native call refuses a closed transport", compatNc.isClosed() && closedCallError instanceof ClosedConnectionError && closedPublishes === 0, { error: closedCallError, closedPublishes });
+    check("CLOSED: failed subscription leaves no unhandled rejection", unhandled.length === 0, unhandled);
 
     // ==================================================================
     // 2B. PRE-EFFECT RETRY COMPATIBILITY GATE: Refreshed service lacks goal-result
@@ -1004,7 +1018,7 @@ async function main() {
     await cleanup();
   }
 
-  if (pass + fail !== 61) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 61`);
+  if (pass + fail !== 63) throw new Error(`lifetime suite executed ${pass + fail} checks, expected 63`);
   console.log(`\nSmoke suite completed: ${pass} passed, ${fail} failed.`);
   emitSentinel({ passed: pass, failed: fail });
   if (fail > 0) process.exitCode = 1;
