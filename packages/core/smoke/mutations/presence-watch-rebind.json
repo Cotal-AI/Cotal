@@ -39,8 +39,8 @@
     {
       "name": "R6 stop() no longer moves the epoch, so only a rebuild retires an in-flight bind and a stop-time bind still lands",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.stopped = true;\n    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n",
-      "replace": "    this.stopped = true;\n",
+      "find": "    this.activeGoalFollowers.clear();\n    this.presenceEpoch++;\n    this.presenceRebind = undefined;\n",
+      "replace": "    this.activeGoalFollowers.clear();\n",
       "expectRed": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)"
     },
     {
