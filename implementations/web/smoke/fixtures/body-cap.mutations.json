@@ -82,8 +82,8 @@
     {
       "name": "C12 the no-body guard stops considering transfer-encoding, so a chunked upload reaches a route that does not read it",
       "file": "implementations/web/src/web.ts",
-      "find": "    const announcedBody = (Number.isFinite(declared) && declared > 0) || req.headers[\"transfer-encoding\"] !== undefined;\n",
-      "replace": "    const announcedBody = Number.isFinite(declared) && declared > 0;\n",
+      "find": "    const announcedBody = declared > 0 || req.headers[\"transfer-encoding\"] !== undefined;\n",
+      "replace": "    const announcedBody = declared > 0;\n",
       "expectRed": "7.2 transfer-encoding on a no-body route is refused on that framing announcement without reading the chunked body"
     },
     {

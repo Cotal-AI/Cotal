@@ -932,7 +932,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     // of silently letting Node drain an upload the handler will never inspect.
     const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
     const declared = Number(req.headers["content-length"]);
-    const announcedBody = (Number.isFinite(declared) && declared > 0) || req.headers["transfer-encoding"] !== undefined;
+    const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
     if (noBodyRoute && announcedBody) throw noBody(path, declared);
 
     if (path === "/feed") {
@@ -1511,7 +1511,7 @@ function tooLarge(bytes: number, how: "declared" | "read"): PayloadTooLarge {
 }
 
 function noBody(path: string, declared: number): PayloadTooLarge {
-  const announced = Number.isFinite(declared) && declared > 0 ? `${declared} bytes` : "transfer-encoding";
+  const announced = declared > 0 ? `${declared} bytes` : "transfer-encoding";
   return new PayloadTooLarge(
     `request body announces ${announced}, over the 0 byte limit because ${path} takes no request body`,
   );
