@@ -2,20 +2,24 @@
  * Broker-backed cancellation and timeout guarantees for submitAndFollowGoal.
  * Tests:
  *  1. Native byte-gate held nc.flush PONG: gate holds outbound bytes, abort while pending,
- *     verify follower settles BEFORE releasing gate; after release submit counter stays 0.
- *  2. In-flight submit with actual pending broker request (no responder reply): abort follower
- *     without cooperatively resolving request; verify follower settles; close connection AFTER assertion.
+ *     verify follower settles with typed EpEnvelopeError (outcome: not-executed) BEFORE
+ *     releasing gate; after release submit counter stays 0.
+ *  2. In-flight submit with actual pending broker request: witness request arrival at silent
+ *     subscriber, verify request is still pending (no reply), abort follower, and verify
+ *     prompt settlement with typed EpEnvelopeError (outcome: unknown) before connection cleanup.
  *     Seam note: Synthetic submit seam uses a real NATS request with a silent subscriber
  *     (no reply sent) to simulate an unresponded action request without spinning up a full Manager endpoint.
- *  3. Post-flush abort: abort immediately post-flush before submit(); verify submit counter stays 0.
+ *  3. Post-flush abort: abort immediately post-flush before submit(); verify typed not-executed
+ *     rejection and submit counter stays 0.
  *
  * Run: pnpm exec tsx packages/core/smoke/goal-follow-cancellation.smoke.ts
  */
-import { spawn } from "node:child_process";
-import { createServer, connect as tcpConnect, type Socket } from "node:net";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, connect as tcpConnect, type Socket, type Server, type AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
@@ -26,12 +30,14 @@ import {
   newIdentity,
   serverConfig,
   standaloneConnectOpts,
+  epGoalProgressGrantRow,
   EpEnvelopeError,
   type EpAttributedReply,
   type EpCaller,
 } from "../src/index.js";
-import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { submitAndFollowGoal } from "../src/endpoint-invoke.js";
+import { pickFreePort } from "./_free-port.js";
 
 // Native FIFO TCP gate
 class OrderedGate {
@@ -39,12 +45,12 @@ class OrderedGate {
   holding = false;
   ready = false;
   upstream?: Socket;
-  onHeldData?: (chunk: Buffer) => void;
+  onHeldData?: () => void;
   constructor(public client: Socket) {}
   take(chunk: Buffer): void {
     if (!this.ready || this.holding) {
       this.held.push(chunk);
-      this.onHeldData?.(chunk);
+      this.onHeldData?.();
     } else {
       this.upstream?.write(chunk);
     }
@@ -67,61 +73,83 @@ const enc = new TextEncoder();
 const space = `nbp${mintLifecycleUid().slice(0, 8)}`;
 const endpoint = "manager";
 const caller: EpCaller = { owner: "local", actor: "seat", uid: mintLifecycleUid() };
-
-const auth = await createSpaceAuth(space);
-const brokerPort = 21000 + Math.floor(Math.random() * 18000);
-const gatePort = brokerPort + 1;
-const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}cancellation-`));
-writeFileSync(
-  join(dir, "server.conf"),
-  serverConfig(auth, [auth], {
-    host: "127.0.0.1",
-    port: brokerPort,
-    storeDir: join(dir, "js"),
-    transport: { kind: "plaintext" },
-  })
-);
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, dir);
-const exited = new Promise<void>((resolve) => broker.once("exit", () => resolve()));
-
-const gates: OrderedGate[] = [];
-const gateServer = createServer((client) => {
-  const row = new OrderedGate(client);
-  gates.push(row);
-  const upstream = tcpConnect(brokerPort, "127.0.0.1");
-  row.upstream = upstream;
-  upstream.on("connect", () => {
-    row.ready = true;
-    if (!row.holding && row.held.length) {
-      upstream.write(Buffer.concat(row.held.splice(0)));
-    }
-  });
-  client.on("data", (chunk) => row.take(chunk));
-  upstream.on("data", (chunk) => client.write(chunk));
-  const stop = () => { client.destroy(); upstream.destroy(); };
-  client.on("error", stop); upstream.on("error", stop);
-  client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
-});
-await new Promise<void>((resolve) => gateServer.listen(gatePort, "127.0.0.1", resolve));
-
-const followerIdentity = newIdentity();
-const followerJwt = await encodeUser(
-  "probe-follower",
-  fromPublic(followerIdentity.id),
-  fromPublic(auth.account.pub),
-  {
-    pub: { allow: [">"] },
-    sub: { allow: [">"] },
-  },
-  { signer: fromSeed(enc.encode(auth.account.signingSeed)) }
-);
-const followerCreds = new TextDecoder().decode(fmtCreds(followerJwt, fromSeed(enc.encode(followerIdentity.seed))));
+const silentSubject = `${space}.probe.silent`;
 
 const conns: NatsConnection[] = [];
-const trackedTimers: NodeJS.Timeout[] = [];
+const gates: OrderedGate[] = [];
+const trackedTimers: (NodeJS.Timeout | ReturnType<typeof setInterval>)[] = [];
+let broker: ChildProcess | undefined;
+let gateServer: Server | undefined;
+let releaseBroker: (() => void) | undefined;
+let dir = "";
 
-async function main() {
+try {
+  const auth = await createSpaceAuth(space);
+  const brokerPort = await pickFreePort();
+  dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}cancel-probe-`));
+  writeFileSync(
+    join(dir, "server.conf"),
+    serverConfig(auth, [auth], {
+      host: "127.0.0.1",
+      port: brokerPort,
+      storeDir: join(dir, "js"),
+      transport: { kind: "plaintext" },
+    })
+  );
+
+  // Explicit broker child environment
+  const brokerEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    SYSTEMROOT: process.env.SYSTEMROOT,
+    TMPDIR: dir,
+    COTAL_ROOT: dir,
+  };
+  broker = spawn("nats-server", ["-c", join(dir, "server.conf")], {
+    stdio: "ignore",
+    env: brokerEnv,
+  });
+  releaseBroker = teardownOnSignal(broker, dir);
+
+  gateServer = createServer((client) => {
+    const row = new OrderedGate(client);
+    gates.push(row);
+    const upstream = tcpConnect(brokerPort, "127.0.0.1");
+    row.upstream = upstream;
+    upstream.on("connect", () => {
+      row.ready = true;
+      if (!row.holding && row.held.length) {
+        upstream.write(Buffer.concat(row.held.splice(0)));
+      }
+    });
+    client.on("data", (chunk) => row.take(chunk));
+    upstream.on("data", (chunk) => client.write(chunk));
+    const stop = () => { client.destroy(); upstream.destroy(); };
+    client.on("error", stop); upstream.on("error", stop);
+    client.on("close", () => upstream.destroy()); upstream.on("close", () => client.destroy());
+  });
+
+  // OS-assigned dynamic port for gate server
+  await new Promise<void>((resolve, reject) => {
+    gateServer!.once("error", reject);
+    gateServer!.listen(0, "127.0.0.1", resolve);
+  });
+  const gatePort = (gateServer.address() as AddressInfo).port;
+
+  // Scoped transport-only credentials: exact progress subject, connection reply inbox, and silent test subject
+  const followerIdentity = newIdentity();
+  const followerInbox = `_INBOX_${followerIdentity.id}.>`;
+  const followerJwt = await encodeUser(
+    "probe-follower",
+    fromPublic(followerIdentity.id),
+    fromPublic(auth.account.pub),
+    {
+      pub: { allow: [followerInbox, "_INBOX.>", silentSubject] },
+      sub: { allow: [followerInbox, "_INBOX.>", epGoalProgressGrantRow(space, endpoint, caller), silentSubject] },
+    },
+    { signer: fromSeed(enc.encode(auth.account.signingSeed)) }
+  );
+  const followerCreds = new TextDecoder().decode(fmtCreds(followerJwt, fromSeed(enc.encode(followerIdentity.seed))));
+
   const servers = `nats://127.0.0.1:${brokerPort}`;
   let up = false;
   for (let i = 0; i < 50 && !up; i++) {
@@ -148,13 +176,6 @@ async function main() {
     let submitsCalled1 = 0;
     const controller1 = new AbortController();
 
-    let heldPingSeen = false;
-    for (const g of gates) {
-      g.onHeldData = (chunk) => {
-        if (chunk.toString("utf8").includes("PING")) heldPingSeen = true;
-      };
-    }
-
     const followP1 = submitAndFollowGoal(
       follower,
       space,
@@ -164,28 +185,41 @@ async function main() {
       async () => {
         submitsCalled1++;
         return {
-          reply: { ok: true, data: { goalId: "g-case1" } },
-          responder: { endpoint, instanceId: "inst-1", epoch: 1 },
-        } as EpAttributedReply;
+          reply: {
+            v: 1 as const,
+            id: randomBytes(16).toString("base64url"),
+            ok: true as const,
+            data: { goalId: "g-case1" },
+          },
+          responder: { endpoint, instanceId: mintLifecycleUid(), epoch: 1 },
+        };
       },
       { signal: controller1.signal }
     );
 
-    // Wait until PING is queued in the gate (or timeout)
-    await new Promise<void>((resolve) => {
-      const poll = setInterval(() => {
-        if (heldPingSeen || gates.some((g) => Buffer.concat(g.held).includes("PING"))) {
-          clearInterval(poll);
+    // Held-byte barrier: verify PING is physically captured in gate buffer before aborting
+    await new Promise<void>((resolve, reject) => {
+      let poll: NodeJS.Timeout | undefined;
+      const onHeld = () => {
+        if (gates.some((g) => Buffer.concat(g.held).includes("PING"))) {
+          if (poll) clearInterval(poll);
           resolve();
         }
-      }, 5);
+      };
+      for (const g of gates) g.onHeldData = onHeld;
+      onHeld();
+      poll = setInterval(onHeld, 5);
       trackedTimers.push(poll);
-      const timer = setTimeout(() => { clearInterval(poll); resolve(); }, 60);
+      const timer = setTimeout(() => {
+        if (poll) clearInterval(poll);
+        reject(new Error("timed out waiting for held PING in gate"));
+      }, 500);
       trackedTimers.push(timer);
     });
 
     controller1.abort();
 
+    // Check if follower settles BEFORE releasing gate (within 400ms) with typed not-executed outcome
     const timeoutWindow = 400;
     const raceResult1 = await Promise.race([
       followP1.then(
@@ -198,10 +232,15 @@ async function main() {
       }),
     ]);
 
-    const settledBeforeRelease = raceResult1.settled === true;
+    const isNotExecuted = raceResult1.settled === true
+      && raceResult1.kind === "rejected"
+      && raceResult1.err instanceof EpEnvelopeError
+      && raceResult1.err.code === "unavailable"
+      && raceResult1.err.outcome === "not-executed";
+
     check(
-      "aborted follower settles before gate release during held flush",
-      settledBeforeRelease,
+      "aborted follower settles before gate release with not-executed during held flush",
+      isNotExecuted,
       { raceResult1 }
     );
 
@@ -235,10 +274,16 @@ async function main() {
 
     const controller2 = new AbortController();
     let submitStarted = false;
+    let submitFinished = false;
+    let silentReceived = false;
 
-    const silentSubject = `${space}.probe.silent`;
-    // Create silent subscription so NATS broker does not return immediate 503 NoResponders
-    follower.subscribe(silentSubject);
+    // Silent subscriber receives request but sends no reply, keeping request pending on wire
+    follower.subscribe(silentSubject, {
+      callback: () => {
+        silentReceived = true;
+      },
+    });
+    await follower.flush();
 
     const followP2 = submitAndFollowGoal(
       follower,
@@ -246,23 +291,40 @@ async function main() {
       endpoint,
       caller,
       5000,
-      async () => {
+      async (signal) => {
         submitStarted = true;
-        // Real NATS broker request with silent responder; do NOT cooperatively resolve!
+        // Real NATS broker request on silent subject; do NOT cooperatively resolve!
         const rawReqP = follower.request(silentSubject, enc.encode("{}"), { timeout: 10_000 });
         await rawReqP;
+        submitFinished = true;
         return {
-          reply: { ok: true, data: { goalId: "g-case2" } },
-          responder: { endpoint, instanceId: "inst-2", epoch: 1 },
-        } as EpAttributedReply;
+          reply: {
+            v: 1 as const,
+            id: randomBytes(16).toString("base64url"),
+            ok: true as const,
+            data: { goalId: "g-case2" },
+          },
+          responder: { endpoint, instanceId: mintLifecycleUid(), epoch: 1 },
+        };
       },
       { signal: controller2.signal }
     );
 
-    await new Promise<void>((resolve) => {
-      const poll = setInterval(() => { if (submitStarted) { clearInterval(poll); resolve(); } }, 5);
+    // Barrier: wait until silent subscriber callback actually receives the request over NATS
+    await new Promise<void>((resolve, reject) => {
+      let poll: NodeJS.Timeout | undefined;
+      const checkReceived = () => {
+        if (silentReceived && submitStarted) {
+          if (poll) clearInterval(poll);
+          resolve();
+        }
+      };
+      poll = setInterval(checkReceived, 5);
       trackedTimers.push(poll);
-      const timer = setTimeout(() => { clearInterval(poll); resolve(); }, 100);
+      const timer = setTimeout(() => {
+        if (poll) clearInterval(poll);
+        reject(new Error("timed out waiting for silent subscriber request receipt"));
+      }, 1000);
       trackedTimers.push(timer);
     });
 
@@ -280,10 +342,18 @@ async function main() {
       }),
     ]);
 
+    const isUnknown = raceResult2.settled === true
+      && raceResult2.kind === "rejected"
+      && raceResult2.err instanceof EpEnvelopeError
+      && raceResult2.err.code === "unavailable"
+      && raceResult2.err.outcome === "unknown";
+
+    const stillPending = submitStarted && silentReceived && !submitFinished;
+
     check(
-      "aborted follower settles during pending unresponded broker submit",
-      raceResult2.settled === true,
-      { raceResult2 }
+      "aborted follower settles with unknown outcome during pending broker submit",
+      isUnknown && stillPending,
+      { isUnknown, stillPending, submitStarted, silentReceived, submitFinished, raceResult2 }
     );
     // Connection closed in finally AFTER this assertion
   }
@@ -309,6 +379,7 @@ async function main() {
       controller3.abort();
     };
 
+    let error3: unknown;
     try {
       await submitAndFollowGoal(
         follower,
@@ -319,41 +390,47 @@ async function main() {
         async () => {
           submitsCalled3++;
           return {
-            reply: { ok: true, data: { goalId: "g-case3" } },
-            responder: { endpoint, instanceId: "inst-3", epoch: 1 },
-          } as EpAttributedReply;
+            reply: {
+              v: 1 as const,
+              id: randomBytes(16).toString("base64url"),
+              ok: true as const,
+              data: { goalId: "g-case3" },
+            },
+            responder: { endpoint, instanceId: mintLifecycleUid(), epoch: 1 },
+          };
         },
         { signal: controller3.signal }
       );
-    } catch {
-      // Expected EpEnvelopeError on cancellation
+    } catch (err) {
+      error3 = err;
     }
 
+    const isNotExecuted = error3 instanceof EpEnvelopeError
+      && error3.code === "unavailable"
+      && error3.outcome === "not-executed";
+
     check(
-      "post-flush abort prevents goal submission (0 submits)",
-      submitsCalled3 === 0,
-      { submitsCalled3 }
+      "post-flush abort prevents goal submission with typed not-executed error",
+      isNotExecuted && submitsCalled3 === 0,
+      { isNotExecuted, submitsCalled3, error3 }
     );
   }
-}
-
-try {
-  await main();
 } catch (e) {
   check("goal follow cancellation completed", false, e instanceof Error ? e.message : String(e));
 } finally {
-  for (const t of trackedTimers) clearTimeout(t);
+  for (const t of trackedTimers) {
+    clearTimeout(t as NodeJS.Timeout);
+    clearInterval(t as NodeJS.Timeout);
+  }
   for (const nc of conns) await nc.close().catch(() => {});
   for (const g of gates) { g.client.destroy(); g.upstream?.destroy(); }
-  await new Promise<void>((resolve) => gateServer.close(() => resolve()));
-  if (broker.exitCode === null) broker.kill("SIGTERM");
-  await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);
-  if (broker.exitCode === null) broker.kill("SIGKILL");
-  await exited;
-  rmSync(dir, { recursive: true, force: true });
-  releaseBroker();
+  if (gateServer) await new Promise<void>((resolve) => gateServer!.close(() => resolve())).catch(() => {});
+  if (broker) await killAndAwaitExit(broker, "SIGTERM").catch(() => {});
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  releaseBroker?.();
 }
 
-console.log(`goal-follow-cancellation smoke: ${pass} passed, ${fail} failed`);
-emitSentinel({ passed: pass, failed: fail, cells: 5 });
-process.exit(fail === 0 ? 0 : 1);
+const totalCells = pass + fail;
+console.log(`goal-follow-cancellation smoke: ${pass} passed, ${fail} failed (cells: ${totalCells})`);
+emitSentinel({ passed: pass, failed: fail, cells: totalCells });
+process.exit(fail === 0 && totalCells === 5 ? 0 : 1);

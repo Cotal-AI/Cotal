@@ -10,8 +10,8 @@
       "file": "packages/core/src/endpoint-invoke.ts",
       "find": "      const preparing = activeNc;\n      try { await bounded(() => preparing.flush(), deadline); }\n",
       "replace": "      const preparing = activeNc;\n      try { await preparing.flush(); }\n",
-      "expectRed": "aborted follower settles before gate release during held flush",
-      "cell": "aborted follower settles before gate release during held flush",
+      "expectRed": "aborted follower settles before gate release with not-executed during held flush",
+      "cell": "aborted follower settles before gate release with not-executed during held flush",
       "note": "Awaiting flush directly without bounded race leaves the follower hanging until the gate is released, failing to settle upon abort."
     },
     {
@@ -19,8 +19,8 @@
       "file": "packages/core/src/endpoint-invoke.ts",
       "find": "    try { attributed = await bounded(() => submit(work.signal), deadline); }",
       "replace": "    try { attributed = await submit(work.signal); }",
-      "expectRed": "aborted follower settles during pending unresponded broker submit",
-      "cell": "aborted follower settles during pending unresponded broker submit",
+      "expectRed": "aborted follower settles with unknown outcome during pending broker submit",
+      "cell": "aborted follower settles with unknown outcome during pending broker submit",
       "note": "Awaiting submit directly without bounded race hangs on an unresponded broker request without settling upon abort."
     }
   ]
