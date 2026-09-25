@@ -201,7 +201,7 @@ export function seedGeneration(): string {
     throw new Error(`invalid seed generation ${JSON.stringify(generation)} read from ${source}: it must be a plausible semver and a single safe path segment with no path separator or ".." segment (${reason})`);
   };
   if (!isValidSemver(generation)) invalid("not plausible semver");
-  if (generation === "." || generation.split(/[\\/]/).includes("..")) invalid('".." segment');
+  if (generation === "." || generation.includes("..")) invalid('".." segment');
   if (/[\\/]/.test(generation)) invalid("path separator");
   return generation;
 }

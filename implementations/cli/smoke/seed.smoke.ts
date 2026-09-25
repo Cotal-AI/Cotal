@@ -120,7 +120,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   };
   const generationTraversal = craftedGeneration("../../escaped");
   check("seed generation: reconcile input refuses a traversal version before any write", /not plausible semver/.test(generationTraversal) && generationTraversal.includes("package.json"), generationTraversal);
-  const generationDotSegment = craftedGeneration("0.36.0+../escaped");
+  const generationDotSegment = craftedGeneration("0.36.0+..");
   check("seed generation: reconcile input refuses a semver build-metadata dot segment", /"\.\." segment/.test(generationDotSegment), generationDotSegment);
   const generationSeparator = craftedGeneration("0.36.0+safe/escaped");
   check("seed generation: reconcile input refuses a semver build-metadata separator", /path separator/.test(generationSeparator), generationSeparator);
