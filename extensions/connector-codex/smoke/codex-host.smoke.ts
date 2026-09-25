@@ -10,7 +10,9 @@
  *   2. wake: a DM drives a real turn carrying the rendered batch;
  *   3. ack-on-completion: a completed turn's batch never redelivers;
  *   4. steer: a directed message arriving mid-turn is steered INTO the live turn;
- *   5. interrupt: an interrupted turn's batch is NOT acked and redelivers immediately;
+ *   5. interrupt: an interrupted turn's batch is DISMISSED (acked), not redelivered, unless the
+ *      interrupt is one this host itself issued for its own retirement; a turn whose terminal
+ *      status is missing or unrecognized ("unknown") leaves the batch un-acked instead;
  *   6. failed: a failed turn's batch is NOT acked — it retries with backoff, and the loop
  *      is released afterwards;
  *   7. tools: a model-initiated MCP tools/call round-trips into the shared cotal_* surface,
@@ -30,7 +32,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, type PresenceCondition } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -119,9 +121,20 @@ const operator = new CotalEndpoint({
 });
 operator.on("error", () => {});
 let online = false;
-operator.on("presence", (e: { type: string; presence: { card: { id: string; name: string } } }) => {
+// Every presence event the operator has seen for PEER, in arrival order. A condition can be
+// published and cleared again within one boundary's async tail (the next turn's `working`
+// transition wipes it, same as any real operator's dashboard would lose it if they blinked) —
+// polling `operator.getRoster()` for it is a snapshot race that can step over the window
+// entirely. Recording every push as it lands, the way `logEntries()` does for the fake's own
+// journal, means a condition that was genuinely published is never missed just because nothing
+// polled while it was live.
+const presenceLog: { at: number; status?: string; condition?: PresenceCondition }[] = [];
+operator.on("presence", (e: { type: string; presence: { card: { id: string; name: string }; status?: string; condition?: PresenceCondition } }) => {
   const c = e.presence.card;
-  if ((c.id === PEER || c.name === PEER) && e.type !== "offline") online = true;
+  if ((c.id === PEER || c.name === PEER) && e.type !== "offline") {
+    online = true;
+    presenceLog.push({ at: Date.now(), status: e.presence.status, condition: e.presence.condition });
+  }
 });
 
 /** DM the peer by its ROSTER id (principal dot-form) — names are not unicast recipients. */
@@ -264,30 +277,70 @@ try {
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
 
-  // (5) interrupt: the batch is NOT acked, so the boundary drive redelivers it immediately —
-  // a SECOND turn carrying "HANG now" (the fake's HANG is one-shot, so the redelivery completes).
+  // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
+  // the turn open until it is interrupted (the fake's self-interrupt fallback after ~1s stands in
+  // for an operator's Escape in the attached TUI, since this host never calls driver.interrupt()
+  // itself outside shutdown()). Dismissed means the marker appears in exactly ONE turn/start ever
+  // (the boundary never re-drives it); a mutant that leaves it un-acked instead redrives it into a
+  // SECOND turn immediately, before "after-hang" is even sent — so the count, not the last turn's
+  // content, is what actually distinguishes dismissed from redelivered.
   await sleep(300);
   await dm("HANG now");
   await waitFor("HANG turn", () => turnStarts().find((t) => t.includes("HANG now")));
-  const redelivered = await waitFor("redelivery turn", () =>
-    turnStarts().filter((t) => t.includes("HANG now")).length >= 2 ? true : undefined,
-  );
-  check("interrupted turn's batch redelivers", redelivered === true);
+  await sleep(1500); // let the self-interrupt fallback fire and the boundary settle (and, on a
+  // mutant, let the redelivery it triggers run to completion too)
+  const hangOccurrences = turnStarts().filter((t) => t.includes("HANG now")).length;
+  check("interrupted turn's batch is dismissed, not redelivered", hangOccurrences === 1, hangOccurrences);
   await dm("after-hang");
   await waitFor("after-hang turn", () => turnStarts().find((t) => t.includes("after-hang")));
+
+  // (5b) an unknown terminal status (missing/unrecognized `status`) is neither a real interrupt
+  // nor a completion — the batch stays un-acked, same as today, so the boundary immediately
+  // redrives it into a second turn (no backoff, unlike `failed`); the fake's marker is one-shot,
+  // so that redelivery completes normally. The wait is caught rather than left to throw, so a
+  // mutant that acks it instead reddens a named check rather than an uncaught timeout.
+  await sleep(300);
+  await dm("UNKNOWNSTATUS now");
+  await waitFor("unknown-status turn", () => turnStarts().find((t) => t.includes("UNKNOWNSTATUS now")));
+  const unknownRedelivered = await waitFor("unknown-status redelivery", () =>
+    turnStarts().filter((t) => t.includes("UNKNOWNSTATUS now")).length >= 2 ? true : undefined,
+  ).catch(() => false);
+  check("unknown terminal status leaves the batch un-acked", unknownRedelivered === true);
+  await dm("after-unknown");
+  await waitFor("after-unknown turn", () => turnStarts().find((t) => t.includes("after-unknown")));
 
   // (6) failed: the batch is NOT acked — the backoff timer retries it (the fake's FAIL is
   // one-shot, so the retry completes and acks), and the loop is not wedged afterwards.
   await sleep(300);
+  const failSentAt = Date.now();
   await dm("FAIL this");
   await waitFor("FAIL turn", () => turnStarts().find((t) => t.includes("FAIL this")));
+  const failSeenAt = Date.now();
   const retried = await waitFor("failed-turn retry", () =>
     turnStarts().filter((t) => t.includes("FAIL this")).length >= 2 ? true : undefined,
   );
   check("failed turn's batch retries with backoff (never acked-dropped)", retried === true);
+  // The fake fails this turn in the same frame it starts it, so the host handles the start and
+  // the failure in one tick. Its start clears the condition and its failure sets one; the record
+  // that STANDS after the boundary is whichever write went out last. Grade that standing record,
+  // not whether the condition was ever glimpsed: the presence bucket keeps one revision per key,
+  // so a condition written first and cleared a millisecond later may or may not reach a watcher,
+  // and a glimpse would pass by luck. The retry follows a one-second backoff, so every push in the
+  // window after the failed start and before it belongs to the failed turn's boundary.
+  const boundary = presenceLog.filter((e) => e.at >= failSentAt && e.at < failSeenAt + 600);
+  const standing = boundary.at(-1)?.condition;
+  check(
+    "failed turn relays Codex's native error as a rate-limit condition",
+    standing?.code === "rate_limit" && standing.source === "rateLimitExceeded" && standing.message === "fake rate limit",
+    boundary,
+  );
   await dm("after-fail");
   const t6 = await waitFor("post-fail turn", () => turnStarts().find((t) => t.includes("after-fail")));
   check("loop released after the failed batch settled", !t6.includes("FAIL this"), t6);
+  check(
+    "a later normal turn clears the prior condition",
+    await waitFor("condition clear", () => operator.getRoster().find((p) => p.card.name === PEER)?.condition === undefined ? true : undefined),
+  );
 
   // (7) the cotal_* MCP surface: the app-server calls it ITSELF over loopback HTTP, which is why
   // it works identically on a mesh-driven turn and one typed into the attached TUI.
@@ -301,17 +354,36 @@ try {
   const noAuth = await waitFor("unauthenticated tool call", () => logEntries().find((e) => e.ev === "toolReplyNoAuth"));
   check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
 
+  await dm("APPROVAL probe");
+  await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "item/commandExecution/requestApproval"));
+  const approvalCondition = await waitFor("approval presence condition", () =>
+    // Same race as the failed-turn condition above: the approval `waiting` condition and a
+    // later turn's `working` (which clears it) can both land before anything polls the live
+    // roster. Read the recorded push log instead of `operator.getRoster()`.
+    presenceLog.find((e) => e.condition?.source === "item/commandExecution/requestApproval")?.condition,
+  );
+  check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
+
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
   // foreign turn's `completed` must never finalize the host's own batch: the batch was never
-  // carried by it, so acking there loses the message outright.
+  // carried by it, so acking there loses the message outright. Our OWN turn then ends
+  // `interrupted` (the human's typing stole the terminal) — an interrupt this host did not
+  // issue, so it dismisses the batch exactly like an operator's Escape would (one occurrence
+  // ever, the same counting shape as (5): a mutant that leaves it un-acked redrives it into a
+  // second turn immediately, before any later DM is even sent).
   await sleep(300);
   await dm("FOREIGN turn steals the terminal");
   await waitFor("FOREIGN turn", () => turnStarts().find((t) => t.includes("FOREIGN turn steals")));
-  const redeliveredForeign = await waitFor("FOREIGN batch redelivery", () =>
-    turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length >= 2 ? true : undefined,
+  await sleep(500); // let the foreign turn complete and our own turn end interrupted
+  const foreignOccurrences = turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length;
+  check(
+    "a foreign (TUI-owned) turn's completion never acks the host's batch, but our own interrupted turn dismisses it",
+    foreignOccurrences === 1,
+    foreignOccurrences,
   );
-  check("a foreign (TUI-owned) turn never acks the host's batch", redeliveredForeign === true);
+  await dm("after-foreign");
+  await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
   // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the

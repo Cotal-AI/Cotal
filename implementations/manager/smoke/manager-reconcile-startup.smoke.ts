@@ -33,6 +33,9 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  deliveryBucket,
+  leaseKey,
+  principalKey,
   mintCheckpoint,
   mintLifecycleUid,
   setupSpaceStreams,
@@ -59,6 +62,11 @@ import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot, staticLifecycleTransport } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";
+
+// The machine-home registry is not under test; a foreign or damaged record in the operator's
+// ~/.cotal must not refuse this suite's starts (loadMeshes reads every record it finds).
+for (const k of Object.keys(process.env)) if (k === "COTAL_HOME" || k.startsWith("COTAL_")) delete process.env[k];
+process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "cotal-reconcile-start-home-"));
 
 const ORPHANS = 8;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -149,9 +157,29 @@ try {
   });
   delivery.on("error", () => {});
   await delivery.start();
+  // The #1694 binding needs a real holder: this fixture daemon acquires `lease.0` itself (the
+  // endpoint's own acquire stamps its principal AND incarnation), so its answer carries
+  // `holdsDeliveryLease: true` against a row the manager can read. The SR1 block below retires
+  // this row and re-acquires it for its own holder responder.
+  await delivery.acquireDeliveryLease(0).catch(() => {});
   delivery.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
-    if (req.op === "reloadStoreIdentity")
-      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
+    if (req.op === "reloadStoreIdentity") {
+      // The answerer's wire identity and its LIVE lease claim, computed exactly as the shipped
+      // daemon-side op computes it.
+      let holds = false;
+      try {
+        const own = await delivery!.readDeliveryLeaseEntry(0);
+        holds = own !== undefined && delivery!.ownsDeliveryLease(own.info);
+      } catch { holds = false; }
+      return {
+        ok: true,
+        data: {
+          identity: { kind: "fs", root: resolve(workspaceRoot) },
+          responder: principalKey("local", deliveryIdentity.id).key,
+          holdsDeliveryLease: holds,
+        },
+      };
+    }
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     return {
@@ -596,6 +624,214 @@ try {
     await adopting.stop({ withAgents: true }).catch(() => {});
   }
 
+  // ── SR1 (#1694): a queue-grouped NON-HOLDER answering the store-identity challenge ──
+  //
+  // The delivery-admin rail is a queue group: EVERY process holding a `delivery` credential for the
+  // space is bound, while only the holder of `lease.0` reloads standing credentials. Two responders
+  // are stood up here — the LEASE HOLDER (a real acquire of `lease.0`, answering with a FOREIGN
+  // store so the identity comparison alone would refuse it) and a NON-HOLDER (bound only after the
+  // reproduction manager has started, naming the manager's own store). The ownership decision is
+  // then driven through the public renewal pass (`claimDaemonRenewalOwnership` → start() and every
+  // timer tick) until the non-holder answers.
+  //
+  // RED-FIRST HISTORY: at base eac62fec8 the second cell below asserted `daemonRenewalOwner ===
+  // true` — the manager read "shared" off the non-holder's bare store identity and TOOK the renewal
+  // lease (reproduced green; see the lane notes). The reply now carries the #1694 binding, so the
+  // same drive must refuse: an honest non-holder is refused by its own claim, and the lease row
+  // (which names the holder) refuses it twice over.
+  {
+    // Retire the fixture daemon's row BEFORE anything closes (a release at the BROKER's current
+    // revision, the shipped pattern), so the holder below can acquire the shard.
+    const fixtureRev = (await delivery!.readDeliveryLeaseEntry(0))?.revision;
+    await (delivery as unknown as {
+      releaseDeliveryLease(s: number, rev?: number): Promise<void>;
+    }).releaseDeliveryLease(0, fixtureRev);
+    await manager!.stop({ withAgents: true }).catch(() => {});
+    await delivery!.stop().catch(() => {});
+
+    // THE HOLDER: a real endpoint that acquires lease.0 itself (principal + incarnation stamped by
+    // the endpoint's own acquire, exactly the shipped shape) and answers with a foreign store.
+    const holderId = newIdentity();
+    const CARD = (id: string) => principalKey("local", id).key;
+    const evict = async (req: { op: string; args?: unknown }): Promise<ControlReply> => {
+      if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
+      const principal = String((req.args as { principal?: unknown })?.principal ?? "");
+      return {
+        ok: true,
+        data: await evictDeniedPrincipalWithCreds({
+          servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+        }),
+      };
+    };
+    const holder = new CotalEndpoint({
+      space,
+      servers: broker.servers,
+      creds: await mintCreds(auth, holderId, "delivery"),
+      card: { id: holderId.id, name: "delivery-holder", role: "delivery", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    });
+    holder.on("error", () => {});
+    await holder.start();
+    let holderAnswers = 0;
+    let holderStore: "foreign" | "manager-own" = "foreign";
+    const holderSub = holder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+      if (req.op === "reloadStoreIdentity") {
+        holderAnswers++;
+        // The reply carries the #1694 binding: the answerer's wire identity and its LIVE lease
+        // claim, computed exactly as the shipped daemon-side op computes it. The store flips from
+        // foreign (start refused as divergent) to the manager's own (a later pass takes the lease)
+        // for the blocker-2 staging below.
+        const own = await holder.readDeliveryLeaseEntry(0);
+        const holds = own !== undefined && holder.ownsDeliveryLease(own.info);
+        return {
+          ok: true,
+          data: {
+            identity: { kind: "fs", root: holderStore === "foreign" ? join(workspaceRoot, "holder-store") : resolve(workspaceRoot) },
+            responder: CARD(holderId.id),
+            holdsDeliveryLease: holds,
+          },
+        };
+      }
+      return evict(req);
+    }, { boundReply: true });
+    // Acquire the freed shard as THIS holder; the acquire stamps principal + incarnation.
+    await holder.acquireDeliveryLease(0);
+
+    // The reproduction manager: SAME root as the stopped one (its instance identity file is
+    // persisted, so this is the restart shape). It starts while the holder is the sole responder:
+    // a foreign store is the ordinary "divergent" pass, so the start itself is clean.
+    const sr1 = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+    await sr1.start();
+    const doors = sr1 as unknown as {
+      daemonRenewalOwner: boolean;
+      renewDaemonCreds: () => Promise<void>;
+    };
+
+    // THE NON-HOLDER: same rail, no lease, names the MANAGER'S OWN store — the answer a bare
+    // identity could not tell apart from the holder's, and the one that produced the false
+    // "shared" at base. Bound AFTER the start so the start's own challenge cannot hit it.
+    const nonHolderId = newIdentity();
+    const nonHolder = new CotalEndpoint({
+      space,
+      servers: broker.servers,
+      creds: await mintCreds(auth, nonHolderId, "delivery"),
+      card: { id: nonHolderId.id, name: "delivery-nonholder", role: "delivery", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    });
+    nonHolder.on("error", () => {});
+    await nonHolder.start();
+    let nonHolderAnswers = 0;
+    nonHolder.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+      if (req.op === "reloadStoreIdentity") {
+        nonHolderAnswers++;
+        // A DISHONEST non-holder — the attack #1694 actually files: the row names the other
+        // responder, and a responder that does not hold the lease can assert that it does. The
+        // claim alone must never carry the pass; the binding test (row holder != answerer) is
+        // what refuses this answer.
+        return {
+          ok: true,
+          data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: CARD(nonHolderId.id), holdsDeliveryLease: true },
+        };
+      }
+      return evict(req);
+    }, { boundReply: true });
+
+    check("the challenge CAN be driven to the non-holder (the queue group answered from it)",
+      await until(async () => { await doors.renewDaemonCreds(); return nonHolderAnswers > 0; }, 30_000),
+      { nonHolderAnswers, holderAnswers });
+    check("a NON-HOLDER answer with the manager's own store is REFUSED: the manager does not take the renewal lease (#1694)",
+      doors.daemonRenewalOwner === false,
+      { daemonRenewalOwner: doors.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
+
+    // ROUND 2, blocker 2 REPRODUCTION SHAPE: a manager that already HELD the renewal lease must
+    // LOSE it when a later pass refuses. This manager started while the holder answered with a
+    // FOREIGN store, so it never held the lease — the cells below stage the held-lease state
+    // explicitly before driving the refusal.
+
+    // ── the absence half of #1694: a no-responder rail outcome is settled from the lease row ──
+    //
+    // The rail's own "no responder" is not evidence of absence: it is reachable while a live holder
+    // owns the shard (the responder unbound, or an answer in a shape the client reads as that
+    // error). Case 1: BOTH responder subscriptions come off the rail while the holder still owns
+    // lease.0, so requestDeliveryAdmin throws the no-responder shape with a holder on record.
+    //
+    // ROUND 2, blocker 2: the manager driving the refusal must first HOLD the renewal lease, or a
+    // kept lease cannot be observed. This block re-points the holder's store answer at THIS
+    // manager's root and drives a pass while the holder still answers, so the pass reads "shared"
+    // and takes the lease; THEN the responders come off the rail for the refusal.
+    holderStore = "manager-own";
+    const tookLease = await until(async () => { await doors.renewDaemonCreds(); return doors.daemonRenewalOwner === true; }, 30_000);
+    check("the manager held the renewal lease before the refusal (started shared, then the responder answered its store)",
+      tookLease && doors.daemonRenewalOwner === true, { daemonRenewalOwner: doors.daemonRenewalOwner });
+
+    await nonHolder.stop().catch(() => {});
+    try { holderSub.unsubscribe(); } catch { /* already closed */ }
+    let refusal = "";
+    const holderRow = await (sr1 as unknown as {
+      ep: { readDeliveryLeaseEntry(s: number): Promise<{ info: { holder: string } } | undefined> };
+    }).ep.readDeliveryLeaseEntry(0);
+    check("the row still names the holder while the rail has no responder (the ambiguous state)",
+      holderRow !== undefined && typeof holderRow.info.holder === "string" && holderRow.info.holder.length > 0,
+      holderRow);
+    // The refusal is LOUD and RECORDED, never fatal (each daemon's own timer is the backstop), so
+    // it surfaces on the renewal pass's own error channel — capture that channel, not a rethrow.
+    const said: string[] = [];
+    const origSay = console.error;
+    console.error = (...a: unknown[]) => { said.push(a.map(String).join(" ")); };
+    try { await doors.renewDaemonCreds(); }
+    catch (e) { refusal = (e as Error).message; }
+    finally { console.error = origSay; }
+    const passLog = said.join("\n");
+    check("a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
+      (refusal.includes("names a holder") || passLog.includes("names a holder")) && doors.daemonRenewalOwner === false,
+      { refusal, passLog, daemonRenewalOwner: doors.daemonRenewalOwner });
+
+    // ROUND 2, blocker 1: the row EXISTS (a live PUT) but its bytes do not parse. The core reader
+    // swallows the parse failure into `undefined`, so this reads as no-row → "absent" → the manager
+    // takes the renewal lease over a lease row it could not read. Staged by publishing raw
+    // unparseable bytes to lease.0 under the holder's own delivery cred (the sole lease-key
+    // writer), then driving the same public pass.
+    {
+      const bucket = await (holder as unknown as {
+        deliveryRegistry(): Promise<{ update(k: string, v: Uint8Array, rev: number): Promise<number>; get(k: string): Promise<{ revision: number } | undefined> }>;
+      }).deliveryRegistry();
+      const row = await bucket.get(leaseKey(0));
+      await bucket.update(leaseKey(0), new TextEncoder().encode("{not-json"), row!.revision);
+    }
+    let unreadableRefusal = "";
+    const said2: string[] = [];
+    const origSay2 = console.error;
+    console.error = (...a: unknown[]) => { said2.push(a.map(String).join(" ")); };
+    try { await doors.renewDaemonCreds(); }
+    catch (e) { unreadableRefusal = (e as Error).message; }
+    finally { console.error = origSay2; }
+    check("a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
+      (unreadableRefusal.includes("could not read") || said2.join("\n").includes("could not read")) && doors.daemonRenewalOwner === false,
+      { unreadableRefusal, passLog: said2.join("\n"), daemonRenewalOwner: doors.daemonRenewalOwner });
+
+    // Case 3: the corrupt row is REPLACED with a holderless one (a row that names no holder —
+    // `bucket.update` under the holder's own cred, the one lease-key writer) and the rail still
+    // reports no responder. Today's "absent" must survive: the same manager's next pass may take
+    // the lease. (Deleting the whole stream would take the bucket away, and "bucket missing" is
+    // an undetermined read, not an absent row.)
+    {
+      const bucket = await (holder as unknown as {
+        deliveryRegistry(): Promise<{ update(k: string, v: Uint8Array, rev: number): Promise<number>; get(k: string): Promise<{ revision: number } | undefined> }>;
+      }).deliveryRegistry();
+      const row = await bucket.get(leaseKey(0));
+      await bucket.update(leaseKey(0), new TextEncoder().encode(JSON.stringify({ holder: "", since: Date.now(), ready: false })), row!.revision);
+    }
+    await holder.stop().catch(() => {});
+    let absentRefusal = "";
+    try { await doors.renewDaemonCreds(); }
+    catch (e) { absentRefusal = (e as Error).message; }
+    check("a holderless or absent lease row with no responder reads ABSENT: the manager may take the renewal lease (the daemon is not bound yet)",
+      absentRefusal === "" && doors.daemonRenewalOwner === true,
+      { absentRefusal, daemonRenewalOwner: doors.daemonRenewalOwner });
+
+    await sr1.stop().catch(() => {});
+  }
+
 
 } finally {
   await callerNc?.drain().catch(() => callerNc?.close());
@@ -605,7 +841,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 32;
 console.log(`\n${fail === 0 ? "MANAGER RECONCILE STARTUP SMOKE OK ✅" : "MANAGER RECONCILE STARTUP SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

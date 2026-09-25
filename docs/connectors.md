@@ -10,6 +10,8 @@ not support throws; nothing silently degrades.
 Connectors track raw NATS transport liveness separately from endpoint readiness. A short broker
 disconnect marks the transport down until nats.js reconnects, without claiming that the connector's
 full Cotal bind was torn down and rebuilt. A clean connector stop clears both states locally.
+If a post-connect bind fails, the endpoint closes that partial connection and reports both
+transport and connection down before retrying.
 The endpoint `transport` event reports edges and is not replayed to listeners attached later. A
 connector that needs current state reads its `MeshAgent.transportConnected` value, then listens for
 later edges.
@@ -27,7 +29,7 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ (private Harness API instance) | ✓ (forks) |
 | Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
-| Event plane (`--events`) | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ |
+| Event plane (default on; `--no-events` opts out) | ✓ | ✓ | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 **Native vs. bridged.** OpenCode and pi expose real plugin runtimes, so the connector runs

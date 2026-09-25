@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  assertLifecycleToken,
   instancePinnedInstrumentCapabilities,
   isReachable,
   mintCreds,
@@ -104,6 +105,7 @@ export interface Connection {
    *  unregistered `--space`). Callers that branch on open vs static MUST read this, not the
    *  absence of `auth`: an authenticated registry entry with a missing seed is still `auth`. */
   mode?: MeshTarget["mode"];
+  policy?: MeshTarget["policy"];
   /** The connection's v0.4 caller triple (SPEC §13.2), present when this connection can ride the
    *  ep rails: a minted operator INSTRUMENT (`control-caller-*` / `deployer`, static trust
    *  material - the mint pins a fresh lifecycle uid) or a USER-mode bearer (the callout mints the
@@ -149,6 +151,7 @@ export interface UserViewAuth {
   /** The bearer's ledger lifecycle claim - with (owner, actor) the v0.4 caller triple the
    *  callout-minted instrument-view rows pin (1c.2c). */
   lifecycleUid: string;
+  managerInstanceId?: string;
   source: () => Promise<string>;
 }
 
@@ -158,7 +161,7 @@ export interface UserViewAuth {
  *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
  *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
  *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string): Promise<UserViewAuth> {
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string } = {}): Promise<UserViewAuth> {
   if (!conn.bearer || !conn.userAuth || !conn.root)
     throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
   const ua = conn.userAuth;
@@ -172,10 +175,33 @@ export async function userViewAuth(conn: Connection, view: string): Promise<User
   }
   const dir = userAuthStateDir(conn.root, conn.space);
   const store = workspaceSecretStore(conn.root);
-  const mint = () => provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR, view });
+  if (opts.managerInstanceId !== undefined) {
+    if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
+    assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
+  }
+  const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
+  const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
+  const mint = async () => {
+    const result = await provider.userCredentials(request);
+    if (original) {
+      const { owner, actor, lifecycleUid } = principalFromBearer(result.bearer);
+      const payload = JSON.parse(Buffer.from(result.bearer.split(".")[1]!, "base64url").toString("utf8"));
+      if (owner !== original.owner || actor !== original.actor || lifecycleUid !== original.lifecycleUid ||
+          payload.act?.owner !== owner || payload.act?.view !== view ||
+          !(payload.aud === conn.space || (Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === conn.space)) ||
+          typeof payload.act?.managerInstanceId !== "string")
+        throw new Error("manager control exchange returned different space, principal, lifecycle or view coordinates");
+      const instanceId = assertLifecycleToken(payload.act.managerInstanceId, "managerInstanceId");
+      if (request.managerInstanceId !== undefined && instanceId !== request.managerInstanceId)
+        throw new Error("manager control exchange selected a different manager instance");
+      request.managerInstanceId = instanceId;
+    }
+    return result;
+  };
   const { bearer, sentinelCreds } = await mint();
   const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
-  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source: () => mint().then((r) => r.bearer) };
+  const managerInstanceId = request.managerInstanceId;
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
 }
 
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
@@ -249,8 +275,8 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * because there is only one place the sentence is written.
  */
 export class ConnectRefusal extends Error {
-  constructor(readonly rendered: string, readonly hint?: string) {
-    super(rendered);
+  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown }) {
+    super(rendered, options);
     this.name = "ConnectRefusal";
   }
 }
@@ -418,6 +444,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
   return {
     server: target.server, space: target.space, tls: target.tlsRequired, creds, auth: target.auth, root: target.root, source: target.source,
     mode: target.mode,
+    ...(target.policy ? { policy: target.policy } : {}),
     ...(epCaller ? { epCaller } : {}),
   };
 }
@@ -497,6 +524,7 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
       root: target.root,
       source: target.source,
       mode: target.mode,
+      ...(target.policy ? { policy: target.policy } : {}),
       epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
     };
   } catch (e) {
@@ -540,7 +568,9 @@ export async function resolveTargetOrThrow(flags: {
   try {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
-    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }));
+    // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
+    // every other refusal can read its `code` instead of matching the rendered sentence.
+    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e });
     throw e;
   }
   // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,

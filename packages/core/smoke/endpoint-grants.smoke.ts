@@ -33,6 +33,11 @@ c("request row: class one, owner mode, caller-pinned, nonce-only wildcard",
 c("request rows: routes + instance pin",
   epRequestGrantRows("demo", { endpoint: "manager", command: "status", routes: ["one", "all"], instanceId: IID }, caller).join("|")
   === `cotal.demo.ep.one.manager.status.u_abc.cli.${UID}.*|cotal.demo.ep.all.manager.status.u_abc.cli.${UID}.*|cotal.demo.ep.inst.manager.${IID}.status.u_abc.cli.${UID}.*`);
+c("request row: instance-only omits every class/scatter row",
+  epRequestGrantRows("demo", { endpoint: "manager", command: "status", instanceId: IID, instanceOnly: true }, caller).join("|")
+  === `cotal.demo.ep.inst.manager.${IID}.status.u_abc.cli.${UID}.*`);
+throws("instance-only refuses without an exact instance id",
+  () => epRequestGrantRows("demo", { endpoint: "manager", command: "status", instanceOnly: true }, caller));
 c("journal row: same authz block, no nonce",
   epJournalGrantRow("demo", spawnCap, caller) === `cotal.demo.epj.manager.spawn.owner.u_abc.u_abc.cli.${UID}`);
 c("reply-rail read row: own rail, exact arity",
@@ -85,8 +90,8 @@ c("issued per-goal progress row is the plain triple: the subject the endpoint pu
 const baseline = epBaselineGrantRows("demo", caller);
 c("baseline: the ONE wildcard-endpoint form is describe-only, caller pinned, nonce-tailed",
   baseline.pub[0] === `cotal.demo.ep.one.*.describe.u_abc.cli.${UID}.*`);
-c("baseline: delivery join/leave/list untargeted + manager stop/turn-pending/turn-yield self-mode + the ONE epc-subject-scoped store fetch, nothing else",
-  baseline.pub.length === 8
+c("baseline: delivery join/leave/list untargeted + manager stop/turn-pending/turn-yield/run-answer self-mode + the ONE epc-subject-scoped store fetch, nothing else",
+  baseline.pub.length === 9
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.join.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.leave.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.delivery.list.u_abc.cli.${UID}.*`)
@@ -95,6 +100,7 @@ c("baseline: delivery join/leave/list untargeted + manager stop/turn-pending/tur
   // relay at all, and the manager pushes nothing.
   && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`)
   && baseline.pub.includes(`cotal.demo.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`)
+  && baseline.pub.includes(`cotal.demo.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`)
   // §13.7 store fetch rides the baseline (describe answers digests; a caller that may describe
   // may fetch the schemas those digests name) — EXACTLY the epc-subject-scoped Direct Get form,
   // never the bare/stream-wide row, and no epc PUBLISH row.
@@ -105,10 +111,10 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect + list-personas + show-persona ride untargeted (the 1c table's connector reads)",
-  spawnCallerCapabilities("u_abc").length === 7
+c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect + list-personas + show-persona + goal-result ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 8
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.list-personas.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.show-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.goal-result.u_abc.cli.${UID}.*`);
 // THE REGRESSION GUARD FOR THE `input` PLACEMENT, and it is a cell rather than a comment because
 // the mistake it stops is a ONE-WORD edit that reads as tidying: adding "input" to
 // SPAWN_OWNER_LIFECYCLE_COMMANDS beside its two obvious siblings. That edit hands every
@@ -125,22 +131,22 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` and `turn` (the two
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
-c("the privileged instrument set: reads + spawn + define-persona + the run family, NOTHING targeted",
-  operatorInstrumentCapabilities("privileged").length === 13
-  && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
-// The `run` capability (SPEC 14.3): the five untargeted run-* rows PLUS the whole spawn set, and
+c("the privileged instrument set: reads + spawn + define-persona + the run family, with run-answer self-targeted",
+  operatorInstrumentCapabilities("privileged").length === 14
+  && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,goal-result,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+// The `run` capability (SPEC 14.3): four untargeted run-* rows, self-targeted run-answer, PLUS the whole spawn set, and
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
-c("the run capability set: run-start/run-resume/run-answer/run-status/run-ps untargeted + the spawn set",
-  runCallerCapabilities("u_abc").length === 12
+c("the run capability set: run-start/run-resume/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
+  runCallerCapabilities("u_abc").length === 13
   && runCallerCapabilities("u_abc").slice(0, 5).map((cap) => cap.command).join(",") === "run-start,run-resume,run-answer,run-status,run-ps"
-  && runCallerCapabilities("u_abc").slice(0, 5).every((cap) => cap.target === undefined)
+  && runCallerCapabilities("u_abc").slice(0, 5).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
   && JSON.stringify(runCallerCapabilities("u_abc").slice(5)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 27
+  adminCaps.length === 28
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
@@ -206,8 +212,9 @@ const BASELINE_PUB = [
   `cotal.epg.ep.one.manager.stop.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
   `cotal.epg.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
+  `cotal.epg.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
 ];
-c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-pending/turn-yield), nothing wider",
+c("no-capability mint carries EXACTLY the Appendix-B baseline ep rows (describe-all + delivery join/leave/list + self stop/turn-pending/turn-yield/run-answer), nothing wider",
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep.") || r.includes(".epj.")).sort())
   === JSON.stringify([...BASELINE_PUB].sort()),
   JSON.stringify(without.pub.allow.filter((r) => r.includes(".ep."))));

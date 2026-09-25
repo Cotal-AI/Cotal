@@ -18,6 +18,7 @@ import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
+import { ConnectRefusal, isWorkspaceTargetError, renderWorkspaceError, type ControlTarget } from "@cotal-ai/workspace";
 import { legacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
@@ -72,7 +73,7 @@ const runtime: UpdateRuntime = {
   nodePath: process.execPath,
   version: cliVersion,
   reconcile: () => runSeed({ force: true }),
-  reportRunningManager,
+  reportRunningManager: (target) => reportRunningManagers(target),
   extensions: () => loadExtensionsManifest().extensions,
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
@@ -148,7 +149,7 @@ async function reconcileCurrent(
   try {
     if (await rt.reportRunningManager(target) === "legacy") return finish(false);
   } catch (e) {
-    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
+    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
     return finish(false);
   }
 
@@ -225,12 +226,85 @@ async function reconcileCurrent(
   }
 }
 
-async function reportRunningManager(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
-  const target = await resolveControlTarget({
-    ...(typeof flags.space === "string" ? { space: flags.space } : {}),
-    ...(typeof flags.server === "string" ? { server: flags.server } : {}),
-    ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
-  }, "control-caller-admin");
+/** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
+ *  down with none selected. Either way no manager is running. A mesh selected with `--space` or
+ *  from inside its project, a named space, a broken record, or a dead broker each still names a
+ *  manager this command was asked about. */
+function isNoMeshRefusal(e: unknown): boolean {
+  return e instanceof ConnectRefusal && isWorkspaceTargetError(e.cause) && e.cause.code === "no-meshes";
+}
+
+/** The refusal sentence this command prints. A {@link MeshTargetError} arrives RAW here — the
+ *  control resolver rethrows the codes it does not absorb before the connect helper can wrap them —
+ *  so its `message` is the resolver's bare, command-agnostic text, with none of the recovery copy
+ *  every other surface shows. Render it the way `status` and `ps` do, dropping the rendered line's
+ *  own `✗` because this one is already printed under the command's marker; a `ConnectRefusal`
+ *  already carries that rendering as its message, and anything else is a real fault printed as is. */
+function refusal(e: unknown): string {
+  return isWorkspaceTargetError(e)
+    ? renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")
+    : message(e);
+}
+
+/** The running meshes an `ambiguous-target` named, or undefined when this refusal names none to act
+ *  on (several tenants on one root, an unreadable account record) and so stands. */
+function runningSpaces(e: unknown): string[] | undefined {
+  if (!isWorkspaceTargetError(e) || e.code !== "ambiguous-target") return undefined;
+  const spaces = e.details.spaces;
+  return spaces && spaces.length > 1 ? spaces : undefined;
+}
+
+/**
+ * The continuity read for every manager this update is asked about, not just one of them.
+ *
+ * `update --self` replaces the single `cotal-ai` install every running manager on the machine
+ * shares, so with no `--space` / `--server` / `--creds` the question is asked about all of them.
+ * Reporting one and staying silent about the rest is a partial answer; refusing outright leaves the
+ * operator with no continuity report at all. So an ambiguous target is enumerated and read once per
+ * running mesh, and every one of them is observed before this returns and anything is written
+ * (#1620). A `legacy` verdict on any of them makes the whole run not a hot update. A selector flag
+ * still selects one, and every other refusal stands.
+ */
+export async function reportRunningManagers(
+  flags: Record<string, unknown>,
+  readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
+): Promise<"none" | "legacy"> {
+  try {
+    return await readOne(flags);
+  } catch (e) {
+    const selected = ["space", "server", "creds"].some((name) => typeof flags[name] === "string");
+    const spaces = selected ? undefined : runningSpaces(e);
+    if (!spaces) throw e;
+    console.log(c.dim(`${spaces.length} meshes running; reading each manager's continuity`));
+    let verdict: "none" | "legacy" = "none";
+    for (const space of spaces) {
+      console.log(c.bold(space));
+      // Every manager is read, including after a legacy verdict: the report is about all of them,
+      // and stopping at the first would reintroduce the partial answer from the other direction.
+      if (await readOne({ ...flags, space }) === "legacy") verdict = "legacy";
+      else console.log(c.dim("  manager custody carries this update"));
+    }
+    return verdict;
+  }
+}
+
+async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+  let target: ControlTarget;
+  try {
+    target = await resolveControlTarget({
+      ...(typeof flags.space === "string" ? { space: flags.space } : {}),
+      ...(typeof flags.server === "string" ? { server: flags.server } : {}),
+      ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
+    }, "control-caller-admin", undefined, { onRefusal: "throw" });
+  } catch (e) {
+    // No running manager means no custody to preserve and nothing this update could interrupt. Only
+    // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
+    // with none selected. A selected mesh that is down, a named space that is not running, a broken
+    // record, or a dead broker each still names a manager this command was asked about, and stays a
+    // refusal.
+    if (isNoMeshRefusal(e)) return "none";
+    throw e;
+  }
   const status = await askManager(target.space, target.server, "managerStatus", undefined, target.auth);
   if (!status.ok) {
     // The MARKER, not the sentence. `unanswered` is the structural fact `epRailFailure` sets from
@@ -271,7 +345,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     if (await rt.reportRunningManager(target) === "legacy") return 1;
   } catch (e) {
-    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));
+    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
     return 1;
   }
 

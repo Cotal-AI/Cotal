@@ -665,6 +665,8 @@ const SELFTEST_IPV6_HYPHEN_TAIL = `${['2a01', '4f8', '1c17', 'd00d', '', '1'].jo
 const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
 
+// When adding a self-test cell, add its registration and increment this total deliberately.
+const EXPECTED_SELFTEST_CELL_TOTAL = 65;
 const CELL_EXPECTATIONS = new Map([
   ['host-planted', 'primary=1/1 secondary=1/1'],
   ['host-substring', 'primary=0/1 secondary=1/1'],
@@ -1349,6 +1351,15 @@ const SELFTEST_CELLS = [
 ];
 
 export function selftest(context) {
+  if (CELL_EXPECTATIONS.size !== EXPECTED_SELFTEST_CELL_TOTAL) {
+    emit(
+      context,
+      'SELFTEST_CELL_COUNT_ROW',
+      `expected=${EXPECTED_SELFTEST_CELL_TOTAL} registered=${CELL_EXPECTATIONS.size} status=FAIL reason="when adding a self-test cell, add its registration and increment EXPECTED_SELFTEST_CELL_TOTAL deliberately"`,
+    );
+    return false;
+  }
+
   let failed = 0;
   const counts = new Map();
   const passingIds = new Set();

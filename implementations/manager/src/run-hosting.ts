@@ -108,6 +108,7 @@ interface HostedRun {
   readonly epoch: number;
   readonly identity: Identity;
   readonly mediatorIdentity: Identity;
+  placements: readonly { endpoint: string; instanceId: string }[];
   /** Set once the connection is up; a slot reserved before that holds neither. */
   nc?: NatsConnection;
   mediatorNc?: NatsConnection;
@@ -157,6 +158,7 @@ export class RunHosting {
     this.assertReconciled();
     const host = this.host();
     const verdict = host.validate(args.source, args.file);
+    const placements = verdict.ok ? verdict.placements ?? [] : [];
     if (!verdict.ok) {
       // The refusal carries every problem, as the runtime's own records, so a caller (a person at
       // the CLI, an agent at the tool) can fix the program without a second round-trip. The
@@ -168,6 +170,8 @@ export class RunHosting {
         verdict.errors.map((e) => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })),
       );
     }
+    if (placements.length > 1)
+      throw new EpEnvelopeError("unimplemented", "this manager hosts a run with placed spawns on one manager instance only; split the program or drive it locally rather than widening one run credential across hosts");
     // Minted here, never caller-supplied: the records table binds run-id minting to the driver.
     // 128 bits, the width the spec's other minted identifiers carry.
     const runId = `run-${randomBytes(16).toString("hex")}`;
@@ -181,6 +185,7 @@ export class RunHosting {
       fencingToken: 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
       admission,
+      placements,
     });
     return { runId };
   }
@@ -275,6 +280,12 @@ export class RunHosting {
         throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
       if (found.program === undefined)
         throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: no program is recorded for it, so a hosted resume has no source to run; drive it from a terminal with \`cotal run resume ${args.runId} --local --file <program>\``);
+      const verdict = host.validate(found.program.source, found.program.file);
+      if (!verdict.ok)
+        throw new EpEnvelopeError("failed-precondition", `run ${args.runId}: its recorded program no longer validates on this host`);
+      if ((verdict.placements?.length ?? 0) > 1)
+        throw new EpEnvelopeError("unimplemented", `run ${args.runId}: its placed spawns name more than one manager instance, which this host does not widen one run credential across`);
+      slot.placements = verdict.placements ?? [];
     } catch (e) {
       // Nothing was launched: the slot is this call's to give back.
       this.free(slot);
@@ -299,7 +310,11 @@ export class RunHosting {
    *  one minted for that pause's token alone, so the writes reach no other pause on the endpoint.
    *  `by` is the caller as the manager knows them, decided by the serve layer from the
    *  authenticated principal (SPEC 14.5), never read from the request. */
-  async answer(args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string }, by: string): Promise<unknown> {
+  async answer(
+    args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string },
+    by: string,
+    authorize?: (open: RunHostOpenPause) => void | Promise<void>,
+  ): Promise<unknown> {
     const host = this.host();
     const endpoint = args.endpoint ?? this.ctx.endpoint;
     let open: RunHostOpenPause;
@@ -313,6 +328,7 @@ export class RunHosting {
       if ((e as { name?: string }).name === "CheckpointNotOpen") throw new EpEnvelopeError("not-found", (e as Error).message);
       throw e;
     }
+    await authorize?.(open);
     return await this.withOperator({ endpoint, answers: { token: open.token } }, (planes) =>
       host.answer(planes, {
         endpoint,
@@ -396,7 +412,10 @@ export class RunHosting {
     const host = this.host();
     for (const r of inherited) {
       try {
-        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission });
+        const verdict = host.validate(r.source, r.file);
+        if (!verdict.ok) throw new Error("the recorded program no longer validates on this host");
+        if ((verdict.placements?.length ?? 0) > 1) throw new Error("its placed spawns name more than one manager instance");
+        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [] });
       } catch (e) {
         this.ctx.log(`! run ${r.runId} could not be taken back: ${(e as Error).message}`);
       }
@@ -411,7 +430,11 @@ export class RunHosting {
     const auth = this.ctx.auth;
     if (!auth) return;
     for (const run of this.runs.values()) {
-      const pin = { endpoint: this.ctx.endpoint, runId: run.runId, takeoverId: run.takeoverId, instanceId: this.ctx.instanceId, epoch: run.epoch };
+      const pin = {
+        endpoint: this.ctx.endpoint, runId: run.runId, takeoverId: run.takeoverId,
+        instanceId: this.ctx.instanceId, epoch: run.epoch,
+        ...(run.placements.length === 1 ? { placement: { instanceId: run.placements[0]!.instanceId } } : {}),
+      };
       if (run.creds !== undefined && inspectCredHealth(run.creds).state !== "healthy") {
         try {
           run.creds = await mintCreds(auth, run.identity, "run-driver", { runDriver: pin });
@@ -455,10 +478,10 @@ export class RunHosting {
   /** Claim a run's slot SYNCHRONOUSLY: the one place the occupancy rule is decided, with no await
    *  between the check and the set. A held slot is a conflict for every later claimant until the
    *  attempt that holds it ends. */
-  private claim(runId: string): HostedRun {
+  private claim(runId: string, placements: readonly { endpoint: string; instanceId: string }[] = []): HostedRun {
     if (this.runs.has(runId)) throw new EpEnvelopeError("conflict", `run ${runId} is being driven by this manager already`);
     const takeoverId = newTakeoverId();
-    const slot: HostedRun = { runId, takeoverId, epoch: 0, identity: newIdentity(), mediatorIdentity: newIdentity() };
+    const slot: HostedRun = { runId, takeoverId, epoch: 0, identity: newIdentity(), mediatorIdentity: newIdentity(), placements };
     this.runs.set(runId, slot);
     return slot;
   }
@@ -474,10 +497,10 @@ export class RunHosting {
    *  including the two before a drive is attempted, frees a slot whose drive never started. */
   private async launch(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[] },
     claimed?: HostedRun,
   ): Promise<void> {
-    const slot = claimed ?? this.claim(req.runId);
+    const slot = claimed ?? this.claim(req.runId, req.placements ?? []);
     try {
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
       if (this.launching >= MAX_LAUNCHING)
@@ -498,7 +521,7 @@ export class RunHosting {
 
   private async drive(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[] },
     slot: HostedRun,
   ): Promise<void> {
     const { takeoverId, identity, mediatorIdentity } = slot;
@@ -508,9 +531,10 @@ export class RunHosting {
           runDriver: { endpoint: this.ctx.endpoint, runId: req.runId, takeoverId, instanceId: this.ctx.instanceId, epoch: req.epoch },
         })
       : undefined;
+    const placement = slot.placements.length === 1 ? { instanceId: slot.placements[0]!.instanceId } : undefined;
     const mediatorCreds = auth
       ? await mintCreds(auth, mediatorIdentity, "run-mediator", {
-          runMediator: { endpoint: this.ctx.endpoint, runId: req.runId, takeoverId, instanceId: this.ctx.instanceId, epoch: req.epoch },
+          runMediator: { endpoint: this.ctx.endpoint, runId: req.runId, takeoverId, instanceId: this.ctx.instanceId, epoch: req.epoch, ...(placement !== undefined ? { placement } : {}) },
         })
       : undefined;
     // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from

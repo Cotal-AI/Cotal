@@ -1,5 +1,34 @@
 # @cotal-ai/connector-opencode
 
+## 0.54.0
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4668927: The OpenCode connector's AG-UI emitter now waits for the mesh link before it starts. The shim creates
+  the native session before the plugin's endpoint binds, the emitter started from that first event
+  against an endpoint that had not started, and its holder failed terminally, so every armed OpenCode
+  session published nothing for its whole life with one stderr line as the only record. The emitter
+  now awaits the same bounded connection wait the Claude Code connector takes, and past its window it
+  fails into the holder's terminal error rather than hanging the event handler.
+- 37737cc: Refuse an explicit OpenCode model pin before joining the mesh when the running server's provider listing does not serve that model, even if the CLI catalog advertises it.
+
+## 0.50.1
+
 ## 0.50.0
 
 ### Minor Changes

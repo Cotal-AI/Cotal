@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   CotalEndpoint,
@@ -26,6 +27,7 @@ import {
   isReachable,
   mintLifecycleUid,
   principalKey,
+  presenceBucket,
   setupSpaceStreams,
   type CotalMessage,
   type Delivery,
@@ -146,6 +148,7 @@ try {
 
   const aliceActor = `alice_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const bobActor = `bob_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  process.env.COTAL_ENVIRONMENT = "env:core-smoke";
   const alice = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
@@ -155,6 +158,7 @@ try {
     heartbeatMs: 300,
     ttlMs: 1_500,
   });
+  delete process.env.COTAL_ENVIRONMENT;
   const bob = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
@@ -166,6 +170,8 @@ try {
   });
   watchEndpointErrors("alice", alice);
   watchEndpointErrors("bob", bob);
+  const bobWarnings: string[] = [];
+  bob.on("warning", (error: Error) => bobWarnings.push(error.message));
 
   const bobReceived: Array<{ kind: string; text: string }> = [];
   let bobMentions: string[] | undefined;
@@ -187,11 +193,51 @@ try {
     ),
   );
 
+  const bindingProbe = await connect({ servers: SERVERS });
+  try {
+    const presenceKv = await new Kvm(bindingProbe).open(presenceBucket(SPACE));
+    await presenceKv.put(
+      "local.binding_probe",
+      JSON.stringify({
+        card: { id: "local.someone_else", name: "spoof", kind: "agent" },
+        status: "idle",
+        ts: Date.now(),
+      }),
+    );
+    check(
+      "the roster drops and diagnoses a presence row whose card id differs from its KV key",
+      await until(() => bob.presenceBindingDropCount === 1)
+        && !bob.getRoster().some((peer) => peer.card.name === "spoof")
+        && bobWarnings.some((message) => message.includes("does not match its KV key")),
+      { roster: bob.getRoster(), warnings: bobWarnings, drops: bob.presenceBindingDropCount },
+    );
+    await presenceKv.delete("local.binding_probe");
+  } finally {
+    await bindingProbe.close();
+  }
+
   await alice.setStatus("working");
+  await alice.setCondition({ code: "rate_limit", source: "native_rate_limit", since: 123 });
   check(
     "presence status propagates",
     await until(() => bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.status === "working"),
     bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.status,
+  );
+  check(
+    "presence condition and opaque environment reference propagate",
+    await until(() => {
+      const presence = bob.getRoster().find((peer) => peer.card.id === alice.card.id);
+      return presence?.condition?.code === "rate_limit"
+        && presence.condition.source === "native_rate_limit"
+        && presence.condition.since === 123
+        && presence.environment === "env:core-smoke";
+    }),
+    bob.getRoster().find((peer) => peer.card.id === alice.card.id),
+  );
+  await alice.setCondition(null);
+  check(
+    "presence condition clears explicitly",
+    await until(() => bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.condition === undefined),
   );
 
   const sent = await alice.multicast("hello team", {
@@ -386,7 +432,7 @@ try {
   if (brokerExited && storeRemoved) releaseBroker();
 }
 
-const EXPECTED_BEFORE_COUNT = 21;
+const EXPECTED_BEFORE_COUNT = 24;
 check(
   `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
   pass + fail === EXPECTED_BEFORE_COUNT,

@@ -268,6 +268,7 @@ function mustHaveRun(r: Run, what: string): void {
 }
 const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
+let stoppedCleanly = false;
 try {
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -289,7 +290,7 @@ try {
   const B = await instrument([{ command: "inspect" }, { command: "input", owner: true }]);
 
   console.log("1. the fixture witnesses reality: a live seat whose sink is EMPTY before anything is typed");
-  const typist = await spawnLive(A.call, { name: "typist", agent: "input-echo", cwd: repoRoot });
+  const typist = await spawnLive(A.call, { name: "typist", agent: "input-echo", cwd: repoRoot, events: false });
   // Without this, every byte-exact cell below could pass on a broken stub: an absence assertion
   // ("no trailing \r") is satisfied by a sink that never receives anything at all.
   check("the spawned seat's sink starts empty (so an absence below means absence, not a dead stub)",
@@ -358,7 +359,7 @@ try {
     const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
     const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
     const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds, tls: false }), maxReconnectAttempts: 0 });
-    const opseat = await spawnLive(A.call, { name: "opseat", agent: "input-echo", cwd: repoRoot });
+    const opseat = await spawnLive(A.call, { name: "opseat", agent: "input-echo", cwd: repoRoot, events: false });
     check("fixture: A spawned the seat, so the instrument is NOT its spawner", opseat.name.startsWith("opseat"), opseat.name);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 15_000 });
     check("the instrument resolves `input` generically off the served document (digest-verified recompile)",
@@ -412,7 +413,7 @@ try {
     // unmodified, and the forcing is undone immediately. It is graded here rather than left to a
     // reasoned argument because "refuses to type into a dead seat" is the one thing an external UI
     // must be able to rely on when a seat dies mid-session.
-    const deadseat = await spawnLive(A.call, { name: "deadseat", agent: "input-echo", cwd: repoRoot });
+    const deadseat = await spawnLive(A.call, { name: "deadseat", agent: "input-echo", cwd: repoRoot, events: false });
     const managed = M.agents.get(deadseat.name);
     if (!managed) throw new Error(`FIXTURE FAILURE: ${deadseat.name} is live in ps but absent from the manager's slot map`);
     const realStatus = managed.handle.status.bind(managed.handle);
@@ -436,7 +437,7 @@ try {
     // and every layer between the flag and the subject (flag parsing, the seat-locality pin, the
     // instrument mint, the alias -> triple resolution, the reach choice) is invisible to cells 2-7:
     // a defect in any of them leaves those green and the product broken.
-    const cliseat = await spawnLive(A.call, { name: "cliseat", agent: "input-echo", cwd: repoRoot });
+    const cliseat = await spawnLive(A.call, { name: "cliseat", agent: "input-echo", cwd: repoRoot, events: false });
     const run = await cotal(["input", "--name", cliseat.name, "--text", "/compact", "--space", space]);
     mustHaveRun(run, "`cotal input`");
     const out = strip(run.out);
@@ -450,7 +451,7 @@ try {
     // The receipt is derived from the runtime acknowledgement, not from `data`. A dropped write that
     // resolves without an accepted-byte count is the mutation control from issue #1333: before the
     // fix this exited 0 and printed `sent 9 bytes` while the child received nothing.
-    const dropseat = await spawnLive(A.call, { name: "dropseat", agent: "input-echo", cwd: repoRoot });
+    const dropseat = await spawnLive(A.call, { name: "dropseat", agent: "input-echo", cwd: repoRoot, events: false });
     const dropped = M.agents.get(dropseat.name);
     if (!dropped?.handle.write) throw new Error(`FIXTURE FAILURE: ${dropseat.name} has no writable managed handle`);
     const realWrite = dropped.handle.write;
@@ -576,7 +577,7 @@ try {
     // boundaries would be grading the child's scheduler and would flake in CI. That the SEAT then
     // submits on the call that sent it is graded end to end, on a real jcode seat, by
     // `implementations/manager/smoke/acceptance-1649-e2e.mjs`.
-    const shapeseat = await spawnLive(A.call, { name: "typist", agent: "input-echo", cwd: repoRoot });
+    const shapeseat = await spawnLive(A.call, { name: "typist", agent: "input-echo", cwd: repoRoot, events: false });
     const managed = M.agents.get(shapeseat.name);
     if (!managed?.handle.write) throw new Error(`FIXTURE FAILURE: ${shapeseat.name} has no writable managed handle`);
     const realWrite = managed.handle.write.bind(managed.handle);
@@ -633,8 +634,21 @@ try {
 
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
-  await mgr.stop();
+  // WITH agents, and nothing less (#1712). `stop()` without the flag is the DETACHED mode: it
+  // releases only this manager's local custody handle and exits, which tells no custodian
+  // anything. Every seat this suite spawned survived that as a live detached custodian holding
+  // ~65 MB, and the CI shard's leak check failed the suite for it (all cells green). `withAgents`
+  // hard-stops each child and AWAITS the runtime's exit proof, so the custodians settle and remove
+  // their own records before this process exits - the same teardown every sibling suite that
+  // spawns pty seats already uses.
+  await mgr.stop({ withAgents: true });
+  stoppedCleanly = true;
 } finally {
+  // A cell that threw never reached the stop above, and this suite still holds live seats it
+  // spawned. Stop them best-effort so a FAILING run does not also leak custodians (the CI shard
+  // kills them, but this suite reaps its own); caught so the original failure is what the run
+  // reports, exactly as a cell's own error must not be masked by teardown noise.
+  if (!stoppedCleanly) await mgr.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

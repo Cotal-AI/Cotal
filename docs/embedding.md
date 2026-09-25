@@ -59,7 +59,7 @@ are marked; import them with `import type`.
 | `createSpaceAuth(space)` | the one-space convenience: broker trust + one account in a single composed bundle. |
 | `setupSpaceStreams({ servers, space, creds })` | create the space's JetStream streams. |
 | `ensureDefaultDeliveryClass({ servers, space, creds?, deliveryClass })` | write the space's default delivery class at creation so it is wire-discoverable (SPEC section 4). |
-| `serverConfig(broker, spaces, { storeDir, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required and `extraAccounts` preloads the auth-callout account. |
+| `serverConfig(broker, spaces, { storeDir, maxFileStore?, extraAccounts?, port?, host? })` | render the broker config: one operator, N space accounts. `storeDir` is required, `maxFileStore` caps JetStream file storage in bytes (omitted, nats-server's dynamic default applies), and `extraAccounts` preloads the auth-callout account. |
 | `mintCreds(auth, identity, profile, opts?)` | mint a scoped cred for any `Profile`. |
 | `mintMembershipObserverCreds`, `mintConnectionEvictorCreds` | mint the membership/eviction scoped creds. |
 | `provisionAgent`, `provisionAgentDurables` | create a principal's bind-only durables. |
@@ -128,7 +128,10 @@ actor ledger are **not** store-injected: `runAuthService` resolves them under
 `userAuthStateDir(findCotalRoot(), space)`, a path relative to the process working directory, so a
 host provisions those into that exact directory (neither `store` nor `COTAL_HOME` selects it). It
 also writes an ephemeral `auth-service.json` discovery file there that carries the live exchange
-capability.
+capability. That file appears only after every plane is bound, so waiting on it is the readiness
+signal: a host that also passes the daemon's pid to the provider's `ready()` gets a process-bound
+wait. The wait extends past the base timeout while that pid is alive, up to a fixed bound, and it
+ends at once when the pid exits.
 
 ```ts
 import { runAuthService } from "@cotal-ai/auth";
@@ -322,8 +325,9 @@ const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
 ```
 
 Rendering the broker config for a user-auth space is `serverConfig(broker, spaces, { storeDir,
-extraAccounts })`, where `extraAccounts` must include the callout account from `createCalloutAuth` so
-the auth-service has a broker account to answer on. That account never shares the data account.
+maxFileStore?, extraAccounts })`, where `extraAccounts` must include the callout account from
+`createCalloutAuth` so the auth-service has a broker account to answer on. That account never shares
+the data account. `maxFileStore` is an optional positive integer byte cap; any other value throws.
 
 Broker trust and space accounts are separate authorities: `createBrokerAuth` mints the one
 operator + system account a broker trusts, `createSpaceAccountAuth(broker, space)` signs each

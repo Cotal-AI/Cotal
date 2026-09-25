@@ -31,7 +31,7 @@ Task dispatch:
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
 | Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
-| Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | `cotal console` / `cotal web` |
+| Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | `cotal web` / `cotal console` |
 | Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
@@ -53,7 +53,7 @@ For operators running and watching a mesh:
 |---|---|
 | [Run a mesh](run-a-mesh.md) | How do I operate the local stack (modes, status, multiple meshes, history)? |
 | [Define a team](define-a-team.md) | How do I declare a whole team in one `cotal.yaml` and launch it? |
-| [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what (terminal console, web dashboard)? |
+| [Watch a mesh](watch-a-mesh.md) | How do I see who is doing what (browser dashboard, terminal console)? |
 | [Deploy](deploy.md) | How do I run agent teams against an external broker? |
 | [Upgrading](UPGRADING.md) | How do I upgrade a deployment that already exists, and in what order? |
 | [Examples](examples.md) | Which runnable examples exist? |
@@ -124,6 +124,8 @@ For people changing how Cotal is built or shipped (not needed to use it).
 | [Release](release.md) | How we version and publish. |
 | [Substrate stability](stability.md) | What can I build a product on, and what will the v0.4 cut break? |
 | [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
+| [Signer isolation](design/signer-isolation.md) | How the account signing seed moves off the manager uid (design, not shipped). |
+| [Tasks endpoint](design/tasks-endpoint.md) | How a tasks provider joins a space as an ordinary endpoint (design, not shipped). |
 
 Each runnable example documents itself in its own `examples/*/README.md`. Working
 build-plans and research live in the private `.internal/` submodule, not here.

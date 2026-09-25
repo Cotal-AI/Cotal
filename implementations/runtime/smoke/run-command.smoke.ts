@@ -25,11 +25,11 @@ import { jetstreamManager, jetstream } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
-  replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey,
+  replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
-import { runWorkflow, journalOutcomeOf } from "../src/index.js";
+import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -150,6 +150,20 @@ const holdAtCheckpoint = async (): Promise<{ rid: string; open: boolean; driven:
   return { rid, open, driven };
 };
 
+/** Answer a checkpoint the way the cells above do, with one bounded retry on the arming race: the
+ *  journal's pending row can be readable before the checkpoint's KV spec record is, and an answer
+ *  that lands in that window is refused with "no record on endpoint" rather than accepted. The
+ *  record is the driver's own write and lands within milliseconds, so a single retry after a beat
+ *  resolves it; a pause that genuinely never armed keeps refusing and fails the cell. */
+const answerCheckpoint = async (rid: string): Promise<true | Error> => {
+  for (let attempt = 0; ; attempt += 1) {
+    const r = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+    if (r === undefined) return true;
+    if (attempt >= 5 || !r.message.includes("no record on endpoint")) return r;
+    await wait(200);
+  }
+};
+
 // ── 1) start: a pure program completes through the command, under a minted id ────────────────
 let P = "";
 {
@@ -206,6 +220,19 @@ let P = "";
   c("a failed step keeps its status and error code",
     journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }) === "failed (L4000)",
     journalOutcomeOf({ ...base, status: "failed", error: { code: "L4000", kind: "checkpoint", message: "no" } }));
+  const answered = journalStepRow(1, { ...base, result: { outcome: "resolved", value: 42, by: "operator", artifact: "artifact://proof", answerId: "answer-1", at: 123 } });
+  c("a resolved pause row carries only the accepted answer facts the journal holds",
+    answered.answer?.value === 42 && answered.answer.by === "operator" && answered.answer.artifact === "artifact://proof"
+      && answered.answer.answerId === "answer-1" && answered.answer.at === 123,
+    answered.answer);
+  const expired = journalStepRow(2, { ...base, result: { outcome: "expired", value: "stale", by: "nobody", answerId: "answer-expired", at: 456 } });
+  c("an expired pause row carries no answer",
+    expired.outcome === "expired" && expired.answer === undefined,
+    expired);
+  const ordinary = journalStepRow(3, { ...base, kind: "notify", result: { outcome: "resolved", value: 99, by: "not-an-answer", answerId: "answer-2", at: 789 } });
+  c("a non-pause step cannot expose answer-shaped result fields",
+    ordinary.answer === undefined,
+    ordinary);
 }
 
 // ── 4) resume: a completed run replays to the same completion ────────────────────────────────
@@ -249,7 +276,7 @@ let P = "";
     captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("asks")).join(" | "));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
-  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' })
+  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"', artifact: "artifact://run-command" })
     .then(() => true, (e: Error) => e);
   c("answer presents as the arming holder and is accepted", answered === true, answered);
   c("and reports the resumed settle", captured().includes('"settle": "resumed"'), captured());
@@ -265,6 +292,10 @@ let P = "";
   c("the answered checkpoint renders resolved, not the settled status ok",
     captured().includes("/checkpoint:approve#0  resolved"),
     captured().split("\n").filter((l) => l.includes("checkpoint")).join(" | "));
+  c("the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
+    captured().includes('answered    value="yes"') && captured().includes('by="smoke"')
+      && captured().includes('artifact="artifact://run-command"') && captured().includes('answerId=') && captured().includes('at='),
+    captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("answered")).join(" | "));
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -475,9 +506,77 @@ let P = "";
     stateOf(psRow(eid)) === "completed" && !captured().includes(`${EP}/${eid}: revoked by`), captured());
 }
 
+// ── 12) migrate: the check over an edited program, read-only, through the command ────────────
+//
+// #1529: `migrateRun` existed and nothing could call it — the verb table refused `migrate` as
+// usage while `resume --file` named "a migration or a fork" as the remedy for an edited program.
+// The verb is READ-ONLY: it runs the check and prints the report, and the commit side
+// (`commitMigration`) stays out; the printed report says so itself. Both cases below ride runs
+// this suite already drove to shape: an answered checkpoint whose decision the edit keeps (the
+// walk accounts for everything, admissible), and one whose decision the edit DROPS (the L5004
+// orphan the table exists to refuse).
+{
+  // THE EXIT SENTINEL FIRST, so a refusal that ends the process is graded rather than taken: every
+  // gate in this command rides `process.exit(1)`, and without the swap the suite dies at the first
+  // one instead of failing the cell. Armed for the whole block; `console.error` is NOT swapped
+  // here, so the suite's own ✗ FAIL lines still reach stderr.
+  class Exited extends Error { constructor(readonly code: number | string | null | undefined) { super(`exit ${code}`); } }
+  const origExit = process.exit;
+  process.exit = (((code?: number | string | null) => { throw new Exited(code); }) as typeof process.exit);
+  try {
+  // The admissible case first. `holdAtCheckpoint` + an answer leaves a run whose journal holds one
+  // recorded decision; the edit is the recorded source verbatim, so every step survives it.
+  reset();
+  const { rid, open: paused, driven } = await holdAtCheckpoint();
+  const answered = await answerCheckpoint(rid);
+  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "held")]);
+  c("the run the admissible edit migrates completed with its decision recorded", paused && answered === true && outcome === "completed", { answered: String(answered), outcome });
+  const migrated = await wf(["migrate", rid], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
+  c("an admissible edit prints the report and exits 0",
+    migrated === undefined && process.exitCode === undefined && captured().includes("admissible"),
+    { err: migrated instanceof Error ? migrated.message.slice(0, 120) : "", exit: process.exitCode, out: captured().slice(0, 200) });
+  c("the report says the walk's count and the hash it would move to",
+    /accounts for \d+ journal row/.test(captured()) && /moves to sha256:[0-9a-f]/.test(captured()), captured().split("\n").slice(0, 2).join(" | "));
+  c("and the one line that names what a commit would file, and that this filed nothing",
+    captured().includes("a commit would file this report") && captured().includes("filed nothing"), captured().split("\n").at(-1) ?? "");
+  // THE STORE READS EMPTY: the check decides, it does not file. Read back through the same core
+  // reader the migrate smoke uses, under the run-operator credential this suite already holds.
+  const filed = await asOperator(rid, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid)).catch(() => undefined);
+  c("the migration store holds no record afterward", filed !== undefined && filed.length === 0, filed);
+
+  // The rejection: an edit that drops the RECORDED DECISION. `holdAtCheckpoint` again, answered,
+  // then the edit removes the checkpoint line entirely — the orphan is L5004 with the step named.
+  const { rid: rid2, open: paused2, driven: driven2 } = await holdAtCheckpoint();
+  void paused2;
+  await answerCheckpoint(rid2).catch(() => undefined);
+  await Promise.race([driven2, wait(15_000)]);
+  const DROP = join(sd, "migrate-drop.cotal.js");
+  writeFileSync(DROP, 'log("nothing left");\n');
+  reset();
+  const refused = await wf(["migrate", rid2], { file: DROP }).then(() => undefined, (e: Error) => e);
+  const orphanLine = captured().split("\n").find((l) => l.includes("checkpoint:approve")) ?? "";
+  c("an edit that orphans a recorded decision prints that step with its code and is not admissible",
+    refused === undefined && captured().includes("not admissible") && orphanLine.includes("rejected") && orphanLine.includes("L5004"),
+    { exit: process.exitCode, orphanLine, err: refused instanceof Error ? refused.message.slice(0, 120) : "" });
+  c("and the exit status is non-zero, because the check refused", process.exitCode === 1, process.exitCode);
+  c("the refusal's why names the repair the table offers", captured().includes("--discard-approvals"), captured().split("\n").find((l) => l.includes("person actually made")) ?? "");
+  const filed2 = await asOperator(rid2, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid2)).catch(() => undefined);
+  c("...and the refused check filed nothing either", filed2 !== undefined && filed2.length === 0, filed2);
+
+  // A commit-side override is refused BY NAME, before any read of the run; the sentinel from the
+  // head of this block converts the gate's exit into the value graded here, and `withStderr`
+  // captures the sentence the way block 10 captures a ps diagnostic.
+  reset();
+  const override = await withStderr(() => wf(["migrate", rid2], { file: DROP, "discard-approvals": true })).then(() => undefined, (e: Error) => e);
+  c("a commit-side override is refused by name",
+    override instanceof Exited && ERRS.some((l) => l.includes("--discard-approvals") && l.includes("only checks")),
+    override instanceof Error ? override.message.slice(0, 160) : ERRS);
+  } finally { process.exit = origExit; }
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 45;
+const DECLARED = 59;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

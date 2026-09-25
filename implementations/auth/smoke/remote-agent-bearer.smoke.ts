@@ -31,10 +31,12 @@ if (SUBCOMMAND === "auth-service" || SUBCOMMAND === "agent-bearer") {
 }
 
 const { CotalEndpoint, chatSubject, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid,
-  newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts } = await import("@cotal-ai/core");
+  newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts, epAuthBucket, recordsBucket,
+  recordSpecKey, recordStatusKey, RECORD_KINDS } = await import("@cotal-ai/core");
+const { Kvm } = await import("@nats-io/kv");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
-const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, grantActor, grantManagedActor, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
+const { authDir, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { cotalAuthProvider, grantActor, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
 const { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } = await import("jose");
 const { pickFreePort } = await import("./_free-port.js");
 
@@ -42,6 +44,12 @@ type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type Delivery = import("@cotal-ai/core").Delivery;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Readiness budget for the fixture's own auth-service child. #1534 measured a contended CI runner
+// where the child outlived the old fixed wait (100 fetches x 100ms = 10s) and the loop fell through
+// silently into a misattributed 502; the provider's own readiness contract budgets 15s
+// (READY_TIMEOUT_MS in src/provider.ts), which covers that observed worst case. One budget, both
+// surfaces; no environment override.
+const AUTH_SERVICE_READY_TIMEOUT_MS = 15_000;
 const until = async (fn: () => boolean, ms = 8_000) => {
   const end = Date.now() + ms;
   while (!fn() && Date.now() < end) await wait(50);
@@ -170,6 +178,20 @@ try {
   teardownOnSignal(broker);
   for (let i = 0; i < 50 && !(await isReachable(SERVER)); i++) await wait(100);
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const managerInstanceId = mintLifecycleUid();
+  const managerServe = newIdentity();
+  saveManagerInstanceIdentity(serverRoot, SPACE, { instanceId: managerInstanceId, serveIdentity: managerServe });
+  {
+    const execId = newIdentity();
+    const execNc = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintCreds(auth, execId, "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: managerInstanceId } }), tls: false }) });
+    const kvm = new Kvm(execNc);
+    const records = await kvm.open(recordsBucket(SPACE));
+    const authKv = await kvm.open(epAuthBucket(SPACE));
+    const spec = await records.put(recordSpecKey(RECORD_KINDS.svc, ["manager", managerInstanceId]), new TextEncoder().encode(JSON.stringify({ endpoint: "manager", owner: "local", clusterDigests: [`sha256:${"a".repeat(64)}`], protocol: { v: 1 } })));
+    await records.put(recordStatusKey(RECORD_KINDS.svc, ["manager", managerInstanceId]), new TextEncoder().encode(JSON.stringify({ epoch: 1, state: "ready", observedSpecRevision: spec })));
+    await authKv.put(`epgate.manager.${managerInstanceId}`, new TextEncoder().encode(JSON.stringify({ state: "open", generation: 1, processEpoch: 1, registrationRevision: spec, nameAuthorityRevision: 0, principal: `local.${managerServe.id}` })));
+    await execNc.drain();
+  }
   grantActor(serverDir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], lifecycleUid });
   const secret = newActorToken();
   grantManagedActor(serverDir, { owner: OWNER, actor: ACTOR, scope: ["role:worker"], allowSubscribe: ["general"],
@@ -180,10 +202,17 @@ try {
   authService = spawn(process.execPath, [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER,
     "--exchange-public-port", String(publicPort), "--exchange-public-url", exchangeBase],
   { cwd: serverRoot, env: cleanEnv, stdio: "ignore" });
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(`http://127.0.0.1:${publicPort}/health`)).ok) break; } catch { /* wait */ }
-    await wait(100);
-  }
+  // Wait on the signal the service itself emits: the discovery file in the child's state dir
+  // (serverDir — cwd serverRoot, so findCotalRoot resolves there), its pid alive, and /health on
+  // the recorded URL answering 200. That is the provider's shipped readiness contract, polled at
+  // its own cadence; an exhausted budget throws naming the auth service and the last observed
+  // reason, so the proxy below is never built over a port nothing is listening on. The cell below
+  // drives THIS wait (against a state dir no service writes to) so the mutation fixture can prove
+  // a silently-swallowed budget reddens it.
+  const waitForAuthService = async (dir: string, timeoutMs: number): Promise<void> => {
+    await prepared.service.ready({ dir, timeoutMs });
+  };
+  await waitForAuthService(serverDir, AUTH_SERVICE_READY_TIMEOUT_MS);
 
   proxy = createHttpsServer({ cert: readFileSync(join(pki, "leaf.pem")), key: readFileSync(join(pki, "leaf.key")) }, (req, res) => {
     const chunks: Buffer[] = [];
@@ -211,6 +240,73 @@ try {
   witness.on("error", () => {}); await witness.start();
 
   cell("the real user-auth broker is reachable", async () => assert.equal(await isReachable(SERVER), true));
+  cell("the fixture waits on the discovery file the service writes only when every plane is bound", () => {
+    // The accept control: the wait above returned against serverDir, so the file exists NOW, its pid
+    // is the spawned child, and /health answers 200 on the recorded URL (the provider checked all
+    // three before returning — these cells read back what it observed, pinning the signal itself).
+    const info = loadAuthServiceInfo(serverDir);
+    assert.ok(info, "no discovery file in the service state dir after ready() returned");
+    assert.equal(info.pid, authService!.pid);
+    assert.equal(info.publicUrl, exchangeBase);
+  });
+  cell("a service that never becomes ready fails the wait loudly, naming the auth service", async () => {
+    // Same input class as the #1534 reproduction (a child that never binds — here an empty state
+    // dir no service writes to), with a short budget passed explicitly to THIS call so the cell
+    // fails in ~1s on any runner. The exhausted budget must THROW naming the auth service and the
+    // last observed reason, never fall through into a misattributed 502 at the exchange cell.
+    const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "never-ready-"));
+    await assert.rejects(
+      () => waitForAuthService(dirNoServiceWritesTo, 1_000),
+      /auth service not ready after 1000ms .*the auth service has not written its discovery file yet/,
+    );
+  });
+  cell("the wait bound to a live pid that never binds refuses at the BOUND, not the base clock, naming the pid", async () => {
+    // #1931's boundary: a daemon that is provably ALIVE but never finishes binding (a wedged
+    // authority-plane open) must not be followed forever, and must not be misreported at the base
+    // clock while it lives. The live pid is THIS smoke's own helper process; the state dir is one
+    // no daemon writes, so readiness can only end by bound or by the pid's exit.
+    //
+    // The elapsed clock is load-bearing, not decoration: the refusal message names maxWaitMs
+    // verbatim, so a mutant that drops the pid-bound deadline (deadline = base clock) still prints
+    // "after 1600ms" — only the measured wait separates 1600ms (kept the bound) from ~800ms (gave
+    // up at the base clock while the pid lived, the exact #1931 misreport).
+    const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "bound-"));
+    const held = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30);"], { stdio: "ignore" });
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => prepared.service.ready({ dir: dirNoServiceWritesTo, timeoutMs: 800, maxWaitMs: 1_600, pid: held.pid }),
+        /auth service not ready after 1600ms - the process \(pid \d+\) is alive and still starting/,
+      );
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed >= 1_400, `refused after ${elapsed}ms; the wait must run to the 1600ms bound, not the 800ms base clock`);
+    } finally {
+      held.kill("SIGKILL");
+    }
+  });
+  cell("the wait bound to a pid that EXITS ends at once with the exited reason", async () => {
+    // The other boundary: a dead daemon can never become ready, so the wait ends the moment the
+    // pid is gone — well before the base clock — and the refusal says the process exited.
+    const dirNoServiceWritesTo = mkdtempSync(join(serverRoot, "exited-"));
+    const shortLived = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 300);"], { stdio: "ignore" });
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => prepared.service.ready({ dir: dirNoServiceWritesTo, timeoutMs: 60_000, maxWaitMs: 60_000, pid: shortLived.pid }),
+        /auth service not ready - the process \(pid \d+\) exited before becoming ready/,
+      );
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 15_000, `the exited-pid wait took ${elapsed}ms; it must end at the exit, not at a clock`);
+    } finally {
+      shortLived.kill("SIGKILL");
+    }
+  });
+  cell("a live pid that BECOMES ready inside the bound resolves (slow-but-alive is accepted)", async () => {
+    // The acceptance the bound must not over-refuse: the real daemon's own discovery file — the
+    // service IS ready — resolves immediately even with the pid of the (live) daemon bound in.
+    const out = await prepared.service.ready({ dir: serverDir, timeoutMs: 800, maxWaitMs: 2_000, pid: authService!.pid });
+    assert.equal(typeof out.url, "string");
+  });
   cell("the real public exchange is ready behind verified HTTPS", async () => assert.equal((await tlsGet(exchangeBase, "health")).status, 200));
   cell("the managed actor row uses the already-issued actorToken and lifecycle", () => {
     assert.equal(statSync(tokenPath).mode & 0o777, 0o600); assert.equal(readFileSync(tokenPath, "utf8"), secret.actorToken);
@@ -231,6 +327,26 @@ try {
   });
   cell("the public exchange receives exact agent proof with NO capability header", () => {
     const req = exchangeRequests[0]; assert.equal(req.authorization, undefined); assert.deepEqual(req.body, { owner: OWNER, actor: ACTOR, actorToken: secret.actorToken });
+  });
+  cell("--manager-call prints one raw bearer line, binds the selected instance, and leaves health untouched", async () => {
+    writeFileSync(healthPath, "seat-health");
+    const result = await execBearer([...bearerArgv(), "--manager-call", "--manager-instance", managerInstanceId]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim().split("\n").length, 1);
+    const payload = await verifyFrom(exchangeBase, result.stdout.trim());
+    const act = payload.act as { view?: string; managerInstanceId?: string };
+    assert.equal(act.view, "manager-caller");
+    assert.equal(act.managerInstanceId, managerInstanceId);
+    assert.equal(readFileSync(healthPath, "utf8"), "seat-health");
+    const req = exchangeRequests.at(-1)!;
+    assert.deepEqual(req.body, { owner: OWNER, actor: ACTOR, actorToken: secret.actorToken, view: "manager-caller", managerInstanceId });
+  });
+  cell("--manager-instance refuses an empty selector instead of silently defaulting", async () => {
+    const before = exchangeRequests.length;
+    const result = await execBearer([...bearerArgv(), "--manager-call", "--manager-instance", ""]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /manager instance/);
+    assert.equal(exchangeRequests.length, before);
   });
   cell("the remote bearer verifies against the advertised public JWKS with exact principal and lifecycle", async () => {
     const payload = await verifyFrom(exchangeBase, firstBearer); assert.equal(payload.sub, OWNER);
@@ -288,10 +404,13 @@ try {
     const argv = bearerArgv().filter((v, i, a) => v !== "--exchange-url" && a[i - 1] !== "--exchange-url"); argv.push("--dir", clientDir);
     const result = await execBearer(argv); assert.notEqual(result.code, 0); assert.match(result.stderr, /auth service.*not running/i);
   });
-  cell("plain HTTP is refused for attacker names AND genuine loopback literals — there is no exception", async () => {
-    for (const base of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com",
-      "http://127.0.0.1:9", "http://0177.0.0.1:9", "http://2130706433:9", "http://[::ffff:127.0.0.1]:9"]) {
+  cell("plain HTTP is refused for attacker names and accepted only for loopback literals", async () => {
+    for (const base of ["http://127.evil.com", "http://127.0.0.1.nip.io", "http://127.com", "http://localhost:9"]) {
       const result = await execBearer(bearerArgv(base)); assert.notEqual(result.code, 0); assert.match(result.stderr, /must be https/i);
+    }
+    for (const base of ["http://127.0.0.1:9", "http://0177.0.0.1:9", "http://2130706433:9", "http://[::ffff:127.0.0.1]:9"]) {
+      const result = await execBearer(bearerArgv(base)); assert.notEqual(result.code, 0);
+      assert.doesNotMatch(result.stderr, /must be https/i); assert.match(result.stderr, /did not answer|fetch failed|ECONNREFUSED/i);
     }
   });
 

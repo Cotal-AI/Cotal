@@ -1,5 +1,57 @@
 # @cotal-ai/connector-core
 
+## 0.54.0
+
+### Minor Changes
+
+- 34beea1: Route user-auth manager calls through a short-lived, instance-bound control credential. Discovery and invocation address the same authorized manager while the agent's standing connection, credentials and conversation remain unchanged. Managed launches retain their manager selection across launch and resume. Static and open mesh routing is unchanged. Confirm the standing goal-progress subscription at the broker before submitting on the separate control connection, so fast terminal events cannot outrun the subscription. Recover accepted goal results through the manager's caller-scoped `goal-result` command after connection replacement, without repeating the mutation or granting clients raw JetStream reads. Followed calls now require a compatible manager before submission; update the issuer, participant manager and client together. Stopping a caller cancels its observation without cancelling the accepted goal. Retain Linux custody records across clean child exit so retirement can prove process identity and finish cleanup even after the custodian removes its file; socket loss alone never frees the alias.
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 6595c48: The console can drive the mesh as well as watch it. Every operator action (kill, spawn, status, purge, channel delete, attach) rides the CLI's own per-action control path over the endpoint rails, never the observer, using only the manager commands that already exist; `a` attaches through the full `cotal attach` loop in place; on an open mesh the operator's first send starts a presence-only peer under the observer's card so agents can reply, with concurrent sends sharing that startup result; multi-manager reads keep silent instances separate from reachable error replies; the topology lens overlays the broker-authoritative membership feed and says live, stale, traffic-only, or unreadable; channel tabs carry unread badges, the roster tags each agent's harness, the agent detail lists runs, model, and skills, and the status bar draws a 60-second activity sparkline.
+
+### Patch Changes
+
+- 794acb1: The version-exact docs bundle `cotal_docs` serves is generated during the connector's build instead of being committed. Any two branches that regenerated the same region of the checked-in artifact conflicted in it while their source pages merged cleanly, so editing a docs page now means editing the page and nothing else. `check:docsbundle` can no longer diff a committed file, so it regenerates into a temporary path and refuses a generator failure or a hollow bundle, which keeps a release unable to ship empty docs; the upgrade-section gate regenerates the same way instead of reading the tree behind an `existsSync` that silently dropped its shipped-copy check when the file was absent. Fixes #1713.
+- 9269fc2: Keep a jcode seat with events enabled alive through a mesh rebuild window. Previously an event
+  flush or run close that ran while the endpoint was reconnecting read `max_payload` off a connection
+  that was not there, and the seat exited 1 with `AG-UI emitter stopped: ... max_payload is only
+known while connected`. `AguiEmitterHolder` takes an optional `waitLive` hook that a queued step
+  awaits before it measures and publishes. The jcode host waits on both the Cotal bind and the raw
+  transport, so the queued records publish in order once the connection is live, with none dropped or
+  duplicated. A seat stopped during the outage still exits, and its unpublished records stay in
+  the journal behind the stored cursor. Every other emitter failure stays terminal. Connectors that do
+  not pass the hook behave as before. Fixes #1868.
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- 491e923: The public user-auth exchange now mints `channel-writer` and `channel-purger` for a signed-in
+  human whose ledger row carries `admin`, so a remote owner can run `cotal channels set/default`
+  and a dashboard channel delete without a loopback capability. `admin`, `purger`, `deployer`, and
+  `manager-service` stay loopback-only. A managed-agent secret exchange still never mints a view.
+  This is not full remote channel management: `cotal web` still asks for the read-only admin view
+  at startup.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+
+## 0.50.1
+
 ## 0.50.0
 
 ### Minor Changes

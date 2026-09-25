@@ -6,10 +6,12 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { CotalEndpoint, mintCreds, newIdentity, registry, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
+import { isIPv4, isIPv6 } from "node:net";
+import { assertLifecycleToken, CotalEndpoint, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
+  deleteIdpSpaceCatalog,
   establishIdpSession,
   loadIdpSession,
   normalizeIdpUrl,
@@ -21,6 +23,17 @@ import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
+
+function isLoopbackLiteral(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIPv4(host)) return host.startsWith("127.");
+  const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
+  if (!isIPv6(host)) return false;
+  if (host === "::1") return true;
+  const mapped = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  return mapped !== null && mapped[1].startsWith("127.");
+}
 
 /** Every operational failure in these commands is a deliberately-legible thrown sentence
  *  (a refused client id, a revoked session, a malformed IdP response …) — the CLI's generic
@@ -73,7 +86,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     const idp = normalizeIdpUrl(idpArg);
     // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
     // proof leaves no cache entry to fool requireIdpSession later.
-    const { session, sub, label } = await establishIdpSession({
+    const { session, sub, previousSub, label } = await establishIdpSession({
       dir: homeCotalDir(),
       idpUrl: idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
@@ -83,6 +96,16 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         console.log(`Waiting for approval - the code expires in ${Math.ceil(p.expiresInSec / 60)} min. Ctrl-C to abort.`);
       },
     });
+    const provider = resolveAuthProvider();
+    if (previousSub) {
+      const removed = removeCatalogMeshes(deleteIdpSpaceCatalog(homeCotalDir(), idp, previousSub));
+      if (removed.length)
+        console.log(`Removed the previous account's discovered spaces: ${removed.join(", ")}. No replacement was selected automatically.`);
+    }
+    if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
+      const consumer = resolveSpaceCatalogConsumer();
+      await provider.syncSpaceCatalogAfterLogin?.({ dir: homeCotalDir(), idpUrl: idp, validate: consumer.validate, apply: consumer.apply });
+    }
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     const who = label ? `${label} (${sub})` : sub;
@@ -125,6 +148,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
       );
     }
     deleteIdpSession(dir, idp);
+    if (session.sub) removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
     console.log(`Logged out of ${idp} - server-side session revoked, local cache cleared.`);
   });
 }
@@ -295,6 +319,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
   const v = args.values as {
     dir?: string; space?: string; owner?: string; actor?: string;
     "token-file"?: string; "health-file"?: string; "exchange-url"?: string;
+    "manager-call"?: boolean; "manager-instance"?: string;
   };
   const { dir, space, owner, actor } = v;
   const tokenFile = v["token-file"];
@@ -303,7 +328,14 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
   // Every attempt's outcome lands in the manager-composed health file (core's AgentAuthHealth) —
   // the `ps` window into a detached agent's bearer life. Best-effort: health reporting must never
   // turn a successful exchange into a failure.
+  const managerCall = v["manager-call"] === true;
+  if (v["manager-instance"] !== undefined && !managerCall)
+    throw new Error("agent-bearer: --manager-instance requires --manager-call");
+  const managerInstance = v["manager-instance"] === undefined
+    ? undefined
+    : assertLifecycleToken(v["manager-instance"], "manager instance");
   const health = (state: "ok" | "failed", reason?: string) => {
+    if (managerCall) return;
     const path = v["health-file"];
     if (!path) return;
     try {
@@ -324,12 +356,11 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       let u: URL;
       try { u = new URL(remote); }
       catch { throw new Error(`agent-bearer: --exchange-url is not a URL (got ${JSON.stringify(remote)})`); }
-      // No plain-http exception. A remote actorToken is the credential that proves this request;
-      // sending it over anything but HTTPS hands the spawn-time secret to the network. Requiring
-      // HTTPS unconditionally avoids the hostname-vs-address exception that has repeatedly been
-      // mistaken for a string-prefix question elsewhere.
-      if (u.protocol !== "https:")
-        throw new Error(`agent-bearer: --exchange-url must be https:// (got ${u.protocol}//) - the actor token is sent in the request body and must never cross plaintext`);
+      // Match the remote-registration and enrollment transport rule: HTTPS, except a loopback HTTP
+      // literal where the actor token never leaves this machine. Names such as localhost get no
+      // exception because name resolution chooses where the credential goes.
+      if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+        throw new Error(`agent-bearer: --exchange-url must be https://, except for a loopback HTTP literal (got ${u.protocol}//) - the actor token must never cross plaintext off this machine`);
       u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
       u.search = "";
       u.hash = "";
@@ -357,7 +388,12 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         method: "POST",
         headers,
         redirect: "manual",
-        body: JSON.stringify({ owner, actor, actorToken }),
+        body: JSON.stringify({
+          owner,
+          actor,
+          actorToken,
+          ...(managerCall ? { view: "manager-caller", ...(managerInstance !== undefined ? { managerInstanceId: managerInstance } : {}) } : {}),
+        }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
@@ -400,6 +436,7 @@ const authCommands: Command[] = [
       { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
       { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises (spawn POSTs it with the login bearer)" },
     ],
+    prepareMeshTarget: false,
     run: (args) => legibly(() => runAuthService(args)),
   },
   {
@@ -436,6 +473,8 @@ const authCommands: Command[] = [
       { name: "actor", type: "string", value: "<a>", description: "the agent's actor token" },
       { name: "token-file", type: "string", value: "<path>", description: "0600 file holding the spawn-time agent secret" },
       { name: "health-file", type: "string", value: "<path>", description: "write each attempt's outcome here (read by the manager's ps)" },
+      { name: "manager-call", type: "boolean", description: "mint a token bound to one manager instance" },
+      { name: "manager-instance", type: "string", value: "<id>", description: "select the manager instance for --manager-call" },
     ],
     run: (args) => legibly(() => runAgentBearer(args)),
   },

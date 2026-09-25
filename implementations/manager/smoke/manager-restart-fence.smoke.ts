@@ -35,6 +35,7 @@ import {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
   type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
+  type Connector, type LaunchSpec, registry,
 } from "@cotal-ai/core";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
 // the split is deliberate. The long-lived-client behaviour graded below lives in
@@ -70,6 +71,19 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
 type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext } };
+// THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
+// AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
+// so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
+// stale-bind fence this block grades (refuse-before-run, re-issue, counted recovery) can never fire.
+// The stub declares `requires: ["node"]` (satisfied by the very runtime running this suite) and a
+// `buildLaunch` that never runs: the cells below spawn a GHOST persona, which the manager refuses at
+// the persona lookup before any connector is consulted, so the answer is the manager's own refusal
+// at its epoch — exactly what these cells were written to grade. An operator-run manager always has
+// a real connector (that is its purpose), so this is the representative shape, not a special one.
+registry.register({
+  kind: "connector", name: "mrf-stub", requires: ["node"],
+  buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", ""], env: {} }),
+} as Connector);
 const bootManager = async (): Promise<InstanceType<typeof Manager>> => {
   const m = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await m.start();

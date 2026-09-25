@@ -19,11 +19,27 @@
     {
       "name": "an ask payload is surfaced as a bare turn",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        ask = renderAskRequest(p, this.config.name);\n",
+      "find": "        ask = renderAskRequest(p);\n",
       "replace": "",
       "expectRed": "the ask is rendered after the context: the step, every field with its kind, and the attempt count",
       "cell": "the ask is rendered after the context: the step, every field with its kind, and the attempt count",
       "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 24 passed, 3 failed Named cell red: the ask is rendered after the context: the step, every field with its kind, and the attempt count"
+    },
+    {
+      "name": "the ask renderer prints the hosted-forbidden caller-chosen answerer",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;",
+      "replace": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by seat --value '<json record>'`;",
+      "expectRed": "the answer command is the hosted form the manager accepts: run, step, value, and no caller-chosen `--by`",
+      "cell": "the answer command is the hosted form the manager accepts: run, step, value, and no caller-chosen `--by`"
+    },
+    {
+      "name": "the escalation renderer prints the hosted-forbidden caller-chosen answerer",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;",
+      "replace": "    + `\\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by seat --value '<json>'`;",
+      "expectRed": "the escalation answer command is the hosted form too, with no caller-chosen `--by`",
+      "cell": "the escalation answer command is the hosted form too, with no caller-chosen `--by`"
     },
     {
       "name": "a lifecycle idle is routed through the turn boundary",
@@ -37,11 +53,11 @@
     {
       "name": "the status is assigned before its presence write, so a failed write swallows the boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const prev = this._status;\n    try {\n      await this.publishStatus(status, activity);\n    } finally {",
-      "replace": "    const prev = this._status;\n    this._status = status;\n    await this.publishStatus(status, activity);\n    if (prev === \"working\" && status === \"idle\") this.onTurnBoundary();\n    if (false) {",
+      "find": "    const prev = this._status;\n    try {\n      if (prev !== \"working\" && status === \"working\") await this.ep.setCondition(null);\n      await this.publishStatus(status, activity);\n    } finally {",
+      "replace": "    const prev = this._status;\n    if (prev !== \"working\" && status === \"working\") await this.ep.setCondition(null);\n    this._status = status;\n    await this.publishStatus(status, activity);\n    if (prev === \"working\" && status === \"idle\") this.onTurnBoundary();\n    if (false) {",
       "expectRed": "a failed presence write does not swallow the boundary",
       "cell": "a failed presence write does not swallow the boundary",
-      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a failed presence write does not swallow the boundary"
+      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a failed presence write does not swallow the boundary Re-anchored 2026-09-22 after a condition-clearing call was added inside the try; the replace carries that call unchanged so the mutation still isolates the ordering alone."
     },
     {
       "name": "the seat discards every pull refusal in silence",
@@ -73,7 +89,7 @@
     {
       "name": "an escalated checkpoint is surfaced as a bare turn again",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "  const escalation = renderEscalation(p, seatName);\n  if (escalation !== \"\") return escalation;\n",
+      "find": "  const escalation = renderEscalation(p);\n  if (escalation !== \"\") return escalation;\n",
       "replace": "",
       "expectRed": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
       "cell": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",

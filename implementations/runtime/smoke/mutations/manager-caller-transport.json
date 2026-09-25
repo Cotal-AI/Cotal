@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/manager-caller-transport.smoke.ts"
+  ],
+  "guard": "The runtime askHost entrypoint forwards auth.managerInstanceId to resolveService so instance-scoped manager-caller credentials can resolve their pinned instance without hitting broker permission denial on class routes.",
+  "command": "pnpm --filter @cotal-ai/runtime build && pnpm exec tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/manager-caller-transport.json",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=3",
+  "mutations": [
+    {
+      "name": "runtime askHost omits instanceId when resolving manager",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),",
+      "replace": "      /* mutated: omitted instanceId */",
+      "afterRestore": "pnpm --filter @cotal-ai/runtime build",
+      "expectRed": "runtime askHost connects to instance-scoped manager with valid managerInstanceId",
+      "cell": "runtime askHost connects to instance-scoped manager with valid managerInstanceId",
+      "note": "A manager-caller credential holds permission only for its pinned instance route (ep.inst.manager.<IID>.describe). Omitting instanceId causes resolveService to default to class route ep.one.manager.describe, which the native broker refuses with permission-denied."
+    }
+  ]
+}

@@ -112,13 +112,18 @@ export function censusCustodians(run?: string): CustodianSighting[] {
 }
 
 /**
- * Reap one custodied seat that this process did not spawn: a crashed manager's, or a seat whose
- * custodian is lingering after its child exited. Signals only a pid whose current start identity
- * matches the record, verifies the custodian, the child and the child's whole process group gone,
- * then removes the custody record. A record written without start identities refuses: a bare pid
- * cannot be told from an unrelated process that inherited it. Linux only, like the custodian.
+ * Reap one custodied seat: a crashed manager's orphan, a lingering custodian, or a cleanly exited seat
+ * whose custodian unlinked its on-disk record.
+ *
+ * When the record exists on disk, it is verified against the live kernel state. When the on-disk record
+ * is absent, `opts.pinnedRecord` allows the launching/adopting runtime to supply its authoritative pinned
+ * start identities to execute the same kernel identity and group checks. An unknown reference with neither
+ * on-disk file nor pinned record returns `absent` (failing closed as RuntimeReapUnproven).
+ *
+ * Signals only a pid whose current start identity matches the record, verifies the custodian, the child
+ * and the child's whole process group gone, then removes the custody record directory.
  */
-export async function reapSeat(root: string, id: string, opts: { graceMs?: number } = {}): Promise<SeatReapEvidence> {
+export async function reapSeat(root: string, id: string, opts: { graceMs?: number; pinnedRecord?: SeatRecord } = {}): Promise<SeatReapEvidence> {
   if (process.platform !== "linux") throw unsupportedTransport();
   const graceMs = opts.graceMs ?? 10_000;
   const path = recordPath(root, id);
@@ -126,8 +131,15 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   try {
     rec = readRecord(path);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
-    throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      if (opts.pinnedRecord && opts.pinnedRecord.id === id) {
+        rec = opts.pinnedRecord;
+      } else {
+        return { outcome: "absent" };
+      }
+    } else {
+      throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
+    }
   }
   if (rec.custodianStart === undefined)
     throw new Error(`seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`);
@@ -171,6 +183,7 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     }, graceMs);
     if (!empty) throw new Error(`seat ${id}: ${group} process(es) still in group ${rec.childPid} ${graceMs}ms after SIGKILL; exit not proved`);
   }
+  const hadPath = existsSync(path);
   const dir = dirname(path);
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   return {
@@ -178,6 +191,6 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     custodian,
     child,
     group,
-    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled ? `, group ${rec.childPid} empty` : ""}; custody record removed`,
+    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}`,
   };
 }

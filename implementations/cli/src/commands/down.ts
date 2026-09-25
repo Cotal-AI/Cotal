@@ -1,6 +1,6 @@
-import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   abortMaintenanceCut,
@@ -15,6 +15,7 @@ import {
   completeMaintenanceCut,
   disarmManagerShutdownIntent,
   loadMeshes,
+  meshesForRoot,
   localProcessPath,
   localProcessPathCandidates,
   readMaintenanceJournal,
@@ -36,6 +37,11 @@ import {
   type LocalProcessContext,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
   writeMaintenanceResumeDocument,
+  loadSeatWriterGeneration,
+  materializeFromManifest,
+  type MaintenanceResumeDescriptor,
+  seatCheckpointDir,
+  type SeatCheckpoint,
   type JsonValue,
 } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -53,6 +59,7 @@ import {
   parsePrincipalKey,
   principalKey,
   standaloneConnectOpts,
+  type Connector,
   type ManagerLeaseInfo,
   type Presence,
 } from "@cotal-ai/core";
@@ -65,6 +72,29 @@ import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { captureSeatCheckpoint } from "../lib/seat-capture.js";
+import {
+  listManagerSeatsForSpare,
+  printLegacyManagerSpareUncertainty,
+  printSparedAgents,
+  type SpareSeatRow,
+} from "../lib/teardown-spare.js";
+
+/** The fields a checkpoint reads off one retained inventory entry. The manager owns
+ *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
+ *  other, so the coordinator states the shape it actually reads. */
+interface ManagerResumeAgentShape {
+  name: string;
+  identity: { lifecycleUid: string };
+  launch: {
+    connector: string;
+    cwd?: string;
+    sessionId?: string;
+    sessionStatePath?: string;
+    unresolvedLaunchOptionKeys?: string[];
+    source: { configSha256: string; manifestSha256?: string; hash?: string };
+  };
+}
 
 /** Complete selective component names without importing installed packages. */
 export function downComplete(argv: string[]): CompletionResult {
@@ -81,7 +111,7 @@ export function downComplete(argv: string[]): CompletionResult {
 /** Stop the whole local stack by default, or only named self-registered process components. The
  *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
 export async function down(args: ParsedArgs): Promise<void> {
-  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; space?: string };
+  const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   const requested = [...new Set(args.positionals)];
   if (values["preserve-state"] && values["with-agents"])
     throw new Error("--preserve-state cannot be combined with --with-agents");
@@ -91,10 +121,11 @@ export async function down(args: ParsedArgs): Promise<void> {
     if (requested.length || values.file || values.run || values["dry-run"] || values.space)
       throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
-    await preserveStateDown(values["store-dir"]);
+    await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []));
     return;
   }
   if (values["store-dir"]) throw new Error("--store-dir is only valid with down --preserve-state");
+  if (values["session-store"]?.length) throw new Error("--session-store is only valid with down --preserve-state");
   if ((values.file || values.run) && (requested.length || values.space)) {
     throw new Error("component names and --space cannot be combined with --file or --run");
   }
@@ -171,7 +202,7 @@ export async function down(args: ParsedArgs): Promise<void> {
 
   const managerComponent = selected.find((component) => component.name === "manager");
   const managerContext = managerComponent ? contextFor(managerComponent) : undefined;
-  let spared: DownSeatRow[] | undefined;
+  let spared: SpareSeatRow[] | undefined;
   let legacyManagerSpareUnverified = false;
   if (!values["with-agents"] && managerComponent && managerContext && processRecorded(managerComponent, managerContext)) {
     const managerPidPath = localProcessPath(managerComponent.pidFile, managerContext);
@@ -228,6 +259,28 @@ export async function down(args: ParsedArgs): Promise<void> {
     for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, contextFor(component)), { force: true });
   }
 
+  // Pidfiles are the only thing this stack owns. A registered broker that answers with no pidfile
+  // is a different situation: something is running that `down` did not start and must not stop.
+  // This runs BEFORE the registry sweep below, which drops this root's records. Probing after that
+  // sweep would find nothing and print "Nothing running" about a broker that is still up.
+  // Owned components (a detached web, a manager) do not change the question: stopping them is not
+  // the same as this stack owning the broker. The probe runs on every bare down that holds no
+  // nats pidfile, AFTER their owned artifacts cleared, so those components stop exactly as they
+  // do with no broker present. Targeted stops and --dry-run stay pidfile-only.
+  if (!requested.length && !values["dry-run"]) {
+    const unowned = await liveUnownedBrokers(folderCtx());
+    if (unowned.length) {
+      for (const broker of unowned) {
+        console.error(c.red(
+          `Broker for "${broker.space}" is running at ${broker.server}, but no pidfile records it. ` +
+          `cotal down will not stop a process it did not start. ` +
+          `Stop that broker with the supervisor that started it, or remove the registration with \`cotal meshes rm ${broker.space}\`.`,
+        ));
+      }
+      process.exit(1);
+    }
+  }
+
   // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
   // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
   if (selected.some((component) => component.clearsMesh)) {
@@ -251,55 +304,16 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
 export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
 
-type DownSeatRow = {
-  name: string;
-  mode?: string;
-  pid?: number;
-  agent?: string;
-  cwd?: string;
-  status?: string;
-};
-
-/** Best-effort inventory for the operator-facing spare report. Detach safety is independently
- * established by the exact-process capability marker, so a down broker cannot make the local
- * manager unstoppable. */
-async function listManagerSeatsForSpare(context: LocalProcessContext): Promise<DownSeatRow[] | undefined> {
-  const mesh = loadMeshes().find((candidate) => candidate.root === context.root && candidate.space === context.space);
-  if (!mesh) {
-    console.error(c.dim("could not list managed agents (this root has no recorded mesh); agents will still be spared"));
-    return undefined;
+/** Registered brokers for this root that answer and have no nats pidfile. Never a kill list. */
+async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{ space: string; server: string }>> {
+  const nats = localProcessSurface().find((component) => component.name === "nats");
+  if (!nats || processRecorded(nats, context)) return [];
+  const matching = meshesForRoot(context.root);
+  const live: Array<{ space: string; server: string }> = [];
+  for (const mesh of matching) {
+    if (await isReachable(mesh.server)) live.push({ space: mesh.space, server: mesh.server });
   }
-  let target;
-  try {
-    target = await resolveControlTarget(
-      { space: mesh.space, server: mesh.server },
-      "control-caller-privileged",
-      undefined,
-      { onRefusal: "throw" },
-    );
-  } catch (e) {
-    console.error(c.dim(`could not list managed agents (${(e as Error).message}); agents will still be spared`));
-    return undefined;
-  }
-  const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
-  if (!reply.ok || !Array.isArray(reply.data)) {
-    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"}); agents will still be spared`));
-    return undefined;
-  }
-  return reply.data as DownSeatRow[];
-}
-
-function printSparedAgents(rows: DownSeatRow[]): void {
-  console.log(c.dim(`left ${rows.length} managed agent${rows.length === 1 ? "" : "s"} running (no longer managed):`));
-  for (const row of rows) {
-    const facts = [row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, row.status].filter(Boolean);
-    console.log(`  ${facts.join("  ·  ")}`);
-  }
-  console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
-}
-
-function printLegacyManagerSpareUncertainty(): void {
-  console.log(c.dim("manager version could not be verified; an older destructive SIGTERM handler may have reaped managed agents"));
+  return live;
 }
 
 export function processRecorded(component: LocalProcess, context: LocalProcessContext): boolean {
@@ -497,13 +511,39 @@ function retainedPrincipalKeys(inventory: unknown): Set<string> {
   }).filter((id): id is string => Boolean(id)));
 }
 
-async function preserveStateDown(storeOverride?: string): Promise<void> {
+/**
+ * The operator's `--session-store` paths, resolved and proven to be directories.
+ *
+ * There is no default and nothing is inferred from a connector name: this repository does not know
+ * where a harness keeps its transcript, and a guess recorded as a fact would produce a checkpoint
+ * promising `exact` over bytes nobody chose. A path that does not exist or is not a directory is
+ * refused HERE, before a single process is stopped, because a cut that discovers it after the stack
+ * is down costs the operator the whole cut.
+ */
+function assertSessionStores(paths: readonly string[]): string[] {
+  return paths.map((path) => {
+    const resolved = resolvePath(path);
+    let stat;
+    try {
+      stat = statSync(resolved);
+    } catch (error) {
+      throw new Error(`--session-store ${resolved} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); name the harness transcript store directory for this host`);
+    }
+    if (!stat.isDirectory())
+      throw new Error(`--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
+    return resolved;
+  });
+}
+
+async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
   if (matching.length !== 1)
     throw new Error(`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`);
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
+  // The store cap the broker was started with travels with the store, so the resume re-renders it.
+  const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
   const lock = acquireMaintenanceLock(root);
   try {
     const all = localProcessSurface();
@@ -575,7 +615,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           writeMaintenanceResumeDocument(lock, {
             version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
             inventory: replan.inventory as JsonValue,
-            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, mode: mesh.mode },
+            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, ...cap, mode: mesh.mode },
           });
         } catch (cause) {
           // A restarted manager prepared a DIFFERENT inventory: the journaled cut no longer
@@ -633,6 +673,11 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
       }
       if (unmanaged.length)
         throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
+      // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
+      // still running. This reads only the prepared inventory, so it needs nothing that stopping
+      // would provide, and refusing after the stack is down would cost the operator a running mesh
+      // to tell them the cut was never going to complete.
+      assertSeatsCheckpointable(plan.inventory);
       resume = writeMaintenanceResumeDocument(lock, {
         version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
         inventory: plan.inventory as JsonValue,
@@ -641,6 +686,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
           space: mesh.space,
           server: mesh.server,
           storeDir,
+          ...cap,
           mode: mesh.mode,
         },
       });
@@ -650,7 +696,7 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
         mode: mesh.mode,
         sourcePath: storeDir,
         resume,
-        launch: { server: mesh.server, storeDir },
+        launch: { server: mesh.server, storeDir, ...cap },
       });
       clearPreservationPrepareIntent(lock);
     }
@@ -725,6 +771,11 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     if (stillRunning.length)
       throw new Error(`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(", ")}`);
     await waitForEndpointUnreachable(mesh.server);
+    // Step 7 and 8 of the cut. ONLY here: the manager has proven every child exited
+    // (`commitPreservation` above returned state "preserved" with no failures) and the whole stack
+    // is down, so nothing is writing to a working tree or a transcript. A capture any earlier races
+    // the harness by construction.
+    const captured = await captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores);
     completeMaintenanceCut(lock, {
       attemptId,
       observedAt: new Date().toISOString(),
@@ -735,9 +786,88 @@ async function preserveStateDown(storeOverride?: string): Promise<void> {
     console.log(c.green(`✓ preserved state for "${mesh.space}"`));
     console.log(c.dim(`  source: ${storeDir}`));
     console.log(c.dim(`  resume inventory: ${join(root, ".cotal", "maintenance", "v1", resume.file)}`));
+    for (const seat of captured)
+      console.log(c.dim(`  checkpoint: ${seat.name} (${seat.session.continuity}, generation ${seat.generation}) -> ${join(seatCheckpointDir(root, attemptId), seat.name)}`));
     console.log(c.dim("  stack remains stopped; create a backup or deliberately resume with `cotal up`"));
   } finally {
     releaseMaintenanceLock(lock);
+  }
+}
+
+/**
+ * Refuse any seat the cut could not checkpoint, from the prepared inventory alone.
+ *
+ * Called at prepare time, before a single child is stopped. The capture itself must wait until the
+ * stack is proven down, but the DECISION about whether a capture is possible reads only the
+ * inventory, so it belongs where the operator still has a running mesh.
+ *
+ * A seat the manager would refuse to resume is refused here too, with the manager's own wording:
+ * `Manager.inventoryReferenceError` says `imperative launch options have no non-secret durable
+ * source`, and a checkpoint inherits that refusal rather than writing something that will not
+ * reproduce the seat.
+ */
+function assertSeatsCheckpointable(inventory: unknown): void {
+  for (const entry of ((inventory as { agents?: ManagerResumeAgentShape[] }).agents ?? [])) {
+    const keys = entry.launch?.unresolvedLaunchOptionKeys ?? [];
+    if (keys.length)
+      throw new Error(`imperative launch options have no non-secret durable source (${keys.join(", ")}): seat ${entry.name} cannot be checkpointed`);
+    if (!entry.launch?.cwd) throw new Error(`seat ${entry.name} has no launch cwd to capture`);
+  }
+}
+
+/** Capture one checkpoint per retained seat, after the cut has proven the whole stack down. */
+async function captureSeatCheckpoints(
+  root: string,
+  space: string,
+  resume: MaintenanceResumeDescriptor,
+  destination: string,
+  sessionStores: readonly string[],
+): Promise<SeatCheckpoint[]> {
+  const document = readMaintenanceResumeDocument(root, resume);
+  const inventory = document.inventory as { agents?: ManagerResumeAgentShape[] } | undefined;
+  const agents = inventory?.agents ?? [];
+  const sealed: SeatCheckpoint[] = [];
+  for (const entry of agents) {
+    // Re-asserted over the document that was actually written, not the plan read at prepare time.
+    assertSeatsCheckpointable({ agents: [entry] });
+    const cwd = entry.launch.cwd as string;
+    // The generation this cut is taken at, from what this host holds. A destination claims the
+    // successor by exclusive create before it launches anything.
+    const held = loadSeatWriterGeneration(root, space, entry.name);
+    const connector = await connectorCapabilities(entry.launch.connector);
+    // The store is applied to every CONTINUATION-CAPABLE seat and to no other. A connector that
+    // does not reopen a session has nothing to reopen it from, and carrying a transcript for it
+    // would put harness bytes in an artifact that can never use them.
+    const carriesSession = Boolean(connector?.supportsSessionContinuation);
+    sealed.push(captureSeatCheckpoint(join(destination, entry.name), entry, {
+      cwd,
+      space,
+      name: entry.name,
+      lifecycleUid: entry.identity.lifecycleUid,
+      generation: held?.generation ?? 0,
+      workspaceRoot: root,
+      profile: {
+        configSha256: entry.launch.source.configSha256,
+        ...(entry.launch.source.manifestSha256 ? { manifestSha256: entry.launch.source.manifestSha256 } : {}),
+        ...(entry.launch.source.hash ? { hash: entry.launch.source.hash } : {}),
+      },
+      connector,
+      ...(entry.launch.sessionId ? { sessionId: entry.launch.sessionId } : {}),
+      ...(carriesSession && entry.launch.sessionStatePath ? { sessionStatePath: entry.launch.sessionStatePath } : {}),
+      ...(carriesSession && sessionStores.length ? { sessionStorePaths: sessionStores } : {}),
+    }));
+  }
+  return sealed;
+}
+
+/** Resolve a connector's DECLARED capabilities. An unresolvable connector is `undefined`, which
+ *  `sessionContinuityClass` reads as drain-only: unknown capabilities are default-deny and no
+ *  continuation promise may be inferred from a package name or a host-local probe. */
+async function connectorCapabilities(name: string): Promise<Pick<Connector, "supportsResume" | "supportsSessionContinuation" | "supportsFreshStart"> | undefined> {
+  try {
+    return await materializeFromManifest<Connector>({ kind: "connector", name });
+  } catch {
+    return undefined;
   }
 }
 

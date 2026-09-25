@@ -177,11 +177,16 @@ export type EpInstanceLiveness = "gone" | "live" | "unknown";
  * the broker's no-responders 503 — an affirmative statement that this instance holds no
  * subscription — or draws nothing at all.
  *
- * NOTHING IS `unknown`, NEVER DEATH. A denied publish, a slow broker, a responder that receives the
- * request and declines to answer, and a perfectly healthy instance are indistinguishable from here,
- * and every one of them must keep the caller waiting. The failure direction is the whole safety
- * argument: because only a 503 says anything, a short probe budget can never turn a live instance
- * into a fast `missing` — it can only fail to speed up a dead one.
+ * NOTHING IS `unknown` BUT A REFUSED PUBLISH, AND NOTHING IS EVER DEATH. A slow broker, a responder
+ * that receives the request and declines to answer, and a perfectly healthy instance are
+ * indistinguishable from here, and every one of them must keep the caller waiting. A REFUSED
+ * PUBLISH IS THE ONE EXCEPTION, and it is a refusal rather than a verdict: `nc.publish` returns
+ * normally on a violation, so the permission watch (see {@link openPublishDenialWatch}, registered
+ * before the publish and released in the `finally`) races the budget and settles the probe
+ * `permission-denied` naming the refused subject as soon as the connection reports it — never a
+ * silent `unknown` that consumes the full budget on a permission problem. The failure direction is
+ * otherwise the whole safety argument: because only a 503 says anything, a short probe budget can
+ * never turn a live instance into a fast `missing` — it can only fail to speed up a dead one.
  *
  * It rides `describe` because §13.7 makes every endpoint serve it and it carries no effect, and it
  * rides as a CAST: the verdict comes from the transport, not from an answer, so nothing is read and
@@ -207,10 +212,15 @@ export async function epProbeInstanceInterest(
   // grant for the `_nr._nr._nr` reply subject (§13.9), so a 503 arriving there is the broker's own
   // control frame and cannot be forged by a recipient that knows the nonce.
   const noRespReplyTo = noRespondersReplyTo(space, caller, n);
+  // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING, and race it against the
+  // budget: a refused publish that expired into `unknown` would read a permission problem as "no
+  // verdict" and pay the full budget for it — the exact slow masquerade the watch exists to end.
+  const denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
+    `the liveness probe for ${endpoint}.${iId} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}" (the instance rail for ${iId}). The instance may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "probe");
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await new Promise<EpInstanceLiveness>((resolve) => {
+    const verdict = new Promise<EpInstanceLiveness>((resolve) => {
       timer = setTimeout(() => resolve("unknown"), deadlineMs);
       // A PROBE MUST NEVER BE THE REASON A PROCESS IS STILL RUNNING. Against a LIVE instance no
       // answer ever comes back — the request is a cast and §13.5 forbids the responder replying to
@@ -228,9 +238,15 @@ export async function epProbeInstanceInterest(
       });
       nc.publish(subject, new TextEncoder().encode(JSON.stringify(env)), { reply: noRespReplyTo });
     });
+    // The refusal settles the probe INSTEAD of the budget: raced here, it rejects the await as the
+    // thrown `permission-denied` before the deadline can resolve `unknown`. When the 503 or the
+    // budget settles first, the finally below releases the watch and a refusal never observed by
+    // anyone is never raised.
+    return await Promise.race([verdict, denialWatch.denied]);
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
+    denialWatch.release();
   }
 }
 
@@ -380,8 +396,9 @@ export async function epCall(
   space: string,
   route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number },
   op: EpVerbOp,
-  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry" },
+  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry"; signal?: AbortSignal },
 ): Promise<EpAttributedReply> {
+  opts.signal?.throwIfAborted();
   const deadlineMs = assertDeadline(opts.deadlineMs);
   if (route.mode === "one" && opts.currentEpoch === undefined)
     throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2, the stale-reply rejection rule)");
@@ -396,7 +413,16 @@ export async function epCall(
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, undefined, "unknown"));
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+  });
   try {
+    // Register denial observation before publishing. Keep subscription and publication in the
+    // same promise executor: a closed/draining connection must not strand a rejected reply wait.
+    denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
+      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "call");
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
       sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
         callback: (err, msg) => {
@@ -414,15 +440,11 @@ export async function epCall(
           resolve({ subject: msg.subject, data: msg.data });
         },
       });
+      opts.signal?.throwIfAborted();
+      nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     });
-    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. See
-    // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
-    // from an unanswered call.
-    denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
-      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "call");
-    nc.publish(req.subject, req.body, { reply: noRespReplyTo });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
-    const msg = await Promise.race([outcome, timeout, denialWatch.denied]);
+    const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
     // the same question better: it knows it did not run the command, where the check can only
@@ -490,6 +512,7 @@ export async function epCall(
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
     denialWatch?.release();
+    if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -503,6 +526,13 @@ export async function epCall(
  * `checkRequestSubjectAgreement` refuses an all-rail request without a deadline regardless of
  * `replyExpected`, and a cast has no reply on which that refusal could surface — so an all-cast
  * without a deadline would be silently dropped by every responder. Fail loud at the caller instead.
+ *
+ * A broker publish refusal is NOT a flushed cast: `nc.publish` returns normally on a violation, so
+ * the permission watch (see {@link openPublishDenialWatch}, registered before the publish and
+ * released in the `finally`) races the flush, and a refused cast settles `permission-denied`
+ * naming the refused subject as soon as the connection reports it — never a resolution the caller
+ * could read as "it was cast". Nothing is added to the healthy path: a permitted publish is
+ * unaffected and the flush round-trip stands as the settling time.
  */
 export async function epCast(
   nc: NatsConnection,
@@ -517,8 +547,27 @@ export async function epCast(
     replyExpected: false,
     ...(opts.deadlineMs !== undefined ? { deadlineMs: assertDeadline(opts.deadlineMs) } : {}),
   });
-  nc.publish(req.subject, req.body);
-  await nc.flush();
+  // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING, and race it against the
+  // flush: a refused cast that resolved with the flush would be the exact success masquerade the
+  // watch exists to eliminate, and the caller has no reply or deadline of its own to notice
+  // otherwise. The refusal is not wall-clock latency: the broker writes the permission ERROR
+  // before the PONG that answers the flush, so the violation is already on the connection when
+  // the flush resolves — but its dispatch to this race rides a longer microtask chain than the
+  // flush's own continuation, and `Promise.race` would hand the flush the win on arrival order
+  // alone. Chaining ONE EVENT-LOOP TURN (`setImmediate`, not a timer) after the flush lets that
+  // chain complete first: a refused publish rejects deterministically, and a permitted one
+  // settles on the next loop turn — the flush round-trip remains the entire cost.
+  const denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
+    `the cast for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not cast: this caller's credential does not authorize publishing to "${req.subject}". The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "cast");
+  try {
+    nc.publish(req.subject, req.body);
+    await Promise.race([
+      nc.flush().then(() => new Promise<void>((resolve) => setImmediate(resolve))),
+      denialWatch.denied,
+    ]);
+  } finally {
+    denialWatch.release();
+  }
 }
 
 // ---- watch: the LIVE-EVENT half (§13.5) --------------------------------------------------------

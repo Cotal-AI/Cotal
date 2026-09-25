@@ -31,6 +31,9 @@ export interface EpCapability {
   command: string;
   routes?: ("one" | "all")[];
   instanceId?: string;
+  /** Emit only the exact instance route. Requires `instanceId`; used by a manager-bound caller
+   *  whose credential must never retain the class or scatter rails. */
+  instanceOnly?: boolean;
   target?: EpTarget;
   /** Also grant the matching journal-submission append row (`epj`, §13.9 matrix). */
   journal?: boolean;
@@ -86,7 +89,9 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
   const cmd = assertCommandToken(cap.command);
   const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
   const tail = `${mid}.${callerBlock(caller)}.*`;
-  const rows = (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
+  if (cap.instanceOnly && cap.instanceId === undefined)
+    throw new Error(`an instance-only capability on "${cap.endpoint}.${cap.command}" requires instanceId`);
+  const rows = cap.instanceOnly ? [] : (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
   if (cap.instanceId)
     rows.push(`${spacePrefix(space)}.${plane(caller)}.inst.${e}.${assertLifecycleToken(cap.instanceId, "instanceId")}.${cmd}${tail}`);
   return rows;
@@ -147,7 +152,8 @@ export function epCallerGrantRows(
 // command NAMES map the served v0.3 ops 1:1: ctl.delivery durableJoin/durableLeave/listMemberships
 // → delivery `join`/`leave`/`list` (untargeted: they act on the caller's own memberships, carried
 // by the pinned caller triple, no target block); the self-service control tier serves exactly
-// no-name self `stop` → manager `stop` with mode `self`; the privileged tier's spawn/stop/despawn/
+// no-name self `stop` → manager `stop` with mode `self`; caller-bound `run-answer` also rides self
+// mode so a baseline seat can answer only through the manager's addressed-pause check; the privileged tier's spawn/stop/despawn/
 // attach → the owner-mode spawn set. These names become the served v0.4 endpoint surfaces when the
 // daemons register them; minting them ahead of serving is default-deny-safe (an unserved request
 // form is a no-responder, never authority).
@@ -159,15 +165,16 @@ export function epCallerGrantRows(
  *  minted agent grant (the afa715b identity-vs-integrity class, executed repro). */
 export const BASELINE_DELIVERY_ENDPOINT = "delivery";
 export const BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"] as const);
-/** The manager endpoint's self-lifecycle baseline and the spawn-capability owner-mode lifecycle
+/** The manager endpoint's self baseline and the spawn-capability owner-mode lifecycle
  *  set. Self mode reaches the caller's OWN incarnation and nothing else: the no-name self stop
- *  (the v0.3 self-service tier's only op) and the two halves of the run-turn relay, a seat
- *  pulling the turns addressed to it and yielding them back. Both are in the baseline because
+ *  (the v0.3 self-service tier's only op), the two halves of the run-turn relay, and `run-answer`.
+ *  The answer handler narrows a baseline seat to the open pause named by its own pending relay.
+ *  The relay commands are in the baseline because
  *  the manager pushes nothing into a seat: without the pull row, a seat on an auth mesh is
  *  broker-denied at its first `turn-pending` and the relay is silently dead for every spawned
  *  agent (measured: the connector reads the denial as "no manager here" and stays quiet). */
 export const BASELINE_LIFECYCLE_ENDPOINT = "manager";
-export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield"] as const);
+export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield", "run-answer"] as const);
 /** `spawn` is CREATION: a virgin spawn has no target lifecycle UID or current mapping yet, so it
  *  CANNOT ride owner mode (§13.2 owner mode resolves a body `{owner, actor, lifecycleUid}` against
  *  the CURRENT mapping — there is nothing to resolve for a not-yet-existing child). It is minted
@@ -213,19 +220,20 @@ export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
  *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
-export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona"] as const);
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
  *  three writes start a run, take one over and answer its open pause; the two reads list runs
  *  and render one run's record and journal. All UNTARGETED: a run is not an agent, so no target
  *  block names it, and the manager scopes what a caller may see by the run's own record.
  *  A program can `spawn`, so the `run` capability implies the spawn set as well
  *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
-export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-answer"] as const);
+export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume"] as const);
+export const RUN_ANSWER_COMMAND = "run-answer" as const;
 export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
 /** The manager endpoint's read commands (`manager.read` class). */
-export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models", "list-personas", "show-persona"] as const);
+export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
  *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
  *  NEVER an agent/spawn profile (the ratified 1c pin). */
@@ -270,7 +278,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  it derives nothing from a descriptor, which is the part §13.7 forbids. `smoke:unfenced-responder`
  *  tripwires that pin so the version cannot move without this table being named. */
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona", "run-status", "run-ps"]),
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona", "run-status", "run-ps", "goal-result"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
@@ -350,6 +358,7 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
 export function runCallerCapabilities(callerOwner: string): EpCapability[] {
   return [
     ...RUN_WRITE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: RUN_ANSWER_COMMAND, target: { mode: "self" } as const },
     ...RUN_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     ...spawnCallerCapabilities(callerOwner),
   ];
@@ -388,6 +397,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // creation authority and what a program's own spawns already need.
     ...RUN_READ_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     ...RUN_WRITE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: RUN_ANSWER_COMMAND, target: { mode: "self" } as const },
   ];
   if (tier === "admin") {
     caps.push(
@@ -455,6 +465,12 @@ export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin
       ...tierCaps.map((cap) => ({ ...cap, instanceId: id })),
     ];
   });
+}
+
+/** Pin any capability set to one exact manager instance and remove every class/scatter route. */
+export function instanceOnlyManagerCapabilities(caps: EpCapability[], instanceId: string): EpCapability[] {
+  const id = assertLifecycleToken(instanceId, "instanceId");
+  return caps.map((cap) => ({ ...cap, endpoint: BASELINE_LIFECYCLE_ENDPOINT, routes: [], instanceId: id, instanceOnly: true }));
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

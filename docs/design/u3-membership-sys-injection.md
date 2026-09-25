@@ -21,9 +21,10 @@ Every read site, measured:
 - `implementations/delivery/src/membership.ts:35-36` builds `obsPath`/`cfgPath` from
   `join(findCotalRoot(), ".cotal")`; `:42-43` gate on `existsSync`; `:70` parses the account id;
   `:82` reads the observer; `:90-95` reads the evictor for the torn-rotation check.
-- `implementations/delivery/src/evict-exec.ts:54-58` (`resolveScan`) reads `membership.json`;
-  `:86-95` reads both `$SYS` creds for eviction; `:117-124` and `:155-163` read the observer for the
-  two liveness verbs.
+- `implementations/delivery/src/evict-exec.ts` loads the observer first for `evictPrincipal`.
+  A complete scan that matches nothing answers verified-gone, and the evictor is not read. The
+  evictor is loaded and dialled only when the scan finds a live match. A live match without it
+  still refuses. The two liveness verbs read the observer only.
 
 The write sites are `implementations/cli/src/commands/up.ts:2835-2838` (fresh provision),
 `:2811-2814` (`healMembershipDataCreds`), and `packages/workspace/src/system-rotation.ts:108-109`

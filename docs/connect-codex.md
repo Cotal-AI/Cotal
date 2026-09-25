@@ -82,13 +82,16 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   after the app-server, MCP surface, and mesh endpoint are all live (including the initial
   presence publish). If the broker cannot be reached, startup fails within 15 seconds with the
   broker address and latest connection error; it never opens an offline-looking TUI.
-- **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) only when the
-  turn completes. A failed turn retries with backoff, and an interrupted turn leaves the batch to
-  redeliver. If the Codex app-server itself dies, the host restarts it in place (same mesh
-  identity, credential, and durable) and re-drives the un-acked batch into the new thread; a
-  crash *loop* (more than 3 in 2 minutes) is fatal rather than an endless respawn. (The shared
-  bounded-inbox overflow rule applies: under extreme bursts an evicted in-flight id cannot
-  redeliver.)
+- **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) when the turn
+  completes, and also when the operator interrupts it (Escape in the attached TUI): that dismisses
+  the batch rather than redelivering it. A failed turn retries with backoff, and an unknown terminal
+  outcome (a missing or unrecognized status) leaves the batch un-acked with no retry of its own. If
+  the Codex app-server itself dies, the host restarts it in place (same mesh identity, credential,
+  and durable) and re-drives the un-acked batch into the new thread; a crash *loop* (more than 3 in
+  2 minutes) is fatal rather than an endless respawn. A retirement (the host shutting itself down)
+  interrupts any live turn too, but that batch stays un-acked and redelivery to it is not promised:
+  a later same-name spawn is a successor with its own delivery frontier. (The shared bounded-inbox
+  overflow rule applies: under extreme bursts an evicted in-flight id cannot redeliver.)
 - **Isolated, never written.** Each agent gets a private `CODEX_HOME` (one hashed directory
   per space+name under `.cotal/codex/`, rooted at the manager's workspace): your `~/.codex`
   config.toml, hooks, and MCP servers never load into a managed agent, and Codex's per-project
@@ -127,7 +130,18 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   path, and `ls -t .cotal/codex/*/host.log` finds it after the fact). Attached, a failure is also
   reported on the terminal; detached, that report goes to the pty, so the file is the durable copy.
 - **Presence from events.** working/idle/waiting are derived from the app-server event stream;
-  the model id is reported from the started thread.
+  approval requests relay an `approval` condition. A failed turn maps its native
+  `codexErrorInfo` into the closed condition vocabulary and preserves that value in
+  `condition.source`. Presence writes leave the host in the order the events arrived, so a
+  turn that fails or asks for approval in the tick it started keeps its condition until the
+  next turn starts. The model id is reported from the started thread.
+
+  `contextWindowExceeded` maps to `context`; `sessionBudgetExceeded` to `budget`;
+  `usageLimitExceeded` to `billing`; `rateLimitExceeded` to `rate_limit`;
+  `serverOverloaded` to `overloaded`; `internalServerError` and `httpConnectionFailed` to
+  `server`; `unauthorized` to `auth`; `badRequest`, `cyberPolicy`, and
+  `misalignmentPolicyViolation` to `request`; and rollback, sandbox, `other`, or an unrecognized
+  value to `failed`. An error marked `willRetry` maps to `retrying` while keeping its native source.
 
 `--opt k=v` launch options render as codex `-c k=v` config overrides on the app-server child
 (top-level keys, scalar values; write TOML inline-table text yourself for nested values). The
@@ -137,18 +151,18 @@ spawn, not at launch) rather than silently overridden.
 
 ## Event plane
 
-A seat launched with `cotal spawn --events` publishes a structured account of what it did: run
+A spawned seat publishes a structured account of what it did: run
 boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
 function-call and custom-tool interfaces, each with its start and its end. Tool arguments and
 tool results are not republished onto this channel. That covers the tools you watch a seat use,
 `shell` and `apply_patch` among them. The channel is
 `events.<owner>.<actor>`, named after the seat's principal, and the rules for it are the same on
 every connector: see [connect-claude.md](connect-claude.md#event-plane) for the channel, the grant,
-and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; your own
-`codex` publishes nothing.
+and how to read it. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out. Your
+own `codex` publishes nothing unless its environment arms the plane.
 
 ```bash
-cotal spawn watcher --agent codex --events -d   # armed, detached; read it with `cotal console`
+cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`
 ```
 
 Eight things are specific to Codex and worth knowing before you read a stream:

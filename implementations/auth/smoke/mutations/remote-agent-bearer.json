@@ -1,0 +1,67 @@
+{
+  "suite": [
+    "implementations/auth/smoke/remote-agent-bearer.smoke.ts",
+    "implementations/auth/smoke/remote-exchange.smoke.ts"
+  ],
+  "guard": "the fixture waits on the auth service's own readiness signal (discovery file, pid alive, /health on the recorded URL) and an exhausted budget throws naming the auth service instead of falling through into a misattributed 502",
+  "command": "pnpm smoke:remote-agent-bearer:live",
+  "completionMarker": "remote-agent-bearer smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/remote-agent-bearer.json",
+  "why": [
+    "#1534: the readiness loop was one hundred fetches one hundred milliseconds apart with no",
+    "assertion on exhaustion. A contended runner whose child outlived that budget got a silent",
+    "fall-through, the TLS proxy was built over a port nothing was listening on, and the first",
+    "exchange cell reported 502 !== 200 as an apparent exchange misconfiguration. The service",
+    "already had a readiness contract (the discovery file is written only after every plane is",
+    "bound); the fixture now drives it through the provider's shipped ready() with the provider's",
+    "own fifteen-second budget, and a never-ready service is a thrown error naming the service."
+  ],
+  "mutations": [
+    {
+      "name": "the exhausted readiness budget silently returns instead of throwing, as before the fix",
+      "file": "implementations/auth/smoke/remote-agent-bearer.smoke.ts",
+      "find": "    await prepared.service.ready({ dir, timeoutMs });",
+      "replace": "    await prepared.service.ready({ dir, timeoutMs }).catch(() => {});",
+      "expectRed": "a service that never becomes ready fails the wait loudly, naming the auth service",
+      "cell": "a service that never becomes ready fails the wait loudly, naming the auth service"
+    },
+    {
+      "name": "the pid-bound wait treats a live never-binding daemon as if no pid was given, refusing at the base clock",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "          const deadline = Date.now() + (daemonPid === undefined ? timeoutMs : Math.max(timeoutMs, maxWaitMs));",
+      "replace": "          const deadline = Date.now() + timeoutMs;",
+      "expectRed": "the wait bound to a live pid that never binds refuses at the BOUND, not the base clock, naming the pid",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-agent-bearer:live"
+    },
+    {
+      "name": "the pid-bound wait never checks the bound pid's exit, so a dead daemon is waited on to the clock",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "            if (daemonPid !== undefined && probeLiveness(daemonPid) === \"dead\")\n              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);",
+      "replace": "            if (daemonPid !== undefined && false)\n              throw new Error(`auth service not ready - the process (pid ${daemonPid}) exited before becoming ready (${lastReason})`);",
+      "expectRed": "the wait bound to a pid that EXITS ends at once with the exited reason",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-agent-bearer:live"
+    },
+    {
+      "name": "two live remote manager candidates select the first instead of refusing ambiguity",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    if (remoteLive.length > 1)\n      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner}; exactly one is required or name --manager-instance`);",
+      "replace": "    if (remoteLive.length > 1) return remoteLive[0];",
+      "expectRed": "two live remote managers refuse and name the count",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+      "completionMarker": "remote-exchange smoke:",
+      "note": "The absent selector must never choose by enumeration order when several owner-bound managers are live."
+    },
+    {
+      "name": "an unavailable owner remote manager falls through to the co-located manager",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    if (remoteInstances.length > 0)\n      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? \"\" : \"s\"}, none live); pass managerInstanceId to select an instance explicitly rather than falling through to the local manager`);",
+      "replace": "    if (remoteInstances.length > 0 && localCandidate === undefined)\n      throw new Error(`the remote manager for owner ${owner} is unavailable`);",
+      "expectRed": "an unavailable owner remote manager refuses with the explicit-selector remedy instead of falling through local",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+      "completionMarker": "remote-exchange smoke:",
+      "note": "Any owner-specific remote gate establishes precedence even when it is frozen, retired, or deregistered."
+    }
+  ]
+}

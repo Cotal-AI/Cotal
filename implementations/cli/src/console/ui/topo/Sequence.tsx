@@ -95,7 +95,7 @@ export function Sequence({
     const cells = blankRow(laneRegionW);
     for (const key of laneKeys) stamp(cells, centerOf(key), "│", { dim: true });
     const style: CellStyle = { color: agentColor(e.from.name), dim: aged, bold: graph.now - e.ts < 10_000 };
-    const s = centerOf("a:" + e.from.name);
+    const s = centerOf("a:" + e.from.id);
     if (e.delivery === "unicast") {
       const targets = targetsOf(e).map((t) => centerOf(t.key));
       const lo = Math.min(s, ...targets);

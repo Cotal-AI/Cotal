@@ -23,13 +23,16 @@ import {
   partsToText,
   type MessageMeta,
   type Presence,
+  type PresenceCondition,
   type PresenceStatus,
   type TransportState,
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
+  type GoalResultFact,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
+import { invokeUserManager } from "./manager-call.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -78,9 +81,9 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 /** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
  *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
  *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-function execBearerCmd(argv: string[]): Promise<string> {
+function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+    execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr.trim() || err.message));
       const bearer = stdout.trim();
       if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
@@ -244,8 +247,8 @@ export const AUTOMATIC_QUEUE_STALL_MS = 600_000;
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
  *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
  *  a checkpoint is answered through). Empty when the payload carries no ask. */
-function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }, seatName: string): string {
-  const escalation = renderEscalation(p, seatName);
+function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }): string {
+  const escalation = renderEscalation(p);
   if (escalation !== "") return escalation;
   const ask = p.ask;
   if (ask === null || typeof ask !== "object") return "";
@@ -256,14 +259,14 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; che
   const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json record>'`;
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;
 }
 
 /** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
  *  carries a schema, and the same answer command an ask uses. The runtime submitted this shape from
  *  the day escalations were relayed, and the seat read `ask` alone: the addressee was woken with a
  *  context block and no question, auto-yielded `done`, and the pause ran to its own expiry. */
-function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }, seatName: string): string {
+function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }): string {
   const cp = p.checkpoint;
   if (cp === null || typeof cp !== "object") return "";
   const c = cp as { prompt?: unknown; schema?: unknown; deadlineAt?: unknown };
@@ -271,7 +274,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
   const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
   const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
   return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json>'`;
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
 }
 
 export class MeshAgent extends EventEmitter {
@@ -1426,13 +1429,13 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }): Promise<ControlReply> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
     const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
@@ -1501,7 +1504,43 @@ export class MeshAgent extends EventEmitter {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     try {
-      r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
+      const input = clean && Object.keys(clean).length ? clean : undefined;
+      if (this.config.userAuth) {
+        const submit = async (signal?: AbortSignal) => {
+          const bearer = await execBearerCmd([
+            ...this.config.userAuth!.bearerCmd,
+            "--manager-call",
+            ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
+          ], signal);
+          return invokeUserManager(this.config, bearer, command, input, { ...opts, signal });
+        };
+        // Subscribe before submission on the renewing main connection. A long accepted launch
+        // must not inherit the short-lived control credential's expiry.
+        r = opts.follow
+          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
+              reconcile: async (goalId, attributed, context) => {
+                const instanceId = attributed.responder?.instanceId;
+                if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
+                const bearer = await execBearerCmd([
+                  ...this.config.userAuth!.bearerCmd,
+                  "--manager-call", "--manager-instance", instanceId,
+                ], context.signal, Math.min(30_000, context.deadlineMs));
+                // Validate the renewed bearer against the accepting identity, not mutable session state.
+                const config = {
+                  ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
+                  userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
+                };
+                const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
+                  signal: context.signal, deadlineMs: Math.min(opts.deadlineMs ?? 10_000, context.deadlineMs),
+                });
+                if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
+                return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+              },
+            })
+          : await submit();
+      } else {
+        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
+      }
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
       // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
@@ -1576,7 +1615,10 @@ export class MeshAgent extends EventEmitter {
    *  as a manager that did not answer. */
   async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>): Promise<ControlReply> {
     await this.requireConnected();
-    return this.managerInvoke(`run-${verb}`, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
+    return this.managerInvoke(`run-${verb}`, args, {
+      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+      ...(verb === "answer" ? { target: { mode: "self" as const } } : {}),
+    });
   }
 
   // ---- the turn relay (seat side) ------------------------------------------------------------
@@ -1651,7 +1693,7 @@ export class MeshAgent extends EventEmitter {
       try {
         const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown; checkpoint?: unknown };
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
-        ask = renderAskRequest(p, this.config.name);
+        ask = renderAskRequest(p);
       } catch { /* opaque payload — surface it as it came */ }
       return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}${ask}`;
     });
@@ -1838,6 +1880,7 @@ export class MeshAgent extends EventEmitter {
     await this.requireConnected();
     const prev = this._status;
     try {
+      if (prev !== "working" && status === "working") await this.ep.setCondition(null);
       await this.publishStatus(status, activity);
     } finally {
       // The transition is a fact about the SEAT, not about whether its presence row was written:
@@ -1874,6 +1917,11 @@ export class MeshAgent extends EventEmitter {
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
+  }
+
+  /** Relay a harness-reported condition into presence, or clear it. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    await this.ep.setCondition(condition);
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the

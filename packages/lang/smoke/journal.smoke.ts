@@ -1419,6 +1419,111 @@ await sleep("3h", { name: "after-the-catch" });
 }
 
 {
+  // A PROGRAM'S OWN REFUSAL KEEPS ITS CODE IN THE SCOPE'S RECORD (#1519). `fanOut` over a literal
+  // list with no ids and no key raises the RuntimeFault L3021 INSIDE the scope (the validator only
+  // warns; the runtime decides on the value), and the settle used to flatten it to `L4000`
+  // scope-fault with the L3021 sentence still inside the message. The same fault outside any scope
+  // always kept its code, so the record and the rethrow disagreed with every resume: live the
+  // program caught `L3021`, every replay read `L4000` off the entry. `runtime` is the kind both
+  // engines' `toProgramError` already bind for this class, so the record answers as the program's
+  // catch does.
+  const journal = new Journal({ run: "r-sf1-a" });
+  let caught: unknown;
+  try {
+    await run(
+      'const a = await spawn("a");\nawait fanOut(["x", "y"], async (x) => { await turn(a, { name: "check" }); return x; }, { name: "sweep" });',
+      { runId: "r-sf1-a", journal, handler: new SimHandler({}) },
+    );
+  } catch (e) {
+    caught = e;
+  }
+  const settled = journal.entries().find((e) => e.kind === "fanOut");
+  ok(
+    "a program refusal raised inside a scope settles under its own catalog code, not the generic L4000",
+    settled?.status === "failed" && settled?.error?.code === "L3021" && settled?.error?.kind === "runtime",
+    { status: settled?.status, error: settled?.error?.code, kind: settled?.error?.kind },
+  );
+  ok(
+    "...and the run still throws the fault itself, which is what the program catches live",
+    (caught as { code?: string })?.code === "L3021",
+    String((caught as Error)?.message).slice(0, 90),
+  );
+
+  // THE RESUME HALF, which is where the flattening did its damage: a replayed failed scope is
+  // delivered as an EffectError built FROM THE RECORD, so a flattened code was not a cosmetic loss
+  // but a different answer on every resume.
+  const seen: unknown[][] = [];
+  let r!: Awaited<ReturnType<typeof run>>;
+  let threw: unknown;
+  try {
+    r = await run(
+      'const a = await spawn("a");\nlet saw = null;\ntry {\n  await fanOut(["x", "y"], async (x) => { await turn(a, { name: "check" }); return x; }, { name: "sweep" });\n} catch (e) { saw = e.code; }\nlog(saw);',
+      { runId: "r-sf1-b", journal: new Journal({ run: "r-sf1-b" }), handler: new SimHandler({}), onLog: (l) => seen.push([...l.values]) },
+    );
+  } catch (e) {
+    threw = e;
+  }
+  ok("the live run catches its own refusal by code", threw === undefined && JSON.stringify(seen) === '[["L3021"]]', { threw: String(threw).slice(0, 60), seen });
+  await resume(
+    'const a = await spawn("a");\nlet saw = null;\ntry {\n  await fanOut(["x", "y"], async (x) => { await turn(a, { name: "check" }); return x; }, { name: "sweep" });\n} catch (e) { saw = e.code; }\nlog(saw);',
+    r.journal,
+    { runId: "r-sf1-b", pins: r.pins, handler: new SimHandler({}), onLog: (l) => seen.push([...l.values]) },
+  );
+  ok(
+    "and a resume over the same journal reads the SAME code the live run caught, not a flattened L4000",
+    JSON.stringify(seen) === '[["L3021"],["L3021"]]',
+    seen,
+  );
+}
+
+{
+  // THE TWO CONTROLS beside it: the classes the ladder must keep recording as it did before.
+  // A plain non-EffectError throw from the handler stays the generic scope fault, and a handler's
+  // own coded EffectError keeps its code and kind through `recordableError`. Both are the same
+  // conclave shape the cells above use, so the only variable is the thrown class.
+  const sim = new SimHandler({});
+  const plain = Object.create(sim) as EffectHandler;
+  plain.openConclave = async () => {
+    throw new Error("plain handler boom");
+  };
+  const journal = new Journal({ run: "r-sf1-c" });
+  try {
+    await run(
+      'const a = await spawn("a");\nconst b = await spawn("b");\nawait conclave([a, b], () => turn(a, { name: "huddle" }), { name: "triage" });',
+      { runId: "r-sf1-c", journal, handler: plain },
+    );
+  } catch {
+    // The scope path rethrows its raw reason; the record is the subject here.
+  }
+  const plainEntry = journal.entries().find((e) => e.kind === "conclave");
+  ok(
+    "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
+    plainEntry?.status === "failed" && plainEntry?.error?.code === "L4000" && plainEntry?.error?.kind === "scope-fault",
+    { status: plainEntry?.status, error: plainEntry?.error?.code, kind: plainEntry?.error?.kind },
+  );
+
+  const coded = Object.create(sim) as EffectHandler;
+  coded.openConclave = async () => {
+    throw new EffectError("L6002", "handler-fault", "the room refused");
+  };
+  const codedJournal = new Journal({ run: "r-sf1-d" });
+  try {
+    await run(
+      'const a = await spawn("a");\nconst b = await spawn("b");\nawait conclave([a, b], () => turn(a, { name: "huddle" }), { name: "triage" });',
+      { runId: "r-sf1-d", journal: codedJournal, handler: coded },
+    );
+  } catch {
+    // Same: the record is the subject.
+  }
+  const codedEntry = codedJournal.entries().find((e) => e.kind === "conclave");
+  ok(
+    "and a handler's own coded failure keeps its code and kind through the same settle",
+    codedEntry?.status === "failed" && codedEntry?.error?.code === "L6002" && codedEntry?.error?.kind === "handler-fault",
+    { status: codedEntry?.status, error: codedEntry?.error?.code, kind: codedEntry?.error?.kind },
+  );
+}
+
+{
   // THE LOAD DOOR, for the second field. Hand-built for the same reason the binding's load cell is:
   // with the write guards in place nothing shipped can produce such an entry.
   const bad = [

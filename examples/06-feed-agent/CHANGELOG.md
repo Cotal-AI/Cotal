@@ -1,5 +1,69 @@
 # @cotal-ai/example-06-feed-agent
 
+## 0.0.27
+
+### Patch Changes
+
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+
+## 0.0.26
+
+### Patch Changes
+
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/core@0.53.0
+
+## 0.0.25
+
+### Patch Changes
+
+- Updated dependencies [5784ec9]
+  - @cotal-ai/core@0.52.1
+
+## 0.0.24
+
+### Patch Changes
+
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [ab0808c]
+  - @cotal-ai/core@0.52.0
+
+## 0.0.23
+
+### Patch Changes
+
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [ec8649b]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+  - @cotal-ai/core@0.51.0
+
+## 0.0.22
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+
 ## 0.0.21
 
 ### Patch Changes

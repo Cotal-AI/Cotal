@@ -24,7 +24,7 @@
  */
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertValidOwnerToken } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "@cotal-ai/core";
 import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
@@ -103,6 +103,8 @@ export interface IssueClaims {
   /** Exchange-authorized elevated view (already ledger-checked upstream; the issuer only stamps —
    *  and re-asserts the closed enum, mint ↔ validate inverse). */
   view?: UserTokenView;
+  /** Exact manager instance bound to the manager-caller view. */
+  managerInstanceId?: string;
   /** Requested lifetime; capped at {@link MAX_TOKEN_TTL_SEC} (an overlong ask THROWS). */
   ttlSec?: number;
 }
@@ -162,6 +164,11 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       throw new Error(
         `issue: view "${String(claims.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - the enum is closed on the mint side too`,
       );
+    if (claims.managerInstanceId !== undefined) assertLifecycleToken(claims.managerInstanceId, "managerInstanceId");
+    if (claims.view === "manager-caller" && claims.managerInstanceId === undefined)
+      throw new Error('issue: view "manager-caller" requires managerInstanceId');
+    if (claims.managerInstanceId !== undefined && claims.view !== "manager-caller")
+      throw new Error('issue: managerInstanceId is valid only with view "manager-caller"');
     const ttl = claims.ttlSec ?? MAX_TOKEN_TTL_SEC;
     if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > MAX_TOKEN_TTL_SEC)
       throw new Error(`issue: ttlSec ${ttl} out of range (0, ${MAX_TOKEN_TTL_SEC}] - the cap is the revocation lever`);
@@ -171,7 +178,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
-      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}) },
+      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}) },
     })
       .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
       .setSubject(claims.owner)

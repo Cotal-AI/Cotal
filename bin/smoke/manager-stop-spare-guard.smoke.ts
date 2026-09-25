@@ -58,7 +58,6 @@ const FROZEN_DROPPED = [
   "implementations/manager/smoke/cli-on-instance-live.smoke.ts",
   "implementations/manager/smoke/manager-deregister.smoke.ts",
   "implementations/manager/smoke/manager-restart-live.smoke.ts",
-  "implementations/manager/smoke/seat-input-live.smoke.ts",
 ] as const;
 
 let pass = 0, fail = 0;

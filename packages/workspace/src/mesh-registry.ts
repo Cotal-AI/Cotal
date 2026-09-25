@@ -36,6 +36,9 @@ export interface MeshEntry {
    *  broker truth: it lives under the user's protected registry dir and is trusted the way the
    *  registry itself is; remote/cross-machine discovery is explicitly out of its scope. */
   userAuth?: UserAuthInfo;
+  /** Closed space policy carried by a user-auth registration. Absent preserves the generic launch
+   *  behavior; `events: "required"` forbids a connector session from joining without its event plane. */
+  policy?: { events: "required" };
   /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
    *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
    *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind
@@ -53,6 +56,11 @@ export interface MeshEntry {
    * The browser console opens one session per pane, so the right number is roughly agents × panes.
    */
   maxSessions?: number;
+  /** The JetStream file storage cap in bytes the running broker was started with (`cotal up
+   *  --max-file-store`). `down --preserve-state` copies it into the preserved launch so the resume
+   *  re-renders it, and a refresh compares a requested cap against it. Absent means the broker runs
+   *  on nats-server's dynamic default. */
+  maxFileStore?: number;
   /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
    *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
    *  decision was recorded (and is what any record written before this field means).
@@ -87,7 +95,20 @@ export interface MeshEntry {
    *  not `cotal down` / `cotal clean all` sweeping a shared root, and not a `cotal up` REFRESH that
    *  merely found a broker already answering (it starts nothing, so it keeps the origin). A `cotal
    *  up` for that space anywhere else refuses outright rather than reclaim the name. */
-  origin?: "up" | "manual";
+  origin?: "up" | "manual" | "catalog";
+  /** Opaque account key for a catalog-owned record. Present iff `origin === "catalog"`; it keeps
+   *  two signed-in accounts at one IdP separate without persisting the subject in the registry. */
+  catalogOwner?: string;
+  /** Provider catalog metadata used only for display and snapshot reconciliation. */
+  catalogId?: string;
+  catalogSlug?: string;
+  catalogName?: string;
+  catalogKind?: string;
+  catalogRole?: string;
+  catalogFetchedAt?: string;
+  catalogError?: string;
+  /** Last successful or attempted trusted policy refresh for a pre-policy manual user registration. */
+  policyCheckedAt?: string;
   /** Present and true when the operator EXPLICITLY accepted registering an overlay address that
    *  this build cannot encrypt (`--allow-unencrypted-overlay`). Recorded rather than inferred: the
    *  address class is re-derivable from `server`, but CONSENT is not, and a dial that happens long
@@ -206,7 +227,7 @@ function meshFile(space: string): string {
  *  older builds). Matched by each document's own `space` - never by decoding the filename, which
  *  would case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh
  *  the canonical file no longer records. A file that will not parse is left for {@link loadMeshes}
- *  to skip. */
+ *  to refuse by name. */
 function removeLegacyMeshFiles(space: string): void {
   let files: string[];
   try {
@@ -270,7 +291,7 @@ export type PruneReason = "gone" | "mismatch";
 
 export function pruneMesh(space: string, reason: PruneReason = "gone"): boolean {
   const m = findMesh(space);
-  if (!m || m.origin === "manual") return false;
+  if (!m || m.origin === "manual" || m.origin === "catalog") return false;
   if (reason === "gone") return false;
   removeMesh(space);
   return true;
@@ -311,7 +332,7 @@ export function meshesForRoot(root: string): MeshEntry[] {
 export function removeMeshesByRoot(root: string): string[] {
   const removed: string[] = [];
   for (const m of meshesForRoot(root)) {
-    if (m.origin === "manual") continue;
+    if (m.origin === "manual" || m.origin === "catalog") continue;
     removeMesh(m.space);
     if (getCurrent() === m.space) clearCurrent();
     removed.push(m.space);
@@ -324,13 +345,60 @@ export function removeMeshesByRoot(root: string): string[] {
  *  mesh still live" asks about its OWN mesh: a hand-registered record co-rooted here points at a
  *  broker on another machine, which the operator cannot stop and must not be blocked by. */
 export function localMeshesForRoot(root: string): MeshEntry[] {
-  return meshesForRoot(root).filter((m) => m.origin !== "manual");
+  return meshesForRoot(root).filter((m) => m.origin !== "manual" && m.origin !== "catalog");
 }
 
-/** All currently-recorded meshes. An unparseable/partially-written entry is skipped, not fatal —
- *  one bad file must not hide the rest. One record per space: if a pre-hex legacy file and the
- *  canonical `space.<hex>` file both name the same space (a crash between {@link recordMesh}'s
- *  write and its legacy sweep), the canonical one wins — it is the newer scheme's write. */
+/** Remove only the discovered entries owned by one proved account. Manual and local entries with
+ *  the same root or IdP are never included. Returns removed names and clears a matching selection. */
+export function removeCatalogMeshes(ownerKey: string): string[] {
+  const removed: string[] = [];
+  for (const m of loadMeshes()) {
+    if (m.origin !== "catalog" || m.catalogOwner !== ownerKey) continue;
+    removeMesh(m.space);
+    if (getCurrent() === m.space) clearCurrent();
+    removed.push(m.space);
+  }
+  return removed.sort();
+}
+
+/** Validate one parsed registry document as a {@link MeshEntry} a consumer can actually use, or
+ *  throw naming the file. Required are the fields every consumer dereferences blindly — the
+ *  renderer pads `server`/`mode` (a missing one was the `reading 'length'` TypeError), the target
+ *  resolver dials `server`, the sweep probes `server` under `root`, and every keyed API addresses
+ *  the record by `space`. Enum fields must hold a value this build understands, and `space` must be
+ *  one the keyed namespaces can address at all ({@link spaceSegment} refuses `.`/`..` and
+ *  ill-formed Unicode, so a record carrying those could be listed but never removed or re-recorded).
+ *
+ *  REFUSED, never repaired: inventing a server would send credentials at whatever address a guess
+ *  produced. REFUSED, never skipped: a skipped record is invisible to `cotal meshes` AND to
+ *  `cotal meshes rm`, so the operator could neither see it nor remove it by name — the only honest
+ *  answer is the file's own name. */
+function assertMeshEntryShape(entry: MeshEntry, file: string): void {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry))
+    throw new Error(`${file} is not a usable mesh record: the document is not an object - restore the record or remove it`);
+  const missing = (["space", "server", "root", "mode", "ts"] as const).filter(
+    (k) => typeof (entry as unknown as Record<string, unknown>)[k] !== "string" || ((entry as unknown as Record<string, unknown>)[k] as string).length === 0,
+  );
+  if (missing.length > 0)
+    throw new Error(`${file} is not a usable mesh record: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing - restore the record or remove it`);
+  if (entry.mode !== "auth" && entry.mode !== "open" && entry.mode !== "user")
+    throw new Error(`${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
+  if (entry.origin !== undefined && entry.origin !== "up" && entry.origin !== "manual" && entry.origin !== "catalog")
+    throw new Error(`${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
+  try {
+    spaceSegment(entry.space);
+  } catch (e) {
+    throw new Error(`${file} is not a usable mesh record: ${(e as Error).message}`);
+  }
+}
+
+/** All currently-recorded meshes, refusing a record this build cannot use BY NAME rather than
+ *  rendering or skipping it. One record per space: if a pre-hex legacy file and the canonical
+ *  `space.<hex>` file both name the same space (a crash between {@link recordMesh}'s write and its
+ *  legacy sweep), the canonical one wins — it is the newer scheme's write. A registry file that
+ *  does not parse or does not carry the {@link MeshEntry} shape throws naming the file; the CLI
+ *  renders that as one `✗` line, so the operator reads WHICH record is wrong instead of a
+ *  TypeError from the renderer (or a silently `undefined` column in `status`). */
 export function loadMeshes(): MeshEntry[] {
   let files: string[];
   try {
@@ -340,19 +408,19 @@ export function loadMeshes(): MeshEntry[] {
   }
   const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
   for (const f of files.sort()) {
+    const file = join(meshesDir(), f);
     let entry: MeshEntry;
     try {
-      entry = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
-    } catch {
-      continue; /* skip a corrupt/half-written entry rather than fail the whole listing */
+      entry = JSON.parse(readFileSync(file, "utf8")) as MeshEntry;
+    } catch (e) {
+      // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
+      // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
+      throw new Error(`${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`);
     }
-    if (typeof entry.space !== "string" || !entry.space) continue; // every consumer keys on space
-    let canonical = false;
-    try {
-      canonical = f === meshFileName(entry.space);
-    } catch {
-      /* a degenerate space name in the doc has no canonical filename - rank it as legacy */
-    }
+    assertMeshEntryShape(entry, file);
+    // Safe unguarded: the shape check above ran `space` through `spaceSegment`, which is the only
+    // throw site of `meshFileName`.
+    const canonical = f === meshFileName(entry.space);
     const prev = bySpace.get(entry.space);
     if (!prev || (canonical && !prev.canonical)) bySpace.set(entry.space, { entry, canonical });
   }

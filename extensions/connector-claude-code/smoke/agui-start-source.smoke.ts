@@ -3,7 +3,8 @@
  *
  * `source: "startup"` is Claude's explicit statement that this is a new session, so a virgin event
  * WAL reads from byte zero. Every retained-history source (`resume`, `fork`, `clear`, `compact`)
- * keeps the generic adopt-at-current-boundary rule. A DEFINED cursor always wins over either mode:
+ * keeps the generic adopt-at-current-boundary rule; `fork` additionally waits for its copied file,
+ * which Claude creates after the hook. A DEFINED cursor always wins over either mode:
  * crash recovery resumes after what the WAL folded and never replays from zero.
  *
  * This is the source-policy half of `smoke:claude-run-error`, whose real broker arm proves the same
@@ -12,7 +13,10 @@
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PresenceStatus } from "@cotal-ai/core";
+import type { MeshAgent } from "@cotal-ai/connector-core";
 import { createClaudeTranscriptSource, readStartupTranscriptWhenReady } from "../src/agui-source.js";
+import { createClaudeHandle } from "../src/hooks.js";
 
 const line = (id: number): string => `${JSON.stringify({ id })}\n`;
 
@@ -137,6 +141,43 @@ try {
     );
   }
 
+  // A fork is retained history in a NEW file that Claude copies after SessionStart. The source waits
+  // for that copy like a startup does, then adopts at its end: none of the copied records replay,
+  // and the fork's first own record is still readable from the adopt cursor.
+  const forkLate = file("fork-late");
+  const forkOutcome = createClaudeTranscriptSource(forkLate, "fork")
+    .read(undefined)
+    .then((read) => ({ read }), (error: unknown) => ({ error: error as Error }));
+  await new Promise<void>((resolve) =>
+    setTimeout(() => {
+      writeFileSync(forkLate, line(14) + line(15));
+      resolve();
+    }, 75),
+  );
+  const forkResult = await forkOutcome;
+  let forkNext: number[] = [];
+  if ("read" in forkResult) {
+    appendFileSync(forkLate, line(16));
+    forkNext = (await createClaudeTranscriptSource(forkLate, "fork").read(forkResult.read.cursor)).records.map((r) => r.value.id);
+  }
+  check(
+    "fork:a-SessionStart-before-the-copied-transcript-exists-waits-for-it-and-adopts-at-its-end",
+    "read" in forkResult && forkResult.read.records.length === 0 && forkNext.join(",") === "16",
+    "error" in forkResult ? forkResult.error.message : { adopted: forkResult.read.records.length, next: forkNext },
+  );
+
+  let forkMissing: Error | undefined;
+  try {
+    await createClaudeTranscriptSource(file("fork-never"), "fork", { startupFileWaitMs: 60 }).read(undefined);
+  } catch (error) {
+    forkMissing = error as Error;
+  }
+  check(
+    "fork:a-copy-that-never-appears-fails-loud-after-the-same-bounded-wait",
+    forkMissing?.message.includes("did not appear within 60ms") === true,
+    forkMissing?.message,
+  );
+
   // Crash recovery: a startup-labelled process can restart with an existing WAL. The defined cursor
   // is the authority; replay-from-zero applies only to an actually virgin frontier.
   const recovery = file("recovery");
@@ -164,7 +205,60 @@ try {
     );
   }
 
-  check("every cell ran", pass + fail === 15, { ran: pass + fail, expected: 15 });
+  // Exercise the shipped hook handler; only the presence/inbox collaborator is replaced.
+  const published: PresenceStatus[] = [];
+  const recordStatus = async (status: PresenceStatus): Promise<void> => { published.push(status); };
+  const agent = {
+    setStatus: recordStatus,
+    resetStatus: recordStatus,
+    setAttention: async () => {},
+    setCondition: async () => {},
+    channelBriefing: () => "",
+    peekInbox: () => [],
+    peekPendingTurns: () => undefined,
+    pendingWake: () => 0,
+  } as unknown as MeshAgent;
+  const { handle } = createClaudeHandle();
+  await handle(agent, { hook_event_name: "SessionStart", source: "startup" });
+  check("presence:a-session-with-no-open-turn-starts-idle", published.join(",") === "idle");
+  await handle(agent, { hook_event_name: "UserPromptSubmit" });
+  const beforeCompact = published.length;
+  await handle(agent, { hook_event_name: "SessionStart", source: "compact" });
+  check(
+    "presence:compact-during-an-open-turn-keeps-working-without-a-status-write",
+    published.at(-1) === "working" && published.length === beforeCompact,
+    published,
+  );
+  await handle(agent, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "README.md" } });
+  await handle(agent, { hook_event_name: "Notification", notification_type: "permission_prompt", message: "Approval needed" });
+  const beforeWaitingCompact = published.length;
+  await handle(agent, { hook_event_name: "SessionStart", source: "compact" });
+  check(
+    "presence:compact-during-a-permission-wait-keeps-waiting-without-a-status-write",
+    published.at(-1) === "waiting" && published.length === beforeWaitingCompact,
+    published,
+  );
+  await handle(agent, { hook_event_name: "SessionStart", source: "future-mode" });
+  check(
+    "presence:an-unknown-source-does-not-reset-an-open-turn",
+    published.at(-1) === "waiting" && published.length === beforeWaitingCompact,
+    published,
+  );
+  for (const terminal of ["Stop", "StopFailure", "SessionEnd"] as const) {
+    await handle(agent, { hook_event_name: "UserPromptSubmit" });
+    await handle(agent, { hook_event_name: terminal });
+    const terminalStatus = published.at(-1);
+    const beforeRestart = published.length;
+    await handle(agent, { hook_event_name: "SessionStart", source: "resume" });
+    check(
+      `presence:${terminal}-closes-the-turn-and-the-next-session-start-resets-idle`,
+      terminalStatus === (terminal === "SessionEnd" ? "offline" : "idle") &&
+        published.at(-1) === "idle" && published.length === beforeRestart + 1,
+      published,
+    );
+  }
+
+  check("every cell ran", pass + fail === 24, { ran: pass + fail, expected: 24 });
   console.log(`claude-start-source smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 } finally {

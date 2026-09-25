@@ -11,7 +11,7 @@
  * binds them to the real MCP server. The behaviour lives here so `smoke/wake-path.smoke.ts`
  * drives the SHIPPED code rather than a copy of it.
  */
-import type { PresenceStatus } from "@cotal-ai/core";
+import type { PresenceCondition, PresenceConditionCode, PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
   fmtFrom,
@@ -71,6 +71,34 @@ function stopFailure(ev: HookEvent): { message: string; code?: string } | undefi
   return {
     message: detail || `claude turn ended on ${code ?? "an unreported error"}`,
     ...(code ? { code } : {}),
+  };
+}
+
+const CLAUDE_FAILURE_CONDITIONS: Record<string, PresenceConditionCode> = {
+  rate_limit: "rate_limit",
+  overloaded: "overloaded",
+  authentication_failed: "auth",
+  oauth_org_not_allowed: "auth",
+  cloud_credential_error: "auth",
+  account_on_hold: "billing",
+  billing_error: "billing",
+  invalid_request: "request",
+  model_not_found: "model",
+  server_error: "server",
+  max_output_tokens: "context",
+  unknown: "failed",
+};
+
+/** Relay Claude Code's closed StopFailure vocabulary without reclassifying absent or unknown input. */
+function failureCondition(ev: HookEvent): PresenceCondition | undefined {
+  if (ev.hook_event_name !== "StopFailure") return undefined;
+  const source = typeof ev.error === "string" && ev.error ? ev.error : undefined;
+  const message = typeof ev.error_details === "string" && ev.error_details.trim() ? ev.error_details.trim() : undefined;
+  return {
+    code: source === undefined ? "failed" : (CLAUDE_FAILURE_CONDITIONS[source] ?? "failed"),
+    ...(source ? { source } : {}),
+    ...(message ? { message } : {}),
+    since: Date.now(),
   };
 }
 
@@ -188,6 +216,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    * command/action awaiting approval, not just "Claude needs your permission".
    */
   let pendingTool: { name: string; detail: string } | undefined;
+  /** SessionStart can arrive during an open turn, including after compaction. */
+  let turnOpen = false;
   /** Batches awaiting a delivery verdict, keyed by the EVENT OBJECT the control server passes to
    *  both `handle` and `onReply`. Frames are separate socket connections and can overlap (a
    *  `PreToolUse` from a parallel tool batch while a `UserPromptSubmit` reply is still being
@@ -214,6 +244,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   const safeStatus = async (agent: MeshAgent, status: PresenceStatus, activity?: string): Promise<void> => {
     try {
       await agent.setStatus(status, activity);
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  const safeCondition = async (agent: MeshAgent, condition: PresenceCondition | null): Promise<void> => {
+    try {
+      await agent.setCondition(condition);
     } catch {
       /* best-effort */
     }
@@ -271,7 +309,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // NOT a turn ending. `SessionStart` fires on compact, clear and resume, and a compaction
           // lands mid-turn: routed through the boundary this published `done` for a run turn the
           // model was still working on.
-          try { await agent.resetStatus("idle"); } catch { /* best-effort */ }
+          // Preserve working or waiting until the turn's own terminal hook arrives.
+          if (!turnOpen) {
+            try { await agent.resetStatus("idle"); } catch { /* best-effort */ }
+          }
           // Reset to fail-open on every (re)start — a crashed/restarted agent must not stay silently
           // deaf. Advisory: the local default is already "open", so a failed write changes nothing.
           try {
@@ -287,6 +328,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return withContext(parts.length ? parts.join("\n\n") : undefined);
         }
         case "UserPromptSubmit": {
+          turnOpen = true;
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           flushEvents(ev.transcript_path);
           await safeStatus(agent, "working");
@@ -313,10 +355,19 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
             ? `${pendingTool.name}${pendingTool.detail ? `: ${pendingTool.detail}` : ""}`
             : msg;
           await safeStatus(agent, "waiting", activity);
+          const notificationType = typeof ev.notification_type === "string" ? ev.notification_type : undefined;
+          if (notificationType === "permission_prompt" || notificationType === "agent_needs_input")
+            await safeCondition(agent, {
+              code: notificationType === "permission_prompt" ? "approval" : "input",
+              source: notificationType,
+              ...(msg ? { message: msg } : {}),
+              since: Date.now(),
+            });
           return {};
         }
         case "Stop":
         case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
+          turnOpen = false;
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
           flushEvents(ev.transcript_path);
           // THE TURN TERMINAL, and it has to be a second call rather than part of the flush. The
@@ -333,6 +384,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // for which signals count and why. `RUN_ERROR` closes the run on its own, so there is no
           // second terminal to follow it.
           closeEvents(Date.now(), stopFailure(ev));
+          if (event === "StopFailure") await safeCondition(agent, failureCondition(ev) ?? null);
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
           // wake one turn so its UserPromptSubmit surfaces the batch. (Ack sites are two: the
@@ -345,6 +397,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
         case "SessionEnd":
+          turnOpen = false;
           flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");
           return {};

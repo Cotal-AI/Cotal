@@ -5,15 +5,34 @@
     "bin/smoke/gen-npm-publish-preflight-dts.mts",
     "bin/smoke/npm-publish-preflight.smoke.ts"
   ],
-  "guard": "The fixed-group npm census refuses partial, incomplete, or stage-only releases before any registry write",
+  "guard": "The fixed-group npm preflight refuses fallback access tokens and partial, incomplete, or stage-only releases before any registry write",
   "command": "pnpm smoke:npm-publish-preflight",
   "completionMarker": "SUITE COMPLETE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/npm-publish-preflight.json",
   "why": [
     "A sequential recursive publish cannot recover after one package version lands and a later package refuses.",
-    "npm OIDC HTTP 201 proves identity, not the direct-publish Allowed action. These mutations remove one fail-before-write property at a time and every one must be killed by the fake registry smoke."
+    "npm OIDC HTTP 201 proves identity, not the direct-publish Allowed action. These mutations remove one fail-before-write property at a time and every one must be killed by the fake registry smoke.",
+    "pnpm can continue after a failed OIDC exchange with an ambient npm access token. The preflight rejects every supported environment credential before its first registry or OIDC request."
   ],
   "mutations": [
+    {
+      "name": "an npm access token is allowed to reach the OIDC exchange",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  const accessTokenVariable = NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES.find((name) => Boolean(env[name]));\n  if (accessTokenVariable) {\n    throw new Error(`publish preflight refused: ${accessTokenVariable} is set; release publishes through OIDC only`);\n  }\n",
+      "replace": "",
+      "expectRed": "NPM_TOKEN refuses before the spawned repository entrypoint requests OIDC",
+      "cell": "NPM_TOKEN refuses before the spawned repository entrypoint requests OIDC",
+      "note": "The spawned repository entrypoint carries NPM_TOKEN plus a local fake registry and OIDC requester. Removing the boundary lets that child exchange OIDC, so the refusal and zero-request assertion both fail."
+    },
+    {
+      "name": "the retired unproven direct-publish guard returns",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (refusedDirect.length) {\n    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);\n  }\n",
+      "replace": "  if (refusedDirect.length) {\n    throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);\n  }\n  const unproven = rows.filter((row) => row.direct !== \"createPackage\"\n    && row.direct !== \"unverifiable:trust-endpoint-needs-npm-token\");\n  if (unproven.length) {\n    throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);\n  }\n",
+      "expectRed": "the three post-census refusals do not retain the removed unproven guard",
+      "cell": "the three post-census refusals do not retain the removed unproven guard",
+      "note": "Every possible direct result is already consumed by the OIDC, stage-only, or direct-publish guards, except the permitted createPackage and 401 outcomes. Restoring this unreachable fourth guard must red the source-contract cell."
+    },
     {
       "name": "an already-published exact version is treated as absent",
       "file": "scripts/preflight-npm-publish.mjs",
@@ -51,8 +70,8 @@
       "file": "scripts/preflight-npm-publish.mjs",
       "find": "    : absent.length === rows.length\n      ? \"all-absent\"\n",
       "replace": "    : absent.length === rows.length\n      ? \"all-present\"\n",
-      "expectRed": "zero-present repository entrypoint reaches the publish authorization stage",
-      "cell": "zero-present repository entrypoint reaches the publish authorization stage"
+      "expectRed": "token-free repository entrypoint reaches the publish authorization stage",
+      "cell": "accept control: a token-free repository entrypoint reaches the publish authorization stage"
     },
     {
       "name": "the recursive publish set may omit one fixed-group package",

@@ -17,6 +17,7 @@ import {
   aclEnv,
   connectorLaunchOptions,
   controlEndpoint,
+  eventChannel,
   launchEnv,
   materialEnv,
 } from "@cotal-ai/connector-core";
@@ -41,6 +42,7 @@ export const piConnector: Connector = {
   requires: ["pi"],
   supportsResume: true,
   supportsSessionContinuation: true,
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.resume && opts.continueSession)
       throw new Error("pi connector: resume (fork source) and continueSession (same session) are mutually exclusive");
@@ -69,10 +71,17 @@ export const piConnector: Connector = {
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
       // extension drops even that once it has read it, so a shell this seat runs inherits neither.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // Arming is separate from the broker's publish grant. The WAL needs a stable root on restart.
+    if (opts.events !== false) {
+      if (!opts.workspaceRoot)
+        throw new Error("pi connector: events were requested without workspaceRoot for the durable event log");
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
@@ -86,6 +95,7 @@ export const piConnector: Connector = {
     // UUID at launch, so even an idle/no-prompt Pi has a recoverable session identity before its
     // first turn (Pi otherwise creates no session until a turn starts).
     const freshSessionId = !opts.resume && !opts.continueSession ? randomUUID() : undefined;
+    if (freshSessionId) env.COTAL_PI_FRESH_SESSION = "1";
     if (opts.resume) args.push("--fork", opts.resume);
     else if (opts.continueSession) args.push("--session-id", opts.continueSession);
     else args.push("--session-id", freshSessionId!);

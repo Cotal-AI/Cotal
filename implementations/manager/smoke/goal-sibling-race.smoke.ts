@@ -121,7 +121,7 @@ try {
   // ── A accepts on its OWN inst rail; its goal is left in flight ────────────────────────────────
   const rA = await epCall(
     callNc, SPACE, { mode: "inst", instanceId: A.managerInstanceId, epoch: A.serviceServe?.grant.epoch ?? 0 },
-    { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "sib", agent: "stuck" } },
+    { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "sib", agent: "stuck", events: false } },
     { deadlineMs: 30_000 },
   );
   tap.unsubscribe();

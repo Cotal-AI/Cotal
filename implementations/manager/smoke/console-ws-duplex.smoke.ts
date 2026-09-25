@@ -59,7 +59,7 @@ try {
   mgr = new Manager({ space, servers: SERVER, runtime: "pty", workspaceRoot, wsPort, consolePort });
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2500;
   await mgr.start();
-  await mgr.startAgent({ name: "echo1", agent: "echo" }); // cat: a clean line-echo pty
+  await mgr.startAgent({ name: "echo1", agent: "echo", events: false }); // cat: a clean line-echo pty
   // The console URL carries the credential in the FRAGMENT, which is how the browser is handed it;
   // the page reads it from `location.hash` and presents it on the routes that need it. Do the same:
   // the mint route is credentialed, and without the token this POST gets a 401 (before the merge it

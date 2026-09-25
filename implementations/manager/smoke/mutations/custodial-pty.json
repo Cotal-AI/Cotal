@@ -21,10 +21,11 @@
     {
       "name": "M2 return a dead handle from production adopt",
       "file": "implementations/manager/src/runtime/custodial-pty.ts",
-      "find": "    const seat = adoptSeatSync(loadSeat(this.root, reference.id));\n    return { ...seat, release: () => seat.close() } as AgentHandle;",
-      "replace": "return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } } as unknown as AgentHandle;",
+      "find": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat,",
+      "replace": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat, pid: -1, status: () => \"exited\" as const,",
       "expectRed": "production adopt returns a live proxy",
       "cell": "production adopt returns a live proxy",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "note": "The mutation is only the adopt return. Spawn still launches a real seat; the successor proxy is what must stay live."
     },
     {

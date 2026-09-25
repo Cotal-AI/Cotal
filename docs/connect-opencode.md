@@ -56,6 +56,13 @@ cotal spawn --agent opencode --model anthropic/claude-sonnet-4-6 --variant high
 A `--variant` on a connector that doesn't support variants is rejected up front; the OpenCode
 connector advertises variant support, so this is the connector where it applies.
 
+For an explicit model pin, the connector checks the running OpenCode server's `/provider`
+listing before joining the mesh. If that server does not list the model, launch refuses with
+the id and names both the server listing and the `opencode models --pure --verbose` CLI catalog.
+The CLI catalog alone does not prove that the server serving this session has the model.
+OpenCode's cold server bootstrap can take longer than the generic 30-second manager check;
+the connector declares a two-minute readiness window for this check and the mesh join.
+
 ## How it binds
 
 OpenCode has a native plugin runtime, so the adapter is **not** an MCP server; a single
@@ -92,13 +99,17 @@ The generic tool surface and the inbound-message model are shared across connect
 
 ## Event plane
 
-A session launched with `cotal spawn --events` publishes a structured account of what it did: run
+A spawned session publishes a structured account of what it did: run
 boundaries per turn, assistant text, and each tool call with its start and its end. Tool
 arguments and tool results are not republished onto this channel.
 The channel is `events.<owner>.<actor>`, named after the session's principal, and the rules for it
 are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for the
-channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
-`--events` spawns; a personal `opencode` with the plugin installed publishes nothing.
+channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by default; pass
+`--no-events` to opt out on an unrestricted space. A required registration carries
+`eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
+personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
+cover the principal-keyed event channel or the connector refuses before joining. The emitter starts
+once the mesh link is up, so a session created before the first bind still publishes.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 

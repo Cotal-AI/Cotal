@@ -19,8 +19,10 @@
  * WHY THIS POLLS AND WHAT THE NUMBERS MEAN. Emptiness is monotone -- a package that serves a version
  * keeps serving it -- so SUCCESS can be reported the moment the missing set empties. Declaring
  * FAILURE is the hard direction, because a partial publish and ordinary registry propagation produce
- * the identical reading. The discriminator is whether the missing set SHRINKS over time, and the
- * samples have to span longer than the propagation window or they are one sample in disguise.
+ * the identical reading. Silence for a calibrated interval is not evidence that a package will never
+ * appear: 0.49.0 held one clean 404 for 12m13s after the package was written. A non-404 registry
+ * failure is no stronger: it says the registry did not answer the question. The registry census has
+ * no positive evidence that a package will never appear, so it never emits PARTIAL on its own.
  *
  * Measured on this repo, polling the per-version endpoint after the publish job reported success:
  *   0.41.2  17/21 -> 17/21 -> 19/21 -> 21/21   (60s apart; reads 1 and 2 IDENTICAL, still pure lag)
@@ -34,10 +36,14 @@
  * insufficient the gate reports UNSETTLED rather than asserting a failure it cannot distinguish from
  * a slow registry.
  *
- * Usage:  node scripts/verify-publish-closure.mjs <version> [--json]
+ * One errored poll is a registry hiccup, not a verdict. Two consecutive errored polls are tolerated;
+ * a third bounds the ambiguity after 30 seconds at the default cadence. The I/O budget includes those
+ * two retries beyond the 10-minute decision deadline and remains well inside the job's 15-minute cap.
+ *
+ * Usage:  node scripts/verify-publish-closure.mjs <version> [--json] [--recheck]
  * Exit:   0 PUBLISHED  — the whole closure is live; a Release may be cut
- *         1 PARTIAL    — some of the group live and some not. The dangerous case; do NOT cut
- *         2 UNSETTLED  — still moving, or the deadline passed. Cannot tell; skip rather than guess
+ *         1 PARTIAL    — reserved for positive publisher evidence; this registry census cannot emit it
+ *         2 UNSETTLED  — incomplete or errored. Cannot tell; skip rather than guess
  *         3 NONE       — nothing published at all (an ordinary version-PR push). Skip, not a failure
  */
 import { readFileSync } from "node:fs";
@@ -50,8 +56,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = {
   registryBase: "https://registry.npmjs.org",
   pollIntervalMs: 15_000,
-  // A missing set must hold UNCHANGED for at least this long before it counts as a real partial
-  // publish. Must exceed the observed propagation window (~2 min) with margin; see the header.
+  // The stability window still distinguishes NONE, because an all-404 version is an ordinary
+  // version-PR push rather than a partial publish. A subset of 404s never becomes decisive from
+  // silence alone; it waits for the deadline evidence rule below.
   stableWindowMs: 300_000,
   // 10 minutes, not 15: the release job runs under `timeout-minutes: 15`, so a deadline equal to
   // the job's own budget means the UNSETTLED path loses to the Actions timeout and reds the job
@@ -63,6 +70,17 @@ export const DEFAULTS = {
   // connection and never sent headers parked the gate inside a single await, the budget could not
   // bind, and the job timeout reddened a fully healthy release.
   deadlineMs: 600_000,
+  // Tolerate two consecutive no-evidence polls. This guarantees that one transient poll neither
+  // resets the observation nor ends the run, while the third bounds a sustained registry failure.
+  maxConsecutiveErrorPolls: 2,
+};
+
+export const RECHECK_DEFAULTS = {
+  registryBase: DEFAULTS.registryBase,
+  pollIntervalMs: 1_000,
+  stableWindowMs: 5_000,
+  deadlineMs: 15_000,
+  maxConsecutiveErrorPolls: DEFAULTS.maxConsecutiveErrorPolls,
 };
 
 /**
@@ -77,21 +95,29 @@ export function parseOptions(argv, base = DEFAULTS) {
     "--poll-interval-ms": "pollIntervalMs",
     "--stable-window-ms": "stableWindowMs",
     "--deadline-ms": "deadlineMs",
+    "--max-consecutive-error-polls": "maxConsecutiveErrorPolls",
   };
   for (const arg of argv) {
     const [flag, raw] = arg.split("=", 2);
-    if (flag === "--registry") {
+    if (!flag.startsWith("--") || flag === "--json" || flag === "--recheck") {
+      continue;
+    } else if (flag === "--registry") {
       if (!raw) throw new Error("--registry needs a value");
       opts.registryBase = raw.replace(/\/+$/, "");
     } else if (numeric[flag]) {
       const value = Number(raw);
       if (!Number.isFinite(value) || value < 0) throw new Error(`${flag} needs a non-negative number`);
       opts[numeric[flag]] = value;
+    } else {
+      throw new Error(`unknown option: ${flag}`);
     }
   }
+  if (!Number.isInteger(opts.maxConsecutiveErrorPolls)) {
+    throw new Error("--max-consecutive-error-polls needs a non-negative integer");
+  }
   if (opts.deadlineMs < opts.stableWindowMs) {
-    // Otherwise the deadline fires first every time and PARTIAL is unreachable: the gate could
-    // never raise the one verdict it exists to raise.
+    // Otherwise an all-404 version reaches the deadline before the NONE stability window, so the
+    // ordinary no-publish path becomes UNSETTLED instead of its distinct harmless skip.
     throw new Error("--deadline-ms must be at least --stable-window-ms");
   }
   if (opts.stableWindowMs < opts.pollIntervalMs) {
@@ -134,25 +160,30 @@ export function versionUrl(base, pkg, version) {
  * Classify one reading. Split out from the polling so the decision can be exercised directly:
  * the thing worth testing is the rule, not the sleeping.
  */
-export function classify({ missing, errored = [], total, unchangedForMs, elapsedMs }, opts = DEFAULTS) {
-  // A scan carrying transport errors is not an observation of the closure, so it can never settle
-  // into `published`, `none` or `partial` -- the three verdicts that decide whether a Release is cut
-  // or a failure is raised. It can only keep polling, or time out as "cannot tell".
+export function classify({
+  missing,
+  errored = [],
+  failed = [],
+  confirmedErrored = [],
+  total,
+  unchangedForMs,
+  elapsedMs,
+}, opts = DEFAULTS) {
+  // A scan carrying errors is not an observation of the closure. It can keep polling or end as
+  // cannot-tell after the bound. Repetition bounds the run; it does not turn a failed registry answer
+  // into evidence that the package will never appear.
   const clean = errored.length === 0;
   if (!clean) {
-    if (elapsedMs >= opts.deadlineMs) return { state: "unsettled", missing, errored, why: "transport" };
-    return { state: "polling", missing, errored };
+    if (confirmedErrored.length === 0) return { state: "polling", missing, errored };
+    return { state: "unsettled", missing, errored, why: failed.length > 0 ? "registry-error" : "transport" };
   }
   if (missing.length === 0) return { state: "published" };
-  if (unchangedForMs >= opts.stableWindowMs) {
-    // NOTHING published is not a partial publish. A version-PR push runs this job and publishes no
-    // package at all, which is ordinary and must stay the harmless skip it has always been; calling
-    // it a failure would red every such push. A PARTIAL is the dangerous case the gate exists for:
-    // SOME of the lockstep group live and some not.
-    if (missing.length === total) return { state: "none", missing };
-    return { state: "partial", missing };
+  // NOTHING published is not a partial publish. A version-PR push runs this job and publishes no
+  // package at all, which is ordinary and must stay the harmless skip it has always been.
+  if (missing.length === total && unchangedForMs >= opts.stableWindowMs) return { state: "none", missing };
+  if (elapsedMs >= opts.deadlineMs) {
+    return { state: "unsettled", missing, why: "deadline" };
   }
-  if (elapsedMs >= opts.deadlineMs) return { state: "unsettled", missing, why: "deadline" };
   return { state: "polling", missing };
 }
 
@@ -178,6 +209,7 @@ async function readWithinBudget(fetchImpl, url, remainingMs) {
 async function readClosure(packages, version, opts, fetchImpl, budgetEndsAt) {
   const missing = [];
   const errored = [];
+  const failed = [];
   for (const pkg of packages) {
     // Real time, deliberately, and not the injected clock: this bounds real sockets, while the
     // injected clock exists so cells can simulate a long propagation window without waiting. Once
@@ -220,16 +252,21 @@ async function readClosure(packages, version, opts, fetchImpl, budgetEndsAt) {
         if (body && body.name === pkg && body.version === version) continue;
         // The body was parseable but does not identify this package at this version.
         errored.push(pkg);
+        failed.push(pkg);
       } catch {
         // Unparseable or unreadable body: no evidence about the package.
         errored.push(pkg);
+        failed.push(pkg);
       }
       continue;
     }
     if (status === 404) missing.push(pkg);
-    else errored.push(pkg);
+    else {
+      errored.push(pkg);
+      failed.push(pkg);
+    }
   }
-  return { missing, errored };
+  return { missing, errored, failed };
 }
 
 /**
@@ -256,19 +293,24 @@ export async function verifyClosure(version, {
 } = {}) {
   const started = now();
   const ioStarted = Date.now();
-  const budgetEndsAt = ioStarted + opts.deadlineMs;
+  const budgetEndsAt = ioStarted + opts.deadlineMs
+    + opts.pollIntervalMs * opts.maxConsecutiveErrorPolls;
   let previous = null;
   let unchangedSince = started;
+  const consecutiveErrors = new Map(packages.map((pkg) => [pkg, 0]));
   const reads = [];
 
   for (;;) {
-    const { missing, errored } = await readClosure(packages, version, opts, fetchImpl, budgetEndsAt);
-    if (errored.length > 0) {
-      // No continuous observation across an error, so the stability window restarts rather than
-      // counting the outage as though the set had held.
-      previous = null;
-      unchangedSince = now();
-    } else {
+    const { missing, errored, failed } = await readClosure(packages, version, opts, fetchImpl, budgetEndsAt);
+    const erroredSet = new Set(errored);
+    for (const pkg of packages) {
+      if (erroredSet.has(pkg)) consecutiveErrors.set(pkg, (consecutiveErrors.get(pkg) ?? 0) + 1);
+      else consecutiveErrors.set(pkg, 0);
+    }
+    const confirmedErrored = errored.filter(
+      (pkg) => (consecutiveErrors.get(pkg) ?? 0) > opts.maxConsecutiveErrorPolls,
+    );
+    if (errored.length === 0) {
       const key = missing.join(" ");
       if (previous === null || key !== previous) unchangedSince = now();
       previous = key;
@@ -282,7 +324,15 @@ export async function verifyClosure(version, {
     reads.push({ published: packages.length - missing.length - errored.length, missing: [...missing], errored: [...errored], elapsedMs });
     log(`  published=${packages.length - missing.length - errored.length}/${packages.length} missing=[${missing.join(" ")}] errored=[${errored.join(" ")}] unchanged_for=${Math.round(unchangedForMs / 1000)}s`);
 
-    const verdict = classify({ missing, errored, total: packages.length, unchangedForMs, elapsedMs }, opts);
+    const verdict = classify({
+      missing,
+      errored,
+      failed,
+      confirmedErrored,
+      total: packages.length,
+      unchangedForMs,
+      elapsedMs,
+    }, opts);
     if (verdict.state !== "polling") return { ...verdict, reads, packages: packages.length };
     await sleep(opts.pollIntervalMs);
   }
@@ -296,11 +346,15 @@ const EXIT = { published: 0, partial: 1, unsettled: 2, none: 3 };
 async function main(argv) {
   const version = argv.find((a) => !a.startsWith("--"));
   const asJson = argv.includes("--json");
+  const recheck = argv.includes("--recheck");
   if (!version) {
-    process.stderr.write("usage: verify-publish-closure.mjs <version> [--json]\n");
+    process.stderr.write("usage: verify-publish-closure.mjs <version> [--json] [--recheck]\n");
     return 2;
   }
-  const opts = parseOptions(argv);
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version)) {
+    throw new Error(`invalid version: ${version}`);
+  }
+  const opts = parseOptions(argv, recheck ? RECHECK_DEFAULTS : DEFAULTS);
   const configPath = resolve(ROOT, ".changeset/config.json");
   const packages = closureFromConfig(readFileSync(configPath, "utf8"), configPath);
   if (!asJson) process.stdout.write(`closure: ${packages.length} packages in the fixed group\n`);
@@ -318,11 +372,13 @@ async function main(argv) {
   } else if (result.state === "none") {
     process.stdout.write(`VERDICT: nothing published — no package serves ${version}; skipping the Release.\n`);
   } else if (result.state === "partial") {
-    process.stdout.write(`VERDICT: PARTIAL PUBLISH — missing set unchanged past the stability window.\n`);
+    process.stdout.write(`VERDICT: PARTIAL PUBLISH — positive publisher evidence says the closure is incomplete.\n`);
     process.stdout.write(`  missing: ${result.missing.join(" ")}\n`);
-    process.stdout.write(`  This is not registry lag. Do not cut a Release; report it.\n`);
+    process.stdout.write(`  Do not cut a Release; report it.\n`);
   } else {
-    process.stdout.write(`VERDICT: UNSETTLED — still ${result.missing.length} missing and the set was still moving.\n`);
+    process.stdout.write(`VERDICT: UNSETTLED — the registry census cannot establish closure.\n`);
+    if (result.missing.length > 0) process.stdout.write(`  missing: ${result.missing.join(" ")}\n`);
+    if (result.errored?.length > 0) process.stdout.write(`  errored: ${result.errored.join(" ")}\n`);
     process.stdout.write(`  Treat as "cannot tell", not as a failure.\n`);
   }
   return EXIT[result.state];

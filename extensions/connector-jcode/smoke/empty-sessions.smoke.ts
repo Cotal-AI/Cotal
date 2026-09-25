@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -118,33 +118,54 @@ try {
   mkdirSync(join(emptyHome, "sessions"), { recursive: true, mode: 0o700 });
   const empty = startHost(emptyName, {});
   child = empty.child;
-  await waitFor("empty-sessions create_session", () =>
-    entriesOf(empty.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
-  );
-  await waitFor("empty-sessions orientation", () =>
-    entriesOf(empty.log).find(
-      (entry) =>
-        entry.ev === "request" &&
-        entry.frame?.req === "send_message" &&
-        String((entry.frame as { content?: string }).content).includes("cotal_orientation"),
-    ),
-  );
-  const emptyErr = empty.stderr();
-  const emptyReqs = entriesOf(empty.log).filter((entry) => entry.ev === "request");
-  check("an empty sessions directory still starts a fresh session", /started a fresh session/.test(emptyErr), emptyErr);
-  check(
-    "list_sessions is not sent when sessions is an empty directory",
-    !emptyReqs.some((entry) => entry.frame?.req === "list_sessions"),
-    emptyReqs.map((entry) => entry.frame?.req),
-  );
-  check("the empty-directory seat does not die as startup failed (unknown)", !/startup failed \(unknown\)/.test(emptyErr), emptyErr);
-  check("the empty-directory seat is still running after readiness", empty.child.exitCode === null, {
-    code: empty.child.exitCode,
-    stderr: emptyErr,
+  // The accept control AND its negative anchor: an early refusal of this seat (a check that
+  // fires on a directory the harness could perfectly well use) must fail HERE by name, not as
+  // an anonymous suite timeout. The 20s bound is generous for a healthy boot (~2s measured).
+  await waitFor(
+    "empty-sessions create_session",
+    () => entriesOf(empty.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
+    20_000,
+  ).catch((error: Error) => {
+    check(
+      "an empty sessions directory still starts a fresh session",
+      false,
+      `the empty writable directory never reached create_session: ${(error as Error).message}\nhost stderr:\n${empty.stderr()}`,
+    );
   });
-  empty.child.kill("SIGTERM");
-  await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
-  check("the empty-directory seat exits cleanly", empty.child.exitCode === 0, { code: empty.child.exitCode, stderr: empty.stderr() });
+  if (!existsSync(empty.log) || !entriesOf(empty.log).some((entry) => entry.req === "create_session")) {
+    empty.child.kill("SIGTERM");
+    await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
+  } else {
+    await waitFor("empty-sessions orientation", () =>
+      entriesOf(empty.log).find(
+        (entry) =>
+          entry.ev === "request" &&
+          entry.frame?.req === "send_message" &&
+          String((entry.frame as { content?: string }).content).includes("cotal_orientation"),
+      ),
+    );
+    const emptyErr = empty.stderr();
+    const emptyReqs = entriesOf(empty.log).filter((entry) => entry.ev === "request");
+    check("an empty sessions directory still starts a fresh session", /started a fresh session/.test(emptyErr), emptyErr);
+    check(
+      "list_sessions is not sent when sessions is an empty directory",
+      !emptyReqs.some((entry) => entry.frame?.req === "list_sessions"),
+      emptyReqs.map((entry) => entry.frame?.req),
+    );
+    check("the empty-directory seat does not die as startup failed (unknown)", !/startup failed \(unknown\)/.test(emptyErr), emptyErr);
+    check("the empty-directory seat is still running after readiness", empty.child.exitCode === null, {
+      code: empty.child.exitCode,
+      stderr: emptyErr,
+    });
+    empty.child.kill("SIGTERM");
+    await Promise.race([once(empty.child, "exit"), sleep(15_000)]);
+    check("the empty-directory seat exits cleanly", empty.child.exitCode === 0, { code: empty.child.exitCode, stderr: empty.stderr() });
+    check(
+      "the write probe leaves nothing behind in a writable sessions directory",
+      readdirSync(join(emptyHome, "sessions")).every((entry) => !entry.startsWith(".cotal-write-probe-")),
+      readdirSync(join(emptyHome, "sessions")),
+    );
+  }
 
   const panicName = "panicpeer";
   const panicHome = managedHome("jcodeempty", panicName);
@@ -171,36 +192,80 @@ try {
   const lockedSessions = join(lockedHome, "sessions");
   mkdirSync(lockedSessions, { recursive: true, mode: 0o700 });
   if (process.platform === "win32") {
-    check("the unreadable sessions directory is named to the operator (unreachable on Windows)", true);
+    check("the unwritable sessions directory refuses before the harness is asked (unreachable on Windows)", true);
   } else {
-    // The local inspection runs on every managed seat's startup path. A directory it cannot read
-    // must not be fatal: this home starts fine on the pre-change connector, so killing it here
-    // would be a regression that reintroduces the exact `unknown` death this change removes.
+    // #1538: the harness accepts create_session on a sessions/ it cannot write and dies only while
+    // persisting the session during the first turn, outside every guard the connector owns, so the
+    // seat used to render as `startup failed (unknown)`. The connector must refuse first, before
+    // any create_session reaches the harness, naming the path and the errno.
     chmodSync(lockedSessions, 0o000);
     const locked = startHost(lockedName, {});
     child = locked.child;
     try {
-      // A timeout here is the regression itself, so it must redden a NAMED cell rather than
-      // aborting the suite anonymously: a mutation-proof run needs a cell name to anchor on.
-      await waitFor("unreadable-sessions create_session", () =>
-        entriesOf(locked.log).find((entry) => entry.ev === "session_path" && entry.req === "create_session"),
-      ).catch(() => undefined);
+      // The refusal must win the race with the harness ask: wait for the host to EXIT, not for a
+      // request, so a regression that reaches create_session first still terminates this cell on
+      // the exit's own terms rather than hanging until the suite-wide timeout.
+      const lockedExit = await Promise.race([once(locked.child, "exit"), sleep(20_000).then(() => undefined)]);
       const lockedErr = locked.stderr();
-      // The only claim this fixture can honestly make. The harness reads AND WRITES this directory,
-      // accepts create_session, and fails later while persisting, outside any guard the connector
-      // owns; on real jcode v0.81.5 the seat still dies and main dies identically. So the connector
-      // does not promise the seat survives, and asserting `never unknown` here would be a claim the
-      // real binary disproves. What it does promise, and what an operator needs before the harness
-      // death, is the path and the errno. Making the seat survive an unwritable home is #1538.
       check(
-        "the unreadable sessions directory is named to the operator",
-        /stored sessions directory could not be read \(.*sessions: EACCES\)/.test(lockedErr),
+        "the unwritable sessions directory exits non-zero before the seat joins",
+        lockedExit !== undefined && locked.child.exitCode === 1,
+        { exit: locked.child.exitCode, stderr: lockedErr },
+      );
+      check(
+        "the unwritable sessions directory never reaches the harness",
+        !existsSync(locked.log) || !entriesOf(locked.log).some((entry) => entry.frame?.req === "create_session"),
+        existsSync(locked.log) ? entriesOf(locked.log).map((entry) => entry.frame?.req ?? entry.ev) : ["(no harness log)"],
+      );
+      check(
+        "the refusal names sessions_unwritable, the path, and EACCES",
+        /startup failed \(sessions_unwritable\)/.test(lockedErr) &&
+          /cannot persist sessions at \S*sessions \(EACCES\)/.test(lockedErr),
         lockedErr,
       );
+      check("the unwritable sessions directory never renders as unknown", !/startup failed \(unknown\)/.test(lockedErr), lockedErr);
     } finally {
       chmodSync(lockedSessions, 0o700);
       locked.child.kill("SIGTERM");
       await Promise.race([once(locked.child, "exit"), sleep(15_000)]);
+    }
+  }
+
+  const writeOnlyName = "writeonlypeer";
+  const writeOnlyHome = managedHome("jcodeempty", writeOnlyName);
+  const writeOnlySessions = join(writeOnlyHome, "sessions");
+  mkdirSync(writeOnlySessions, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") {
+    check("the write-only sessions directory refuses before the harness is asked (unreachable on Windows)", true);
+  } else {
+    // #1538 round 2: mode 0200 carries the write bit and no search bit, so a permission test on
+    // the directory alone (access W_OK, or the mode bits) passes while creating a file inside
+    // fails EACCES - the exact gap that let the harness accept create_session and the seat die
+    // as startup failed (unknown). The refusal must key on the create the harness performs.
+    chmodSync(writeOnlySessions, 0o200);
+    const writeOnly = startHost(writeOnlyName, {});
+    child = writeOnly.child;
+    try {
+      const writeOnlyExit = await Promise.race([once(writeOnly.child, "exit"), sleep(20_000).then(() => undefined)]);
+      const writeOnlyErr = writeOnly.stderr();
+      check(
+        "the write-only sessions directory refuses before the harness is asked",
+        writeOnlyExit !== undefined &&
+          writeOnly.child.exitCode === 1 &&
+          /startup failed \(sessions_unwritable\)/.test(writeOnlyErr) &&
+          /EACCES/.test(writeOnlyErr) &&
+          !/startup failed \(unknown\)/.test(writeOnlyErr),
+        { exit: writeOnly.child.exitCode, stderr: writeOnlyErr },
+      );
+      check(
+        "the write-only sessions directory never reaches the harness",
+        !existsSync(writeOnly.log) || !entriesOf(writeOnly.log).some((entry) => entry.frame?.req === "create_session"),
+        existsSync(writeOnly.log) ? entriesOf(writeOnly.log).map((entry) => entry.frame?.req ?? entry.ev) : ["(no harness log)"],
+      );
+    } finally {
+      chmodSync(writeOnlySessions, 0o700);
+      writeOnly.child.kill("SIGTERM");
+      await Promise.race([once(writeOnly.child, "exit"), sleep(15_000)]);
     }
   }
 

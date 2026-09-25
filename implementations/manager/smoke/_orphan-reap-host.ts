@@ -63,8 +63,8 @@ await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 if (process.env.REPRO_SPAWN === "1") {
-  let reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo }, undefined, hooks);
-  for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo }, undefined, hooks); }
+  let reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo, events: false }, undefined, hooks);
+  for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: alias, agent: "orphan-reap-repro", cwd: repo, events: false }, undefined, hooks); }
   if (!reply.ok) {
     process.stdout.write(`REPRO_SPAWN ${JSON.stringify({ managerPid: process.pid, managerInstanceId, reply })}\n`);
     await new Promise<void>(() => {});

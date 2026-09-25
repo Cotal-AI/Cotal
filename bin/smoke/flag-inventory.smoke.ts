@@ -49,15 +49,21 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
+      // `--accept-stale-checkpoint` (2026-09): gate 3's only override on the preserved-resume path.
+      "accept-stale-checkpoint:boolean",
       // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
       "rotate-sys:boolean",
+      // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
+      "max-file-store:string",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
   },
   // `--space` (2026-07): selects the mesh for target-addressed components (`cotal down web --space <name>`).
-  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "space:string", "store-dir:string", "with-agents:boolean"], positionals: true },
+    // `--session-store` (2026-09): repeatable operator input naming the harness transcript store a
+  // preserve-state cut captures with each continuation-capable seat. No default, never inferred.
+  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "session-store:string", "space:string", "store-dir:string", "with-agents:boolean"], positionals: true },
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
   // `meshes` gained the registry-maintenance verbs (2026-08): `add <space> --server … [--root]
   // [--mode]` registers a mesh this machine did NOT start, `rm <space> …` drops records. `--force`
@@ -70,6 +76,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
+  // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
+  sync: { flags: ["idp:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
@@ -167,6 +175,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
+  // `service` (2026-09): the manager as a user service; the subcommand is the positional.
+  service: { flags: ["json:boolean", "linger:boolean", "mesh:string"], positionals: true },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },

@@ -128,6 +128,16 @@
       "expectRed": "reapSeat signals a live seat by identity and proves it gone",
       "cell": "reapSeat signals a live seat by identity and proves it gone",
       "note": "A reader that rebuilds the record without the stamp makes every seat unreapable: the custodian writes the boot, readRecord forgets it, and reapSeat refuses the record it was handed."
+    },
+    {
+      "name": "ungate group sweep in reapSeat regardless of leader status",
+      "file": "packages/seat/src/reap.ts",
+      "find": "  let group = 0;\n  if (groupKilled) {",
+      "replace": "  let group = 0;\n  if (true) {",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build",
+      "expectRed": "a pid whose start identity differs from the record is treated as gone, never signalled",
+      "cell": "a pid whose start identity differs from the record is treated as gone, never signalled",
+      "note": "Ungating the group sweep causes reapSeat to signal pgid childPid even when the recorded child is gone by start identity and its former PID was reused by an unrelated process group leader."
     }
   ]
 }

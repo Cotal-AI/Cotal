@@ -248,6 +248,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
 | `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
 | `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
+| `events` | boolean | no | Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default. |
 
 ## `cotal_feedback`
 

@@ -1,0 +1,35 @@
+{
+  "suite": [
+    "implementations/manager/smoke/remote-manager-goal-reader.smoke.ts"
+  ],
+  "guard": "real two-owner remote readiness and mediated canonical terminal reads without participant host authority",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
+  "completionMarker": "REMOTE-MANAGER-GOAL-READER COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/remote-manager-goal-reader.json",
+  "why": [
+    "Two actual CLI supervisors authenticate through the real IdP/exchange and share one native broker account.",
+    "Only the connector edge refuses process launch; manager/provider/auth/registration code is not patched.",
+    "Failed accepted spawns exercise the actual remote scoped goal-writer and goal-result command. This does not prove successful remote managed-agent enrollment.",
+    "Baseline asserts30 cells; a prerequisite refusal ends early with truthful counts and proven cleanup."
+  ],
+  "mutations": [
+    {
+      "name": "omit remote service status publication",
+      "file": "implementations/manager/src/remote-register.ts",
+      "find": "    await writeServiceStatus(recordsKv, {\n      endpoint: MANAGER_ENDPOINT,\n      instanceId: args.instanceId,\n      epoch: observed.processEpoch,\n      status: {\n        state: SERVICE_READY,\n        epoch: observed.processEpoch,\n        observedSpecRevision: observed.registrationRevision,\n      },\n      readProcessEpoch: async () => {\n        const current = await fence.observe();\n        if (!current) throw new Error(\"remote manager issuance gate vanished\");\n        return current.processEpoch;\n      },\n    });\n",
+      "replace": "    // Mutant omits remote service status publication.\n",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "owner A selects its own live remote manager",
+      "cell": "owner A selects its own live remote manager"
+    },
+    {
+      "name": "omit real mediated result read",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));",
+      "replace": "const result = undefined;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "owner 0 reads a canonical failed terminal over actual goal-result",
+      "cell": "owner 0 reads a canonical failed terminal over actual goal-result"
+    }
+  ]
+}

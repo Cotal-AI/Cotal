@@ -93,6 +93,44 @@ export interface RemoteManagerAuthorityMaterial {
   }>;
 }
 
+/** Closed host-owned maintenance request for one remote manager registration. The participant
+ * names an operation and, for eviction, one claimed family holder. The host re-binds every
+ * coordinate to the authenticated owner and current registration before it acts. */
+export interface RemoteManagerMaintenanceRequest {
+  v: 1;
+  kind: "manager-service-maintenance";
+  operation: "evict-family-principal" | "reconcile-registration";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** Instance whose frozen gate or credential family the host operation touches. Eviction requires
+   * this to equal `instanceId`; reconciliation may name a foreign slot holder in the same space. */
+  targetInstanceId: string;
+  /** Required only for `evict-family-principal`. Membership is host-enumerated, never trusted. */
+  principal?: string;
+}
+
+/** Exact maintenance request echo plus the host-owned result. */
+export interface RemoteManagerMaintenanceResult {
+  v: 1;
+  kind: "manager-service-maintenance";
+  operation: RemoteManagerMaintenanceRequest["operation"];
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  targetInstanceId: string;
+  principal?: string;
+  eviction?: import("./evict.js").EvictionResult;
+  reconciliation?: import("./endpoint-reconcile.js").GateReconcileReport;
+}
+
 /**
  * Closed request for a remote manager to revalidate one retained managed agent on its host.
  *

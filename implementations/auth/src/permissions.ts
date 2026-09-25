@@ -33,9 +33,15 @@ export type AclResolver = (
  *    have them agree, else it is rejected (the confused-authority guard the Q4 review required closed the
  *    moment `permissionsFor(validated)` became production).
  */
+export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string) => Record<string, unknown>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> {
+  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
+): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export function calloutPermissions(
+  resolveAcl: AclResolver,
+  authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
+): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
   return (t, connId) => {
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
     const caps = t.act.scope ?? [];
@@ -75,10 +81,21 @@ export function calloutPermissions(
       // required scope, or nothing is minted. View names ARE profile names (a closed enum,
       // never a client-chosen profile passthrough); channel ACLs don't apply to these profiles.
       const need = VIEW_REQUIRED_SCOPE[t.act.view];
-      if (!caps.includes(need))
+      if (need !== undefined && !caps.includes(need))
         throw new Error(`callout permissions: view "${t.act.view}" without capability "${need}" in act.scope - refusing to mint`);
       if (t.act.view === "manager-service")
         throw new Error('callout permissions: "manager-service" is a typed material exchange, not a connect profile; raw view bearers are refused');
+      if (t.act.view === "manager-caller") {
+        const instanceId = t.act.managerInstanceId!;
+        if (!authorizeManagerCaller)
+          throw new Error("callout permissions: manager-caller needs the server-side manager gate authorizer");
+        return authorizeManagerCaller(t.owner, instanceId).then(() => permissionsFor(
+          "manager-caller",
+          t.space,
+          { ...principal, lifecycleUid: t.act.lifecycleUid },
+          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId },
+        ));
+      }
       return permissionsFor(
         t.act.view,
         t.space,

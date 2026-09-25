@@ -1,5 +1,30 @@
 # @cotal-ai/pi
 
+## 0.54.0
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+### Patch Changes
+
+- 3322a2c: The pi adapter hands pi the plain Zod JSON Schema render instead of a TypeBox-branded copy, so a JSON round-trip of every tool's parameters carries only schema keywords and a strict provider no longer refuses the declarations.
+
+## 0.51.0
+
+### Minor Changes
+
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 7885a2b: Publish Pi's native persisted assistant and tool boundaries as durable AG-UI events at completed-message granularity.
+
+## 0.50.1
+
 ## 0.50.0
 
 ### Patch Changes

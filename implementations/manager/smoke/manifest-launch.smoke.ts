@@ -84,6 +84,7 @@ const resolved: MeshLaunchAgent = {
   description: "Quick web researcher.",
   body: "Research the web; report in 3 bullets.",
   prompt: "Kick off: post your research plan in #general.",
+  events: false,
   capabilities: ["spawn"],
   subscribe: ["general", "ops"],
   allowSubscribe: ["general", "ops", "review"],
@@ -234,14 +235,14 @@ function writeSpec(name: string, body: unknown): string {
     owner: "u_" + "c".repeat(26),
     agents: [{
       name: "scout", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
-      body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
+      body: "Research; 3 bullets.", events: false, capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
       allowPublish: ["general"], personaPath: undefined, hash: "abc123",
     }, {
       // A NON-COLLIDING declared name. `scout` is already live from the startAgent test above, so
       // under M6 it refuses (asserted below) — and the ledger-keying invariants that used to ride
       // on the collision-numbered `scout-2` have to keep running somewhere, so they ride this.
       name: "ranger", agent: "smoke-launch", role: "researcher", model: "opus", variant: "high", description: "Quick researcher.",
-      body: "Research; 3 bullets.", capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
+      body: "Research; 3 bullets.", events: false, capabilities: ["spawn"], subscribe: ["general"], allowSubscribe: ["general", "ops"],
       allowPublish: ["general"], personaPath: undefined, hash: "abc123",
     }],
   };
@@ -303,7 +304,7 @@ function writeSpec(name: string, body: unknown): string {
     space: "demo",
     runId: runId3,
     agents: [{
-      name: "pusher", agent: "smoke-launch", role: "researcher", model: "opus", body: "Inline persona.",
+      name: "pusher", agent: "smoke-launch", role: "researcher", model: "opus", body: "Inline persona.", events: false,
       subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"], personaPath: undefined, hash: "def456",
     }],
   };

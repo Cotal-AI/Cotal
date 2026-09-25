@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
-import { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
+import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
 
@@ -70,6 +70,17 @@ await cell("supervise alone passes the dedicated gate", async () => {
   assert.deepEqual(material.actors, remoteManagerActors(instanceId));
   assert.equal(material.expiresAt, 150_000);
 });
+await cell("renew accepts the refreshed supervisor and executor pair without unrelated standing credentials", async () => {
+  const material = await issueRemoteManagerAuthority({
+    request: { ...request, operation: "renew", registrationProof },
+    owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    scope: ["supervise"],
+    now: () => 10,
+    issue: async () => ({ credentials }),
+  });
+  assert.deepEqual(Object.keys(material.credentials), ["supervisor", "executor"]);
+  assert.equal(material.expiresAt, 150_000);
+});
 await rejects("raw profile/view strings are refused by the core permission builder", () =>
   permissionsFor("manager-service" as never, "demo", { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "cli", connId: newIdentity().id }, {}), /not a generic profile/);
 await cell("manager-service is a closed view name but cannot become a connect profile", () => {
@@ -77,6 +88,25 @@ await cell("manager-service is a closed view name but cannot become a connect pr
 });
 await rejects("unknown request fields are refused", () => parseRemoteManagerAuthorityRequest({ ...request, profile: "provisioner" }), /unknown field/);
 await rejects("unknown operations are refused", () => parseRemoteManagerAuthorityRequest({ ...request, operation: "mint" }), /operation must/);
+const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const maintenance = {
+  v: 1 as const, kind: "manager-service-maintenance" as const, operation: "evict-family-principal" as const,
+  space: request.space, actor: request.actor, instanceId, managerLifecycleUid: lifecycleUid,
+  requestId: `maintain${mintLifecycleUid()}`, identities, targetInstanceId: instanceId,
+  principal: `${owner}.manager_goal_${instanceId}`,
+};
+await cell("host maintenance admits an enumerated holder in the caller instance family", async () => {
+  assert.equal((await authorizeRemoteManagerMaintenance({
+    request: maintenance, owner, scope: ["supervise"], space: request.space,
+    observeManagerGate: async () => ({ state: "open", principal: `${owner}.manager_serve_${instanceId}`, processEpoch: 0, registrationRevision: 1 }),
+    scanner: { scanEndpointCredentialFamily: async () => [{ key: `epcred.manager.${instanceId}.sha256-a`, data: new TextEncoder().encode(JSON.stringify({ credentialId: "sha256-a", holderPrincipal: maintenance.principal, lifecycleUid: instanceId, endpoint: "manager", sourceChain: ["root"], state: "active", exp: 200 })), seq: 1, op: "PUT" }] } as never,
+  })).principal, maintenance.principal);
+});
+await rejects("host maintenance refuses a principal outside the caller instance family", () => authorizeRemoteManagerMaintenance({
+  request: { ...maintenance, principal: `${owner}.foreign` }, owner, scope: ["supervise"], space: request.space,
+  observeManagerGate: async () => ({ state: "open", principal: `${owner}.manager_serve_${instanceId}`, processEpoch: 0, registrationRevision: 1 }),
+  scanner: { scanEndpointCredentialFamily: async () => [{ key: `epcred.manager.${instanceId}.sha256-a`, data: new TextEncoder().encode(JSON.stringify({ credentialId: "sha256-a", holderPrincipal: maintenance.principal, lifecycleUid: instanceId, endpoint: "manager", sourceChain: ["root"], state: "active", exp: 200 })), seq: 1, op: "PUT" }] } as never,
+}), /outside that family/);
 await rejects("retire requires its closed operation object", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: undefined }), /retire requires retirement exactly/);
 await rejects("retire refuses unknown operation fields", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, profile: "admin" } }), /exactly/);
 await rejects("retire requires a stable lifecycle opId", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, opId: "not-valid" } }), /opId/);

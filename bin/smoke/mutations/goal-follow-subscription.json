@@ -39,11 +39,11 @@
     {
       "name": "the subscription error is discarded again, so a denied caller is handed a timeout",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "        subError ??= err instanceof Error ? err : new Error(String(err));\n        for (const wake of waiters.values()) wake();\n        return;",
-      "replace": "        return;",
+      "find": "        if (err) { subError ??= err; wake?.(); return; }",
+      "replace": "        if (err) return;",
       "expectRed": "the reply is a refusal, not a deadline",
       "cell": "the reply is a refusal, not a deadline",
-      "note": "The defect exactly as shipped: the error is discarded and a denied subscription becomes indistinguishable from an empty one, so the caller blames the goal for a terminal that was committed on time. The broker's own wording for this is that a denied peer looks absent; discarding the error is what made the client believe it. Anchored on the three code lines rather than on the `if (err) {` line above them, because the comment between the two is prose a tidying commit could move, and a guard that a docs change can disarm is not a guard.",
+      "note": "Discard the actual progress-subscription callback error and its wakeup. A denied caller then waits as if no terminal arrived, instead of receiving the distinct subscription refusal.",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
@@ -73,8 +73,8 @@
     {
       "name": "the short-circuit is removed, so a knowable denial is still waited out to the deadline",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "    const terminal = terminals.get(goalId) ?? (subError !== undefined ? undefined : await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {",
-      "replace": "    const terminal = terminals.get(goalId) ?? (await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {",
+      "find": "    while (!terminals.has(goalId) && !stopped && !observationError && !subError && Date.now() < deadline) {\n      if (!finalReadRequested && Date.now() >= reconcileAt) {\n        finalReadRequested = true;\n        needsReconcile = true;\n      }\n      if (needsReconcile && !reading) void reconcile();\n      if (terminals.has(goalId) || stopped || observationError || subError) break;",
+      "replace": "    while (!terminals.has(goalId) && !stopped && !observationError && Date.now() < deadline) {\n      if (!finalReadRequested && Date.now() >= reconcileAt) {\n        finalReadRequested = true;\n        needsReconcile = true;\n      }\n      if (needsReconcile && !reading) void reconcile();\n      if (terminals.has(goalId) || stopped || observationError) break;",
       "expectRed": "returned at once rather than after the deadline",
       "cell": "...returned at once rather than after the deadline",
       "note": "The half of this fix that a correct MESSAGE hides. The first version of the fix produced exactly the right refusal text and still consumed 20004ms of a 20000ms budget, because the error arrived before the waiter was registered and nothing checked for it beforehand. Without this mutation the timing assertion, which is the one that caught that, is itself ungraded: a guard nobody has proven guards.",
@@ -85,8 +85,8 @@
     {
       "name": "the diagnosis stops discriminating, so a transport failure is reported as a grant refusal",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "      const refused = subError instanceof PermissionViolationError;",
-      "replace": "      const refused = true;",
+      "find": "    if (!terminal && subError) return subError instanceof PermissionViolationError",
+      "replace": "    if (!terminal && subError) return Boolean(subError)",
       "expectRed": "is not mislabelled a grant refusal",
       "cell": "...and is not mislabelled a grant refusal",
       "note": "A confidently wrong remedy is worse than a vague one: this mutation makes a closed connection report that the BROKER REFUSED A GRANT and that the fix is to grant a row, which sends an operator to the ACLs for a fault that is not there. Measured on the real class before the narrowing landed: a genuine transport error was labelled permission-denied.",
@@ -97,8 +97,8 @@
     {
       "name": "the SURFACE narrows to the permission class, so every other subscription error becomes a timeout again",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "        subError ??= err instanceof Error ? err : new Error(String(err));",
-      "replace": "        if (!(err instanceof PermissionViolationError)) return;\n        subError ??= err;",
+      "find": "        if (err) { subError ??= err; wake?.(); return; }",
+      "replace": "        if (err) { if (!(err instanceof PermissionViolationError)) return; subError ??= err; wake?.(); return; }",
       "expectRed": "a non-permission subscription failure is NOT swallowed into a deadline",
       "cell": "a non-permission subscription failure is NOT swallowed into a deadline",
       "note": "THE TEMPTING WRONG FIX, graded so it cannot be made quietly. Narrowing the surface rather than the diagnosis looks like precision and is this whole defect again in miniature: a non-permission subscription error stops being surfaced, falls through to the wait, and is reported as a deadline about a goal that may have settled on time. Whether the subscription failed is knowable from `err` being present; only the CAUSE and the REMEDY may key on its class.",

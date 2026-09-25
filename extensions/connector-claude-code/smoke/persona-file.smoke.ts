@@ -30,7 +30,7 @@ writeFileSync(agentFile, `---\nname: persona-smoke\n---\n${marker}\n`);
 
 let personaFile = "";
 try {
-  const spec = claudeConnector.buildLaunch({ space: "smoke", name: "claude-persona", configPath: agentFile });
+  const spec = claudeConnector.buildLaunch({ space: "smoke", name: "claude-persona", configPath: agentFile, events: false });
   const flag = spec.args.indexOf("--append-system-prompt-file");
   personaFile = flag >= 0 ? spec.args[flag + 1] ?? "" : "";
 

@@ -1,5 +1,180 @@
 # @cotal-ai/manager
 
+## 0.54.0
+
+### Minor Changes
+
+- 34beea1: Route user-auth manager calls through a short-lived, instance-bound control credential. Discovery and invocation address the same authorized manager while the agent's standing connection, credentials and conversation remain unchanged. Managed launches retain their manager selection across launch and resume. Static and open mesh routing is unchanged. Confirm the standing goal-progress subscription at the broker before submitting on the separate control connection, so fast terminal events cannot outrun the subscription. Recover accepted goal results through the manager's caller-scoped `goal-result` command after connection replacement, without repeating the mutation or granting clients raw JetStream reads. Followed calls now require a compatible manager before submission; update the issuer, participant manager and client together. Stopping a caller cancels its observation without cancelling the accepted goal. Retain Linux custody records across clean child exit so retirement can prove process identity and finish cleanup even after the custodian removes its file; socket loss alone never frees the alias.
+
+### Patch Changes
+
+- e6badb8: Bind the delivery daemon's store-identity answer to the process that reloads
+
+  The delivery-admin rail is queue-grouped, so the `reloadStoreIdentity` challenge is served by
+  whichever bound responder the broker picks, while only the holder of the space's delivery lease
+  actually reloads the standing credentials. The reply was a bare store identity and named no
+  process, so a non-holder answering with a matching store let a manager conclude the stores were
+  shared and remint into a store the reloading daemon never reads.
+
+  The reply now carries the answering endpoint's identity and its own lease claim. The manager reads
+  the delivery lease row itself, under its own credential, and requires the answerer to be the
+  recorded holder. The answerer's claim is kept as a cross-check that must agree, so an honest
+  non-holder is refused by its own admission and the operator-facing reason says which responder
+  answered and who holds the lease. An unreadable lease row is undetermined and refuses, consistent
+  with the existing convention that a hung rail fails closed.
+
+  The supervisor credential gains a read-only point read of the delivery lease bucket, which is what
+  lets the manager establish the holder itself rather than take a responder's word for it. It gains
+  no write, delete or purge on that bucket: a credential able to write the row could manufacture the
+  fact the challenge reads.
+
+  A manager newer than its delivery daemon receives the old reply shape. That is refused with a
+  message naming the mismatch rather than silently accepted, and each daemon's own renewal timer
+  remains the adoption backstop.
+
+  A rail that reports no responder is no longer read as an absent daemon on its own. The manager
+  settles that outcome from the lease row too: a row naming a holder while the rail answers
+  nothing is undetermined and refuses (a live daemon went unanswered, which must not certify a
+  remint), a row the manager cannot read refuses the same fail-closed way, and only an absent or
+  holderless row reads absent, the state that lets a manager without a bound daemon still take
+  renewal ownership.
+
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+  - @cotal-ai/workspace@0.54.0
+  - @cotal-ai/seat@0.54.0
+
+## 0.53.0
+
+### Minor Changes
+
+- 104921c: Let remote user-auth managers renew registration executors and recover stopped or frozen manager registrations through host-scoped eviction and guarded reconciliation.
+
+### Patch Changes
+
+- d1f9703: Supervise of a registered remote user-auth space no longer composes or validates local trust under remote authority. A root hosting an unrelated static space's trust records beside the participant sign-in used to fail with a corrupt-bundle refusal; the manager now consults the store only for the supervised space's own records (account record, or a legacy bundle naming the space), refusing that combination of authorities while other tenants' records are never used. An unreadable record on a key that is read refuses loud with the store's own parse message.
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+  - @cotal-ai/seat@0.53.0
+
+## 0.52.1
+
+### Patch Changes
+
+- Updated dependencies [5784ec9]
+- Updated dependencies [f17791d]
+  - @cotal-ai/core@0.52.1
+  - @cotal-ai/workspace@0.52.1
+  - @cotal-ai/seat@0.52.1
+
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 5b2c19f: Let hosted workflow runs resolve an existing absolute working directory on the selected manager and launch the placed seat in its canonical path.
+
+### Patch Changes
+
+- c44aaf8: Show a settled workflow pause's accepted answer and attribution in the run journal.
+- e064fa2: The manager's reap line now says which door stopped a seat and who asked: a requested stop names the authenticated requesting principal (`at u_alice.actor's request`), a self-stop, a recursive reap (naming the parent that left) and a manager shutdown each render their own sentence, and the shutdown teardown — which previously printed no line at all — now logs one line per seat. The former combined `this manager stopped it (despawn or shutdown)` text is gone. Refs #1423
+- cf5a5cb: The renewal record is per-space: `renewalRecordPath(root, space)` now writes and reads `.cotal/renewal.<spaceKey>.json`, keyed by the same injective hex the pidfiles use, and every writer and reader threads the space — the manager's renewal pass, `doctor auth --fix`'s write, `doctor auth`'s verdict reads, and `status --components`' delivery row. Before, one root-scoped `.cotal/renewal.json` served every space at a root, so with two spaces co-resident the last pass won: a refused adoption in one space was reported as accepted once the other's manager ran a clean pass, and the mirror case reddened a healthy space's doctor. A root-only `renewal.json` left by a pre-per-space build names no space and is never read as any space's verdict; `doctor auth` names it as a leftover with its cleanup, and `cotal clean all` removes it beside the per-space record. Fixes #1850.
+- 09fa8d8: Importing the manager package no longer compiles its service contracts at module scope. Every CLI invocation loads the module before its verb is read (`bin/run.ts` self-registers the manager surface), and the eager Ajv compile of all 41 distinct schema roots cost ~1.8 CPU-seconds paid by `cotal --version` (#1323; an empty node process costs ~28 ms). Command pairs now compile on first access — `managerCommandDefs` materializes the full table at serve registration, where the validators are needed and a compile failure surfaces with the same error class as before — and the §13.7 cluster document derives each command's digests from the source schema through the same member-free manifest construction the profile uses, so all digests stay byte-identical and describe-only readers never compile. `MANAGER_CONTRACTS`, `MANAGER_STATUS_CONTRACT`, and every other export keep their names and types. Measured on a built tree: `cotal --version` median CPU 1.819 s -> 0.867 s; the contract module's import cost 739 ms -> ~200 ms wall (the remainder is the core/cli import graphs, unchanged). Refs #1323.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+  - @cotal-ai/seat@0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 7bd1ce8: Add `cotal service` (install/status/uninstall): run the manager as a user service that survives logout and reboot. Linux installs a systemd user unit per mesh, macOS a launchd agent; other platforms fail with a message naming what is missing. The unit runs a bare `supervise` with mesh facts in a 0600 EnvironmentFile, a private COTAL_HOME (with the mesh registry entry snapshotted into it), and connectors pre-seeded synchronously by the installer. `supervise` reads COTAL_SPACE/COTAL_SERVER from the environment when the flags are absent, and pins its workspace root so a unit's WorkingDirectory owns the pidfiles.
+
+  Every path-derived value the unit writes (WorkingDirectory, EnvironmentFile, ExecStart tokens) is escaped for systemd percent specifiers, so a mesh root containing `%` starts over its real path instead of a path systemd rewrote while install reported success. Uninstall and status require the unit's recorded mesh to be present (and, for uninstall, to match the named mesh); a unit that carries the provenance marker but no recorded mesh is refused rather than treated as the requested mesh.
+
+- 92a8938: Run a manual registration's policy refresh where the policy is consumed. The refresh reached the
+  pinned exchange from the command dispatcher, ahead of every command's own refusals, so `cotal status`
+  on a pre-policy manual entry failed on a transport error and `cotal supervise` reported that error
+  instead of its `--server` mismatch or missing-login sentence. Spawn, join and supervise now refresh
+  after their local refusals; read-only commands never refresh. The bundle validator, the pinned fetch
+  and the dial classifier move to `@cotal-ai/workspace` so the manager can share them.
+- f50e20d: Restore an admitted seat checkpoint on the destination, before the preserved resume starts.
+
+  A destination used to admit a checkpoint and then launch the seat against whatever happened to be at `launch.cwd`. The captured bundle, the two diffs and the untracked archive were written, digested and admitted, and nothing consumed them. `cotal up` now puts those bytes back, as a step of the preserved-resume path that runs after every gate has passed over every checkpoint and before a single writer generation is claimed, so a refusal costs nothing for the same reason a gate failure does.
+
+  Each seat stages beside its own `cwd`. Every recorded digest is verified again over the files as they are now; the bundle is cloned into `<cwd>.incoming`, refused when that path already exists; the recorded base commit is verified in the clone and checked out detached; the index diff is applied with `--index` and the worktree diff without it, both `--binary --allow-empty`; the untracked archive is extracted. Every seat stages before any seat is promoted, and promotion moves an existing `cwd` aside to `<cwd>.superseded.<timestamp>` before renaming the staging directory into place. Those two renames are the only steps that touch the path the seat will use, so a failure anywhere leaves every seat's live `cwd` as it was, promotes nothing and claims no generation. `git` and `tar` run as child processes with argument arrays, never a shell string.
+
+  The superseded name is claimed before anything moves, by exclusive directory create, with a numeric suffix when the name is taken. The timestamp has one-second resolution, so two promotions of the same seat within one second would otherwise compute the same path, and the second rename would either replace the tree the first one saved or fail on it. A name this step could not create is a name it does not use.
+
+  A leftover `<cwd>.incoming` refuses by name and is never removed automatically: a staging directory from a failed run is the only record of what failed, so an operator inspects it and removes it by hand. A pre-existing `cwd` is renamed rather than deleted, so a wrong checkpoint costs a rename instead of a tree.
+
+  The promoted tree is verified once more. A checkpoint now records the seat's `git status --porcelain` as the cut read it, under the same selection rule the untracked set was produced under, and the restore re-reads it in the promoted tree and refuses a difference. Both applies can return 0 and still leave an index the source did not have, and this is the only check that sees it.
+
+  The session files travel the same way. The manager's resume entry carries the connector's `sessionStatePath` when the seat has one, `cotal down --preserve-state` takes `--session-store <path>` (repeatable, applied to every continuation-capable retained seat, refused when the path does not exist or is not a directory), and each captured session file records where it lands as an anchor plus a relative path rather than the source host's absolute spelling. The restore places them before the seat launches, so a connector that declares exact continuation is sealed and resumed as `exact` rather than capped. A pointer whose recorded `sessionId` is not the one the retained inventory reopens is refused before anything is cloned, and a session file already present at its destination is judged by content: equal bytes are already restored, different bytes are refused with both digests rather than clobbered.
+
+  `up --restore <dir>` reaches the same admission and the same restore, after the store is restored and validated and before commit intent is journaled. It previously handed a retained inventory to the manager with no gate run, no generation claimed and no restore.
+
+  The incarnation check runs before the restore does. The recorded `lifecycleUid` is reconciled against the inventory the resume is about to hand the manager as a gate over the staged set, so a checkpoint describing a different incarnation refuses with both uids while every live working tree is still in place and no generation has been claimed. That comparison previously ran after admission returned, which is after a tree had been moved aside, another promoted over it and a generation claimed under the checkpoint's uid.
+
+  A restore never moves or replaces the destination's own control directory. A seat whose `cwd` holds a `.cotal/`, the layout an operator gets from running `up` and `spawn` in one directory, is refused before staging: a checkpoint excludes the control directory by design, so promoting a tree that cannot contain it would carry the destination's live trust material and maintenance state away under the superseded tree, and the restore would report success.
+
+  A continuity class of `exact` or `fork` now requires the pointer and at least one store file. A pointer alone names a session whose transcript the artifact does not hold, and it is capped like a cut carrying neither.
+
+- c18c055: A manager whose boot inventory has no available connector no longer takes unpinned `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this instance's `inst` rail, so a sibling that can launch them can win the queue, and a caller that pins this instance still gets a named harness refusal. `describe` still lists the commands. Manager `status` reports `classSpawn` for that skip (cluster revision 15). A partial inventory keeps the class rail; a harness refusal there names `--on`, because the standing serve credential cannot read sibling inventories.
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [314a12c]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/workspace@0.51.0
+  - @cotal-ai/seat@0.51.0
+
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+  - @cotal-ai/seat@0.50.1
+
 ## 0.50.0
 
 ### Minor Changes

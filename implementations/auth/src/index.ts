@@ -15,6 +15,7 @@ export {
   USER_TOKEN_VER,
   MAX_TOKEN_TTL_SEC,
   USER_TOKEN_VIEWS,
+  PUBLIC_EXCHANGE_VIEWS,
   VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
   type UserTokenView,
@@ -44,13 +45,18 @@ export {
   type IdpBridge,
 } from "./idp.js";
 export {
+  CATALOG_FRESH_MS,
   deviceLogin,
   establishIdpSession,
   fetchIdpJwt,
   revokeIdpSession,
   loadIdpSession,
+  hasIdpSessions,
   saveIdpSession,
   deleteIdpSession,
+  deleteIdpSpaceCatalog,
+  hasIdpSpaceCatalog,
+  prepareIdpSpaceCatalogs,
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
@@ -121,6 +127,7 @@ export {
   type ConnectReader,
 } from "./connect-reader.js";
 export { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
+export { parseRemoteManagerMaintenanceRequest, authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 export {
   parseRemoteRetainedAgentValidationRequest,
   authorizeRemoteRetainedAgentValidation,
