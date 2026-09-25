@@ -125,8 +125,10 @@ const sessionJournalPaths = (sessionId) => [...new Set([
   journalPath,
   process.env.FAKE_JCODE_SESSION_JOURNAL,
 ].filter(Boolean))];
-const appendJournal = (path, record) =>
+const appendJournal = (path, record) => {
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, (existsSync(path) ? readFileSync(path, "utf8") : "") + `${JSON.stringify(record)}\n`);
+};
 const writeJournal = (sessionId) => {
   if (!journalPath) return;
   writeFileSync(
