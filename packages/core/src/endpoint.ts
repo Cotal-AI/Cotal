@@ -23,6 +23,7 @@ import {
   type SecretStoreIdentity,
 } from "./secret-store.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
+import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
@@ -613,6 +614,9 @@ export class CotalEndpoint extends EventEmitter {
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
+   *  and connection replacement / reconnect can trigger reconciliation. */
+  private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
   /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) — the
    *  class-queue splits this endpoint hit and survived.
    *
@@ -1414,6 +1418,11 @@ export class CotalEndpoint extends EventEmitter {
     // Shared-line reasoning is no longer the rebuild proof.
     if (this.stopped) return;
     this.emit("connection", { connected: true });
+    if (this.nc) {
+      for (const follower of this.activeGoalFollowers) {
+        follower.reconnected(this.nc);
+      }
+    }
   }
 
   /** Tear down everything {@link connectAndBind} (re)creates, so a rebind can't leak a
@@ -1757,6 +1766,10 @@ export class CotalEndpoint extends EventEmitter {
     if (this.stopped) return;
     if (this.nc) this.disableLibraryReconnect(this.nc);
     this.stopped = true;
+    for (const follower of this.activeGoalFollowers) {
+      follower.cancel();
+    }
+    this.activeGoalFollowers.clear();
     this.presenceEpoch++;
     this.presenceRebind = undefined;
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
@@ -2241,9 +2254,43 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     submit: () => Promise<EpAttributedReply>,
     deadlineMs = 10_000,
+    opts: {
+      reconcile?: (goalId: string, attributed: EpAttributedReply) => Promise<{ goalId: string; result?: GoalResultFact } | undefined>;
+    } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    return submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit);
+    if (this.stopped) throw new Error("endpoint stopped - cannot follow goal");
+    const abortController = new AbortController();
+    let reconnectHandler: ((nc: NatsConnection) => void) | undefined;
+    const entry = {
+      cancel: () => abortController.abort(),
+      reconnected: (nc: NatsConnection) => reconnectHandler?.(nc),
+    };
+    this.activeGoalFollowers.add(entry);
+    try {
+      const reconcile = opts.reconcile ?? (async (goalId: string) => {
+        // Static / open callers: preserve caller's authorized routing (class routing) over current connection!
+        // Do NOT pin to instanceId, because static caller credentials often have CLASS ONLY authorization!
+        const q = await this.invokeService(endpoint, "goal-result", { goalId }, { deadlineMs });
+        if (q.reply.ok !== true) {
+          const e = new Error(q.reply.error?.message ?? "goal-result query refused");
+          (e as unknown as { isLookupRefusal: boolean }).isLookupRefusal = true;
+          throw e;
+        }
+        return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+      });
+      return await submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
+        reconcile,
+        currentNc: () => this.nc,
+        onReconnect: (cb) => {
+          reconnectHandler = cb;
+          return () => { reconnectHandler = undefined; };
+        },
+        signal: abortController.signal,
+      });
+    } finally {
+      this.activeGoalFollowers.delete(entry);
+    }
   }
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
@@ -2397,7 +2444,24 @@ export class CotalEndpoint extends EventEmitter {
     // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
     // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
     if (!opts.follow) return doInvoke();
-    return submitAndFollowGoal(nc, this.space, endpoint, caller, opts.deadlineMs ?? 10_000, doInvoke);
+    // Compatibility gate: verify the resolved service exposes goal-result before submitting a followed mutation
+    const service = await resolve();
+    if (!service.commands.has("goal-result")) {
+      return {
+        reply: {
+          v: 1,
+          id: randomUUID(),
+          ok: false,
+          data: undefined,
+          error: {
+            code: "failed-precondition",
+            message: `endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
+          },
+        },
+        responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
+      };
+    }
+    return this.followServiceGoal(endpoint, doInvoke, opts.deadlineMs ?? 10_000);
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
@@ -3434,6 +3498,9 @@ export class CotalEndpoint extends EventEmitter {
         if (s.type === "reconnect") {
           this.armAuthExpiryReconnectFence(nc);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
+          for (const follower of this.activeGoalFollowers) {
+            follower.reconnected(nc);
+          }
           continue;
         }
         if (s.type === "close") {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   assertLifecycleToken,
@@ -46,7 +47,7 @@ export async function invokeUserManager(
   bearer: string,
   command: string,
   args: Record<string, unknown> | undefined,
-  opts: { target?: EpVerbTarget; deadlineMs?: number } = {},
+  opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
 ): Promise<EpAttributedReply> {
   const { caller, instanceId } = managerCallerBinding(bearer, config);
   const nc = await dialerFor(config.servers)({
@@ -58,6 +59,21 @@ export async function invokeUserManager(
     const endpoint = BASELINE_LIFECYCLE_ENDPOINT;
     const resolve = () => resolveService(nc, config.space, endpoint, caller, { instanceId, deadlineMs: opts.deadlineMs ?? 10_000 });
     let service = await resolve();
+    if (opts.follow && !service.commands.has("goal-result")) {
+      return {
+        reply: {
+          v: 1,
+          id: randomUUID(),
+          ok: false,
+          data: undefined,
+          error: {
+            code: "failed-precondition",
+            message: `manager instance ${service.responder.instanceId} does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
+          },
+        },
+        responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
+      };
+    }
     const invoke = async () => {
       const result = await invokeCommand(nc, config.space, service, command, args, opts);
       if (result.reply.ok === false && replyRefusedBeforeEffect(result.reply.error)) {

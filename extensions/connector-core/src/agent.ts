@@ -28,6 +28,7 @@ import {
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
+  type GoalResultFact,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 import { invokeUserManager } from "./manager-call.js";
@@ -1515,7 +1516,25 @@ export class MeshAgent extends EventEmitter {
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
         r = opts.follow
-          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs)
+          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
+              reconcile: async (goalId: string, attributed: EpAttributedReply) => {
+                // Pin user result query using EpAttributedReply.responder.instanceId (broker-attributed responder)
+                const instanceId = attributed.responder?.instanceId;
+                const bearer = await execBearerCmd([
+                  ...this.config.userAuth!.bearerCmd,
+                  "--manager-call",
+                  ...(instanceId ? ["--manager-instance", instanceId] : []),
+                ]);
+                const queryRes = await invokeUserManager(this.config, bearer, "goal-result", { goalId });
+                if (queryRes.reply.ok !== true) {
+                  const err = queryRes.reply.error;
+                  const e = new Error(err?.message ?? "goal-result query refused");
+                  (e as unknown as { isLookupRefusal: boolean }).isLookupRefusal = true;
+                  throw e;
+                }
+                return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+              },
+            })
           : await submit();
       } else {
         r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);

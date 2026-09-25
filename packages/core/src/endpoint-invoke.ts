@@ -23,6 +23,11 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
+  parseGoalResultFact,
+  type GoalResultFact,
+  type GoalRef,
+} from "./endpoint-action.js";
+import {
   contractStoreContext, fetchContractClosure, contractRefToHex, contractArtifactDigestHex,
   type ContractStoreContext, type ArtifactMemo,
 } from "./endpoint-contract-store.js";
@@ -427,6 +432,28 @@ export async function invokeCommand(
   });
 }
 
+export interface SubmitAndFollowGoalOptions {
+  /**
+   * Reconcile callback to query goal-result over current transport.
+   * Invoked across connection reconnect/rebuild, gaps, and pre-deadline fallback.
+   * Returns `{ goalId: string, result?: GoalResultFact }` or undefined.
+   */
+  reconcile?: (goalId: string, attributed: EpAttributedReply) => Promise<{ goalId: string; result?: GoalResultFact } | undefined>;
+  /**
+   * Connection provider returning the current active NatsConnection, or undefined during rebuild/disconnection.
+   */
+  currentNc?: () => NatsConnection | undefined;
+  /**
+   * Register a callback invoked whenever the endpoint rebuilds or reconnects its transport.
+   * Returns an unsubscribe/cleanup function.
+   */
+  onReconnect?: (handler: (newNc: NatsConnection) => void) => () => void;
+  /**
+   * AbortSignal to cancel following immediately (e.g. when endpoint is stopped).
+   */
+  signal?: AbortSignal;
+}
+
 /** Submit an ACTION command and FOLLOW its goal to the terminal (P2 item 2, 2b): since 2a a
  *  spawn/launch reply is the ACCEPTANCE (returned before the agent is live), so a consumer that
  *  wants the old block-until-outcome behaviour follows the caller-scoped progress subtree to the
@@ -444,45 +471,40 @@ export async function submitAndFollowGoal(
   caller: EpCaller,
   deadlineMs: number,
   submit: () => Promise<EpAttributedReply>,
+  opts?: SubmitAndFollowGoalOptions,
 ): Promise<EpAttributedReply> {
   const terminals = new Map<string, { state: string; data?: unknown }>();
   const waiters = new Map<string, () => void>();
   const progressSubject = epGoalProgressGrantRow(space, endpoint, caller);
-  // A SUBSCRIPTION ERROR IS NOT ABSENCE OF NEWS, AND IT MUST NOT BE DISCARDED. If the broker
-  // refuses this subscription the caller can never hear ANY terminal for this goal - success as
-  // readily as failure - so waiting out the deadline reports "no terminal arrived" about a goal
-  // whose terminal may have been committed on time. Measured (#610): the manager bound the goal,
-  // earned ownership, committed the terminal and emitted it, while the caller sat denied and then
-  // printed a timeout. The broker's own wording for this is "a denied peer looks absent", which is
-  // exactly the confusion, and the operator response to the two is opposite: a timeout invites a
-  // retry (which duplicates the effect), a denial requires a grant.
   let subError: Error | undefined;
-  const sub = nc.subscribe(progressSubject, {
-    callback: (err, m) => {
-      if (err) {
-        // Keep the FIRST error (later ones are consequences) and wake every waiter: once this
-        // subscription is refused, no further waiting can change the answer.
-        subError ??= err instanceof Error ? err : new Error(String(err));
-        for (const wake of waiters.values()) wake();
-        return;
-      }
-      let ev: { goalId?: unknown; phase?: unknown; state?: unknown; data?: unknown };
-      try { ev = JSON.parse(dec.decode(m.data)); } catch { return; }
-      if (ev && ev.phase === "terminal" && typeof ev.goalId === "string") {
-        terminals.set(ev.goalId, { state: String(ev.state), data: ev.data });
-        waiters.get(ev.goalId)?.();
-      }
-    },
-  });
+  let activeSub: Subscription | undefined;
+  const handleProgress = (err: Error | null, m: unknown) => {
+    if (err) {
+      // Keep the FIRST error (later ones are consequences) and wake every waiter: once this
+      // subscription is refused, no further waiting can change the answer.
+      subError ??= err instanceof Error ? err : new Error(String(err));
+      for (const wake of waiters.values()) wake();
+      return;
+    }
+    let ev: { goalId?: unknown; phase?: unknown; state?: unknown; data?: unknown };
+    try { ev = JSON.parse(dec.decode((m as { data: Uint8Array }).data)); } catch { return; }
+    if (ev && ev.phase === "terminal" && typeof ev.goalId === "string") {
+      terminals.set(ev.goalId, { state: String(ev.state), data: ev.data });
+      waiters.get(ev.goalId)?.();
+    }
+  };
+  activeSub = nc.subscribe(progressSubject, { callback: handleProgress });
   try {
     // A borrowed submit can use another connection. Confirm this SUB at the broker before
     // that connection can publish a command whose terminal would otherwise outrun our interest.
     await nc.flush();
     const attributed = await submit();
     if (attributed.reply.ok !== true) return attributed; // refuse at accept — surface as-is
-    const acceptance = attributed.reply.data as { goalId?: unknown; readinessDeadlineMs?: unknown } | undefined;
+    const acceptance = attributed.reply.data as { goalId?: unknown; fingerprint?: unknown; readinessDeadlineMs?: unknown } | undefined;
     const goalId = acceptance?.goalId;
     if (typeof goalId !== "string") return attributed; // not an action reply — pass through
+    const acceptedFingerprint = typeof acceptance?.fingerprint === "string" ? acceptance.fingerprint : undefined;
+
     // A bounded action's owner chooses its readiness budget at acceptance. The follow must outlive
     // THAT accepted budget, not only the caller's generic request window: otherwise a connector can
     // lawfully still be booting when its caller reports a timeout and invites a duplicate retry.
@@ -492,38 +514,139 @@ export async function submitAndFollowGoal(
       && Number.isSafeInteger(readinessDeadlineMs) && readinessDeadlineMs >= 0
       ? Math.max(deadlineMs, readinessDeadlineMs + GOAL_FOLLOW_MARGIN_MS)
       : deadlineMs;
-    // A denial that has ALREADY arrived must not be waited out: it is knowable now, and holding the
-    // caller to its deadline is what turns a grant problem into a retry (the cell that caught this
-    // measured 20004ms of a 20000ms budget with the right message attached to it).
-    const terminal = terminals.get(goalId) ?? (subError !== undefined ? undefined : await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
-      const t = setTimeout(() => resolve(terminals.get(goalId)), followDeadlineMs);
-      waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
-    }));
-    if (terminal === undefined && subError !== undefined) {
-      // THE DISTINCT, ACTIONABLE FAILURE (#610). Deliberately NOT the deadline message below: this
-      // caller was never listening, so "no terminal arrived" would be a statement about the goal
-      // when the true statement is about this credential.
-      //
-      // SURFACING IS FOR EVERY ERROR; ONLY THE DIAGNOSIS IS NARROWED. Whether the subscription
-      // failed is knowable from `err` being present, so that decision must never key on the error's
-      // class: narrowing the SURFACE would re-create this very defect for every other class, which
-      // would fall back through to the silent timeout. What may key on the class is the CAUSE and
-      // the REMEDY, because "the broker refused your grant, ask for the row" is a specific claim
-      // and it is false for a transport failure. So an unrecognized class stays loud and says less,
-      // and never degrades to silence.
-      const refused = subError instanceof PermissionViolationError;
-      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: refused
-        ? { code: "permission-denied", message: `the goal "${goalId}" was accepted, but this caller is NOT PERMITTED to hear its outcome: the broker refused the per-goal progress subscription "${progressSubject}" (${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this credential's ability to observe it. Do NOT retry: a retry submits a second goal and duplicates the effect, and it will be just as unobservable. Read the outcome with 'ps'/'inspect', and grant this caller the per-goal progress read row so a following call can hear its own goal (SPEC 13.6)` }
-        : { code: "unavailable", message: `the goal "${goalId}" was accepted, but this caller's per-goal progress subscription "${progressSubject}" FAILED, so it cannot hear the outcome (${subError.name}: ${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this connection's ability to observe it. This is NOT a grant refusal, so changing ACLs is the wrong remedy. Do NOT retry: a retry submits a second goal and duplicates the effect. Read the outcome with 'ps'/'inspect' (SPEC 13.6)` } } };
+
+    let observationError: Error | undefined;
+    let stopped = false;
+
+    // Reconcile helper: checks goal-result over current transport and validates canonical fact
+    const tryReconcile = async (): Promise<boolean> => {
+      if (!opts?.reconcile) return false;
+      try {
+        const queryRes = await opts.reconcile(goalId, attributed);
+        if (queryRes?.result !== undefined) {
+          const ref: GoalRef = { endpoint, caller, goalId };
+          const fact = parseGoalResultFact(queryRes.result, "goal-result reply", ref);
+          if (acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint) {
+            throw new EpEnvelopeError("internal", `goal result fact carries fingerprint ${JSON.stringify(fact.fingerprint)}, which does not match accepted ${JSON.stringify(acceptedFingerprint)}; fingerprint mismatch never authorizes (SPEC 13.6)`);
+          }
+          terminals.set(goalId, { state: fact.state, data: fact.data });
+          waiters.get(goalId)?.();
+          return true;
+        }
+      } catch (err: unknown) {
+        // Post-accept lookup errors MUST NOT copy goal-result's outcome:not-executed or EP_BIND_REFUSED
+        // marker onto the original accepted spawn.
+        const isRefusal = typeof err === "object" && err !== null && "isLookupRefusal" in err && Boolean((err as { isLookupRefusal: boolean }).isLookupRefusal);
+        if (isRefusal || err instanceof EpEnvelopeError) {
+          observationError = err instanceof Error ? err : new Error(String(err));
+          waiters.get(goalId)?.();
+        }
+      }
+      return false;
+    };
+
+    // Reconnect hook: re-subscribe and reconcile on connection replacement
+    let unbindReconnect: (() => void) | undefined;
+    if (opts?.onReconnect) {
+      unbindReconnect = opts.onReconnect(async (newNc) => {
+        try { activeSub?.unsubscribe(); } catch {}
+        try {
+          activeSub = newNc.subscribe(progressSubject, { callback: handleProgress });
+          await newNc.flush();
+        } catch (err) {
+          subError ??= err instanceof Error ? err : new Error(String(err));
+        }
+        await tryReconcile();
+      });
     }
+
+    // Stop signal hook
+    let abortListener: (() => void) | undefined;
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        stopped = true;
+      } else {
+        abortListener = () => {
+          stopped = true;
+          waiters.get(goalId)?.();
+        };
+        opts.signal.addEventListener("abort", abortListener, { once: true });
+      }
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waitPromise = new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
+      timer = setTimeout(async () => {
+        if (!terminals.has(goalId) && !stopped && observationError === undefined) {
+          await tryReconcile();
+        }
+        resolve(terminals.get(goalId));
+      }, followDeadlineMs);
+      waiters.set(goalId, () => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolve(terminals.get(goalId));
+      });
+    });
+
+    const terminal = terminals.get(goalId) ?? (stopped || observationError !== undefined || subError !== undefined ? undefined : await waitPromise);
+
+    if (timer !== undefined) clearTimeout(timer);
+    if (abortListener && opts?.signal) opts.signal.removeEventListener("abort", abortListener);
+    if (unbindReconnect) unbindReconnect();
+
+    // 1. Stopped fence
+    if (stopped) {
+      return {
+        ...attributed,
+        reply: {
+          ...attributed.reply,
+          ok: false,
+          data: undefined,
+          error: {
+            code: "unavailable",
+            message: `the goal "${goalId}" was accepted, but the endpoint was stopped while awaiting its outcome. THE GOAL IS UNAFFECTED - it may already have succeeded; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)`,
+          },
+        },
+      };
+    }
+
+    // 2. Authoritative lookup refusal fence (provenance rule)
+    if (observationError !== undefined) {
+      return {
+        ...attributed,
+        reply: {
+          ...attributed.reply,
+          ok: false,
+          data: undefined,
+          error: {
+            code: "unavailable",
+            message: `the goal "${goalId}" was accepted, but following its outcome failed: ${observationError.message}. THE GOAL IS UNAFFECTED - it may already have succeeded; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)`,
+          },
+        },
+      };
+    }
+
+    // 3. Subscription error fence (#610)
+    if (terminal === undefined && subError !== undefined) {
+      const refused = subError instanceof PermissionViolationError;
+      return {
+        ...attributed,
+        reply: {
+          ...attributed.reply,
+          ok: false,
+          data: undefined,
+          error: refused
+            ? { code: "permission-denied", message: `the goal "${goalId}" was accepted, but this caller is NOT PERMITTED to hear its outcome: the broker refused the per-goal progress subscription "${progressSubject}" (${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this credential's ability to observe it. Do NOT retry: a retry submits a second goal and duplicates the effect, and it will be just as unobservable. Read the outcome with 'ps'/'inspect', and grant this caller the per-goal progress read row so a following call can hear its own goal (SPEC 13.6)` }
+            : { code: "unavailable", message: `the goal "${goalId}" was accepted, but this caller's per-goal progress subscription "${progressSubject}" FAILED, so it cannot hear the outcome (${subError.name}: ${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this connection's ability to observe it. This is NOT a grant refusal, so changing ACLs is the wrong remedy. Do NOT retry: a retry submits a second goal and duplicates the effect. Read the outcome with 'ps'/'inspect' (SPEC 13.6)` },
+        },
+      };
+    }
+
+    // 4. Deadline exceeded fence
     if (terminal === undefined)
-      // WHAT THIS PROVED: nothing about the goal. The goal was ACCEPTED (the submit above returned
-      // ok); only its terminal did not arrive here in time, which a slow runtime or a dropped
-      // progress subscription produces just as readily as a real failure. Observed live: seats that
-      // reported this had already come up and were messaging peers. So say the deadline is about
-      // the WAIT, not the work, and warn about the one action that turns a false negative into real
-      // damage: a retry, which submits a SECOND goal and duplicates whatever the first one did.
       return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" was accepted but produced no terminal within ${followDeadlineMs}ms; this is a timeout on the WAIT, not evidence the goal failed - it may already have succeeded, and may still succeed. Read its outcome with 'ps'/'inspect' before acting; do NOT retry on this alone, a retry submits a second goal and duplicates the effect (SPEC 13.6)` } } };
+
+    // 5. Outcome settlement
     if (terminal.state === "succeeded")
       return { ...attributed, reply: { ...attributed.reply, ok: true, ...(terminal.data !== undefined ? { data: terminal.data } : { data: undefined }), error: undefined } };
     const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown; details?: unknown };
@@ -534,7 +657,7 @@ export async function submitAndFollowGoal(
     const merged = details ?? (fromAccept ? [fromAccept] : undefined);
     return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
   } finally {
-    sub.unsubscribe();
+    try { activeSub?.unsubscribe(); } catch {}
   }
 }
 
