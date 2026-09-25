@@ -1187,4 +1187,113 @@ await parallel({
     `${(replayed as Error)?.name}: ${(replayed as { code?: string }).code}`);
 }
 
+// (6)-(8) the round-2 blocker, the reviewer's exact input: a scope whose arms have BOTH begun,
+// resumed with one arm's recorded sleep duration changed. The ladder entry from (1) keeps the
+// scope entry pending, but the `parallel`/`fanOut` catches and the race `onSettle` non-candidate
+// set used to treat the divergence as a branch failure anyway: every sibling was cancelled — a
+// durable `settled/cancelled` on a run the program had no standing to speak for — and a resume
+// of the ORIGINAL source then threw `Cancelled` (or settled the scope `cancelled`) instead of
+// completing. A divergence is a fact about the program, not an outcome the run reached, so it
+// cancels no sibling and the healthy source must be able to finish the run.
+//
+// The seed is the harvest shape cell (4) already uses: a completed run's entries reset to
+// pending, so both arms' effects are recorded under their original hashes and the race
+// re-enters each arm against them.
+{
+  const P6 = `
+await parallel({
+  a: async () => { await sleep("1m", { name: "a-work" }); return 1; },
+  b: async () => { await sleep("2m", { name: "b-work" }); return 2; },
+}, { name: "both" });
+await sleep("1m", { name: "tail" });
+`;
+  const runId = "r-div-parallel-sib";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(P6, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const pend = (e: JournalEntry) => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
+  const seeded = new Journal({ run: runId, entries: [
+    pend(h.find((e) => e.kind === "parallel") as JournalEntry),
+    pend(h.find((e) => e.name === "a-work") as JournalEntry),
+    pend(h.find((e) => e.name === "b-work") as JournalEntry),
+  ] });
+  const EDITED = P6.replace('sleep("1m", { name: "a-work" })', 'sleep("9m", { name: "a-work" })');
+  ok("the parallel seed edit landed", EDITED !== P6);
+  const diverged = await deadline("the diverging parallel", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}) }));
+  ok("(6) a divergence in one arm of a both-begun parallel still surfaces as RunDivergence",
+    diverged instanceof RunDivergence, `${(diverged as Error)?.name}: ${(diverged as Error)?.message?.slice(0, 90)}`);
+  const sibling = seeded.entries().find((e) => e.name === "b-work");
+  ok("(6) and the sibling arm's entry settles ok, not cancelled",
+    sibling !== undefined && sibling.state === "settled" && (sibling as { status?: string }).status === "ok",
+    sibling === undefined ? "no sibling entry" : { state: sibling.state, status: (sibling as { status?: string }).status });
+  const j6 = new Journal({ run: runId, entries: seeded.entries() });
+  const orig = await deadline("the original-source resume", resume(P6, j6, { runId, pins, handler: new SimHandler({}) }));
+  ok("(6) and a resume of the original source completes both arms and settles the scope ok",
+    orig === null && scopeOf(j6, "parallel")?.state === "settled" && (scopeOf(j6, "parallel") as { status?: string }).status === "ok",
+    `${(orig as Error)?.name ?? "COMPLETED"}; ${j6.entries().map((e) => `${e.kind}:${e.name}/${e.state}${e.status ? `:${e.status}` : ""}`)}`);
+}
+
+{
+  const F7 = `
+await fanOut(["x", "y"], async (lens) => { await sleep(lens === "x" ? "1m" : "2m", { name: "w-" + lens }); return lens; }, { name: "fan", key: (lens) => lens });
+await sleep("1m", { name: "tail" });
+`;
+  const runId = "r-div-fanout-sib";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(F7, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const pend = (e: JournalEntry) => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
+  const seeded = new Journal({ run: runId, entries: [
+    pend(h.find((e) => e.kind === "fanOut") as JournalEntry),
+    pend(h.find((e) => e.name === "w-x") as JournalEntry),
+    pend(h.find((e) => e.name === "w-y") as JournalEntry),
+  ] });
+  const EDITED = F7.replace('lens === "x" ? "1m"', 'lens === "x" ? "9m"');
+  ok("the fanOut seed edit landed", EDITED !== F7);
+  const diverged = await deadline("the diverging fanOut", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}) }));
+  ok("(7) a divergence in one branch of a both-begun fanOut still surfaces as RunDivergence",
+    diverged instanceof RunDivergence, `${(diverged as Error)?.name}: ${(diverged as Error)?.message?.slice(0, 90)}`);
+  const sibling = seeded.entries().find((e) => e.name === "w-y");
+  ok("(7) and the sibling branch's entry settles ok, not cancelled",
+    sibling !== undefined && sibling.state === "settled" && (sibling as { status?: string }).status === "ok",
+    sibling === undefined ? "no sibling entry" : { state: sibling.state, status: (sibling as { status?: string }).status });
+  const j7 = new Journal({ run: runId, entries: seeded.entries() });
+  const orig = await deadline("the original-source resume", resume(F7, j7, { runId, pins, handler: new SimHandler({}) }));
+  ok("(7) and a resume of the original source completes both branches and settles the scope ok",
+    orig === null && scopeOf(j7, "fanOut")?.state === "settled" && (scopeOf(j7, "fanOut") as { status?: string }).status === "ok",
+    `${(orig as Error)?.name ?? "COMPLETED"}; ${j7.entries().map((e) => `${e.kind}:${e.name}/${e.state}${e.status ? `:${e.status}` : ""}`)}`);
+}
+
+{
+  const R8 = `
+const r = await race({
+  fast: async () => { await sleep("1m", { name: "fast-work" }); return "fast"; },
+  slow: async () => { await sleep("2m", { name: "slow-work" }); return "slow"; },
+}, { name: "either" });
+log("win", r.index, r.value);
+`;
+  const runId = "r-div-race-sib";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(R8, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const pend = (e: JournalEntry) => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
+  const seeded = new Journal({ run: runId, entries: [
+    pend(h.find((e) => e.kind === "race") as JournalEntry),
+    pend(h.find((e) => e.name === "fast-work") as JournalEntry),
+    pend(h.find((e) => e.name === "slow-work") as JournalEntry),
+  ] });
+  const EDITED = R8.replace('sleep("1m", { name: "fast-work" })', 'sleep("9m", { name: "fast-work" })');
+  ok("the race seed edit landed", EDITED !== R8);
+  const diverged = await deadline("the diverging race", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}) }));
+  ok("(8) a divergence in one arm of a both-begun race still surfaces as RunDivergence",
+    diverged instanceof RunDivergence, `${(diverged as Error)?.name}: ${(diverged as Error)?.message?.slice(0, 90)}`);
+  const other = seeded.entries().find((e) => e.name === "slow-work");
+  ok("(8) and the other arm's entry settles ok, not cancelled",
+    other !== undefined && other.state === "settled" && (other as { status?: string }).status === "ok",
+    other === undefined ? "no other-arm entry" : { state: other.state, status: (other as { status?: string }).status });
+}
+
 console.log(`scopes.smoke: ${pass} checks passed`);
