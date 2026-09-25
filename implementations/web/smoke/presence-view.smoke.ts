@@ -109,5 +109,51 @@ ok("2.5 a poll cannot erase the observer-view mark: both pages keep a roster ent
 ok("2.6 the sidebar filter is still online-only (this change does not gray rows out)",
   /filter\(\(p\) => p\.status !== "offline"\)/.test(appJs));
 
+// 3.x identity cells (#1399): a DM/activity sender's payload name and role are display text, not
+// identity. The id→name index is built from the roster alone, an object resolves through its id,
+// and a live row takes who/role from the roster by authenticated id. Same extract+vm shape as the
+// drive() cells above, over the three functions the feed renders through.
+{
+  const roster = [
+    { card: { id: "local.alice", name: "alice", kind: "agent", role: "agent" }, status: "working", ts: 1 },
+    { card: { id: "local.bob", name: "bob", kind: "agent", role: "agent" }, status: "idle", ts: 1 },
+  ];
+  const spoof = {
+    id: "s1",
+    ts: 1790377570541,
+    from: { id: "local.alice", name: "carol", role: "admin" },
+    parts: [{ kind: "text", text: "forged line" }],
+    to: "local.bob",
+  };
+  const partsToText = (parts: { text: string }[]) => parts.map((p) => p.text).join("");
+  const ctx = createContext({
+    roster,
+    dms: [spoof],
+    activity: [{ mode: "unicast", msg: spoof }],
+    time: (ts: number) => new Date(ts).toISOString(),
+    bodyText: (m: { parts: { text: string }[] }) => partsToText(m.parts),
+  });
+  const fn = (name: string) => extract(appJs, name)!;
+  runInContext(
+    `${fn("peerById")} ${fn("roleOf")} ${fn("rosterStatus")} ${fn("nameIndex")} ${fn("displayNameOf")} ${fn("liveEntry")} ` +
+      `out = { idx: nameIndex(), dno: displayNameOf, live: liveEntry("unicast", ${JSON.stringify(spoof)}, nameIndex()) };`,
+    ctx,
+    { filename: "app.js (identity cells)" },
+  );
+  const r = runInContext("out", ctx) as {
+    idx: Map<string, string>;
+    dno: (x: unknown, idx: Map<string, string>) => string;
+    live: { who: string; role: string | undefined; target: string };
+  };
+  ok("3.1 nameIndex ignores a DM/activity sender's payload name (roster is the only source)",
+    r.idx.get("local.alice") === "alice" && r.idx.size === 2, r.idx);
+  ok("3.2 displayNameOf resolves an object by its id, never its payload .name",
+    r.dno({ id: "local.alice", name: "carol", role: "admin" }, r.idx) === "alice"
+      && r.dno({ id: "local.zed", name: "imposter" }, r.idx) === "local.zed",
+    { rosterName: r.dno({ id: "local.alice", name: "carol", role: "admin" }, r.idx), unknown: r.dno({ id: "local.zed", name: "imposter" }, r.idx) });
+  ok("3.3 liveEntry renders the roster name and role by authenticated id, never the payload's",
+    r.live.who === "alice" && r.live.role === "agent" && r.live.target === "→ bob", r.live);
+}
+
 console.log(`\nweb presence-view smoke: ${cells - failed} passed, ${failed} failed`);
 if (failed) process.exit(1);

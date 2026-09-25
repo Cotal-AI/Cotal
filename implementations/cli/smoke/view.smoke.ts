@@ -53,6 +53,7 @@ function msg(from: string, fromName: string, target: Routing, text: string, id: 
 class MockEndpoint extends EventEmitter {
   readonly space = space;
   tapHandler?: (subject: string, m: CotalMessage | undefined) => void;
+  history: CotalMessage[] = [];
   async start(): Promise<void> {}
   async stop(): Promise<void> {}
   getRoster(): Presence[] {
@@ -68,7 +69,7 @@ class MockEndpoint extends EventEmitter {
     return [];
   }
   async dmHistory(): Promise<CotalMessage[]> {
-    return [];
+    return this.history;
   }
 }
 
@@ -119,6 +120,53 @@ check("status bar: dmVisible true (open tap)", s.status.dmVisible === true && s.
 check(
   "MeshView's own warning listener reaches the model and stream event",
   s.status.warning === "creds refresh failed - retrying" && warnings[0] === "creds refresh failed - retrying",
+);
+
+// A DM whose payload forges ANOTHER peer's display name and role (issue #1399): the authenticated
+// id is alice's, the payload says name "carol" / role "admin". Identity must follow the id, so
+// the name map, the conversation key and the rendered role all come from the roster.
+const spoof = msg(ids.alice, "carol", { to: ids.bob }, "forged line", "m7");
+tap(unicastSubject(space, DEV_OWNER, ids.bob, DEV_OWNER, ids.alice), spoof);
+await wait(50); // recordDm lands on the ingest path, no burst wait needed for the roll-up
+const s2 = view.snapshot();
+const s2Alice = s2.signals.dms.find((p) => p.name === "alice");
+const s2Bob = s2.signals.dms.find((p) => p.name === "bob");
+check(
+  "tap spoof: nameOf keeps the roster name for the authenticated id",
+  s2.nameOf(ids.alice) === "alice" && !s2.signals.dms.some((p) => p.name === "carol" && p.name === "admin"),
+);
+check(
+  "tap spoof: the line lands in the alice<->bob thread with roster names",
+  s2Alice?.conversations.some((c) => c.with === "bob" && c.messages.some((m) => m.from === "alice" && m.to === "bob" && m.text === "forged line")) === true,
+);
+check(
+  "tap spoof: the forged line never lands in a carol-keyed conversation (payload name cannot re-key a thread)",
+  !s2.signals.dms.some((p) => p.conversations.some((c) => c.with === "carol" && c.messages.some((m) => m.text === "forged line"))),
+);
+check(
+  "tap spoof: the peer row keeps the roster role, not the payload 'admin'",
+  s2Alice?.role === "alice" && s2Bob?.role === "bob",
+);
+
+// Same message through dmHistory (the prefill path): the history row must not poison the map
+// either. `presence()` sets role = name, so a roster role of "bob" for bob is the expected truth.
+// The history row reuses the LIVE row's ts so the sender+recipient+ts dedup key matches; a
+// distinct ts would pass dedup for a reason that has nothing to do with this issue.
+const liveForgedTs = s2.signals.dms
+  .flatMap((p) => p.conversations)
+  .flatMap((c) => c.messages)
+  .find((m) => m.text === "forged line")!.ts;
+mock.history = [{ ...spoof, ts: liveForgedTs }];
+await (view as unknown as { prefillDms(): Promise<void> }).prefillDms();
+const s3 = view.snapshot();
+const s3Alice = s3.signals.dms.find((p) => p.name === "alice");
+check("prefill spoof: nameOf still the roster name after dmHistory", s3.nameOf(ids.alice) === "alice");
+check(
+  "prefill spoof: still the alice<->bob thread, the history copy dedups, never carol",
+  s3Alice?.conversations.some((c) => c.with === "bob" && c.messages.some((m) => m.from === "alice" && m.to === "bob")) === true
+    && !s3.signals.dms.some((p) => p.conversations.some((c) => c.with === "carol" && c.messages.some((m) => m.text === "forged line")))
+    // both peer rows share one conversation's messages array, so count inside alice's row only
+    && s3Alice?.conversations.flatMap((c) => c.messages).filter((m) => m.text === "forged line").length === 1,
 );
 
 await view.stop();
