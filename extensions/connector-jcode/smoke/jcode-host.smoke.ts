@@ -291,6 +291,7 @@ try {
     for (const part of message.parts) if (isAguiFramePart(part)) frames.push(part as typeof frames[number]);
   });
   let peerId: string | undefined;
+  let foldPeerId: string | undefined;
   let busyPeerId: string | undefined;
   let busyActivity = "";
   const announced = new Set<string>();
@@ -298,6 +299,7 @@ try {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
     if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.presence.card.name === "foldpeer") foldPeerId = event.presence.card.id;
     if (event.presence.card.name === "busypeer") {
       busyPeerId = event.presence.card.id;
       busyActivity = event.presence.activity ?? "";
@@ -414,12 +416,12 @@ try {
   });
   let foldErr = "";
   fold.stderr?.on("data", (chunk: Buffer) => (foldErr += chunk.toString()));
-  await waitFor("foldpeer mesh presence", () => announced.has("foldpeer") ? true : undefined);
+  await waitFor("foldpeer mesh presence", () => foldPeerId);
   const foldEventsChannel = eventChannel({ owner: "foldpeer", actor: "foldpeer" });
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
   const foldStart = frames.length;
-  await operator.unicast("foldpeer.foldpeer", foldMarker);
+  await operator.unicast(foldPeerId!, foldMarker);
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "Jcode journal fold terminal event",
