@@ -20,21 +20,24 @@
  * Run: pnpm smoke:goal-sibling-race   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import {
+import type { ActionContext, Connector, EpCaller, GoalRef, LaunchSpec } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const home = mkdtempSync(join(tmpdir(), "cotal-sibrace-home-"));
+process.env.COTAL_HOME = home;
+const {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, epCall, epRequestSubject, epReplySubject,
   actionContext, readGoalResult, registry,
-  type ActionContext, type Connector, type EpCaller, type GoalRef, type LaunchSpec,
-} from "@cotal-ai/core";
-import { recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
-import { launchEnv } from "@cotal-ai/connector-core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+} = await import("@cotal-ai/core");
+const { recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT, MANAGER_CONTRACTS } = await import("../src/manager-service-contract.js");
+const { launchEnv } = await import("@cotal-ai/connector-core");
 
 const dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -178,6 +181,7 @@ try {
   await mgrA?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
   await wait(200);
+  rmSync(home, { recursive: true, force: true });
 }
 
 process.exit(fail > 0 ? 1 : 0);

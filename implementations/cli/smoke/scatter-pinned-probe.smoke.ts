@@ -35,20 +35,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import {
-  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
-  mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, instancePinnedInstrumentCapabilities,
-  freezeExpectedSet, resolveService, scatterCommand,
-  type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
+import type { EpCaller } from "@cotal-ai/core";
 // The manager is the FIXTURE, reached by source path rather than as a dependency: `implementations/*`
 // never depend on each other, and a smoke must not be the thing that creates one. It is here because
 // only a real registration can produce the state under test, and `packages/workspace/smoke/pid.smoke.ts`
 // reaches across the same way for the same reason.
-import { Manager } from "../../manager/src/manager.js";
-import { pinnedLivenessProbe } from "../src/lib/control.js";
-import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
+  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
+  mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, instancePinnedInstrumentCapabilities,
+  freezeExpectedSet, resolveService, scatterCommand,
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../../manager/src/manager.js");
+const { pinnedLivenessProbe } = await import("../src/lib/control.js");
+const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
 const EXPECTED_CELLS = 21; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review)
 
@@ -64,7 +67,6 @@ const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `pinprobe-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });

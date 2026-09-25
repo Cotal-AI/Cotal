@@ -26,17 +26,13 @@
  * Run: pnpm smoke:manager-restart-fence   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
-import {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
-  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
-  type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
-  type Connector, type LaunchSpec, registry,
-} from "@cotal-ai/core";
+import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
+import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
 // the split is deliberate. The long-lived-client behaviour graded below lives in
 // `invokeService`, and a suite that imports `dist` cannot make a claim about `src`: a mutation of
@@ -44,11 +40,18 @@ import {
 // about the test. Nothing is shared across the two copies — the client's only contact with the
 // manager (which reaches core through `dist`) is over NATS, and the goal helpers above operate on
 // the manager's own context, so no branded object crosses the boundary.
-import { CotalEndpoint } from "../../../packages/core/src/index.js";
-import { recordMesh, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
+process.env.COTAL_HOME = home;
+const {
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
+  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry,
+} = await import("@cotal-ai/core");
+const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
+const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -96,8 +99,8 @@ const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
 let mgr: InstanceType<typeof Manager> | undefined;
-let client: CotalEndpoint | undefined;
-let reader: CotalEndpoint | undefined;
+let client: SourceCotalEndpoint | undefined;
+let reader: SourceCotalEndpoint | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mrf-js-`))], { stdio: "ignore" });
   teardownOnSignal(broker);
@@ -203,12 +206,12 @@ try {
     const before = pubs();
     const splitsBefore = client.splitRecoveryCount;
     const announced: Array<{ command?: string; servedBy?: { instanceId: string; epoch: number }; splitsRecovered?: number }> = [];
-    client.on("split-recovered", (e) => announced.push(e as (typeof announced)[number]));
+    client.on("split-recovered", (e: unknown) => announced.push(e as (typeof announced)[number]));
     let threw: unknown;
     let reply: EpAttributedReply | undefined;
     try { reply = await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { threw = e; }
     check("the stale-epoch client's UNSAFE call no longer surfaces `expired` — the successor refused it before running it",
-      threw === undefined, threw instanceof Error ? `${(threw as EpEnvelopeError).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
+      threw === undefined, threw instanceof Error ? `${(threw as EpEnvelopeErrorType).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
     check("...and what comes back is the SUCCESSOR's own answer, at ITS epoch",
       reply?.responder.instanceId === iid1 && reply?.responder.epoch === epoch2, { responder: reply?.responder, epoch2 });
     // The re-issue is the whole point, and it is only safe because the first attempt PROVED it did
@@ -287,6 +290,7 @@ try {
   await client?.stop().catch(() => {});
   await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
+  rmSync(home, { recursive: true, force: true });
 }
 
 console.log(`\n${fail === 0 ? "MANAGER RESTART + TERMINAL SURVIVAL SMOKE OK ✅" : "MANAGER RESTART + TERMINAL SURVIVAL SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
