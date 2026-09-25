@@ -1,6 +1,7 @@
 {
   "suite": [
-    "extensions/connector-jcode/smoke/jcode-host.smoke.ts"
+    "extensions/connector-jcode/smoke/jcode-host.smoke.ts",
+    "extensions/connector-jcode/smoke/jcode-args.smoke.ts"
   ],
   "guard": "the session journal records the requested model pin after setModel, not the harness default",
   "command": "pnpm smoke:jcode-host",
@@ -21,9 +22,11 @@
     {
       "name": "A2 do not map a recovered journal fold into its terminal event",
       "file": "extensions/connector-jcode/src/agui-map.ts",
+      "command": "pnpm smoke:jcode-args",
+      "completionMarker": "JCODE ARGS SMOKE PASSED:",
       "find": "            runError({\n                message: `Jcode session journal folded into its snapshot; ${record.journal_fold.lost_records} unacknowledged record(s) were not emitted`,\n                code: \"jcode_journal_fold\",",
       "replace": "            runError({\n                message: `Jcode session journal folded into its snapshot; ${record.journal_fold.lost_records} unacknowledged record(s) were not emitted`,\n                code: \"not_jcode_journal_fold\",",
-      "expectRed": "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity"
+      "expectRed": "a journal fold closes an open Jcode run with its named discontinuity"
     }
   ],
   "_note": "No completionMarker: this suite is fail-fast (node:assert throws at the first red)."

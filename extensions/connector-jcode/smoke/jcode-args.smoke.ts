@@ -238,6 +238,14 @@ try {
     "a closed Jcode run opens a fresh run for later durable output",
     mapper.map({ cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } })?.events[0]?.type === "RUN_STARTED",
   );
+  const folded = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-fold", now: () => 8 });
+  folded.map(mapperRecord);
+  const foldedMapped = folded.map({ cursor: "journal:cursor:fold", record: { journal_fold: { lost_records: 0 } } });
+  check(
+    "a journal fold closes an open Jcode run with its named discontinuity",
+    foldedMapped?.events[0]?.type === "RUN_ERROR" && foldedMapped.events[0]?.code === "jcode_journal_fold",
+    foldedMapped,
+  );
   const restartedMapped = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map(mapperRecord);
   const messageIds = (result: typeof mapped) => result?.events.flatMap((event) => "messageId" in event ? [event.messageId] : []) ?? [];
   check(
