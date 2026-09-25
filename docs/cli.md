@@ -1398,7 +1398,7 @@ cotal reconcile-gate [--space <s>] [--server <url>] [--endpoint <e>] [--instance
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | this folder's auth space | Space the frozen gate lives in |
-| `--server <url>` | the broker recorded for `--space`, else the local mesh | Broker URL |
+| `--server <url>` | the local mesh | Broker URL |
 | `--endpoint <e>` | `manager` | Endpoint whose gate is frozen |
 | `--instance <id>` | this folder's persisted manager instance | Instance id |
 
@@ -1460,7 +1460,7 @@ cotal deregister-instance [--space <s>] [--server <url>] [--endpoint <e>] [--ins
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | this folder's auth space | Space the instance is registered in |
-| `--server <url>` | the broker recorded for `--space`, else the local mesh | Broker URL |
+| `--server <url>` | the local mesh | Broker URL |
 | `--endpoint <e>` | `manager` | Endpoint the instance serves |
 | `--instance <id>` | this folder's persisted manager instance | Instance id, the whole id as `cotal ps` prints it |
 
