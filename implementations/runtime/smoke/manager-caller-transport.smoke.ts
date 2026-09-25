@@ -92,6 +92,7 @@ const contractMod = await import(
 ) as any;
 const { managerClusterArtifacts, managerContractArtifactValues } = contractMod;
 
+const EXPECTED_CELLS = 3;
 let ok = 0;
 let fail = 0;
 const c = (name: string, pass: boolean, extra?: unknown) => {
@@ -156,7 +157,15 @@ writeFileSync(confPath, serverConfig(auth, [auth], {
   extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
 }));
 
-const broker = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
+// Broker child process: run with an explicit allowlisted environment to prevent secret leakage
+const brokerEnv: NodeJS.ProcessEnv = {
+  PATH: process.env.PATH ?? "/usr/bin:/bin",
+  TMPDIR: isolatedTmp,
+  HOME: isolatedHome,
+  LANG: process.env.LANG ?? "C.UTF-8",
+};
+
+const broker = spawn("nats-server", ["-c", confPath], { stdio: "ignore", env: brokerEnv });
 teardownOnSignal(broker);
 
 const dialer = dialerFor(SERVERS);
@@ -169,6 +178,11 @@ class ProcessExited extends Error {
 
 const origExit = process.exit;
 const origErr = console.error;
+
+// Tracked connections for reliable teardown
+let calloutNc: any;
+let respNc: any;
+let pubNc: any;
 
 try {
   let up = false;
@@ -190,7 +204,7 @@ try {
   const OWNER = deriveOwnerToken("s".repeat(32), "human-test-1");
 
   // Connect callout service to the broker
-  const calloutNc = await dialer({
+  calloutNc = await dialer({
     servers: SERVERS,
     ...standaloneConnectOpts({ creds: callout.calloutCreds, tls: false }),
     maxReconnectAttempts: 0,
@@ -238,13 +252,14 @@ try {
     { signer: pubSigner },
   );
   const pubCreds = new TextDecoder().decode(fmtCreds(pubJwt, fromSeed(new TextEncoder().encode(pubId.seed))));
-  const pubNc = await dialer({ servers: SERVERS, ...standaloneConnectOpts({ creds: pubCreds, tls: false }), maxReconnectAttempts: 0 });
+  pubNc = await dialer({ servers: SERVERS, ...standaloneConnectOpts({ creds: pubCreds, tls: false }), maxReconnectAttempts: 0 });
   const storeCtx = await contractStoreContext(pubNc, space);
   const artifacts = managerClusterArtifacts();
   for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest]) {
     await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
   }
   await pubNc.drain();
+  pubNc = undefined;
 
   // Helper to mint signed EdDSA user tokens
   async function mintUserToken(view?: string) {
@@ -319,10 +334,10 @@ try {
     { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) },
   );
   const responderCreds = new TextDecoder().decode(fmtCreds(responderJwt, fromSeed(new TextEncoder().encode(responderId.seed))));
-  const respNc = await dialer({ servers: SERVERS, ...standaloneConnectOpts({ creds: responderCreds, tls: false }), maxReconnectAttempts: 0 });
+  respNc = await dialer({ servers: SERVERS, ...standaloneConnectOpts({ creds: responderCreds, tls: false }), maxReconnectAttempts: 0 });
 
   respNc.subscribe(`cotal.${space}.ep.inst.manager.${TARGET_IID}.describe.>`, {
-    callback: (err, msg) => {
+    callback: (err: unknown, msg: any) => {
       if (err || !msg) return;
       const parsed = parseEpSubject(msg.subject);
       if (!parsed || parsed.plane !== "request") return;
@@ -348,7 +363,7 @@ try {
   });
 
   respNc.subscribe(`cotal.${space}.ep.inst.manager.${TARGET_IID}.run-ps.>`, {
-    callback: (err, msg) => {
+    callback: (err: unknown, msg: any) => {
       if (err || !msg) return;
       const parsed = parseEpSubject(msg.subject);
       if (!parsed || parsed.plane !== "request") return;
@@ -365,6 +380,9 @@ try {
       respNc.publish(replySubj, new TextEncoder().encode(JSON.stringify(resp)));
     },
   });
+
+  // Flush subscriptions to guarantee broker registration before client publishes
+  await respNc.flush();
 
   // CELL 1: Execute shipped runWorkflow (exercises askHost -> resolveService -> invokeCommand)
   // When mutated (omitting managerInstanceId), askHost receives broker permission denial and calls process.exit(1).
@@ -396,16 +414,22 @@ try {
     console.error = origErr;
   }
 
-  const callerVerified =
-    !runWorkflowFailed &&
+  const describeVerified =
     describeCalls >= 1 &&
+    lastDescribeCaller?.owner === OWNER &&
+    lastDescribeCaller?.actor === CLI_USER_ACTOR &&
+    lastDescribeCaller?.uid === callerUid;
+
+  const runPsVerified =
     runPsCalls >= 1 &&
     lastRunPsCaller?.owner === OWNER &&
     lastRunPsCaller?.actor === CLI_USER_ACTOR &&
     lastRunPsCaller?.uid === callerUid;
 
+  const callerVerified = !runWorkflowFailed && describeVerified && runPsVerified;
+
   if (!callerVerified && !runWorkflowDiagnostic) {
-    runWorkflowDiagnostic = `broker calls or caller triple mismatch: describeCalls=${describeCalls}, runPsCalls=${runPsCalls}, caller=${JSON.stringify(lastRunPsCaller)}`;
+    runWorkflowDiagnostic = `broker calls or caller triple mismatch: describeCalls=${describeCalls}, describeCaller=${JSON.stringify(lastDescribeCaller)}, runPsCalls=${runPsCalls}, runPsCaller=${JSON.stringify(lastRunPsCaller)}`;
   }
 
   c("runtime askHost connects to instance-scoped manager with valid managerInstanceId", callerVerified, runWorkflowDiagnostic);
@@ -437,6 +461,7 @@ try {
 
   // CELL 3: Broker denies sentinel credential alone without a valid bearer token
   let sentinelOnlyRefused = false;
+  let sentinelErrorDiagnostic: string | undefined;
   try {
     const badNc = await dialer({
       servers: SERVERS,
@@ -444,30 +469,67 @@ try {
       maxReconnectAttempts: 0,
     });
     await badNc.close();
-  } catch {
-    sentinelOnlyRefused = true;
+    sentinelErrorDiagnostic = "sentinel-only connection unexpectedly connected";
+  } catch (err: any) {
+    const isAuthDenial =
+      err?.name === "AuthorizationError" ||
+      /authorization violation/i.test(String(err?.message ?? err));
+    if (isAuthDenial) {
+      sentinelOnlyRefused = true;
+    } else {
+      sentinelErrorDiagnostic = `expected AuthorizationError, but got ${err?.name ?? err}: ${err?.message ?? err}`;
+    }
   }
 
-  c("broker denies sentinel-only connection without bearer token", sentinelOnlyRefused);
+  c("broker denies sentinel-only connection without bearer token", sentinelOnlyRefused, sentinelErrorDiagnostic);
 
-  await respNc.drain();
-  await calloutNc.drain();
+  if (respNc && !respNc.isClosed()) {
+    await respNc.drain();
+    respNc = undefined;
+  }
+  if (calloutNc && !calloutNc.isClosed()) {
+    await calloutNc.drain();
+    calloutNc = undefined;
+  }
 } finally {
   process.exit = origExit;
   console.error = origErr;
-  // Restore original environment by deleting keys not originally present and restoring originals
+
+  // Drain any remaining open connections on early failure
+  for (const nc of [pubNc, respNc, calloutNc]) {
+    if (nc && !nc.isClosed()) {
+      try {
+        await nc.drain();
+      } catch {
+        try { nc.close(); } catch {}
+      }
+    }
+  }
+
+  // Restore environment variables: delete keys added during run and restore all originals
   for (const k of Object.keys(process.env)) {
     if (!(k in origEnv)) {
       delete process.env[k];
-    } else {
-      process.env[k] = origEnv[k];
     }
   }
+  for (const [k, v] of Object.entries(origEnv)) {
+    if (v === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = v;
+    }
+  }
+
   await killAndAwaitExit(broker);
   rmSync(isolatedRoot, { recursive: true, force: true });
 }
 
-emitSentinel({ passed: ok, failed: fail });
+if (ok + fail !== EXPECTED_CELLS) {
+  fail++;
+  console.log(`  ✗ FAIL: executed ${ok + fail} cells, expected exactly ${EXPECTED_CELLS}`);
+}
+
+emitSentinel({ passed: ok, failed: fail, cells: EXPECTED_CELLS });
 if (fail > 0) {
   process.exit(1);
 }
