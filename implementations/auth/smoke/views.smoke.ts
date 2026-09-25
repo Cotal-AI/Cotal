@@ -408,11 +408,11 @@ console.log("E. connect-boundary lifecycle equality for views (real ledger dir)"
     try { authorize(vB); } catch { okB = false; }
     check("incarnation B's own admin-view bearer connects (the gate denies STALENESS, not views)", okB);
 
-    // Revocation of the actor record denies subsequent exchange and connect:
+    // Revocation of the actor record denies subsequent connect authorization at the ledger:
     const { revokeActor } = await import("../src/ledger.js");
     revokeActor(dir, OWNER, "cli");
     await rejects(
-      "fresh exchange/connect after revoke refused",
+      "ledger connect authorization after revoke is refused",
       () => authorize(vB),
       'no longer) granted',
     );

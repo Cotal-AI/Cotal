@@ -166,9 +166,9 @@ try {
     const goalResultRow = rows.find((r) => r.includes(".goal-result."));
     check("agent with spawn holds goal-result row", goalResultRow !== undefined, rows);
 
-    // Live pre-revoke read within TTL remains permitted on the caller's own UID:
+    // Own UID goal-result publish permitted on static credential:
     const ownVerdict = await publishAs(creds, concrete(goalResultRow!), false);
-    check("live pre-revoke read within TTL remains permitted", ownVerdict === "allowed", ownVerdict);
+    check("own UID goal-result publish permitted", ownVerdict === "allowed", ownVerdict);
 
     // Foreign UID request subject broker-denied:
     const foreignGoalResultRow = concrete(goalResultRow!).replace(`.${uid}.`, `.${foreignUid}.`);

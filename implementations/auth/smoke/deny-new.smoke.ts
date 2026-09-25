@@ -104,7 +104,7 @@ try {
 
   // ---- the file grant + the exchange arm's root-credential ensure ----
   const uid1 = mintLifecycleUid();
-  grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid1 });
+  grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid1 });
   const credid1 = await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 });
   check("first exchange mints the incarnation's root credential", typeof credid1 === "string" && credid1.length > 0, credid1);
   check("the ensure is idempotent (a re-exchange stamps the SAME credential)", (await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 })) === credid1);
@@ -125,8 +125,11 @@ try {
   });
   await calloutNc.flush();
 
-  const bearer1 = await issuer.issue({ owner: OWNER, space, actor: "worker", scope: [], lifecycleUid: uid1, credentialId: credid1 });
+  const bearer1 = await issuer.issue({ owner: OWNER, space, actor: "worker", scope: ["spawn"], lifecycleUid: uid1, credentialId: credid1 });
   check("HAPPY: a bearer carrying the stamped credential CONNECTS", (await tryConnect(bearer1)) === "connected");
+
+  // Keep one LIVE connection open before revocation to test the same-connection bearer-TTL boundary:
+  const liveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ bearer: bearer1, sentinelCreds: callout.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
 
   // POST-SUCCESSFUL-HEAD crash re-export (incarnation-wide root, ratified): after the head's
   // current-root CAS succeeded (and the bearer bytes possibly released), a crash + re-exchange
@@ -154,8 +157,34 @@ try {
   // ---- revocation bites the NEXT connect, and the exchange refuses to re-mint ----
   await markLedgerRowRevoked(registryStores(reg).authKv, credRowKey(uid1, credid1));
   check("REVOKED: the same previously-connecting bearer is DENIED on its next connect", (await tryConnect(bearer1)) === "denied");
+  check("fresh exchange/connect after revoke refused", (await tryConnect(bearer1)) === "denied");
   await rejects("a revoked root refuses the exchange (rotation is the barrier's job, never a re-mint)",
     () => plane!.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 }), "barrier");
+
+  // ---- live pre-revoke read within TTL on same connection remains permitted ----
+  const ownGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${uid1}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  let ownErr: Error | undefined;
+  try {
+    await liveNc.request(ownGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
+  } catch (e) {
+    ownErr = e as Error;
+  }
+  check("live pre-revoke read within TTL remains permitted",
+    ownErr !== undefined && !/permission|authorization/i.test(ownErr.message), ownErr?.message);
+
+  // ---- foreign UID request subject broker-denied (capturing native policy event) ----
+  const foreignUid = mintLifecycleUid();
+  const foreignGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${foreignUid}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  let foreignErr: Error | undefined;
+  try {
+    await liveNc.request(foreignGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
+  } catch (e) {
+    foreignErr = e as Error;
+  }
+  check("foreign UID request subject broker-denied",
+    foreignErr !== undefined && /permission.*violation/i.test(foreignErr.message), foreignErr?.message);
+
+  await liveNc.close();
 
   // ---- the R1 takeover gap: a same-alias re-grant at a NEW uid refuses the exchange loudly ----
   const uid2 = mintLifecycleUid();
