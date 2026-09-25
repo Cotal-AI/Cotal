@@ -1,6 +1,8 @@
 /** D27 execution-profile proofs for schema-profile.ts: full 2020-12 features validate, the
  *  closure is closed (no ambient resolution), and every bound refuses loudly at registration
  *  time with contract-invalid — distinct from invocation-time arg rejection (SPEC §13.7). */
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   compileContractSchema, compileContract, createCompiledContractCache, ContractInvalidError,
   SCHEMA_PROFILE, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, VOID_SCHEMA_DIGEST,
@@ -90,8 +92,10 @@ refuses("patternProperties key bomb refused", () =>
 // refused the manager's own service contract on Windows CI ("125ms of CPU ... 80ms elapsed" — CPU
 // above wall clock is only possible with concurrent threads, so that number was mostly V8's JIT).
 // It was removed because neither candidate basis survived measurement: cost has no knee (a 14x
-// spread at one node count), and the codegen RangeError it was meant to sit below is not a stable
-// edge (the same document threw cold and compiled on the immediate warm retry in one process).
+// spread at one node count), and the codegen RangeError it was meant to sit below is not a node-
+// count edge but a STACK-BUDGET edge (#1551): it moves linearly with `--stack-size` and with the
+// caller's own frame depth, which a frozen node count cannot express regardless of which value it
+// picks.
 //
 // So the shape the byte/depth/ref-chain bounds always missed is now ADMITTED, and asserting that it
 // COMPILES is the point: a silently re-added ceiling would fail here, and whoever adds it has to
@@ -163,11 +167,15 @@ refuses("patternProperties key bomb refused", () =>
 {
   // WHAT ACTUALLY CATCHES A SCHEMA THE COMPILER CANNOT BUILD: the try/catch around `ajv.compile`,
   // which normalises any codegen failure to `contract-invalid`. It has been doing this the whole
-  // time, including for the RangeError the node bound was proposed to pre-empt.
+  // time, including for the RangeError the node bound was proposed to pre-empt — and, since
+  // #1551, naming the compiler's shape and the overflowing width rather than the caller's schema
+  // when the failure IS that RangeError (see the dedicated child-process cell below).
   //
-  // Deliberately proven with a DETERMINISTIC non-compiling schema. The RangeError itself is not
-  // reproducible on demand — it is exactly the "boundary" that moved between two consecutive runs
-  // of one process — so an assertion built on it would be a flake dressed as a guard.
+  // This particular check stays proven with a DETERMINISTIC non-compiling schema (a dangling
+  // `$ref`) rather than with the RangeError itself: reaching the overflow in-process at a fixed
+  // width depends on THIS process's stack budget and frame depth (#1551), so a width chosen here
+  // would silently stop overflowing on a different host or Node build. The overflow gets its own
+  // deterministic cell instead, in a child process with a reduced `--stack-size`.
   refuses("a schema the compiler rejects is contract-invalid, not a thrown RangeError", () =>
     compileContractSchema({ root: { type: "object", properties: { a: { $ref: "#/$defs/absent" } } } }),
     "does not compile");
@@ -305,5 +313,54 @@ refuses("member $id collision is contract-invalid", () =>
     root: { type: "object", properties: { a: { $ref: `cotal:${dA}` }, b: { $ref: `cotal:${dB}` } } },
     members: { [dA]: idA, [dB]: idB },
   }), "does not compile");
+
+// 15) THE OVERFLOW ITSELF (#1551): a wide but legal object schema — admitted by every ceiling
+// above — overflows the generated validator's call stack at compile, and the caller-facing error
+// must name the compiler's shape and the overflowing width, not the schema. The overflow's own
+// width is a function of THIS process's stack budget and frame depth (see the pin comment on
+// `AJV_PROFILE_OPTIONS`), so it cannot be reached deterministically in THIS process at a fixed
+// property count — a width chosen here would silently stop overflowing on a different host or
+// Node build. A CHILD PROCESS with a reduced `--stack-size` fixes both problems: the reduced
+// budget makes a modest width overflow every time, and the child is disposable, so nothing about
+// this process's own call depth leaks into the result.
+//
+// The smoke's existing 1000-property width (section 6b, admitted with the profile's real stack
+// budget) is re-run in the SAME child, at the SAME reduced budget, as a positive control: it must
+// still compile, so a failure at the larger width is provably about the WIDTH and not about the
+// reduced budget alone.
+{
+  const schemaProfileModule = fileURLToPath(new URL("../src/schema-profile.js", import.meta.url));
+  const overflowWidth = 2000; // ~2.3x the smoke's 1000-property control width
+  const childScript = `
+    import { compileContractSchema } from ${JSON.stringify(schemaProfileModule)};
+    function heavy(n) {
+      const props = {};
+      for (let i = 0; i < n; i++) props["p" + i] = { type: "string", pattern: "^a{0,4}b" + i + "c[0-9]{1,3}$", minLength: 1, maxLength: 40 };
+      return { type: "object", properties: props, additionalProperties: false };
+    }
+    compileContractSchema({ root: heavy(1000) });
+    console.log("CONTROL_1000_OK");
+    try {
+      compileContractSchema({ root: heavy(${overflowWidth}) });
+      console.log("OVERFLOW_DID_NOT_THROW");
+    } catch (e) {
+      console.log("OVERFLOW_MESSAGE " + JSON.stringify(e.message));
+      console.log("OVERFLOW_NAME " + e.constructor.name);
+    }
+  `;
+  const child = spawnSync(process.execPath, ["--stack-size=256", "--import", "tsx", "-e", childScript], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  const out = child.stdout ?? "";
+  ok("positive control: the smoke's 1000-property width still compiles at the reduced stack budget",
+    out.includes("CONTROL_1000_OK"), { status: child.status, stderr: child.stderr?.slice(0, 2000) });
+  ok(`a ${overflowWidth}-property object overflows the reduced stack deterministically`,
+    !out.includes("OVERFLOW_DID_NOT_THROW") && /OVERFLOW_MESSAGE/.test(out), out);
+  ok("the overflow names the compiler's generated-code shape, the overflowing width, and that every profile ceiling had already admitted the schema — not the caller's schema",
+    out.includes("OVERFLOW_NAME") && out.includes("ContractInvalidError")
+    && new RegExp(`generated validator's code shape overflowed.*compiling a ${overflowWidth}-property object.*every profile ceiling.*had already admitted`).test(out)
+    && !out.includes("document is") && !/is \d+ bytes \(profile max/.test(out) && !out.includes("nesting exceeds"),
+    out);
+}
 
 console.log(`schema-profile.smoke: ${pass} checks passed`);
