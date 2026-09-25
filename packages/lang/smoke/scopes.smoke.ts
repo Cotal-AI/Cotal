@@ -1199,6 +1199,10 @@ await parallel({
 // The seed is the harvest shape cell (4) already uses: a completed run's entries reset to
 // pending, so both arms' effects are recorded under their original hashes and the race
 // re-enters each arm against them.
+// Re-entry seed shared by (6)-(8): a settled entry back to pending, so both arms are recorded
+// under their original hashes and the scope re-enters each arm against them.
+const pend = (e: JournalEntry): JournalEntry => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
+
 {
   const P6 = `
 await parallel({
@@ -1212,7 +1216,6 @@ await sleep("1m", { name: "tail" });
   const harvest = new Journal({ run: runId });
   await run(P6, { runId, pins, journal: harvest, handler: new SimHandler({}) });
   const h = harvest.entries();
-  const pend = (e: JournalEntry) => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
   const seeded = new Journal({ run: runId, entries: [
     pend(h.find((e) => e.kind === "parallel") as JournalEntry),
     pend(h.find((e) => e.name === "a-work") as JournalEntry),
@@ -1244,7 +1247,6 @@ await sleep("1m", { name: "tail" });
   const harvest = new Journal({ run: runId });
   await run(F7, { runId, pins, journal: harvest, handler: new SimHandler({}) });
   const h = harvest.entries();
-  const pend = (e: JournalEntry) => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
   const seeded = new Journal({ run: runId, entries: [
     pend(h.find((e) => e.kind === "fanOut") as JournalEntry),
     pend(h.find((e) => e.name === "w-x") as JournalEntry),
@@ -1279,7 +1281,6 @@ log("win", r.index, r.value);
   const harvest = new Journal({ run: runId });
   await run(R8, { runId, pins, journal: harvest, handler: new SimHandler({}) });
   const h = harvest.entries();
-  const pend = (e: JournalEntry) => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
   const seeded = new Journal({ run: runId, entries: [
     pend(h.find((e) => e.kind === "race") as JournalEntry),
     pend(h.find((e) => e.name === "fast-work") as JournalEntry),
