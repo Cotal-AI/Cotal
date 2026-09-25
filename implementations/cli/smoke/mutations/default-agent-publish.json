@@ -63,9 +63,9 @@
       "file": "implementations/cli/src/commands/mint.ts",
       "find": "  const identity = existingIdentity ?? newIdentity();\n  const lifetime = { expiresInSeconds, expiresAt };\n  const creds = target\n    ? await provisionForMint(auth, identity, { allowSubscribe, allowPublish, role, lifecycleUid: lifecycleUid!, ...lifetime }, target)\n    : await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid, ...lifetime });",
       "replace": "  const identity = existingIdentity ?? newIdentity();\n  const creds = target\n    ? await provisionForMint(auth, identity, { allowSubscribe, allowPublish, role, lifecycleUid: lifecycleUid! }, target)\n    : await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid });",
-      "expectRed": "mint --expires-in 3600 succeeds",
-      "cell": "mint --expires-in 3600 succeeds",
-      "note": "Restores the shipped half 1: the flag parses and validates but never reaches mintCreds, so every CLI mint stays unbounded. The exp- arithmetic cell reddens on the same mutation one check later; this one is the first red."
+      "expectRed": "the JWT's exp is iat + the flag, computed within the command's own second",
+      "cell": "the JWT's exp is iat + the flag, computed within the command's own second",
+      "note": "Restores the shipped half 1: the flag parses and validates but never reaches mintCreds, so the mint itself still succeeds while the credential stays unbounded (exp undefined). The success cell stays green by design; the exp-arithmetic cell is the one that catches the dropped lifetime."
     },
     {
       "name": "M7 churn the identity on every re-mint",
