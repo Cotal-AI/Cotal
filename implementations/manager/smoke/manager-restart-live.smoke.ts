@@ -30,17 +30,20 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import {
+import type { ActionContext, CotalEndpoint as CotalEndpointType, EpCaller, ParsedEpRequest, ControlReply, ControlRequest } from "@cotal-ai/core";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, DEV_OWNER,
   mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
   CotalEndpoint, CONTROL_DELIVERY_ADMIN,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
-  type ActionContext, type EpCaller, type ParsedEpRequest, type ControlReply,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -59,7 +62,6 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `mgrrestart-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -78,7 +80,7 @@ type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: num
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let mgr: InstanceType<typeof Manager> | undefined;
-let daemon: CotalEndpoint | undefined;
+let daemon: CotalEndpointType | undefined;
 try {
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   kids.push(srv);
@@ -103,7 +105,7 @@ try {
   // `holdsDeliveryLease` below is truthful.
   await daemon.acquireDeliveryLease(0).catch(() => {});
   let evictCalls = 0;
-  daemon.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+  daemon.serveControl(CONTROL_DELIVERY_ADMIN, async (req: ControlRequest): Promise<ControlReply> => {
     if (req.op === "reloadStoreIdentity") {
       let holds = false;
       try {

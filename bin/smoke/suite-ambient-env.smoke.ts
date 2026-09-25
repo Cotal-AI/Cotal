@@ -57,6 +57,12 @@ const PROCESS_ENV_STRIP =
 /** A second real child-env construction path filters the ambient entries while copying them. It is
  *  not a SPREAD match, but files combining it with a spread are the real mixed-path population. */
 const FILTERED_COPY = /Object\.entries\(\s*process\.env\s*\)\.filter\([\s\S]{0,160}?startsWith\(\s*["']COTAL_["']\s*\)/;
+const RECORD_MESH = /\brecordMesh\s*\(/;
+const COTAL_HOME_ASSIGNMENT = /process\.env\.COTAL_HOME\s*=/;
+
+function hasPrivateRegistryHome(source: string): boolean {
+  return !RECORD_MESH.test(source) || COTAL_HOME_ASSIGNMENT.test(source);
+}
 
 /** Comments are not child env. The census used to treat a `delete` in prose plus a `startsWith("COTAL_")`
  *  on a different child as a strip of every spread in the file. */
@@ -604,6 +610,25 @@ function assertFixtureParses(name: string, source: string): void {
   assert.equal(diagnostics.length, 0, `${name} must parse before its classification is trusted`);
 }
 
+const privateRegistryHomeFixture = [
+  'process.env.COTAL_HOME = "/tmp/private";',
+  'recordMesh({ space: "fixture" });',
+].join("\n");
+assertFixtureParses("the private registry-home fixture", privateRegistryHomeFixture);
+assert.equal(
+  hasPrivateRegistryHome(privateRegistryHomeFixture),
+  true,
+  "a suite that assigns COTAL_HOME before recording a mesh must pass the registry-home rule",
+);
+
+const ambientRegistryHomeFixture = 'recordMesh({ space: "fixture" });';
+assertFixtureParses("the ambient registry-home fixture", ambientRegistryHomeFixture);
+assert.equal(
+  hasPrivateRegistryHome(ambientRegistryHomeFixture),
+  false,
+  "a suite that records a mesh without assigning COTAL_HOME must fail the registry-home rule",
+);
+
 const childScriptScrubTail =
   ' (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];';
 const childScriptSpreadTail = ' const safe = { ...process.env }; spawn("safe", { env: safe });';
@@ -721,6 +746,11 @@ const REVIEWED: Record<string, string> = {
     "spawns herdr-e2e-manager-child.mjs, which builds its OWN stub identity from HE2E_* and sets the COTAL_ vars itself rather than reading the inherited ones",
 };
 
+const REGISTRY_HOME_REVIEWED: Record<string, string> = {
+  "bin/smoke/suite-ambient-env.smoke.ts":
+    "this census itself: recordMesh and COTAL_HOME occur only in fixture strings it feeds to a parser",
+};
+
 /**
  * THE RATCHET, and read the next sentence before you read the list.
  *
@@ -809,11 +839,19 @@ let totalSpreads = 0;
 const multiSpreadFiles: string[] = [];
 const mixedPathFiles: string[] = [];
 let realProcessEnvScrubSpreads = 0;
+const privateRegistryHomes: string[] = [];
+const reviewedRegistryHomes: string[] = [];
+const ambientRegistryHomes: string[] = [];
 
 for (const file of suiteSources(repoRoot)) {
   const rel = relative(repoRoot, file).split("\\").join("/");
   const body = readFileSync(file, "utf8");
   const code = codeWithoutComments(body);
+  if (RECORD_MESH.test(code)) {
+    if (rel in REGISTRY_HOME_REVIEWED) reviewedRegistryHomes.push(rel);
+    else if (hasPrivateRegistryHome(code)) privateRegistryHomes.push(rel);
+    else ambientRegistryHomes.push(rel);
+  }
   const lexical = lexicalRegions(code);
   const spreads = spreadIndexes(code);
   if (spreads.length === 0) continue;
@@ -849,6 +887,26 @@ console.log(
 );
 for (const f of stripped) console.log(`  ✓ ${f} - strips COTAL_ before the spread`);
 for (const f of exempted) console.log(`  · ${f} - reviewed safe: ${REVIEWED[f]}`);
+console.log(
+  `• registry-home census: ${privateRegistryHomes.length + reviewedRegistryHomes.length + ambientRegistryHomes.length} suite file(s) call recordMesh ` +
+    `(${privateRegistryHomes.length} private COTAL_HOME, ${reviewedRegistryHomes.length} reviewed fixture source)`,
+);
+for (const f of privateRegistryHomes) console.log(`  ✓ ${f} - assigns process.env.COTAL_HOME`);
+for (const f of reviewedRegistryHomes) console.log(`  · ${f} - reviewed safe: ${REGISTRY_HOME_REVIEWED[f]}`);
+assert.equal(
+  ambientRegistryHomes.length,
+  0,
+  `suite(s) call recordMesh without assigning process.env.COTAL_HOME: ${ambientRegistryHomes.join(", ")}`,
+);
+assert.ok(
+  privateRegistryHomes.length > 0,
+  "the registry-home census matched no isolated recordMesh suites, which means the rule is broken rather than the tree being clean",
+);
+for (const path of Object.keys(REGISTRY_HOME_REVIEWED))
+  assert.ok(
+    reviewedRegistryHomes.includes(path),
+    `REGISTRY_HOME_REVIEWED lists ${path}, but the census did not find a recordMesh fixture there`,
+  );
 
 // A census that found nothing is not a pass. The spread is a normal thing for a suite to do, so a
 // zero here means the scan stopped seeing files, not that the tree got clean.
