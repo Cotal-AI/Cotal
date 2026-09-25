@@ -47,18 +47,25 @@ const cfg = {
 const peer = (id: string, name: string, status: Presence["status"]): Presence =>
   ({ card: { id, name, kind: "agent" }, status, ts: 1 }) as unknown as Presence;
 
-const stubAgent = (view: PresenceView, roster: Presence[]): MeshAgentType =>
+type WriterOptions = {
+  presenceWriteFailure?: MeshAgentType["presenceWriteFailure"];
+  transportConnected?: boolean;
+};
+
+const stubAgent = (view: PresenceView, roster: Presence[], writer: WriterOptions): MeshAgentType =>
   ({
     connected: true,
+    transportConnected: true,
+    ...writer,
     id: "self",
     attention: "open",
     roster: () => roster,
     presenceView: () => view,
   }) as unknown as MeshAgentType;
 
-const rosterText = (view: PresenceView, roster: Presence[]): string => {
+const rosterText = (view: PresenceView, roster: Presence[], writer: WriterOptions = {}): string => {
   const spec = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_roster")!;
-  return spec.run(stubAgent(view, roster), cfg, {}).text;
+  return spec.run(stubAgent(view, roster, writer), cfg, {}).text;
 };
 
 // All-offline is the exact shape a stale view produces, so it is the shape worth grading.
@@ -107,6 +114,62 @@ for (const view of [
   const current = rosterText({ state: "current", fresh: true }, allOffline);
   const stale = rosterText({ state: "stale", fresh: false, staleSince: 1 }, allOffline);
   check("the same all-offline roster reads differently under a stale view", current !== stale, { current, stale });
+}
+
+// Freshness and write health are separate signals; every combination must retain both.
+const stuckWriter = {
+  bucket: "cotal_presence_demo",
+  since: 1,
+  forMs: 6_500,
+  error: "timeout",
+  consecutiveFailures: 4,
+  stuck: true,
+};
+for (const view of [
+  { state: "current", fresh: true },
+  { state: "stale", fresh: false, staleSince: 1 },
+  { state: "unpopulated", fresh: false },
+] satisfies PresenceView[]) {
+  for (const rows of [[], live]) {
+    for (const stuck of [false, true]) {
+      const label = `${view.state}/${rows.length ? "rows" : "empty"}/${stuck ? "stuck" : "healthy"}`;
+      const text = rosterText(view, rows, { presenceWriteFailure: stuck ? stuckWriter : undefined });
+      const lastKnown = view.state !== "current" || stuck;
+      check(`${label}: liveness claims require both signals healthy`, lastKnown
+        ? !/Present in "demo"|No one is present/i.test(text) && /Last-known roster/.test(text)
+        : rows.length ? text.startsWith('Present in "demo" (2):') : text === 'No one is present in "demo" yet.', text);
+      check(`${label}: write warning is independent of freshness`, text.includes("Presence view is NOT LIVE") === stuck, text);
+      if (stuck) {
+        const expected = `Presence view is NOT LIVE in "demo": bucket "cotal_presence_demo" has refused 4 consecutive writes for 6500ms. ${rows.length ? "The roster below" : "This empty roster"} is last-known until a write succeeds or the broker store is repaired.\n\n`;
+        check(`${label}: preserves complete writer diagnostics and recovery hint`, text.startsWith(expected), text);
+      }
+      if (view.state !== "current") {
+        check(`${label}: preserves freshness warning alongside writer diagnostics`, text.includes(
+          view.state === "stale" ? "presence view is stale" : "presence view is not yet populated"), text);
+      }
+      if (lastKnown) {
+        check(`${label}: labels current presence uncertainty`, text.includes(rows.length
+          ? "these statuses are last-known, NOT current" : "current presence is unknown"), text);
+      }
+      if (rows.length) check(`${label}: preserves peer rows`, text.includes("codex") && text.includes("working"), text);
+    }
+  }
+}
+
+for (const rows of [[], live]) {
+  for (const view of [
+    { state: "current", fresh: true },
+    { state: "stale", fresh: false, staleSince: 1 },
+  ] satisfies PresenceView[]) {
+    const baseline = rosterText(view, rows);
+    check(`${view.state}/${rows.length}: disconnected transport ignores historical writer failure`, rosterText(view, rows, {
+      transportConnected: false,
+      presenceWriteFailure: stuckWriter,
+    }) === baseline);
+    check(`${view.state}/${rows.length}: failure below stuck threshold does not warn`, rosterText(view, rows, {
+      presenceWriteFailure: { ...stuckWriter, stuck: false },
+    }) === baseline);
+  }
 }
 
 console.log(`ROSTER-VIEW-HONESTY: ${pass} checks passed${fail ? `, ${fail} FAILED` : ""}`);

@@ -578,6 +578,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             bucket: presence.bucket,
             since: new Date(presence.since).toISOString(),
             forMs: presence.forMs,
+            consecutiveFailures: presence.consecutiveFailures,
+            stuck: presence.stuck,
             ...(presence.error !== undefined ? { error: presence.error } : {}),
             note: "presence writes are the first thing to fail here, not necessarily the only thing - a broker can refuse writes far more widely while this connection stays up",
           },
@@ -660,12 +662,15 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_roster",
       title: "Cotal: who's present",
       description:
-        "List your Cotal space's roster with each agent's role, status, and activity. When the presence view is stale or not yet populated, the roster is last-known and current presence is unknown.",
+        "List your Cotal space's roster with each agent's role, status, and activity. When the presence view is stale or not yet populated, or the presence writer is stuck, the roster is last-known and current presence is unknown.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
+        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
         const roster = agent.roster();
         const view = agent.presenceView();
-        if (!roster.length && view.state === "current") return ok(`No one is present in "${config.space}" yet.`);
+        if (!roster.length && view.state === "current" && !writeFailure?.stuck) {
+          return ok(`No one is present in "${config.space}" yet.`);
+        }
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -692,18 +697,17 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
-        // A roster is a liveness claim only while the presence watch is current. If the bucket
-        // has been silent past the liveness window (or the initial snapshot has not landed), every
-        // peer reads `offline` at once - a stale VIEW, not a mesh where everyone died inside one
-        // TTL. `cotal ps` already refuses a liveness word there (`mesh unknown`); say the same
-        // here instead of letting a reader take last-known state as fact.
+        // Freshness and a stuck presence writer are independent: retain both warnings.
         const header =
-          view.state === "current"
+          view.state === "current" && !writeFailure?.stuck
             ? `Present in "${config.space}" (${roster.length}):`
-            : `Last-known roster for "${config.space}" (${roster.length}) - presence view ${
-                view.state === "stale" ? "is stale" : "is not yet populated"
+            : `Last-known roster for "${config.space}" (${roster.length}) - presence ${
+                view.state === "current" ? "writer is stuck" : view.state === "stale" ? "view is stale" : "view is not yet populated"
               }, ${roster.length ? "so these statuses are last-known, NOT current:" : "so current presence is unknown."}`;
-        return ok(lines.length ? `${header}\n${lines.join("\n")}` : header);
+        const rendered = lines.length ? `${header}\n${lines.join("\n")}` : header;
+        return ok(writeFailure?.stuck
+          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. ${roster.length ? "The roster below" : "This empty roster"} is last-known until a write succeeds or the broker store is repaired.\n\n${rendered}`
+          : rendered);
       },
     },
     {

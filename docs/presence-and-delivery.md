@@ -57,6 +57,13 @@ the latter re-publishes itself and lets the delivery of that record make the vie
 `cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
 manager reports a view that is not `current` ([cli.md](cli.md)).
 
+Presence publishing is also monitored separately from the watch. One refused heartbeat remains a
+recoverable warning. If consecutive writes keep failing for a full presence TTL, the endpoint raises
+`PresenceWriteStuckError` with code `presence-write-stuck` and marks the failure record as stuck.
+`cotal_orientation` and `cotal_roster` then say the view is not live and label roster rows as
+last-known until a write succeeds. A successful write resets the consecutive count and clears the
+condition. The condition is local diagnosis, not a new wire field.
+
 ## Three delivery modes
 
 Every delivery message is addressed one of three ways

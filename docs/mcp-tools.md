@@ -77,7 +77,7 @@ Read the authoritative Cotal docs bundled with this installed version: the wire 
 
 *who's present*
 
-List your Cotal space's roster with each agent's role, status, and activity. When the presence view is stale or not yet populated, the roster is last-known and current presence is unknown.
+List your Cotal space's roster with each agent's role, status, and activity. When the presence view is stale or not yet populated, or the presence writer is stuck, the roster is last-known and current presence is unknown.
 
 - **Side-effect:** read-only.
 - **Available:** always.

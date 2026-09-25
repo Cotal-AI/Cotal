@@ -87,6 +87,10 @@ const startDaemon = async () => {
   });
   ep.on("error", () => {});
   await ep.start();
+  // The manager's #1694 binding requires the answer to name a real holder of the delivery
+  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
+  // `holdsDeliveryLease` below is truthful.
+  await ep.acquireDeliveryLease(0).catch(() => {});
   ep.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     if (req.op === "principalLiveness") {
@@ -101,8 +105,14 @@ const startDaemon = async () => {
       }
       return { ok: true, data: await evictDeniedPrincipalWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal }) };
     }
-    if (req.op === "reloadStoreIdentity")
-      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
+    if (req.op === "reloadStoreIdentity") {
+      let holds = false;
+      try {
+        const own = await ep.readDeliveryLeaseEntry(0);
+        holds = own !== undefined && ep.ownsDeliveryLease(own.info);
+      } catch { holds = false; }
+      return { ok: true, data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: ep.card.id, holdsDeliveryLease: holds } };
+    }
     return { ok: false, error: `unsupported ${req.op}` };
   }, { boundReply: true });
   return ep;
