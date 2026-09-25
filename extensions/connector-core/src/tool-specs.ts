@@ -578,6 +578,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             bucket: presence.bucket,
             since: new Date(presence.since).toISOString(),
             forMs: presence.forMs,
+            consecutiveFailures: presence.consecutiveFailures,
+            stuck: presence.stuck,
             ...(presence.error !== undefined ? { error: presence.error } : {}),
             note: "presence writes are the first thing to fail here, not necessarily the only thing - a broker can refuse writes far more widely while this connection stays up",
           },
@@ -663,8 +665,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "List the agents currently present in your Cotal space, with their role, status, and current activity.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
+        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
         const roster = agent.roster();
-        if (!roster.length) return ok(`No one is present in "${config.space}" yet.`);
+        if (!roster.length) {
+          const empty = `No one is present in "${config.space}" yet.`;
+          return ok(writeFailure?.stuck
+            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.\n\n${empty}`
+            : empty);
+        }
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -691,7 +699,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
-        return ok(`Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
+        const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
+        return ok(writeFailure?.stuck
+          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.\n\n${rendered}`
+          : rendered);
       },
     },
     {

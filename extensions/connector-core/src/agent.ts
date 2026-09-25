@@ -472,7 +472,14 @@ export class MeshAgent extends EventEmitter {
    *  incident: connected, serving, and silently unable to publish presence.
    *
    *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
-  get presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+  get presenceWriteFailure(): {
+    since: number;
+    forMs: number;
+    error?: string;
+    bucket: string;
+    consecutiveFailures: number;
+    stuck: boolean;
+  } | undefined {
     return this.ep.presenceWriteFailure();
   }
 

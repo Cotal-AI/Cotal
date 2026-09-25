@@ -38,12 +38,14 @@ function cfg(over: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 // A minimal MeshAgent stub — buildOrientation only reads id/status/attention/roster/inboxCount.
-function agentStub(over: { roster?: any[]; unread?: number } = {}): MeshAgent {
+function agentStub(over: { roster?: any[]; unread?: number; presenceWriteFailure?: unknown } = {}): MeshAgent {
   return {
     id: "ALICEID0000000000000000000000000000000000000",
     status: "working",
     attention: "open",
     connected: true,
+    transportConnected: true,
+    presenceWriteFailure: over.presenceWriteFailure,
     roster: () => over.roster ?? [],
     inboxCount: () => over.unread ?? 0,
   } as unknown as MeshAgent;
@@ -73,6 +75,29 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const withRun = cotalToolSpecs(cfg({ creds: "CREDS", capabilities: ["run"] })).map((s) => s.name);
   assert.ok(withRun.includes("cotal_run"), "run cap ⇒ cotal_run shown");
   assert.ok(open.map((s) => s.name).includes("cotal_run"), "open mode ⇒ cotal_run shown");
+}
+
+// 4b — a stuck presence writer makes orientation and roster say the view is not live.
+{
+  const failure = {
+    bucket: "cotal_presence_demo",
+    since: 1,
+    forMs: 6_500,
+    error: "timeout",
+    consecutiveFailures: 4,
+    stuck: true,
+  };
+  const agent = agentStub({
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    presenceWriteFailure: failure,
+  });
+  const text = renderOrientation(buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1));
+  assert.match(text, /presence view: NOT LIVE/,
+    "orientation says the peer snapshot is not live once consecutive presence failures cross one TTL");
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.match(result.text, /Presence view is NOT LIVE/,
+    "cotal_roster labels its rows as last-known while this endpoint's presence writer is stuck");
 }
 
 // 2 — identity + access mapping, and auth vs open.
