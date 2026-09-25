@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -13,7 +13,7 @@ import { acquirePrincipalLock, eventWalLocation, isAguiFramePart, parseAguiFrame
 import { fauxToolCall } from "@earendil-works/pi-ai";
 import cotalMesh from "./src/extension.js";
 import { piConnector } from "./src/connector.js";
-import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, countedAssert, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
@@ -28,6 +28,12 @@ import {
   type ExtensionAPI,
   VERSION,
 } from "@earendil-works/pi-coding-agent";
+
+// The shard runner refuses a suite that exits 0 without naming a cell count, so every assertion
+// here is counted through the same proxy the other registered suites use.
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 assert.equal(VERSION, "0.79.10", "the lifecycle proof must run against the pinned Pi host");
 
@@ -607,3 +613,7 @@ try {
   }
 }
 }
+
+// Only the parent names the tally. The death-stage child runs this same file and writes to the
+// same stdout, so a sentinel from it would be the line the shard reads.
+if (!process.env.PI_EVENTS_DEATH_STAGE) emitSentinel({ passed: cells(), failed: 0 });
