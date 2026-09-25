@@ -425,9 +425,11 @@ try {
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
   await waitFor(
-    "Jcode journal fold priming event",
+    "Jcode journal fold priming turn",
     () =>
-      frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED"))
+      readJsonLines(foldLog).find(
+        (entry) => entry.ev === "turn_run" && String(entry.content).includes("JCODE-JOURNAL-PRIME-1984"),
+      )
         ? true
         : undefined,
   );
