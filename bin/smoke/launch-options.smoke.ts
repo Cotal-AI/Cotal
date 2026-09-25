@@ -60,8 +60,10 @@ eq("any well-shaped key returned (no allow-list)",
 eq("undefined bag → []", connectorLaunchOptions("t", undefined), []);
 
 // -- B. per-connector consumption (RAW — every well-shaped flag renders) ----------------------------
+// This suite grades flag passthrough, not the AG-UI event plane, so the base launch opts out
+// explicitly (`events: false`) rather than relying on the plane's workspaceRoot requirement.
 const base = {
-  space: "smoke", name: "t", role: "worker", id: "id1", creds: "/tmp/none.creds",
+  space: "smoke", name: "t", role: "worker", id: "id1", creds: "/tmp/none.creds", events: false,
   servers: "nats://127.0.0.1:1", subscribe: ["general"], allowSubscribe: ["general"], allowPublish: [],
 };
 const argPair = (args: readonly string[], flag: string, val: string): boolean => {
