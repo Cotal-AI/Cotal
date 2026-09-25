@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
