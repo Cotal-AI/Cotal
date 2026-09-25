@@ -8,14 +8,16 @@ liveness claim only while the observer's presence watch is current: when the who
 been silent past the liveness window, every peer ages out together and the roster reads
 all-offline, which says the view went stale, not that the mesh emptied inside one TTL. The tool
 rendered that indistinguishably from a healthy roster, so `Present in "<space>" (N)` over N
-offline rows was read as fact — on a live mesh a reader concluded a peer had dropped off while
+offline rows was read as fact. On a live mesh a reader concluded a peer had dropped off while
 that peer was mid-turn, and acted on it. `cotal ps` already refuses a liveness word in the same
 situation and prints `mesh unknown` with the reason; this brings the agent-facing tool to the
 same standard. A `current` view is unchanged. A `stale` or `unpopulated` view now heads the
 output with `Last-known roster for "<space>" (N) - presence view is stale` (or `is not yet
 populated`) and marks the statuses last-known rather than current. The rows are still listed,
 because offline peers stay in the roster for observability (SPEC §6) and the failure being
-fixed is the claim made about them, not their presence in the list.
+fixed is the claim made about them, not their presence in the list. An empty stale or
+unpopulated view also reports a last-known roster and unknown current presence. Only an
+empty current view reports that no one is present.
 
 `MeshAgent.presenceView()` is added so the connector can reach the endpoint's existing
 `presenceView()`; it was the only presence signal the facade did not expose, which is why the

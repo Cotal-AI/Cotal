@@ -86,6 +86,22 @@ const live = [peer("self", "alice", "idle"), peer("b", "codex", "working")];
 }
 
 {
+  const text = rosterText({ state: "current", fresh: true }, []);
+  check("an empty current view still reports absence plainly", text === `No one is present in "demo" yet.`, text);
+}
+
+for (const view of [
+  { state: "stale", fresh: false, staleSince: 1 },
+  { state: "unpopulated", fresh: false },
+] satisfies PresenceView[]) {
+  const text = rosterText(view, []);
+  check(`an empty ${view.state} view does NOT claim absence`, !/no one is present/i.test(text), text);
+  check(`an empty ${view.state} view labels its roster last-known`, text.startsWith(`Last-known roster for "demo" (0)`), text);
+  check(`an empty ${view.state} view reports current presence as unknown`, /current presence is unknown/i.test(text), text);
+  check(`an empty ${view.state} view names its freshness state`, view.state === "stale" ? /presence view is stale/i.test(text) : /presence view is not yet populated/i.test(text), text);
+}
+
+{
   // The regression that motivated this: identical rows, different verdicts. If a future change
   // collapses the two headers, this is the cell that fails.
   const current = rosterText({ state: "current", fresh: true }, allOffline);

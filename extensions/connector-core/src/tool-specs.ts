@@ -660,11 +660,12 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_roster",
       title: "Cotal: who's present",
       description:
-        "List the agents currently present in your Cotal space, with their role, status, and current activity.",
+        "List your Cotal space's roster with each agent's role, status, and activity. When the presence view is stale or not yet populated, the roster is last-known and current presence is unknown.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
         const roster = agent.roster();
-        if (!roster.length) return ok(`No one is present in "${config.space}" yet.`);
+        const view = agent.presenceView();
+        if (!roster.length && view.state === "current") return ok(`No one is present in "${config.space}" yet.`);
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -695,14 +696,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // peer reads `offline` at once - a stale VIEW, not a mesh where everyone died inside one
         // TTL. `cotal ps` already refuses a liveness word there (`mesh unknown`); say the same
         // here instead of letting a reader take last-known state as fact.
-        const view = agent.presenceView();
         const header =
           view.state === "current"
             ? `Present in "${config.space}" (${roster.length}):`
             : `Last-known roster for "${config.space}" (${roster.length}) - presence view ${
                 view.state === "stale" ? "is stale" : "is not yet populated"
-              }, so these statuses are last-known, NOT current:`;
-        return ok(`${header}\n${lines.join("\n")}`);
+              }, ${roster.length ? "so these statuses are last-known, NOT current:" : "so current presence is unknown."}`;
+        return ok(lines.length ? `${header}\n${lines.join("\n")}` : header);
       },
     },
     {
