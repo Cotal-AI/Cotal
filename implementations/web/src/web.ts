@@ -927,6 +927,14 @@ export async function web(args: ParsedArgs): Promise<void> {
       return void res.end();
     }
 
+    // The delete endpoint is the sole route that reads a request body. Refuse an announced body
+    // before dispatch everywhere else, so the next no-body route inherits the same bound instead
+    // of silently letting Node drain an upload the handler will never inspect.
+    const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
+    const declared = Number(req.headers["content-length"]);
+    const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
+    if (noBodyRoute && announcedBody) throw noBody(path, declared);
+
     if (path === "/feed") {
       res.writeHead(200, {
         "content-type": "text/event-stream",
@@ -1499,6 +1507,13 @@ async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
 function tooLarge(bytes: number, how: "declared" | "read"): PayloadTooLarge {
   return new PayloadTooLarge(
     `request body ${how === "declared" ? "declares" : "exceeds"} ${bytes} bytes, over the ${MAX_BODY_BYTES} byte limit for this route`,
+  );
+}
+
+function noBody(path: string, declared: number): PayloadTooLarge {
+  const announced = declared > 0 ? `${declared} bytes` : "transfer-encoding";
+  return new PayloadTooLarge(
+    `request body announces ${announced}, over the 0 byte limit because ${path} takes no request body`,
   );
 }
 

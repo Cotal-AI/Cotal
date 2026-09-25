@@ -71,6 +71,27 @@
       "find": "      console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
       "replace": "      if (!(e instanceof PayloadTooLarge)) console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
       "expectRed": "7.3 an oversized CHUNKED body over keep-alive is cut off and RECORDED BY THE OPERATOR even though the uploading caller may get no readable reply, which is the durable half of the refusal and the half this change actually owns"
+    },
+    {
+      "name": "C11 no-body routes no longer reject an announced upload, so a route that never reads a body accepts all of it and returns success",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (noBodyRoute && announcedBody) throw noBody(path, declared);\n",
+      "replace": "",
+      "expectRed": "7.0 an announced 20 MB body to a no-body route is refused at its zero-byte limit before it can be accepted"
+    },
+    {
+      "name": "C12 the no-body guard stops considering transfer-encoding, so a chunked upload reaches a route that does not read it",
+      "file": "implementations/web/src/web.ts",
+      "find": "    const announcedBody = declared > 0 || req.headers[\"transfer-encoding\"] !== undefined;\n",
+      "replace": "    const announcedBody = declared > 0;\n",
+      "expectRed": "7.2 transfer-encoding on a no-body route is refused on that framing announcement without reading the chunked body"
+    },
+    {
+      "name": "C13 the no-body guard also blocks the delete endpoint, so the body-reading route can no longer perform an ordinary under-cap purge",
+      "file": "implementations/web/src/web.ts",
+      "find": "    const noBodyRoute = path !== \"/api/channel/delete\" || req.method !== \"POST\";\n",
+      "replace": "    const noBodyRoute = true;\n",
+      "expectRed": "2.1 an ordinary delete still purges, so the cap is a ceiling on the BODY and not a route that stopped working"
     }
   ],
   "suite": [
