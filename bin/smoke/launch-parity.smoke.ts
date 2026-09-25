@@ -5,8 +5,8 @@
  * between connector-core and workspace, so parity is enforced HERE, by test:
  *   1. `spawnFlags` ⊇ the shared `launchFlags` bundle (spawn parses the whole grammar).
  *   2. Every launch flag maps onto a manager `start`-op key (the golden op vocabulary).
- *   3. Every MCP `cotal_spawn` schema param IS one of those op keys (subset — the tool may
- *      expose less, e.g. no `resume` by design, but never a divergent name).
+ *   3. Every MCP `cotal_spawn` seat param IS one of those op keys (subset — the tool may
+ *      expose less, e.g. no `resume` by design); routing params mirror CLI spawn-only routing.
  *   4. Every launch client's request window OUTLIVES the manager's readiness wait (#159 B1) —
  *      the manager replies to `start`/`launch` only on a real outcome, so a client timeout at or
  *      under that window kills real spawns while the launch proceeds.
@@ -46,6 +46,10 @@ const START_OP_KEYS = new Set([
   "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
 ]);
 
+// Routing chooses the manager that receives the request; it does not describe the seat passed to
+// the manager `start` op. Keep this exception paired with the CLI's spawn-only `--on` flag.
+const SPAWN_ROUTING_PARAMS = new Set(["instance"]);
+
 /** CLI kebab flag → op key. `no-events` folds into the `events` tri-state; `--name` is
  *  the presence-identity OVERRIDE (op `identity`) — the persona REF rides the positional as op
  *  `name`. */
@@ -63,6 +67,9 @@ const spawnNames = new Set(spawnFlags.map((f) => f.name));
 for (const f of launchFlags) {
   assert.ok(spawnNames.has(f.name), `spawn is missing launch flag --${f.name}`);
 }
+const launchNames = new Set(launchFlags.map((f) => f.name));
+assert.ok(spawnNames.has("on"), "spawn must expose the manager routing flag --on");
+assert.ok(!launchNames.has("on"), "--on routes a spawn request and must not enter the launch grammar");
 
 // 2 — every launch flag lands on a start-op key.
 for (const f of launchFlags) {
@@ -82,7 +89,10 @@ const spawnTool = cotalToolSpecs(configFromEnv({ COTAL_NAME: "parity-smoke" }), 
 assert.ok(spawnTool, "cotal_spawn tool spec exists");
 const toolParams = Object.keys(spawnTool.schema.shape);
 for (const p of toolParams) {
-  assert.ok(START_OP_KEYS.has(p), `cotal_spawn param "${p}" is not a start-op key — vocabulary drift`);
+  assert.ok(
+    START_OP_KEYS.has(p) || SPAWN_ROUTING_PARAMS.has(p),
+    `cotal_spawn param "${p}" is neither a start-op key nor a routing parameter — vocabulary drift`,
+  );
 }
 // `resume` stays deliberately OFF the peer-facing tool (host-transcript disclosure — see the
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
