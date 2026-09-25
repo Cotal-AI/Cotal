@@ -56,6 +56,33 @@
       "expectRed": "the manager lease renews after reconnect",
       "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",
       "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained."
+    },
+    {
+      "name": "delivery durable bind drops the plane lease read",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    let lease: DeliveryLeaseInfo | undefined;\n    try { lease = await this.readDeliveryLease(0); }\n    catch (e) { throw refusal((e as Error)?.message ?? String(e)); }\n    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) throw refusal();\n",
+      "replace": "",
+      "expectRed": "a delivery durable bind refuses a plane with no ready delivery lease",
+      "cell": "a delivery durable bind refuses a plane with no ready delivery lease",
+      "note": "Without the liveness read the stale durable binds silently, restoring the reported empty-inbox behavior."
+    },
+    {
+      "name": "delivery durable bind inverts ready lease acceptance",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) throw refusal();\n",
+      "replace": "    const liveDeliveryPlane = lease?.ready !== true;\n    if (!liveDeliveryPlane) throw refusal();\n",
+      "expectRed": "a quiet delivery durable binds while the plane holds a ready lease",
+      "cell": "a quiet delivery durable binds while the plane holds a ready lease without raising an error",
+      "note": "A ready live plane is the positive control and must remain the only accepted lease state."
+    },
+    {
+      "name": "delivery durable bind treats a missing lease row as live",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const liveDeliveryPlane = lease?.ready === true;\n",
+      "replace": "    const liveDeliveryPlane = lease === undefined || lease.ready === true;\n",
+      "expectRed": "a delivery durable bind refuses a plane with no ready delivery lease",
+      "cell": "a delivery durable bind refuses a plane with no ready delivery lease",
+      "note": "A missing lease is the stale-plane signal and must not collapse into a healthy quiet plane."
     }
   ]
 }

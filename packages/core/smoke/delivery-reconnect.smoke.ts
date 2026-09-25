@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts, dlvDurable } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -67,7 +67,7 @@ try {
   // Pre-reconnect: the responder works + the daemon holds a (ready) lease (so the deliveryKv reopen is
   // exercised post-reconnect).
   const leaseRev = await daemon.acquireDeliveryLease(0);
-  await daemon.markDeliveryLeaseReady(0, leaseRev);
+  const readyLeaseRev = await daemon.markDeliveryLeaseReady(0, leaseRev);
   const pre = await agent.durableJoinChannel("review");
   check("durableJoin works before reconnect", pre.durable === true);
   const reviewGen = pre.generation ?? 0;
@@ -248,6 +248,39 @@ try {
   try { await observer.reconnect(); recoveredFromRejectedArm = true; } catch { /* cell below names it */ }
   check("a later rebuild recovers a membership watch after a transient arm rejection", recoveredFromRejectedArm);
   await terminalWatch.stop();
+
+  const durable = dlvDurable(DEV_OWNER, aId.id, uidA);
+  const probeDlvBind = async () => {
+    const errors: Error[] = [];
+    let messages = 0;
+    const probe = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], lifecycleUid: uidA, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice-bind-probe", kind: "agent" } });
+    probe.on("error", (e) => errors.push(e));
+    probe.on("message", () => { messages++; });
+    let startError: Error | undefined;
+    try { await probe.start(); await wait(100); }
+    catch (e) { startError = e as Error; }
+    finally { try { await probe.stop(); } catch { /* a refused bind can leave startup partially bound */ } }
+    return { errors, messages, startError };
+  };
+
+  const quiet = await probeDlvBind();
+  check("a quiet delivery durable binds while the plane holds a ready lease without raising an error", quiet.startError === undefined && quiet.errors.length === 0, quiet);
+  check("the ready-lease control delivers no message on a genuinely quiet plane", quiet.messages === 0, quiet);
+
+  await daemon.releaseDeliveryLease(0, readyLeaseRev);
+  const missingLease = await probeDlvBind();
+  const missingBindError = missingLease.startError as (Error & { code?: string }) | undefined;
+  check("a delivery durable bind refuses a plane with no ready delivery lease", missingBindError?.code === "failed-precondition", missingLease);
+  check("the missing-lease refusal names the durable, space, and reconnect repair", missingBindError?.message.includes(durable) === true && missingBindError.message.includes(space) && missingBindError.message.includes("Reconnect against the plane the delivery daemon serves"), missingBindError?.message);
+  check("the refused missing-lease bind delivers no message", missingLease.messages === 0, missingLease);
+
+  const notReadyRev = await daemon.acquireDeliveryLease(0);
+  const notReadyLease = await probeDlvBind();
+  const notReadyBindError = notReadyLease.startError as (Error & { code?: string }) | undefined;
+  check("a delivery durable bind refuses a plane whose delivery lease is not ready", notReadyBindError?.code === "failed-precondition", notReadyLease);
+  check("the not-ready refusal names the durable, space, and reconnect repair", notReadyBindError?.message.includes(durable) === true && notReadyBindError.message.includes(space) && notReadyBindError.message.includes("Reconnect against the plane the delivery daemon serves"), notReadyBindError?.message);
+  check("the refused not-ready bind delivers no message", notReadyLease.messages === 0, notReadyLease);
+  await daemon.releaseDeliveryLease(0, notReadyRev);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

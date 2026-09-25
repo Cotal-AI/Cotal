@@ -56,6 +56,11 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+An agent binds its per-member delivery durable only when the plane reached by its connection has a
+ready delivery lease. A missing or not-ready lease refuses the bind with `failed-precondition`
+rather than reporting an empty inbox. The refusal names the durable and space and tells the agent to
+reconnect against the plane served by the delivery daemon, which re-binds the durable there.
+
 Before it constructs its endpoint or claims that lease, the daemon reads the account-scoped `$SYS`
 observer from the same source it will use for scans, whether that source is the workstation store or
 an injected hosted store. It refuses if the observer belongs to another account, is missing, or is
