@@ -72,12 +72,13 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
       } catch (error) {
         const replacement = await this.foldedSince();
         if (replacement === undefined) throw error;
+        const fresh = await this.file.readFromBeginning();
         return {
-          cursor: replacement,
-          records: [{
-            cursor: replacement,
-            value: { journal_fold: { lost_records: 0 } },
-          }],
+          cursor: fresh.cursor,
+          records: [
+            { cursor: replacement, value: { journal_fold: { lost_records: 0 } } },
+            ...fresh.records,
+          ],
         };
       }
     }
@@ -125,7 +126,7 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
       const messages = await this.snapshotMessageCount();
       if (messages > this.snapshotMessages) {
         try {
-          const cursor = await this.file.cursorAtBeginning();
+          const cursor = (await this.file.readFromBeginning()).cursor;
           this.snapshotMessages = messages;
           return cursor;
         } catch (error) {
