@@ -70,14 +70,13 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
         this.snapshotMessages = await this.snapshotMessageCount();
         return read;
       } catch (error) {
-        const replacement = await this.foldedSince();
-        if (replacement === undefined) throw error;
-        const fresh = await this.file.readFromBeginning();
+        const fresh = await this.foldedSince();
+        if (fresh === undefined) throw error;
         return {
-          cursor: fresh.cursor,
+          cursor: fresh.fresh.cursor,
           records: [
-            { cursor: replacement, value: { journal_fold: { lost_records: 0 } } },
-            ...fresh.records,
+            { cursor: fresh.beginning, value: { journal_fold: { lost_records: 0 } } },
+            ...fresh.fresh.records,
           ],
         };
       }
@@ -119,16 +118,17 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     }
   }
 
-  private async foldedSince(): Promise<string | undefined> {
+  private async foldedSince(): Promise<{ beginning: string; fresh: SourceRead<JcodeJournalRecord> } | undefined> {
     const deadline = performance.now() + this.waitMs;
     let retryMs = RETRY_INITIAL_MS;
     for (;;) {
       const messages = await this.snapshotMessageCount();
       if (messages > this.snapshotMessages) {
         try {
-          const cursor = await this.file.cursorAtBeginning();
+          const beginning = await this.file.cursorAtBeginning();
+          const fresh = await this.file.read(beginning);
           this.snapshotMessages = messages;
-          return cursor;
+          return { beginning, fresh };
         } catch (error) {
           if (!isMissing(error)) throw error;
         }

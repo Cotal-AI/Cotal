@@ -449,6 +449,15 @@ try {
     () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED")) ? true : undefined,
   );
   await operator.unicast(foldPeerId!, foldMarker);
+  await waitFor(
+    "Jcode journal fold request",
+    () =>
+      readJsonLines<{ ev: string; frame?: { req?: string; content?: string } }>(foldLog).find(
+        (entry) => entry.ev === "request" && entry.frame?.req === "send_message" && String(entry.frame.content).includes(foldMarker),
+      )
+        ? true
+        : undefined,
+  );
   await waitFor("Jcode journal fold scheduling", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_fold_scheduled") ? true : undefined);
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
