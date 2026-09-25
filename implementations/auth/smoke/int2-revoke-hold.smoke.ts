@@ -346,6 +346,10 @@ try {
     }),
     reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
   });
+  // The manager's #1694 binding requires the answer to name a real holder of the delivery
+  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
+  // `holdsDeliveryLease` below is truthful.
+  await delivery.acquireDeliveryLease(0).catch(() => {});
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", `${AGENT}.md`), `---\nname: ${AGENT}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${AGENT} persona.\n`);
