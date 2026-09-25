@@ -5,6 +5,7 @@
   "guard": "The runtime askHost entrypoint forwards auth.managerInstanceId to resolveService so instance-scoped manager-caller credentials can resolve their pinned instance without hitting broker permission denial on class routes.",
   "command": "pnpm --filter @cotal-ai/runtime build && pnpm exec tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/manager-caller-transport.json",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=3",
   "mutations": [
     {
       "name": "runtime askHost omits instanceId when resolving manager",
