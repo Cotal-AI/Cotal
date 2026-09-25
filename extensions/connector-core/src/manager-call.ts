@@ -69,6 +69,7 @@ export async function invokeUserManager(
           error: {
             code: "failed-precondition",
             message: `manager instance ${service.responder.instanceId} does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
+            outcome: "not-executed",
           },
         },
         responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
@@ -79,6 +80,9 @@ export async function invokeUserManager(
       if (result.reply.ok === false && replyRefusedBeforeEffect(result.reply.error)) {
         try {
           service = await resolve();
+          if (opts.follow && !service.commands.has("goal-result")) {
+            throw new Error(`manager instance ${service.responder.instanceId} does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`);
+          }
         } catch (error) {
           return { ...result, reply: { ...result.reply, error: {
             ...result.reply.error!,

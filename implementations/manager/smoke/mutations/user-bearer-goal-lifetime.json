@@ -44,8 +44,8 @@
     {
       "name": "M4 skip lookup refusal provenance guard",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "        const isRefusal = typeof err === \"object\" && err !== null && \"isLookupRefusal\" in err && Boolean((err as { isLookupRefusal: boolean }).isLookupRefusal);",
-      "replace": "        const isRefusal = false;",
+      "find": "        observationError = err instanceof Error ? err : new Error(String(err));\n        waiters.get(goalId)?.();",
+      "replace": "        // skipped observation error\n        waiters.get(goalId)?.();",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "PROVENANCE: lookup failure returns unavailable",
       "cell": "PROVENANCE: lookup failure returns unavailable",
@@ -54,12 +54,42 @@
     {
       "name": "M5 skip pre-deadline fallback reconciliation",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "        if (!terminals.has(goalId) && !stopped && observationError === undefined) {\n          await tryReconcile();\n        }",
+      "find": "        if (!terminals.has(goalId) && !stopped && observationError === undefined && !completed && opts?.reconcile) {\n          // Bounded fallback: do NOT await an unbounded query past the deadline!\n          await Promise.race([\n            tryReconcile(),\n            new Promise<void>((r) => setTimeout(r, Math.min(250, followDeadlineMs))),\n          ]).catch(() => {});\n        }",
       "replace": "        // skip pre-deadline reconcile",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "GAP: followServiceGoal resolves ok: true via reconciliation",
       "cell": "GAP: followServiceGoal resolves ok: true via reconciliation",
       "note": "Pre-deadline fallback must reconcile terminal committed during gap."
+    },
+    {
+      "name": "M6 skip queryRes goalId check",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "          if (queryRes.goalId !== goalId) {",
+      "replace": "          if (queryRes.goalId === goalId) {",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "MIS-SUBJECT: mismatched goalId in queryRes is rejected",
+      "cell": "MIS-SUBJECT: mismatched goalId in queryRes is rejected",
+      "note": "Reconciled fact must match requested goalId."
+    },
+    {
+      "name": "M7 skip pre-submit abort check",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "  if (stopped) {\n    return {",
+      "replace": "  if (false && stopped) {\n    return {",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "ABORT-PRE: submit was never called",
+      "cell": "ABORT-PRE: submit was never called",
+      "note": "Pre-submit abort must return unavailable error immediately without calling submit."
+    },
+    {
+      "name": "M8 skip pre-effect retry goal-result compatibility check",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "            if (opts.follow && !reissueTarget.commands.has(\"goal-result\")) {",
+      "replace": "            if (false && opts.follow && !reissueTarget.commands.has(\"goal-result\")) {",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "COMPAT-RETRY: message explains goal-result requirement",
+      "cell": "COMPAT-RETRY: message explains goal-result requirement",
+      "note": "Pre-effect retry must verify re-resolved service supports goal-result before mutation."
     }
   ]
 }

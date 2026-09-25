@@ -2256,11 +2256,16 @@ export class CotalEndpoint extends EventEmitter {
     deadlineMs = 10_000,
     opts: {
       reconcile?: (goalId: string, attributed: EpAttributedReply) => Promise<{ goalId: string; result?: GoalResultFact } | undefined>;
+      signal?: AbortSignal;
     } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     if (this.stopped) throw new Error("endpoint stopped - cannot follow goal");
     const abortController = new AbortController();
+    if (opts.signal?.aborted) abortController.abort();
+    else if (opts.signal) {
+      opts.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+    }
     let reconnectHandler: ((nc: NatsConnection) => void) | undefined;
     const entry = {
       cancel: () => abortController.abort(),
@@ -2382,6 +2387,9 @@ export class CotalEndpoint extends EventEmitter {
           let reissueTarget;
           try {
             reissueTarget = await resolve();
+            if (opts.follow && !reissueTarget.commands.has("goal-result")) {
+              throw new Error(`endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`);
+            }
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
@@ -2456,6 +2464,7 @@ export class CotalEndpoint extends EventEmitter {
           error: {
             code: "failed-precondition",
             message: `endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
+            outcome: "not-executed",
           },
         },
         responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },

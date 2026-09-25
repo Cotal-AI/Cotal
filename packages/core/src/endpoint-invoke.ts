@@ -478,6 +478,41 @@ export async function submitAndFollowGoal(
   const progressSubject = epGoalProgressGrantRow(space, endpoint, caller);
   let subError: Error | undefined;
   let activeSub: Subscription | undefined;
+  let unbindReconnect: (() => void) | undefined;
+  let completed = false;
+  let stopped = opts?.signal?.aborted === true;
+
+  // Stop signal hook: attach at the very start so pre-submit stop cannot hang
+  let abortListener: (() => void) | undefined;
+  if (opts?.signal) {
+    if (opts.signal.aborted) {
+      stopped = true;
+    } else {
+      abortListener = () => {
+        stopped = true;
+        for (const wake of waiters.values()) wake();
+      };
+      opts.signal.addEventListener("abort", abortListener, { once: true });
+    }
+  }
+
+  if (stopped) {
+    return {
+      reply: {
+        v: 1,
+        id: randomBytes(16).toString("base64url"),
+        ok: false,
+        data: undefined,
+        error: {
+          code: "unavailable",
+          message: "endpoint stopped before goal submission",
+          outcome: "not-executed",
+        },
+      },
+      responder: { endpoint, instanceId: "stopped", epoch: 0 },
+    };
+  }
+
   const handleProgress = (err: Error | null, m: unknown) => {
     if (err) {
       // Keep the FIRST error (later ones are consequences) and wake every waiter: once this
@@ -498,12 +533,77 @@ export async function submitAndFollowGoal(
     // A borrowed submit can use another connection. Confirm this SUB at the broker before
     // that connection can publish a command whose terminal would otherwise outrun our interest.
     await nc.flush();
-    const attributed = await submit();
+    let attributed: EpAttributedReply;
+    try {
+      attributed = await submit();
+    } catch (err) {
+      if (err instanceof EpEnvelopeError) {
+        return {
+          reply: {
+            v: 1,
+            id: randomBytes(16).toString("base64url"),
+            ok: false,
+            data: undefined,
+            error: {
+              code: err.code,
+              message: err.message,
+              ...(err.details ? { details: err.details } : {}),
+              ...(err.outcome ? { outcome: err.outcome } : {}),
+            },
+          },
+          responder: { endpoint, instanceId: "refused", epoch: 0 },
+        };
+      }
+      if (stopped || opts?.signal?.aborted) {
+        return {
+          reply: {
+            v: 1,
+            id: randomBytes(16).toString("base64url"),
+            ok: false,
+            data: undefined,
+            error: {
+              code: "unavailable",
+              message: "the goal submission was cancelled or interrupted while in flight; the submission outcome is unknown. The goal may have been accepted or executed; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)",
+              outcome: "unknown",
+            },
+          },
+          responder: { endpoint, instanceId: "unknown", epoch: 0 },
+        };
+      }
+      throw err;
+    }
+    if (stopped) {
+      return {
+        ...attributed,
+        reply: {
+          ...attributed.reply,
+          ok: false,
+          data: undefined,
+          error: {
+            code: "unavailable",
+            message: "the goal was accepted, but the endpoint was stopped while awaiting its outcome. THE GOAL IS UNAFFECTED - it may already have succeeded; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)",
+            outcome: "unknown",
+          },
+        },
+      };
+    }
     if (attributed.reply.ok !== true) return attributed; // refuse at accept — surface as-is
     const acceptance = attributed.reply.data as { goalId?: unknown; fingerprint?: unknown; readinessDeadlineMs?: unknown } | undefined;
     const goalId = acceptance?.goalId;
     if (typeof goalId !== "string") return attributed; // not an action reply — pass through
     const acceptedFingerprint = typeof acceptance?.fingerprint === "string" ? acceptance.fingerprint : undefined;
+
+    // Check if connection was replaced during submit()
+    const liveNc = opts?.currentNc?.() ?? nc;
+    if (liveNc !== nc && !liveNc.isClosed()) {
+      try { activeSub?.unsubscribe(); } catch {}
+      try {
+        activeSub = liveNc.subscribe(progressSubject, { callback: handleProgress });
+        await liveNc.flush();
+      } catch (err) {
+        subError ??= err instanceof Error ? err : new Error(String(err));
+      }
+    }
 
     // A bounded action's owner chooses its readiness budget at acceptance. The follow must outlive
     // THAT accepted budget, not only the caller's generic request window: otherwise a connector can
@@ -516,81 +616,81 @@ export async function submitAndFollowGoal(
       : deadlineMs;
 
     let observationError: Error | undefined;
-    let stopped = false;
 
     // Reconcile helper: checks goal-result over current transport and validates canonical fact
     const tryReconcile = async (): Promise<boolean> => {
-      if (!opts?.reconcile) return false;
+      if (!opts?.reconcile || completed || stopped) return false;
       try {
         const queryRes = await opts.reconcile(goalId, attributed);
-        if (queryRes?.result !== undefined) {
-          const ref: GoalRef = { endpoint, caller, goalId };
-          const fact = parseGoalResultFact(queryRes.result, "goal-result reply", ref);
-          if (acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint) {
-            throw new EpEnvelopeError("internal", `goal result fact carries fingerprint ${JSON.stringify(fact.fingerprint)}, which does not match accepted ${JSON.stringify(acceptedFingerprint)}; fingerprint mismatch never authorizes (SPEC 13.6)`);
+        if (queryRes !== undefined) {
+          if (typeof queryRes !== "object" || queryRes === null || typeof queryRes.goalId !== "string") {
+            throw new EpEnvelopeError("internal", "goal-result reply is malformed; garbled state never authorizes (SPEC 13.6)");
           }
-          terminals.set(goalId, { state: fact.state, data: fact.data });
-          waiters.get(goalId)?.();
-          return true;
+          if (queryRes.goalId !== goalId) {
+            throw new EpEnvelopeError("internal", `goal-result reply returned goalId ${JSON.stringify(queryRes.goalId)}, expected ${JSON.stringify(goalId)}; mis-subjected reply never authorizes (SPEC 13.4)`);
+          }
+          if (queryRes.result !== undefined) {
+            const ref: GoalRef = { endpoint, caller, goalId };
+            const fact = parseGoalResultFact(queryRes.result, "goal-result reply", ref);
+            if (acceptedFingerprint !== undefined && fact.fingerprint !== acceptedFingerprint) {
+              throw new EpEnvelopeError("internal", `goal result fact carries fingerprint ${JSON.stringify(fact.fingerprint)}, which does not match accepted ${JSON.stringify(acceptedFingerprint)}; fingerprint mismatch never authorizes (SPEC 13.6)`);
+            }
+            terminals.set(goalId, { state: fact.state, data: fact.data });
+            waiters.get(goalId)?.();
+            return true;
+          }
         }
       } catch (err: unknown) {
-        // Post-accept lookup errors MUST NOT copy goal-result's outcome:not-executed or EP_BIND_REFUSED
-        // marker onto the original accepted spawn.
-        const isRefusal = typeof err === "object" && err !== null && "isLookupRefusal" in err && Boolean((err as { isLookupRefusal: boolean }).isLookupRefusal);
-        if (isRefusal || err instanceof EpEnvelopeError) {
-          observationError = err instanceof Error ? err : new Error(String(err));
-          waiters.get(goalId)?.();
-        }
+        // Plain exchange/bearer errors, lookup refusals, and internal validation failures must all surface
+        // as an observation error rather than being swallowed as a silent deadline timeout.
+        observationError = err instanceof Error ? err : new Error(String(err));
+        waiters.get(goalId)?.();
       }
       return false;
     };
 
     // Reconnect hook: re-subscribe and reconcile on connection replacement
-    let unbindReconnect: (() => void) | undefined;
     if (opts?.onReconnect) {
       unbindReconnect = opts.onReconnect(async (newNc) => {
+        if (completed || stopped) return;
         try { activeSub?.unsubscribe(); } catch {}
         try {
-          activeSub = newNc.subscribe(progressSubject, { callback: handleProgress });
+          if (completed || stopped) return;
+          const sub = newNc.subscribe(progressSubject, { callback: handleProgress });
+          if (completed || stopped) {
+            try { sub.unsubscribe(); } catch {}
+            return;
+          }
+          activeSub = sub;
           await newNc.flush();
         } catch (err) {
-          subError ??= err instanceof Error ? err : new Error(String(err));
+          if (!completed && !stopped) subError ??= err instanceof Error ? err : new Error(String(err));
         }
-        await tryReconcile();
+        if (!completed && !stopped) await tryReconcile();
       });
     }
 
-    // Stop signal hook
-    let abortListener: (() => void) | undefined;
-    if (opts?.signal) {
-      if (opts.signal.aborted) {
-        stopped = true;
-      } else {
-        abortListener = () => {
-          stopped = true;
-          waiters.get(goalId)?.();
-        };
-        opts.signal.addEventListener("abort", abortListener, { once: true });
-      }
-    }
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const waitPromise = new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
-      timer = setTimeout(async () => {
-        if (!terminals.has(goalId) && !stopped && observationError === undefined) {
-          await tryReconcile();
+      deadlineTimer = setTimeout(async () => {
+        if (!terminals.has(goalId) && !stopped && observationError === undefined && !completed && opts?.reconcile) {
+          // Bounded fallback: do NOT await an unbounded query past the deadline!
+          await Promise.race([
+            tryReconcile(),
+            new Promise<void>((r) => setTimeout(r, Math.min(250, followDeadlineMs))),
+          ]).catch(() => {});
         }
         resolve(terminals.get(goalId));
       }, followDeadlineMs);
       waiters.set(goalId, () => {
-        if (timer !== undefined) clearTimeout(timer);
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
         resolve(terminals.get(goalId));
       });
     });
 
     const terminal = terminals.get(goalId) ?? (stopped || observationError !== undefined || subError !== undefined ? undefined : await waitPromise);
 
-    if (timer !== undefined) clearTimeout(timer);
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     if (abortListener && opts?.signal) opts.signal.removeEventListener("abort", abortListener);
     if (unbindReconnect) unbindReconnect();
 
@@ -605,6 +705,7 @@ export async function submitAndFollowGoal(
           error: {
             code: "unavailable",
             message: `the goal "${goalId}" was accepted, but the endpoint was stopped while awaiting its outcome. THE GOAL IS UNAFFECTED - it may already have succeeded; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)`,
+            outcome: "unknown",
           },
         },
       };
@@ -657,6 +758,9 @@ export async function submitAndFollowGoal(
     const merged = details ?? (fromAccept ? [fromAccept] : undefined);
     return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
   } finally {
+    completed = true;
+    if (abortListener && opts?.signal) opts.signal.removeEventListener("abort", abortListener);
+    if (unbindReconnect) unbindReconnect();
     try { activeSub?.unsubscribe(); } catch {}
   }
 }
