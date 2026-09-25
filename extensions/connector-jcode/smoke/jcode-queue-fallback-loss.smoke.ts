@@ -181,6 +181,11 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
+      // Keeps the post-join notice a noReply append (#2001's pendingKickoff path is for launches
+      // with no spawn prompt). The busy window below must be a seat that is busy WITHOUT a
+      // Cotal-owned turn, which only holds if the host's next send after readiness is the append
+      // the fake refuses, not a driven turn it queues; see issue #2029.
+      COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029-LOSS",
       COTAL_LIFECYCLE_UID: lifecycleUid,
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-qfloss-control-token",
