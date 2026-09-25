@@ -239,7 +239,8 @@ less than a machine can spend. A larger body is refused with a `413` naming the 
 stops reading it rather than taking it all in first and complaining afterwards, and the connection
 that body arrived on is closed so the rest of it cannot be sent. It is never shortened to fit: a
 trimmed name is a name you did not type, which is the thing the paragraph above exists to prevent.
-Ordinary requests keep their connection as usual.
+Every other route takes no request body. It refuses an announced body before reading it with the
+same `413` and closed connection. Ordinary bodyless requests keep their connection as usual.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so

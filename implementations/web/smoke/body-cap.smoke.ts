@@ -312,7 +312,49 @@ try {
       r4.status.includes("413") && (await stillThere(PREFIX)), { status: r4.status, text: r4.text.slice(0, 160) });
   }
 
-  console.log("7. the bound does not depend on a header the CALLER chooses");
+  console.log("7. routes that do not read bodies refuse them on the announcement");
+  {
+    // The other dashboard routes never inspect `req`, so they have a zero-byte policy rather than
+    // the delete route's 8 KiB policy. These are raw sockets because a fetch body hides whether the
+    // server closed early and cannot express transfer-encoding without a declared length.
+    const NO_BODY = Buffer.alloc(20_000_000, 0x61);
+    const noBodyHead = (path: string, headers: string): string =>
+      `POST ${path} HTTP/1.1\r\nHost: h\r\n${COOKIE}Connection: keep-alive\r\n${headers}\r\n`;
+
+    const beforeDeclared = log.length;
+    const declared = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
+    await wait(200);
+    const declaredLog = log.slice(beforeDeclared);
+    ok("7.0 an announced 20 MB body to a no-body route is refused at its zero-byte limit before it can be accepted",
+      declared.status.includes("413") && declared.sent < NO_BODY.length
+      && declared.text.includes("/api/roster") && declared.text.includes("takes no request body"),
+      { status: declared.status, sent: declared.sent, total: NO_BODY.length, text: declared.text.slice(0, 180) });
+    ok("7.1 ...and the operator records that no-body refusal rather than a server fault",
+      declaredLog.includes("refused") && declaredLog.includes("/api/roster") && declaredLog.includes("takes no request body")
+      && !declaredLog.includes("failed:"), declaredLog.slice(-240));
+
+    const beforeChunked = log.length;
+    const chunked = await raw(noBodyHead("/api/roster", "Transfer-Encoding: chunked\r\n"), NO_BODY, asChunks);
+    await wait(200);
+    const chunkedLog = log.slice(beforeChunked);
+    ok("7.2 transfer-encoding on a no-body route is refused on that framing announcement without reading the chunked body",
+      chunked.sent < NO_BODY.length && /takes no request body/.test(chunkedLog),
+      { sent: chunked.sent, total: NO_BODY.length, status: chunked.status, operatorLine: chunkedLog.slice(-240) });
+
+    const channels = await raw(noBodyHead("/api/channels", `Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
+    ok("7.3 the same zero-byte guard covers a second no-body route rather than special-casing the roster",
+      channels.status.includes("413") && channels.sent < NO_BODY.length && channels.text.includes("/api/channels"),
+      { status: channels.status, sent: channels.sent, total: NO_BODY.length, text: channels.text.slice(0, 180) });
+
+    const get = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed });
+    ok("7.4 CONTROL: a bodyless GET to the roster is still served normally",
+      get.status === 200, { status: get.status, text: await get.text() });
+    const zero = await raw(noBodyHead("/api/roster", "Content-Length: 0\r\n"), Buffer.alloc(0));
+    ok("7.5 CONTROL: an explicit content-length of zero is not a body and reaches the route normally",
+      zero.status.includes("200"), { status: zero.status, text: zero.text.slice(0, 160) });
+  }
+
+  console.log("8. the bound does not depend on a header the CALLER chooses");
   {
     // EVERY CELL ABOVE SENDS `Connection: close`, which is the arm where this cap looks perfect:
     // the frame's reply closes the socket under a caller that is still uploading. On a keep-alive
