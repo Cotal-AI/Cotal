@@ -87,6 +87,7 @@ async function tryConnect(bearer: string): Promise<"connected" | "denied"> {
 let plane: Awaited<ReturnType<typeof openAuthAuthorityPlane>> | undefined;
 let calloutNc: NatsConnection | undefined;
 let smokeWriter: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+let liveNc: NatsConnection | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -129,7 +130,7 @@ try {
   check("HAPPY: a bearer carrying the stamped credential CONNECTS", (await tryConnect(bearer1)) === "connected");
 
   // Keep one LIVE connection open before revocation to test the same-connection bearer-TTL boundary:
-  const liveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ bearer: bearer1, sentinelCreds: callout.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+  liveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ bearer: bearer1, sentinelCreds: callout.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
 
   // POST-SUCCESSFUL-HEAD crash re-export (incarnation-wide root, ratified): after the head's
   // current-root CAS succeeded (and the bearer bytes possibly released), a crash + re-exchange
@@ -157,34 +158,41 @@ try {
   // ---- revocation bites the NEXT connect, and the exchange refuses to re-mint ----
   await markLedgerRowRevoked(registryStores(reg).authKv, credRowKey(uid1, credid1));
   check("REVOKED: the same previously-connecting bearer is DENIED on its next connect", (await tryConnect(bearer1)) === "denied");
-  check("fresh exchange/connect after revoke refused", (await tryConnect(bearer1)) === "denied");
   await rejects("a revoked root refuses the exchange (rotation is the barrier's job, never a re-mint)",
     () => plane!.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 }), "barrier");
 
   // ---- live pre-revoke read within TTL on same connection remains permitted ----
   const ownGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${uid1}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-  let ownErr: Error | undefined;
+  let ownErr: (Error & { cause?: { name?: string; constructor?: { name?: string }; subject?: string } }) | undefined;
   try {
     await liveNc.request(ownGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
   } catch (e) {
     ownErr = e as Error;
   }
+  const isNoResponders = ownErr?.cause?.name === "NoResponders"
+    || ownErr?.cause?.constructor?.name === "NoRespondersError"
+    || /no responders/i.test(ownErr?.message ?? "");
   check("live pre-revoke read within TTL remains permitted",
-    ownErr !== undefined && !/permission|authorization/i.test(ownErr.message), ownErr?.message);
+    isNoResponders && (ownErr?.cause?.subject === ownGoalResultSubj || ownErr?.message?.includes(ownGoalResultSubj)),
+    ownErr?.cause ?? ownErr?.message);
 
   // ---- foreign UID request subject broker-denied (capturing native policy event) ----
   const foreignUid = mintLifecycleUid();
   const foreignGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${foreignUid}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-  let foreignErr: Error | undefined;
+  let foreignErr: (Error & { cause?: { name?: string; constructor?: { name?: string }; subject?: string; operation?: string } }) | undefined;
   try {
     await liveNc.request(foreignGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
   } catch (e) {
     foreignErr = e as Error;
   }
+  const isPermissionViolation = foreignErr?.cause?.name === "PermissionViolationError"
+    || foreignErr?.cause?.constructor?.name === "PermissionViolationError"
+    || /Permissions Violation/i.test(foreignErr?.message ?? "");
+  const matchesForeignSubject = foreignErr?.cause?.subject === foreignGoalResultSubj
+    || foreignErr?.message?.includes(foreignGoalResultSubj);
   check("foreign UID request subject broker-denied",
-    foreignErr !== undefined && /permission.*violation/i.test(foreignErr.message), foreignErr?.message);
-
-  await liveNc.close();
+    isPermissionViolation && matchesForeignSubject,
+    foreignErr?.cause ?? foreignErr?.message);
 
   // ---- the R1 takeover gap: a same-alias re-grant at a NEW uid refuses the exchange loudly ----
   const uid2 = mintLifecycleUid();
@@ -209,6 +217,7 @@ try {
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
   process.exitCode = 1;
 } finally {
+  await liveNc?.close().catch(() => {});
   await plane?.close().catch(() => {});
   await smokeWriter?.close().catch(() => {});
   await calloutNc?.close().catch(() => {});
