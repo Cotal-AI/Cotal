@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { CotalEndpoint, eventChannel, isAguiFramePart, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
+import { CotalEndpoint, eventChannel, isAguiFramePart, isReachable, parsePrincipalKey, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -418,7 +418,9 @@ try {
   let foldErr = "";
   fold.stderr?.on("data", (chunk: Buffer) => (foldErr += chunk.toString()));
   await waitFor("foldpeer mesh presence", () => foldPeerId);
-  const foldEventsChannel = eventChannel({ owner: "foldpeer", actor: "foldpeer" });
+  const foldPrincipal = parsePrincipalKey(foldPeerId!);
+  assert.ok(foldPrincipal, `foldpeer presence has no principal id: ${foldPeerId}`);
+  const foldEventsChannel = eventChannel(foldPrincipal);
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
   const foldStart = frames.length;
