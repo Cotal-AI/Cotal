@@ -701,7 +701,7 @@ async function main() {
       }
       check("GAP-WIRE: native canonical terminal exists before renewal is released", committed?.state === "succeeded" && !gapRebound, { committed: committed?.state, gapRebound });
       releaseRenewal();
-      const recovered = await Promise.race([gapFollow, new Promise<undefined>((resolve) => { recoveryTimer = setTimeout(resolve, 3000); })]);
+      const recovered = await Promise.race([gapFollow, new Promise<undefined>((resolve) => { recoveryTimer = setTimeout(() => resolve(undefined), 3000); })]);
       if (recoveryTimer) clearTimeout(recoveryTimer);
       check("GAP-WIRE: recovery settles promptly after renewal", recovered !== undefined);
       check("GAP-WIRE: real goal-result recovers canonical success", recovered?.reply.ok === true && canonicalReadRecovered, recovered?.reply);
@@ -956,7 +956,7 @@ async function main() {
     let probeTimer: ReturnType<typeof setTimeout> | undefined;
     const observed = await Promise.race([
       hangRecPromise,
-      new Promise<undefined>((resolve) => { probeTimer = setTimeout(resolve, 700); }),
+      new Promise<undefined>((resolve) => { probeTimer = setTimeout(() => resolve(undefined), 700); }),
     ]);
     if (probeTimer) clearTimeout(probeTimer);
     const hangRecElapsed = Date.now() - hangRecT0;
@@ -966,7 +966,7 @@ async function main() {
     let lateFactReads = 0;
     releaseRead({
       get goalId() { lateFactReads++; return "g-hang-rec"; },
-      get result() { lateFactReads++; return { v: 1, goalId: "g-hang-rec", fingerprint: "fp", state: "succeeded", outcomeDigest: contractDigest(null), data: null, ts: Date.now() }; },
+      get result(): GoalResultFact { lateFactReads++; return { v: 1, goalId: "g-hang-rec", fingerprint: "fp", state: "succeeded", outcomeDigest: contractDigest(null), data: null, ts: Date.now() }; },
     });
     const hangRecResult = await hangRecPromise;
     await new Promise<void>((resolve) => setImmediate(resolve));
