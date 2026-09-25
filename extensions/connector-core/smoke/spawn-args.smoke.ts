@@ -27,10 +27,10 @@ const cfg: AgentConfig = {
   subscribe: [], allowSubscribe: [], allowPublish: [],
 };
 
-type Recorded = { endpoint: string; command: string; args?: Record<string, unknown>; opts?: { target?: unknown; deadlineMs?: number } };
+type Recorded = { endpoint: string; command: string; args?: Record<string, unknown>; opts?: { target?: unknown; deadlineMs?: number; instanceId?: string } };
 type InvokeEp = {
   ep: {
-    invokeService: (endpoint: string, command: string, args?: Record<string, unknown>, opts?: { target?: unknown; deadlineMs?: number }) => Promise<unknown>;
+    invokeService: (endpoint: string, command: string, args?: Record<string, unknown>, opts?: { target?: unknown; deadlineMs?: number; instanceId?: string }) => Promise<unknown>;
     principal: { owner: string; actor: string };
   };
 };
@@ -58,11 +58,12 @@ function spawnCall(calls: Recorded[]): Recorded | undefined {
 
 const a = new MeshAgent(cfg);
 const callsA = record(a, "sonnet");
+const INSTANCE = "iiiiiiiiiiiiiiiiiiiiiiiiii";
 
 // Full knobs: harness + model selectors + the kickoff prompt ride through to the manager's
 // v0.4 `spawn` command. The prompt is what makes a fresh, never-prompted session take its first
 // turn; a channel nudge reaches Claude but does not start that first turn on its own.
-const pinned = await a.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet", variant: "high", prompt: "Review the current diff." });
+const pinned = await a.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet", variant: "high", prompt: "Review the current diff.", instance: INSTANCE });
 const rec = spawnCall(callsA);
 check("command is the manager endpoint's `spawn`", rec?.endpoint === "manager" && rec?.command === "spawn", rec);
 check("name forwarded", rec?.args?.name === "rev");
@@ -74,7 +75,9 @@ check("kickoff prompt forwarded", rec?.args?.prompt === "Review the current diff
 // #159 B1: the manager replies to `spawn` only on a real outcome (join / exit / ~30s readiness
 // backstop) — the request must carry the long spawn window, not fall back to the op default.
 check("request outlives the readiness wait (SPAWN_TIMEOUT_MS, not the default deadline)", rec?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, rec?.opts?.deadlineMs);
+check("instance pin reaches invokeService and requests a pinned resolve", rec?.opts?.instanceId === INSTANCE, rec?.opts);
 check("inspect attests the recorded pin", callsA.some((c) => c.command === "inspect" && c.args?.name === "rev"), callsA);
+check("model attestation stays on the pinned manager", callsA.find((c) => c.command === "inspect")?.opts?.instanceId === INSTANCE, callsA);
 check("recorded model rides the spawn result", pinned.ok === true && (pinned.data as { model?: string } | undefined)?.model === "sonnet", pinned);
 
 // Name-only: agent/model/variant absent → STRIPPED before the closed input contract validates
@@ -89,6 +92,7 @@ check("name-only: model key absent", !("model" in (recPlain?.args ?? {})));
 check("name-only: variant key absent", !("variant" in (recPlain?.args ?? {})));
 check("name-only: role key absent", !("role" in (recPlain?.args ?? {})));
 check("name-only: prompt key absent", !("prompt" in (recPlain?.args ?? {})));
+check("name-only: invokeService stays unpinned", recPlain?.opts?.instanceId === undefined, recPlain?.opts);
 check("name-only: inspect is not required when no model was requested", !callsPlain.some((c) => c.command === "inspect"));
 
 // The published cotal_spawn surface carries the prompt too — proving MeshAgent.spawn alone is not
@@ -97,10 +101,25 @@ const spawnTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_spawn") as
   | { schema: { shape: Record<string, unknown> }; run: (agent: MeshAgent, config: AgentConfig, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> }
   | undefined;
 check("cotal_spawn schema exposes the kickoff prompt", spawnTool !== undefined && "prompt" in spawnTool.schema.shape);
+check("cotal_spawn schema exposes the manager instance pin", spawnTool !== undefined && "instance" in spawnTool.schema.shape);
 const toolAgent = new MeshAgent(cfg);
 const callsTool = record(toolAgent);
 await spawnTool?.run(toolAgent, cfg, { name: "tool-rev", prompt: "Start the review now." });
 check("cotal_spawn tool forwards the kickoff prompt", spawnCall(callsTool)?.args?.prompt === "Start the review now.", spawnCall(callsTool)?.args?.prompt);
+
+const pinToolAgent = new MeshAgent(cfg);
+const callsPinTool = record(pinToolAgent);
+await spawnTool?.run(pinToolAgent, cfg, { name: "tool-pin", instance: INSTANCE });
+check("cotal_spawn tool forwards the manager instance pin", spawnCall(callsPinTool)?.opts?.instanceId === INSTANCE, spawnCall(callsPinTool)?.opts);
+
+const malformedAgent = new MeshAgent(cfg);
+const callsMalformed = record(malformedAgent);
+const malformedReply = await spawnTool?.run(malformedAgent, cfg, { name: "bad-pin", instance: "not.a.lifecycle.token" });
+check(
+  "a malformed instance is refused before invoke",
+  malformedReply?.isError === true && /instance .* is not a valid lifecycle token/.test(malformedReply.text) && callsMalformed.length === 0,
+  { reply: malformedReply, calls: callsMalformed },
+);
 
 // User mode now borrows instance-bound control authority instead of using invokeService.
 // Record the command boundary here: these cells grade the real spawn/inspect composition only.
@@ -118,6 +137,22 @@ check("user mode: spawn forwards harness and model at the command boundary",
   recUser?.args?.agent === "opencode" && recUser?.args?.model === "sonnet", recUser);
 check("user mode: request carries the readiness window too", recUser?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, recUser?.opts?.deadlineMs);
 check("user mode: recorded model rides the spawn result", callsUser.some((call) => call.command === "inspect" && call.args?.name === "rev") && recUserReply.ok === true && (recUserReply.data as { model?: string } | undefined)?.model === "sonnet", recUserReply);
+
+const authority = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const explicit = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+const disagreeing = new MeshAgent({ ...cfg, managerInstanceId: authority, userAuth: { bearerCmd: ["not-executed"], sentinelCreds: "sentinel", owner: "u_x", actor: "cli" } } as AgentConfig);
+const callsDisagreeing: Omit<Recorded, "endpoint">[] = [];
+(disagreeing as unknown as { managerInvoke: (command: string, args?: Record<string, unknown>, opts?: Recorded["opts"]) => Promise<unknown> }).managerInvoke = async (command, args, opts) => {
+  callsDisagreeing.push({ command, args, opts });
+  return { ok: true, data: { name: args?.name, mode: "pty" } };
+};
+(disagreeing as unknown as { _connected: boolean })._connected = true;
+const disagreementReply = await disagreeing.spawn("rev", undefined, { instance: explicit });
+check(
+  "user mode: an explicit instance that differs from credential authority is refused before invoke",
+  disagreementReply.ok === false && /differs from this credential's instance authority/.test(disagreementReply.error ?? "") && callsDisagreeing.length === 0,
+  { reply: disagreementReply, calls: callsDisagreeing },
+);
 
 // #972: a requested pin that inspect does not record is a refusal, not a successful default-model seat.
 const dropped = new MeshAgent(cfg);
@@ -150,7 +185,7 @@ check(
   toolReply,
 );
 
-const EXPECTED_CHECKS = 25;
+const EXPECTED_CHECKS = 32;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

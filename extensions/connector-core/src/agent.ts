@@ -11,6 +11,7 @@ import {
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
+  assertLifecycleToken,
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
@@ -1435,16 +1436,24 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; instance?: string }): Promise<ControlReply> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
+    let instance: string | undefined;
+    try {
+      instance = opts?.instance === undefined ? undefined : assertLifecycleToken(opts.instance, "instance");
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)
+      return { ok: false, error: "the requested manager instance differs from this credential's instance authority" };
     const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
     if (!requested) return reply;
     // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
     // looks successful, the seat comes up on the harness default, and nothing in the spawn result
@@ -1452,7 +1461,7 @@ export class MeshAgent extends EventEmitter {
     // A wait-timeout is still a timeout, not evidence the pin landed — annotate it, never upgrade it.
     const actual = reply.data as { name?: string } | undefined;
     const seat = actual?.name ?? name;
-    const recorded = await this.inspectModel(seat);
+    const recorded = await this.inspectModel(seat, instance);
     const recordedLabel = !recorded.ok
       ? `could not inspect the recorded pin: ${recorded.error}`
       : recorded.model === undefined
@@ -1486,8 +1495,8 @@ export class MeshAgent extends EventEmitter {
 
   /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
    *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
-  async inspectModel(name: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
-    const info = await this.managerInvoke("inspect", { name });
+  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+    const info = await this.managerInvoke("inspect", { name }, instance === undefined ? undefined : { instanceId: instance });
     if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
     const model = (info.data as { model?: unknown } | undefined)?.model;
     if (model === undefined) return { ok: true };
@@ -1505,20 +1514,22 @@ export class MeshAgent extends EventEmitter {
   private async managerInvoke(
     command: string,
     args: Record<string, unknown> | undefined,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
   ): Promise<ControlReply> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     try {
       const input = clean && Object.keys(clean).length ? clean : undefined;
       if (this.config.userAuth) {
+        const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
+        const { instanceId: _instanceId, ...invokeOpts } = opts;
         const submit = async (signal?: AbortSignal) => {
           const bearer = await execBearerCmd([
             ...this.config.userAuth!.bearerCmd,
             "--manager-call",
-            ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
+            ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
           ], signal);
-          return invokeUserManager(this.config, bearer, command, input, { ...opts, signal });
+          return invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, { ...invokeOpts, signal });
         };
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
@@ -1537,7 +1548,7 @@ export class MeshAgent extends EventEmitter {
                   userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
                 };
                 const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
-                  signal: context.signal, deadlineMs: Math.min(opts.deadlineMs ?? 10_000, context.deadlineMs),
+                  signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
                 });
                 if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
                 return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
