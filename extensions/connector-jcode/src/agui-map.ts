@@ -33,7 +33,7 @@ export interface JcodeMessage {
 
 export interface JcodeJournalRecord {
   append_messages?: JcodeMessage[];
-  journal_fold?: { lost_records: number };
+  journal_fold?: Record<string, never>;
 }
 
 export interface PositionedJcodeJournalRecord {
@@ -77,7 +77,7 @@ export function createJcodeMapper(opts: {
             runId,
             events: [
               runError({
-                message: `Jcode session journal folded into its snapshot; ${record.journal_fold.lost_records} unacknowledged record(s) were not emitted`,
+                message: "Jcode session journal compacted into its snapshot; records not yet emitted were lost and are not reconstructed",
                 code: "jcode_journal_fold",
                 timestamp: now(),
               }),

@@ -75,7 +75,7 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
         return {
           cursor: fresh.fresh.cursor,
           records: [
-            { cursor: fresh.beginning, value: { journal_fold: { lost_records: 0 } } },
+            { cursor: fresh.beginning, value: { journal_fold: {} } },
             ...fresh.fresh.records,
           ],
         };
