@@ -424,6 +424,18 @@ try {
   await operator.joinChannel(foldEventsChannel);
   const foldMarker = "JCODE-JOURNAL-FOLD-1984";
   const foldStart = frames.length;
+  await waitFor(
+    "Jcode journal fold kickoff",
+    () =>
+      readJsonLines(foldLog).find(
+        (entry) => entry.ev === "request" &&
+          (entry.frame as { req?: string; no_reply?: boolean; content?: string }).req === "send_message" &&
+          !(entry.frame as { no_reply?: boolean }).no_reply &&
+          String((entry.frame as { content?: string }).content).includes(foldMarker),
+      )
+        ? true
+        : undefined,
+  );
   await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "Jcode journal fold terminal event",
