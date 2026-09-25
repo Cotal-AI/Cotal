@@ -1,6 +1,6 @@
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { JsonlFileSource, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
 import type { JcodeJournalRecord, PositionedJcodeJournalRecord } from "./agui-map.js";
 
@@ -11,6 +11,13 @@ const RETRY_MAX_MS = 250;
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const isMissing = (error: unknown): error is NodeJS.ErrnoException =>
   error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT";
+
+export class JcodeJournalFold extends Error {
+  constructor(readonly lostRecords: number) {
+    super(`Jcode session journal folded into its snapshot; ${lostRecords} unacknowledged record(s) could not be emitted`);
+    this.name = "JcodeJournalFold";
+  }
+}
 
 export function jcodeJournalPath(jcodeHome: string, sessionId: string): string {
   return join(jcodeHome, "sessions", `${sessionId}.journal.jsonl`);
@@ -54,6 +61,7 @@ export async function initializeJcodeEventBoundary(path: string, wal: EventWal):
 export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   readonly kind = "jcode-session-journal";
   private readonly file: JsonlFileSource<JcodeJournalRecord>;
+  private snapshotBytes = 0;
 
   constructor(
     readonly path: string,
@@ -63,7 +71,17 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<JcodeJournalRecord>> {
-    if (cursor !== undefined) return this.file.read(cursor);
+    if (cursor !== undefined) {
+      try {
+        const read = await this.file.read(cursor);
+        this.snapshotBytes = await this.snapshotSize();
+        return read;
+      } catch (error) {
+        const replacement = await this.foldedSince();
+        if (replacement === undefined) throw error;
+        throw new JcodeJournalFold(0);
+      }
+    }
     const deadline = performance.now() + this.waitMs;
     let retryMs = RETRY_INITIAL_MS;
     for (;;) {
@@ -83,6 +101,34 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
         await delay(Math.min(retryMs, remaining));
         retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
       }
+    }
+  }
+
+  private async snapshotSize(): Promise<number> {
+    const snapshot = join(dirname(this.path), `${basename(this.path, ".journal.jsonl")}.json`);
+    try {
+      return (await stat(snapshot)).size;
+    } catch (error) {
+      if (isMissing(error)) return 0;
+      throw error;
+    }
+  }
+
+  private async foldedSince(): Promise<string | undefined> {
+    const deadline = performance.now() + this.waitMs;
+    let retryMs = RETRY_INITIAL_MS;
+    for (;;) {
+      if (await this.snapshotSize() > this.snapshotBytes) {
+        try {
+          return await this.file.cursorAtBeginning();
+        } catch (error) {
+          if (!isMissing(error)) throw error;
+        }
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) return undefined;
+      await delay(Math.min(retryMs, remaining));
+      retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
     }
   }
 }
