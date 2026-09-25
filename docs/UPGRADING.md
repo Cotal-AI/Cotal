@@ -34,6 +34,52 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## From 0.53.0 to 0.54.0
+
+Manager calls now borrow an instance-bound `manager-caller` credential. Followed mutations require
+`manager.goal-result` on the selected manager, so a compatible issuer, manager and client must be
+loaded together. An older manager is refused before a followed mutation; upgrading an installed
+binary alone does not replace code in a running manager, connector or embedded client.
+
+### Preserve state before changing processes
+
+Snapshot the broker's durable storage using its supported backup procedure, the host authority and
+actor ledgers, and each participant's manager identity, runtime custody records, credentials and
+saved sessions. Include the embedding application's database and configuration under its supported
+backup procedure. Record the loaded package versions and the CLI path used by bearer helpers.
+Keep these copies private. Do not change the IdP issuer, regenerate manager identities, rotate agent
+credentials or recreate tenant storage to make the upgrade pass.
+
+No ledger, goal-history or session conversion is required for this change. Existing ordinary
+messaging credentials retain their normal expiry rules. New manager-caller credentials are obtained
+on demand from the current grant; old manager-call credentials do not gain the new view automatically.
+Existing accepted goals remain durable and must not be submitted again merely because observation
+was interrupted. Fresh remote registration publishes its service status at the current revision and
+epoch; do not seed that status manually.
+
+### Upgrade the split deployment
+
+1. Stage one pinned 0.54.0 package set for the host and participants, including the embedding SDKs.
+   Pause new manager mutations and let accepted work settle where possible before reloading processes.
+2. Upgrade the host issuer and embedding first. Keep the broker, its account identities and durable
+   storage in place. Then load the matching manager release on each participating machine.
+3. Preserve active seats through the runtime's supported update path. A Linux custodial runtime may
+   release and re-adopt seats within its 600-second unattended window; verify the actual runtime,
+   custody records and process identities before relying on it. A legacy PTY runtime without release
+   support cannot preserve active seats through a generic manager restart. Drain it at an approved
+   idle window instead of signalling the manager or replacing conversations.
+4. Reload the clients and connectors through their session-preserving host controls. Refresh any
+   bearer helper captured from an older immutable CLI path. A transport-only reconnect does not reload
+   JavaScript. Verify authenticated instance selection, a read-only manager command and canonical
+   result recovery before allowing new followed mutations.
+
+Treat the interval from issuer reload through compatible manager/client reload as a manager-control
+outage. Mixed versions can refuse discovery or commands; there is no promised rolling transition.
+Ordinary agent sessions survive only where their runtime and credentials permit it. If verification
+fails, keep mutations paused and repair forward from the preserved state rather than resetting it.
+This release does not add host-backed enrollment or terminal release for stock participant detached
+agents; see [Remote supervised agents](run-a-mesh.md#remote-supervised-agents).
+
 ## From 0.48.2 to 0.49.0
 
 0.49.0 changes how a credential's authority is recorded. A credential is no longer only a signed

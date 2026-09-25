@@ -29,19 +29,20 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connect } from "@nats-io/transport-node";
+import { connect, PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
-  resolveService, invokeCommand, registry,
-  type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
+  resolveService, invokeCommand, registry, parseGoalResultFact, goalResultSubject, epfStreamName,
+  parseEpSubject, deriveReplySubject, epCallerReplyFilter, epRequestSubject,
+  type Connector, type ControlReply, type EpCaller, type EpAttributedReply, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 // Endpoint name + shipped surface pin. Never MANAGER_CONTRACTS: a generic caller does not
 // hand-import schemas. The count comes from the cluster document, not a restated literal.
 import { MANAGER_ENDPOINT, managerShippedSurface } from "../src/manager-service-contract.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 const shipped = managerShippedSurface();
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -82,6 +83,7 @@ const CONNECTOR_READINESS_MS = 45_000;
 registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], readinessTimeoutMs: CONNECTOR_READINESS_MS, buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
+const connections: NatsConnection[] = [];
 // The §13.2 one-rail currency reader for a static mesh: the manager's processEpoch is 0 (no
 // takeover advances it). A production generic caller reads this from the registered svc record.
 const currentEpoch = async () => 0;
@@ -102,15 +104,17 @@ try {
     lifecycleUid: uid, capabilities: ["spawn"],
     endpointCapabilities: [
       { endpoint: MANAGER_ENDPOINT, command: "status" },
+      { endpoint: MANAGER_ENDPOINT, command: "goal-result" },
       { endpoint: MANAGER_ENDPOINT, command: "spawn" },
       { endpoint: MANAGER_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: DEV_OWNER } },
     ],
   });
   const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  connections.push(nc);
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("resolve-cwd advances the manager cluster revision", shipped.revision === 17, shipped);
+  check("goal-result advances the manager cluster revision and retains resolve-cwd", shipped.revision === 18 && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
@@ -132,7 +136,7 @@ try {
   check("a bad spawn field is bad-request at the FETCHED-then-recompiled input contract (not a hand-written schema)", badCode === "bad-request", badCode);
   // P2 item 2: spawn is an ACTION - invoke returns the acceptance floor (before the agent is live).
   const rSpawn = await invokeCommand(nc, space, service, "spawn", { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false }, { currentEpoch, deadlineMs: 30_000 });
-  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string; readinessDeadlineMs?: number };
+  const acc = (rSpawn.reply.data ?? {}) as { name?: string; goalId?: string; fingerprint?: string; readinessDeadlineMs?: number };
   check("invoke spawn accepts the goal with the exact connector readiness budget a follower must outlive",
     rSpawn.reply.ok === true && acc.name === "w1" && typeof acc.goalId === "string" && acc.readinessDeadlineMs === CONNECTOR_READINESS_MS, rSpawn.reply);
   // Poll the managed set until the agent joins - its id + lifecycleUid are the targeting coordinates.
@@ -141,6 +145,103 @@ try {
   for (let i = 0; i < 80 && !live; i++) { live = M.agents.get("w1"); if (!live) await wait(250); }
   const w1 = live!;
   check("invoke spawn boots a REAL agent that joins + is managed", !!w1 && w1.lifecycleUid.length >= 26, w1);
+
+  console.log("3b. mediated canonical goal results stay on the caller's own rail");
+  const goalId = acc.goalId!;
+  const ref = { endpoint: MANAGER_ENDPOINT, caller, goalId };
+  const absent = await invokeCommand(nc, space, service, "goal-result", { goalId: mintLifecycleUid() }, { currentEpoch });
+  check("an absent goal result reports no recorded terminal without inventing a state", absent.reply.ok === true && typeof (absent.reply.data as { goalId?: unknown }).goalId === "string" && !Object.hasOwn(absent.reply.data as object, "result"), absent.reply);
+  let badGoalArgs: string | undefined;
+  try { await invokeCommand(nc, space, service, "goal-result", { goalId, owner: "foreign" }, { currentEpoch }); }
+  catch (e) { badGoalArgs = e instanceof EpEnvelopeError ? e.code : (e as Error).message; }
+  check("goal-result refuses caller-supplied identity fields", badGoalArgs === "bad-request", badGoalArgs);
+
+  let terminal: unknown;
+  const terminalDeadline = Date.now() + 20_000;
+  while (terminal === undefined && Date.now() < terminalDeadline) {
+    const reply = await invokeCommand(nc, space, service, "goal-result", { goalId }, { currentEpoch, deadlineMs: 2_000 });
+    if (!reply.reply.ok) throw new Error(`goal-result read refused: ${JSON.stringify(reply.reply.error)}`);
+    terminal = (reply.reply.data as { result?: unknown }).result;
+    if (terminal === undefined) await wait(100);
+  }
+  check("goal-result reads the real manager's committed terminal for its authenticated caller", terminal !== undefined, terminal);
+  const fact = terminal === undefined ? undefined : parseGoalResultFact(terminal, goalResultSubject(space, ref), ref);
+  check("the mediated terminal matches the accepted goal and fingerprint", fact?.state === "succeeded" && fact.fingerprint === acc.fingerprint && (fact.data as { name?: string })?.name === "w1", fact);
+
+  const otherCallers = [
+    { label: "actor", caller: { ...caller, actor: newIdentity().id } },
+    { label: "lifecycle", caller: { ...caller, uid: mintLifecycleUid() } },
+    { label: "owner", caller: { ...caller, owner: `u_${"b".repeat(26)}` } },
+  ];
+  const readers = [];
+  for (const other of otherCallers) {
+    const otherCreds = await mintCreds(auth, newIdentity(), "agent", {
+      principal: { owner: other.caller.owner, actor: other.caller.actor }, lifecycleUid: other.caller.uid,
+      endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "goal-result" }],
+    });
+    const otherNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: otherCreds, tls: false }), maxReconnectAttempts: 0 });
+    connections.push(otherNc);
+    const otherService = await resolveService(otherNc, space, MANAGER_ENDPOINT, other.caller, { deadlineMs: 5_000 });
+    const reply = await invokeCommand(otherNc, space, otherService, "goal-result", { goalId }, { currentEpoch });
+    check(`goal-result does not disclose a terminal to another ${other.label}`, reply.reply.ok === true && !Object.hasOwn(reply.reply.data as object, "result"), reply.reply);
+    readers.push({ nc: otherNc, caller: other.caller, service: otherService });
+  }
+  // Use the native inbox here: a generic invocation first subscribes to the forged caller's
+  // reply rail and is refused there, before it can prove denial of the forged PUBLISH.
+  const forgedUidSubject = epRequestSubject(space, {
+    route: { mode: "one" }, endpoint: MANAGER_ENDPOINT, command: "goal-result",
+    caller: otherCallers[1]!.caller, nonce: mintLifecycleUid(),
+  });
+  let forgedUidDenied = false;
+  let forgedUidOutcome: unknown;
+  try {
+    const reply = await nc.request(forgedUidSubject, undefined, { timeout: 1_000 });
+    forgedUidOutcome = { status: reply.headers?.code };
+  } catch (e) {
+    const denial = e instanceof PermissionViolationError ? e : (e as Error).cause;
+    forgedUidDenied = denial instanceof PermissionViolationError && denial.subject === forgedUidSubject;
+    forgedUidOutcome = { name: (e as Error).name, message: (e as Error).message };
+  }
+  check("the broker denies a goal-result request forged with another lifecycle UID", forgedUidDenied, forgedUidOutcome);
+  let rawReadDenied = false;
+  let rawReadOutcome: unknown;
+  try { const reply = await nc.request(`$JS.API.DIRECT.GET.${epfStreamName(space)}.${goalResultSubject(space, ref)}`, undefined, { timeout: 1_000 }); rawReadOutcome = { status: reply.headers?.code }; }
+  catch (e) {
+    rawReadDenied = e instanceof PermissionViolationError || (e as Error).cause instanceof PermissionViolationError;
+    rawReadOutcome = { name: (e as Error).name, message: (e as Error).message, cause: (e as Error).cause instanceof Error ? ((e as Error).cause as Error).name : undefined };
+  }
+  check("the mediated caller receives no raw EPF Direct Get authority", rawReadDenied, rawReadOutcome);
+
+  const victim = readers[0]!;
+  let victimReplies = 0;
+  const victimWatch = victim.nc.subscribe(epCallerReplyFilter(space, victim.caller), {
+    callback: (err) => { if (!err) victimReplies++; },
+  });
+  await victim.nc.flush();
+  await invokeCommand(victim.nc, space, victim.service, "goal-result", { goalId }, { currentEpoch });
+  check("the destination observer receives its own legitimate reply", victimReplies === 1, victimReplies);
+  const before = victimReplies;
+  const publish = nc.publish.bind(nc);
+  let suppliedDestination = false;
+  nc.publish = (subject, data, options) => {
+    const parsed = parseEpSubject(subject);
+    if (parsed?.plane === "request" && parsed.command === "goal-result") {
+      suppliedDestination = true;
+      return publish(subject, data, { ...options, reply: deriveReplySubject(space, { ...parsed, caller: victim.caller }, service.responder) });
+    }
+    return publish(subject, data, options);
+  };
+  try {
+    let reply: EpAttributedReply | undefined;
+    let error: unknown;
+    try { reply = await invokeCommand(nc, space, service, "goal-result", { goalId }, { currentEpoch, deadlineMs: 2_000 }); }
+    catch (e) { error = (e as Error).message; }
+    await victim.nc.flush();
+    check("goal-result ignores a caller-chosen reply destination and returns only to its caller", suppliedDestination && reply?.reply.ok === true && (reply.reply.data as { result?: unknown }).result !== undefined && victimReplies === before, { reply: reply?.reply, error, victimReplies, before });
+  } finally {
+    nc.publish = publish;
+    victimWatch.unsubscribe();
+  }
 
   console.log("4. invoke targeted despawn + the generic target guards");
   let noTarget: string | undefined;
@@ -166,10 +267,17 @@ try {
   await nc.drain().catch(() => nc.close());
   await mgr.stop({ withAgents: true });
 } finally {
-  srv.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
-  releaseBroker(); // last: ownership is held until this teardown has actually finished
+  try { await mgr.stop({ withAgents: true }); }
+  finally {
+    for (const nc of connections) await nc.close();
+    await killAndAwaitExit(srv);
+    rmSync(dir, { recursive: true, force: true });
+    releaseBroker();
+  }
 }
 
+const EXPECTED = 23;
+check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
+emitSentinel({ passed: pass, failed: fail });
 process.exit(fail === 0 ? 0 : 1);

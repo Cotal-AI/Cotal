@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator, type NatsConnection, type ConnectionOptions } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, NoRespondersError, PermissionViolationError, type NatsConnection, type ConnectionOptions } from "@nats-io/transport-node";
 import { createSpaceAuth, isReachable, serverConfig, standaloneConnectOpts, mintLifecycleUid } from "@cotal-ai/core";
 import {
   calloutPermissions, createCalloutAuth, createUserTokenIssuer, deriveOwnerToken, generateSigningKey,
@@ -87,6 +87,7 @@ async function tryConnect(bearer: string): Promise<"connected" | "denied"> {
 let plane: Awaited<ReturnType<typeof openAuthAuthorityPlane>> | undefined;
 let calloutNc: NatsConnection | undefined;
 let smokeWriter: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+let liveNc: NatsConnection | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -104,7 +105,7 @@ try {
 
   // ---- the file grant + the exchange arm's root-credential ensure ----
   const uid1 = mintLifecycleUid();
-  grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid1 });
+  grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid1 });
   const credid1 = await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 });
   check("first exchange mints the incarnation's root credential", typeof credid1 === "string" && credid1.length > 0, credid1);
   check("the ensure is idempotent (a re-exchange stamps the SAME credential)", (await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 })) === credid1);
@@ -125,8 +126,11 @@ try {
   });
   await calloutNc.flush();
 
-  const bearer1 = await issuer.issue({ owner: OWNER, space, actor: "worker", scope: [], lifecycleUid: uid1, credentialId: credid1 });
+  const bearer1 = await issuer.issue({ owner: OWNER, space, actor: "worker", scope: ["spawn"], lifecycleUid: uid1, credentialId: credid1 });
   check("HAPPY: a bearer carrying the stamped credential CONNECTS", (await tryConnect(bearer1)) === "connected");
+
+  // Keep one LIVE connection open before revocation to test the same-connection bearer-TTL boundary:
+  liveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ bearer: bearer1, sentinelCreds: callout.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
 
   // POST-SUCCESSFUL-HEAD crash re-export (incarnation-wide root, ratified): after the head's
   // current-root CAS succeeded (and the bearer bytes possibly released), a crash + re-exchange
@@ -157,6 +161,31 @@ try {
   await rejects("a revoked root refuses the exchange (rotation is the barrier's job, never a re-mint)",
     () => plane!.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 }), "barrier");
 
+  // ---- live pre-revoke read within TTL on same connection remains permitted ----
+  const ownGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${uid1}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  let ownErr: unknown;
+  try {
+    await liveNc.request(ownGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
+  } catch (e) {
+    ownErr = e instanceof NoRespondersError ? e : (e as Error).cause;
+  }
+  check("live pre-revoke read within TTL remains permitted",
+    ownErr instanceof NoRespondersError && ownErr.subject === ownGoalResultSubj,
+    ownErr);
+
+  // ---- foreign UID request subject broker-denied (capturing native policy event) ----
+  const foreignUid = mintLifecycleUid();
+  const foreignGoalResultSubj = `cotal.${space}.ep.one.manager.goal-result.${OWNER}.worker.${foreignUid}.${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  let foreignErr: unknown;
+  try {
+    await liveNc.request(foreignGoalResultSubj, new Uint8Array(0), { timeout: 1000 });
+  } catch (e) {
+    foreignErr = e instanceof PermissionViolationError ? e : (e as Error).cause;
+  }
+  check("foreign UID request subject broker-denied",
+    foreignErr instanceof PermissionViolationError && foreignErr.operation === "publish" && foreignErr.subject === foreignGoalResultSubj,
+    foreignErr);
+
   // ---- the R1 takeover gap: a same-alias re-grant at a NEW uid refuses the exchange loudly ----
   const uid2 = mintLifecycleUid();
   grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid2 });
@@ -180,6 +209,7 @@ try {
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
   process.exitCode = 1;
 } finally {
+  await liveNc?.close().catch(() => {});
   await plane?.close().catch(() => {});
   await smokeWriter?.close().catch(() => {});
   await calloutNc?.close().catch(() => {});

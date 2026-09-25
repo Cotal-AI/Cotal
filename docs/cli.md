@@ -1057,9 +1057,11 @@ static/open mesh both verbs first ask every registered instance which one hosts 
 address that instance directly. This happens by default; you do not need `--on`.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
-lookup itself is degraded. It is also the **only** route on a **user-auth mesh**: a ledger-scoped
-bearer does not hold the registry-read rows the lookup needs, so there the verbs stay on the class
-queue unless you pin them yourself.
+lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager
+for a short-lived `manager-caller` view. `--on` requests a specific instance; without it, selection
+must be unique. Discovery and the command use that instance route. The caller gains no registry
+read or scatter permission. An absent, ambiguous or unauthorized selection refuses before sending
+the command.
 
 A seat is reported as **not found** only when every reachable instance answered for itself. An
 instance that stayed silent past the deadline, or that refused the read rather than answering, said
@@ -1070,10 +1072,10 @@ that it is not a report that the seat is gone. Read it as unknown and retry with
 still running. A single manager cannot tell "hosted elsewhere" from "does not exist": it answers
 `not-found` for both, which is why the search asks all of them and why an incomplete search
 concludes nothing.
-- **User-auth mesh.** `cotal ps` reports what **one** manager knows about your agents (an `ep.one`
-  read against the manager's in-memory roster, owner-filtered). It does **not** report other
-  manager instances. It cannot tell you that one is down: an unreachable manager is absent
-  from the list. Completeness across a multi-manager user-auth space is not claimed.
+- **User-auth mesh.** `cotal ps` reports what **one** authorized manager knows about your agents
+  (an instance-addressed read against its in-memory roster, owner-filtered). It does **not** report
+  other manager instances or establish whether they are reachable. Completeness across a
+  multi-manager user-auth space is not claimed.
   A manager that does not answer fails the command outright (exit non-zero), rather than printing
   an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
@@ -1964,5 +1966,7 @@ pinned public exchange with no local capability, follows no redirects, and refus
 URL because the actor token is the credential in the request body. Because a seat execs it on every
 bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
 exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
-a newer store generation cannot refuse a live seat's refresh. (`cotal start` is a removed tombstone: it
+a newer store generation cannot refuse a live seat's refresh. `--manager-call` asks for the
+instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate.
+That mode still prints only the raw token and does not update `--health-file`. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)

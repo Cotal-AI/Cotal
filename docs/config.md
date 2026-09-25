@@ -117,6 +117,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | Variable | Purpose |
 |---|---|
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
+| `COTAL_MANAGER_INSTANCE` | Stable instance id of the launching manager. User-auth managed calls request a separate control view for this instance; the issuer authorizes the selection. It carries no credential or grant. An unbound session uses the issuer's unique authorized selection |
 | `COTAL_ENVIRONMENT` | Opaque provider-issued environment reference published in presence. Read once when the endpoint is constructed; omitted when the launcher sets none |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |

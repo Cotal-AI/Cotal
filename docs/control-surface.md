@@ -85,6 +85,14 @@ names the inspected `name`, the failed `record` (`slot`, `head`, or `slot-or-hea
 cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows,
 so their inspect misses remain live-map reads.
 
+For Linux custodied seats, retirement requires the runtime's process-exit evidence before
+freeing the alias or deleting its credentials and delivery state. Socket loss alone is not
+proof of exit. The runtime retains the record captured at launch or adoption so a clean
+custodian exit can unlink its file without losing the recorded boot and process identities.
+If the file is missing, reaping uses that retained record and the existing kernel identity
+checks. An unknown reference without either record refuses cleanup. Reused process ids
+are never signalled on the strength of the old record.
+
 ## Spawn is a goal
 
 Long-running commands are **actions** ([SPEC §13.6](../SPEC.md#136-composites)): the caller
@@ -138,12 +146,54 @@ state, not reporting a missing one.
 
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
-specific manager without caring which process currently serves it. An untargeted spawn
-rides class anycast (any manager may accept, and the acceptance records which one did);
+specific manager without caring which process currently serves it. On a static or open mesh,
+an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did);
 `cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
 foreground spawn has no manager to pin and refuses the flag). There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because `--on` takes nothing else.
+
+On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
+exchange. It authorizes one concrete manager instance using the caller's current actor grant and
+the host's registered service records. Discovery and invocation both use that instance's `inst`
+route. This view grants no registry scan, class queue, or additional command capability. An absent,
+ambiguous or unauthorized selection refuses before the command is sent.
+
+Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
+them. Existing unbound sessions can use the exchange's unique authorized selection without
+replacing their actor or conversation. The connector uses a separate control connection; the
+standing message connection and its credential source are unchanged. Accepted spawn goals are
+followed on that renewing connection, using its existing caller-scoped progress grant, so a long
+readiness budget does not depend on the short-lived control credential. The follower confirms its
+progress subscription with the broker before submitting on the separate connection. A caller still
+checks the resolved instance and epoch, and never retries an ambiguous mutation outcome.
+
+The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads
+only the authenticated caller's owner, actor and lifecycle through the manager's separate trusted
+goal-writer connection. The caller receives an attributed reply, never a raw JetStream reader
+grant. Each read is admitted by the connection's broker-enforced command grant. A live user-auth
+connection remains bounded by its bearer expiry after revocation; a renewed connection is checked
+against fresh authority. There is no separate per-read ledger check. An absent `result` means no
+terminal is recorded; it does not prove the goal is running or permit another submission. The
+existing trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler
+confines it to this endpoint and caller triple.
+
+A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
+the manager, issuer and client together before using that recovery path. Reloading an issuer alone
+cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
+epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
+acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
+
+Cancellation before submission reports `not-executed`. Once submission starts, cancellation or a
+lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
+refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
+The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
+before the wait deadline, and late read completions cannot settle an expired observation. Its read
+callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
+commands and control connections use that signal. An in-flight dial that finishes after cancellation
+closes without publishing. A local reply-subscription failure prevents publication and is observed
+by the same request promise, including when the transport is closing or draining. Request
+cancellation does not revoke or resubmit the accepted operation.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
 broker host manager-free is still a topology choice: `cotal up` on that host starts a

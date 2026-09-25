@@ -1,6 +1,7 @@
 {
   "suite": [
-    "implementations/auth/smoke/remote-agent-bearer.smoke.ts"
+    "implementations/auth/smoke/remote-agent-bearer.smoke.ts",
+    "implementations/auth/smoke/remote-exchange.smoke.ts"
   ],
   "guard": "the fixture waits on the auth service's own readiness signal (discovery file, pid alive, /health on the recorded URL) and an exhausted budget throws naming the auth service instead of falling through into a misattributed 502",
   "command": "pnpm smoke:remote-agent-bearer:live",
@@ -41,6 +42,26 @@
       "expectRed": "the wait bound to a pid that EXITS ends at once with the exited reason",
       "afterRestore": "pnpm --filter @cotal-ai/auth build",
       "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-agent-bearer:live"
+    },
+    {
+      "name": "two live remote manager candidates select the first instead of refusing ambiguity",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    if (remoteLive.length > 1)\n      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner}; exactly one is required or name --manager-instance`);",
+      "replace": "    if (remoteLive.length > 1) return remoteLive[0];",
+      "expectRed": "two live remote managers refuse and name the count",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+      "completionMarker": "remote-exchange smoke:",
+      "note": "The absent selector must never choose by enumeration order when several owner-bound managers are live."
+    },
+    {
+      "name": "an unavailable owner remote manager falls through to the co-located manager",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    if (remoteInstances.length > 0)\n      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? \"\" : \"s\"}, none live); pass managerInstanceId to select an instance explicitly rather than falling through to the local manager`);",
+      "replace": "    if (remoteInstances.length > 0 && localCandidate === undefined)\n      throw new Error(`the remote manager for owner ${owner} is unavailable`);",
+      "expectRed": "an unavailable owner remote manager refuses with the explicit-selector remedy instead of falling through local",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+      "completionMarker": "remote-exchange smoke:",
+      "note": "Any owner-specific remote gate establishes precedence even when it is frozen, retired, or deregistered."
     }
   ]
 }

@@ -2953,6 +2953,15 @@ export class Manager {
         const data = unwrap(await this.opModels(args(ctx)));
         return { catalogs: Array.isArray(data) ? data : [data] };
       }),
+      goalResult: (ctx) => this.serveGated(ctx, async () => {
+        const gw = this.goalWriter;
+        if (!gw || gw.nc.isClosed()) throw new EpEnvelopeError("unavailable", "the manager goal-reader connection is not standing; the accepted goal is unaffected");
+        const goalId = args(ctx).goalId as string;
+        // Only the broker-authenticated caller's full incarnation can name this read. The
+        // trusted goal-writer keeps the raw EPF authority; serveEndpoint derives the reply rail.
+        const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));
+        return { goalId, ...(result === undefined ? {} : { result }) };
+      }),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
@@ -3882,6 +3891,7 @@ export class Manager {
           ? { ...restart.opts, resume: undefined, prompt: undefined, continueSession }
           : { ...restart.opts, resume: undefined, prompt: undefined };
         const spec = connector.buildLaunch(opts);
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         const wanted = this.managedPrincipal(a);
         const joinedAfter = this.ep.getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)
@@ -4864,6 +4874,7 @@ export class Manager {
         workspaceRoot: this.workspaceRoot,
       };
       const spec = connector.buildLaunch(launchOpts);
+      spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
       const handle = await this.spawnCustodied(name, spec, cwd, custody);
       hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
@@ -5416,6 +5427,7 @@ export class Manager {
           workspaceRoot: this.workspaceRoot,
         };
         const spec = connector.buildLaunch(launchOpts);
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         const value = { spec, launchOpts, ...authority } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };

@@ -31,9 +31,9 @@
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
  * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
  * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
- * hold verbatim; `view` requests other than `channel-writer` and `channel-purger` are REFUSED
- * (those two stay ledger-gated on `admin`; every other operator surface stays loopback-only); a
- * managed-agent secret exchange never mints a view on either face;
+ * hold verbatim. Public views are channel-writer/channel-purger (admin-gated) and manager-caller
+ * (instance-bound, with no added command scope). Other views stay loopback-only. The agent-secret
+ * arm may request only manager-caller on either face;
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
@@ -57,8 +57,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintCreds, mintPublicUserJwt, newIdentity, rawDigest, reconcileEndpointGate, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
-import { findCotalRoot, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { startAuthCallout } from "./callout.js";
@@ -140,6 +140,8 @@ type Values = Record<string, string | undefined>;
 export interface AuthAuthorityPlane {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  selectManagerInstance: (owner: string, requested?: string) => Promise<string>;
+  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
     retired: boolean;
     lifecycleUid: string;
@@ -414,6 +416,62 @@ export async function openAuthAuthorityPlane(opts: {
     throw e;
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
+  const recordsJsm = await jetstreamManager(remoteIssuer.nc);
+  const root = findCotalRoot();
+  const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
+    const localManager = loadManagerInstanceIdentity(root, space);
+    const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+    if (!gate) return "unknown";
+    if (gate.state !== "open") return "not open";
+    const remotePrincipal = `${owner}.${remoteManagerActors(instanceId).serve}`;
+    const local = localManager?.instanceId === instanceId && gate.principal === `local.${localManager.serveIdentity.id}`;
+    const remote = gate.principal === remotePrincipal;
+    if (!local && !remote) return "not this owner's";
+    const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
+    if (!rec || "deleted" in rec) return "not registered";
+    const spec = parseServiceSpec(rec.value, { endpoint: "manager" });
+    if (spec.owner !== (local ? "local" : owner) || rec.revision !== gate.registrationRevision) return "not registered";
+    const statusRec = await readSvcRecordLeader(recordsJsm, space, recordStatusKey(RECORD_KINDS.svc, ["manager", instanceId]));
+    if (!statusRec || "deleted" in statusRec) return "not registered";
+    const status = parseServiceStatus(statusRec.value);
+    if (status.observedSpecRevision < rec.revision || status.epoch !== gate.processEpoch) return "not registered";
+    return "candidate";
+  };
+  const selectManagerInstance = async (owner: string, requested?: string): Promise<string> => {
+    refuseIfFenced();
+    if (requested !== undefined) {
+      const instanceId = assertLifecycleToken(requested, "managerInstanceId");
+      const verdict = await managerGate(owner, instanceId);
+      if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict}`);
+      return instanceId;
+    }
+    const remoteInstances: string[] = [];
+    const remoteLive: string[] = [];
+    let localCandidate: string | undefined;
+    const localManager = loadManagerInstanceIdentity(root, space);
+    for (const raw of await scanner.scanManagerGates()) {
+      if (raw.op !== undefined) continue;
+      const parts = raw.key.split(".");
+      if (parts.length !== 3 || parts[0] !== "epgate" || parts[1] !== "manager")
+        throw new EpEnvelopeError("internal", `the manager gate scan returned the malformed key ${raw.key}`);
+      const instanceId = assertLifecycleToken(parts[2], "managerInstanceId");
+      const row = parseEndpointGate(raw.data, raw.key);
+      if (row.principal === `${owner}.${remoteManagerActors(instanceId).serve}`) {
+        remoteInstances.push(instanceId);
+        if (await managerGate(owner, instanceId) === "candidate") remoteLive.push(instanceId);
+      } else if (localManager?.instanceId === instanceId && row.principal === `local.${localManager.serveIdentity.id}`) {
+        if (await managerGate(owner, instanceId) === "candidate") localCandidate = instanceId;
+      }
+    }
+    remoteLive.sort();
+    if (remoteLive.length === 1) return remoteLive[0];
+    if (remoteLive.length > 1)
+      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner}; exactly one is required or name --manager-instance`);
+    if (remoteInstances.length > 0)
+      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); pass managerInstanceId to select an instance explicitly rather than falling through to the local manager`);
+    if (localCandidate !== undefined) return localCandidate;
+    throw new Error(`manager-caller selection found no manager candidate for owner ${owner}`);
+  };
   // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
   // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
   // window, not the operator — the agent cannot "restart the auth service", so it gets a retryable
@@ -432,6 +490,12 @@ export async function openAuthAuthorityPlane(opts: {
     mintConnectCredential: (args) => {
       refuseIfFenced();
       return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` });
+    },
+    selectManagerInstance,
+    authorizeManagerCaller: async (owner, instanceId) => {
+      refuseIfFenced();
+      const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "managerInstanceId"));
+      if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict} at the permission mint`);
     },
     retireInteractiveLifecycle: async (args) => {
       refuseIfFenced();
@@ -900,7 +964,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     space,
     token: { key: issuer.localKeySet(), issuer: issuer.issuer },
     authorizeActor: plane.authorizeConnect,
-    permissionsFor: calloutPermissions(ledgerAclResolver(dir)),
+    permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller),
     log: (l) => console.error(l),
   });
   // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -938,6 +1002,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     space,
     dir,
     mintConnectCredential: plane.mintConnectCredential,
+    selectManagerInstance: plane.selectManagerInstance,
   };
   const http = createServer((req, res) => void handle(req, res, ctx));
   await new Promise<void>((resolvePort, reject) => {
@@ -1038,6 +1103,7 @@ interface HandlerCtx {
   /** The authority plane's root-credential ensure — the agent-exchange arm stamps from it (the
    *  human arm stamps inside the bridge). */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
 }
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
@@ -1284,17 +1350,20 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
-  const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId } = body as {
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
     owner?: unknown;
     ttlSec?: unknown;
     view?: unknown;
+    managerInstanceId?: unknown;
   };
   if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
-  // Public face: only channel-writer / channel-purger ride this listener (still ledger-gated).
+  if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
+  if (managerInstanceId !== undefined && view !== "manager-caller") return send(res, 400, { error: 'managerInstanceId is valid only with view "manager-caller"' });
+  // Public face: channel-writer / channel-purger and the narrowing manager-caller view.
   // admin, purger, deployer, and manager-service stay loopback-only, whatever the credential.
   // A refused view is a refused exchange: record, audit, then 429 when the peer is already
   // throttled, same order as the neighbouring denial sites. A served view stays unthrottled.
@@ -1312,9 +1381,9 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   if (idpToken !== undefined && actorToken !== undefined)
     return send(res, 400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
   if (actorToken !== undefined) {
-    // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
-    // whatever its ledger row carries (v1 — agents hold no god views).
-    if (view !== undefined)
+    // The actor-secret exception is manager-caller only: it adds no command capability.
+    // Elevated views still require a signed-in human, whatever this agent's row carries.
+    if (view !== undefined && view !== "manager-caller")
       return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
     if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
       return send(res, 400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
@@ -1326,6 +1395,9 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
       // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
       const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
+      const selectedManagerInstanceId = view === "manager-caller"
+        ? await ctx.selectManagerInstance(owner, managerInstanceId as string | undefined)
+        : undefined;
       const token = await ctx.issuer.issue({
         owner,
         space: ctx.space,
@@ -1338,10 +1410,11 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
         // successor's broker authority.
         lifecycleUid: grant.lifecycleUid,
         credentialId,
+        ...(view === "manager-caller" ? { view, managerInstanceId: selectedManagerInstanceId } : {}),
         ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
       });
       const { exp } = decodeJwt(token);
-      return send(res, 200, { token, owner, exp });
+      return send(res, 200, { token, owner, exp, ...(selectedManagerInstanceId ? { managerInstanceId: selectedManagerInstanceId } : {}) });
     } catch (e) {
       policy.recordFailure(ctx, peer);
       const reason = e instanceof Error ? e.message : String(e);
@@ -1356,7 +1429,18 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   try {
     // The bridge validates `view` against the closed enum and the fresh ledger grant — an
     // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
-    const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec, view: view as UserTokenView | undefined });
+    const selectedManagerInstanceId = view === "manager-caller"
+      ? await ctx.selectManagerInstance(
+          deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(idpToken, ctx.bridgeIdp)).sub),
+          managerInstanceId as string | undefined,
+        )
+      : undefined;
+    const r = await ctx.bridge.exchange(idpToken, {
+      actor,
+      ttlSec,
+      view: view as UserTokenView | undefined,
+      managerInstanceId: selectedManagerInstanceId,
+    });
     return send(res, 200, r);
   } catch (e) {
     // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED

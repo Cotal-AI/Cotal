@@ -31,6 +31,9 @@ export interface EpCapability {
   command: string;
   routes?: ("one" | "all")[];
   instanceId?: string;
+  /** Emit only the exact instance route. Requires `instanceId`; used by a manager-bound caller
+   *  whose credential must never retain the class or scatter rails. */
+  instanceOnly?: boolean;
   target?: EpTarget;
   /** Also grant the matching journal-submission append row (`epj`, §13.9 matrix). */
   journal?: boolean;
@@ -86,7 +89,9 @@ export function epRequestGrantRows(space: string, cap: EpCapability, caller: EpC
   const cmd = assertCommandToken(cap.command);
   const mid = cap.target ? `.${targetGrantTokens(cap.target, caller).join(".")}` : "";
   const tail = `${mid}.${callerBlock(caller)}.*`;
-  const rows = (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
+  if (cap.instanceOnly && cap.instanceId === undefined)
+    throw new Error(`an instance-only capability on "${cap.endpoint}.${cap.command}" requires instanceId`);
+  const rows = cap.instanceOnly ? [] : (cap.routes ?? ["one"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);
   if (cap.instanceId)
     rows.push(`${spacePrefix(space)}.${plane(caller)}.inst.${e}.${assertLifecycleToken(cap.instanceId, "instanceId")}.${cmd}${tail}`);
   return rows;
@@ -215,7 +220,7 @@ export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
  *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
-export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona"] as const);
+export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
  *  three writes start a run, take one over and answer its open pause; the two reads list runs
  *  and render one run's record and journal. All UNTARGETED: a run is not an agent, so no target
@@ -228,7 +233,7 @@ export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
 /** The manager endpoint's read commands (`manager.read` class). */
-export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models", "list-personas", "show-persona"] as const);
+export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
  *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
  *  NEVER an agent/spawn profile (the ratified 1c pin). */
@@ -273,7 +278,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  it derives nothing from a descriptor, which is the part §13.7 forbids. `smoke:unfenced-responder`
  *  tripwires that pin so the version cannot move without this table being named. */
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona", "run-status", "run-ps"]),
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona", "run-status", "run-ps", "goal-result"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
@@ -460,6 +465,12 @@ export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin
       ...tierCaps.map((cap) => ({ ...cap, instanceId: id })),
     ];
   });
+}
+
+/** Pin any capability set to one exact manager instance and remove every class/scatter route. */
+export function instanceOnlyManagerCapabilities(caps: EpCapability[], instanceId: string): EpCapability[] {
+  const id = assertLifecycleToken(instanceId, "instanceId");
+  return caps.map((cap) => ({ ...cap, endpoint: BASELINE_LIFECYCLE_ENDPOINT, routes: [], instanceId: id, instanceOnly: true }));
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

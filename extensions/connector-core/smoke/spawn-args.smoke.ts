@@ -1,11 +1,11 @@
 /**
  * cotal_spawn parity smoke — proves the MCP spawn door carries the same harness/model/variant/prompt knobs as the
  * operator's `cotal spawn --detach`. The `cotal_spawn` tool forwards to MeshAgent.spawn, which (1c.2b/2c)
- * puts `agent` plus model selectors into the manager's v0.4 `spawn` command over the generic invoke path
- * (`CotalEndpoint.invokeService`) in EVERY auth mode — the user-mode caller triple is the endpoint's own
- * bearer-derived principal + the launcher's lifecycle uid, so there is no ctl branch left. No NATS: the
- * MeshAgent constructor builds an endpoint but never connects, so we swap in a recording `ep` and mark
- * connected. Run with: pnpm smoke:spawn-args
+ * puts `agent` plus model selectors into the manager's v0.4 `spawn` command. Static mode records the
+ * generic `CotalEndpoint.invokeService` path. User mode records the command boundary to grade spawn
+ * arguments and model attestation, not the borrowed credential or wire transport. No NATS: the
+ * MeshAgent constructor builds an endpoint but never connects. User control dispatch and claim
+ * parsing have separate cells in manager-invoke-verdict. Run with: pnpm smoke:spawn-args
  *
  * #972: a requested `model` that the manager does not record is a refusal, not a successful spawn on
  * the harness default. The mock inspect is the attestation; a spawn that never inspects cannot tell
@@ -15,8 +15,9 @@ import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
 
-let failures = 0;
+let failures = 0, checks = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
+  checks++;
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
   if (!cond) failures++;
 }
@@ -101,17 +102,22 @@ const callsTool = record(toolAgent);
 await spawnTool?.run(toolAgent, cfg, { name: "tool-rev", prompt: "Start the review now." });
 check("cotal_spawn tool forwards the kickoff prompt", spawnCall(callsTool)?.args?.prompt === "Start the review now.", spawnCall(callsTool)?.args?.prompt);
 
-// USER MODE rides the SAME invokeService door (1c.2c: the endpoint's bearer-derived principal +
-// the launcher's lifecycle uid ARE the caller triple; no ctl branch remains in the connector).
-const u = new MeshAgent({ ...cfg, userAuth: { bearerCmd: ["true"], sentinelCreds: "sentinel", owner: "u_x", actor: "cli" } } as AgentConfig);
-const callsUser = record(u, "sonnet");
-(u as unknown as InvokeEp).ep.principal = { owner: "u_x", actor: "cli" };
+// User mode now borrows instance-bound control authority instead of using invokeService.
+// Record the command boundary here: these cells grade the real spawn/inspect composition only.
+// They do not pretend a recording endpoint exercises the user credential exchange or broker.
+const u = new MeshAgent({ ...cfg, userAuth: { bearerCmd: ["not-executed"], sentinelCreds: "sentinel", owner: "u_x", actor: "cli" } } as AgentConfig);
+const callsUser: Omit<Recorded, "endpoint">[] = [];
+(u as unknown as { managerInvoke: (command: string, args?: Record<string, unknown>, opts?: Recorded["opts"]) => Promise<unknown> }).managerInvoke = async (command, args, opts) => {
+  callsUser.push({ command, args, opts });
+  return { ok: true, data: command === "inspect" ? { name: args?.name, model: "sonnet" } : { name: args?.name, mode: "pty" } };
+};
+(u as unknown as { _connected: boolean })._connected = true;
 const recUserReply = await u.spawn("rev", "reviewer", { agent: "opencode", model: "sonnet" });
-const recUser = spawnCall(callsUser);
-check("user mode: the SAME v0.4 spawn command over invokeService (no ctl branch left)",
-  recUser?.endpoint === "manager" && recUser?.command === "spawn" && recUser?.args?.model === "sonnet", recUser);
+const recUser = callsUser.find((call) => call.command === "spawn");
+check("user mode: spawn forwards harness and model at the command boundary",
+  recUser?.args?.agent === "opencode" && recUser?.args?.model === "sonnet", recUser);
 check("user mode: request carries the readiness window too", recUser?.opts?.deadlineMs === SPAWN_TIMEOUT_MS, recUser?.opts?.deadlineMs);
-check("user mode: recorded model rides the spawn result", recUserReply.ok === true && (recUserReply.data as { model?: string } | undefined)?.model === "sonnet", recUserReply);
+check("user mode: recorded model rides the spawn result", callsUser.some((call) => call.command === "inspect" && call.args?.name === "rev") && recUserReply.ok === true && (recUserReply.data as { model?: string } | undefined)?.model === "sonnet", recUserReply);
 
 // #972: a requested pin that inspect does not record is a refusal, not a successful default-model seat.
 const dropped = new MeshAgent(cfg);
@@ -144,5 +150,10 @@ check(
   toolReply,
 );
 
-console.log(`\nSPAWN-ARGS SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
+const EXPECTED_CHECKS = 25;
+if (checks !== EXPECTED_CHECKS) {
+  failures++;
+  console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
+}
+console.log(`\nSPAWN-ARGS SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"} — ${checks} checks, ${failures} failures`);
 process.exit(failures === 0 ? 0 : 1);

@@ -49,8 +49,9 @@ export function describeComplete(argv: string[]): CompletionResult {
 async function epConnection(
   values: Record<string, unknown>,
   profile: "control-caller-privileged" | "control-caller-admin",
+  endpoint: string,
 ): Promise<{ nc: NatsConnection; space: string; auth: ControlAuth }> {
-  const t = await resolveControlTarget(values as { space?: string; server?: string; creds?: string }, profile);
+  const t = await resolveControlTarget(values as { space?: string; server?: string; creds?: string }, profile, undefined, { endpoint });
   if (!t.auth.epCaller || (!t.auth.creds && !(t.auth.bearer && t.auth.sentinelCreds))) {
     console.error(c.red("✗ the generic describe/invoke surface needs an auth mesh with endpoint caller rows"));
     console.error(c.dim("  open meshes have no service registry; sign in and grant the required user capability, or use a static-auth mesh"));
@@ -72,9 +73,12 @@ export async function describeCmd(args: ParsedArgs): Promise<void> {
     console.error(c.red("✗ usage: cotal describe <endpoint>"));
     process.exit(1);
   }
-  const { nc, space, auth } = await epConnection(args.values, "control-caller-privileged");
+  const { nc, space, auth } = await epConnection(args.values, "control-caller-privileged", endpoint);
   try {
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000 });
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {
+      deadlineMs: 10_000,
+      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
+    });
     console.log(`${c.bold(service.endpoint)}  ${c.dim(`owner ${service.owner} · instance ${service.responder.instanceId} · epoch ${service.responder.epoch}`)}`);
     const rows = [...service.commands.values()].sort((a, b) => a.command.localeCompare(b.command));
     const nameW = Math.max(...rows.map((r) => r.command.length));
@@ -110,9 +114,12 @@ export async function invokeCmd(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
   }
-  const { nc, space, auth } = await epConnection(args.values, v.admin === true ? "control-caller-admin" : "control-caller-privileged");
+  const { nc, space, auth } = await epConnection(args.values, v.admin === true ? "control-caller-admin" : "control-caller-privileged", endpoint);
   try {
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000 });
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {
+      deadlineMs: 10_000,
+      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
+    });
     const target = await resolveTarget(nc, space, service, v);
     const deadlineMs = v.timeout !== undefined ? Number(v.timeout) : 10_000;
     if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {

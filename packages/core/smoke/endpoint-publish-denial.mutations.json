@@ -10,8 +10,8 @@
     {
       "name": "epCall never races the publish-denial watch, so a refused publish waits out the budget",
       "file": "packages/core/src/endpoint-verbs.ts",
-      "find": "    const msg = await Promise.race([outcome, timeout, denialWatch.denied]);",
-      "replace": "    denialWatch.denied.catch(() => {});\n    const msg = await Promise.race([outcome, timeout]);",
+      "find": "    const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);",
+      "replace": "    denialWatch.denied.catch(() => {});\n    const msg = await Promise.race([outcome, timeout, cancelled]);",
       "expectRed": "invoke is permission-denied, NOT a deadline",
       "cell": "invoke is permission-denied, NOT a deadline"
     },

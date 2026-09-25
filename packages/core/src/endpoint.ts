@@ -22,7 +22,8 @@ import {
   parseSecretStoreIdentity,
   type SecretStoreIdentity,
 } from "./secret-store.js";
-import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
+import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
+import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
@@ -613,6 +614,9 @@ export class CotalEndpoint extends EventEmitter {
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
+   *  and connection replacement / reconnect can trigger reconciliation. */
+  private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
   /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) — the
    *  class-queue splits this endpoint hit and survived.
    *
@@ -1414,6 +1418,11 @@ export class CotalEndpoint extends EventEmitter {
     // Shared-line reasoning is no longer the rebuild proof.
     if (this.stopped) return;
     this.emit("connection", { connected: true });
+    if (this.nc) {
+      for (const follower of this.activeGoalFollowers) {
+        follower.reconnected(this.nc);
+      }
+    }
   }
 
   /** Tear down everything {@link connectAndBind} (re)creates, so a rebind can't leak a
@@ -1757,6 +1766,10 @@ export class CotalEndpoint extends EventEmitter {
     if (this.stopped) return;
     if (this.nc) this.disableLibraryReconnect(this.nc);
     this.stopped = true;
+    for (const follower of this.activeGoalFollowers) {
+      follower.cancel();
+    }
+    this.activeGoalFollowers.clear();
     this.presenceEpoch++;
     this.presenceRebind = undefined;
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
@@ -2233,6 +2246,55 @@ export class CotalEndpoint extends EventEmitter {
     return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
 
+  /** Follow this caller's goal on its standing connection, subscribing before submission.
+   *  A submitter may use a separate short-lived control credential for the same caller triple;
+   *  the accepted action's readiness budget can outlive that credential. This endpoint retains
+   *  its existing credential renewal and caller-scoped progress grants. */
+  async followServiceGoal(
+    endpoint: string,
+    submit: (signal?: AbortSignal) => Promise<EpAttributedReply>,
+    deadlineMs = 10_000,
+    opts: Pick<SubmitAndFollowGoalOptions, "reconcile" | "signal"> = {},
+  ): Promise<EpAttributedReply> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    if (this.stopped) throw new Error("endpoint stopped - cannot follow goal");
+    const abortController = new AbortController();
+    const onAbort = () => abortController.abort();
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
+    let reconnectHandler: ((nc: NatsConnection) => void) | undefined;
+    const entry = {
+      cancel: () => abortController.abort(),
+      reconnected: (nc: NatsConnection) => reconnectHandler?.(nc),
+    };
+    this.activeGoalFollowers.add(entry);
+    try {
+      const reconcile: NonNullable<SubmitAndFollowGoalOptions["reconcile"]> = opts.reconcile ?? (async (goalId, _attributed, context) => {
+        const current = this.serviceCaller();
+        if (current.owner !== context.caller.owner || current.actor !== context.caller.actor || current.uid !== context.caller.uid)
+          throw new Error("the renewed goal reader no longer has the accepting caller's full identity");
+        // Static callers retain their authorized class route; knowing an instance id grants no rights.
+        const q = await this.invokeService(endpoint, "goal-result", { goalId }, {
+          deadlineMs: Math.min(deadlineMs, context.deadlineMs), signal: context.signal,
+        });
+        if (q.reply.ok !== true) throw new Error(q.reply.error?.message ?? "goal-result query refused");
+        return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+      });
+      return await submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
+        reconcile,
+        currentNc: () => this.nc,
+        onReconnect: (cb) => {
+          reconnectHandler = cb;
+          return () => { reconnectHandler = undefined; };
+        },
+        signal: abortController.signal,
+      });
+    } finally {
+      opts.signal?.removeEventListener("abort", onAbort);
+      this.activeGoalFollowers.delete(entry);
+    }
+  }
+
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
@@ -2256,22 +2318,37 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal } = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
     const caller = this.serviceCaller();
-    const resolve = async (): Promise<ResolvedService> => {
+    const resolve = async (signal = opts.signal): Promise<ResolvedService> => {
+      signal?.throwIfAborted();
       const cached = this.resolvedServices.get(endpoint);
       if (cached) return cached;
-      const svc = await resolveService(nc, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000 });
+      const svc = await resolveService(nc, this.space, endpoint, caller, { deadlineMs: opts.deadlineMs ?? 10_000, signal });
       this.resolvedServices.set(endpoint, svc);
       return svc;
     };
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
-    const doInvoke = async (): Promise<EpAttributedReply> => {
+    const invokeResolved = (service: ResolvedService, signal?: AbortSignal): Promise<EpAttributedReply> => {
+      signal?.throwIfAborted();
+      if (opts.follow && !service.commands.has("goal-result")) {
+        return Promise.resolve({
+          reply: { v: 1, id: randomUUID(), ok: false, error: {
+            code: "failed-precondition", outcome: "not-executed",
+            message: `endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
+          } },
+          responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
+        });
+      }
+      return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, signal });
+    };
+    const doInvoke = async (signal = opts.signal): Promise<EpAttributedReply> => {
+      signal?.throwIfAborted();
       try {
-        const r = await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        const r = await invokeResolved(await resolve(signal), signal);
         // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
         // was bound to a different incarnation and refused BEFORE running the command.
         //
@@ -2321,7 +2398,10 @@ export class CotalEndpoint extends EventEmitter {
           // the fence's marker does: a responder answered and the effect may have landed.
           let reissueTarget;
           try {
-            reissueTarget = await resolve();
+            reissueTarget = await resolve(signal);
+            if (opts.follow && !reissueTarget.commands.has("goal-result")) {
+              throw new Error(`endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`);
+            }
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
@@ -2334,7 +2414,7 @@ export class CotalEndpoint extends EventEmitter {
               "not-executed",
             );
           }
-          return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);
+          return await invokeResolved(reissueTarget, signal);
         }
         return r;
       } catch (e) {
@@ -2368,7 +2448,7 @@ export class CotalEndpoint extends EventEmitter {
           // next call is the caller's, made after it has verified.
           this.resolvedServices.delete(endpoint);
           if (!isRepeatSafeCommand(endpoint, command)) throw e;
-          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+          return await invokeResolved(await resolve(signal), signal);
         }
         // An UNMARKED `failed-precondition` is the resolve's own refusal, raised before any command
         // was published, so re-resolving once is a repair. The `replyRefusedBeforeEffect` half keeps
@@ -2378,13 +2458,13 @@ export class CotalEndpoint extends EventEmitter {
         // whichever code carries it.
         if (e.code !== "failed-precondition" || replyRefusedBeforeEffect(e.toEpError())) throw e;
         this.resolvedServices.delete(endpoint);
-        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        return await invokeResolved(await resolve(signal), signal);
       }
     };
     // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
     // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
     if (!opts.follow) return doInvoke();
-    return submitAndFollowGoal(nc, this.space, endpoint, caller, opts.deadlineMs ?? 10_000, doInvoke);
+    return this.followServiceGoal(endpoint, doInvoke, opts.deadlineMs ?? 10_000, { signal: opts.signal });
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
@@ -3421,6 +3501,9 @@ export class CotalEndpoint extends EventEmitter {
         if (s.type === "reconnect") {
           this.armAuthExpiryReconnectFence(nc);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
+          for (const follower of this.activeGoalFollowers) {
+            follower.reconnected(nc);
+          }
           continue;
         }
         if (s.type === "close") {

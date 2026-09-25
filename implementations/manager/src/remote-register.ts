@@ -16,6 +16,8 @@ import {
   registerServiceInstance,
   serveIssuanceGateKv,
   standaloneConnectOpts,
+  SERVICE_READY,
+  writeServiceStatus,
   type RemoteManagerAuthorityMaterial,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
@@ -108,6 +110,21 @@ export async function registerRemoteManagerAuthority(args: {
         return current.processEpoch;
       },
       readClusterArtifact,
+    });
+    await writeServiceStatus(recordsKv, {
+      endpoint: MANAGER_ENDPOINT,
+      instanceId: args.instanceId,
+      epoch: observed.processEpoch,
+      status: {
+        state: SERVICE_READY,
+        epoch: observed.processEpoch,
+        observedSpecRevision: observed.registrationRevision,
+      },
+      readProcessEpoch: async () => {
+        const current = await fence.observe();
+        if (!current) throw new Error("remote manager issuance gate vanished");
+        return current.processEpoch;
+      },
     });
     return { registrationRevision: observed.registrationRevision, processEpoch: observed.processEpoch, serveGrant };
   } finally {

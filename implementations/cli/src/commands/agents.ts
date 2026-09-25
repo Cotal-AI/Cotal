@@ -166,10 +166,10 @@ export async function locateSeat(
   name: string,
   opts: { onRefusal?: "exit" | "throw" } = {},
 ): Promise<SeatLocation> {
-  // USER mode cannot do this: a ledger-scoped bearer does not hold the freeze rows, so a scatter
-  // dies on a permissions violation that reads as "no manager". Left unpinned — `--on` stays the
-  // manual escape hatch there, and docs/cli.md says so rather than this failing mysteriously.
+  // User control authority selects one manager; it does not grant the registry reads needed
+  // to scatter. Carry that selection into the targeted command's fresh credential.
   const probe = await resolveControlTarget(v, "control-caller-privileged", undefined, opts);
+  if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
@@ -400,18 +400,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole
   // night in miniature.
   //
-  // USER MODE (bearer present): `ep.one` to one manager. The ledger-scoped bearer holds
-  // `ep.one.manager.ps` when scope includes `admin` (measured); it does NOT hold the freeze
-  // STREAM.INFO row, so a class scatter would die on a permissions violation that reads as
-  // "no manager". The manager answers from its in-memory roster with an owner filter — no
-  // privileged records read. Multi-manager completeness is not claimed (see docs/cli.md).
+  // USER MODE (bearer present): the borrowed manager view pins one authorized instance and keeps
+  // the actor's existing command scopes. It has no registry freeze rows and never scatters.
+  // The manager answers from its in-memory roster with an owner filter; this is not a complete
+  // multi-manager inventory (see docs/cli.md).
   //
   // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds
   // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
   // unreachable (pin 3).
   if (t.auth.bearer) {
-    // `ps` has `--on` and did not pass it on this branch (the pinned branch returned above), so a
-    // split may name it as the remedy: the pin is declared, empty.
+    // No explicit --on on this branch; askManager uses the issuer's concrete selection.
     const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];

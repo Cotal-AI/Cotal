@@ -567,6 +567,19 @@ const FINALIZE_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId", "durableCommitToken"],
   properties: { attemptId: { type: "string", minLength: 1 }, durableCommitToken: { type: "string", minLength: 1 } },
 } as const;
+const GOAL_RESULT_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 } },
+} as const;
+const GOAL_RESULT_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: {
+    goalId: { type: "string", minLength: 1 },
+    // Core validates the canonical fact before mediation; absence means no recorded terminal.
+    result: { type: "object" },
+  },
+} as const;
+
 const OPEN_OBJECT_SCHEMA = { type: "object" } as const;
 const COMMIT_RESUME_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId", "state", "durableCommitToken"],
@@ -727,6 +740,7 @@ const ROWS: CommandRow[] = [
   { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
   { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
+  { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
   { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
   { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
@@ -863,7 +877,10 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  without gaining any untargeted run command.
  *
  *  17 = `resolve-cwd` lets a caller ask one manager instance to canonicalize an absolute existing
- *  directory before a placed workflow spawn launches there. */
+ *  directory before a placed workflow spawn launches there.
+ *
+ *  18 = `goal-result` mediates a caller's own canonical terminal through the manager's trusted
+ *  goal-writer, so a result remains observable after the caller's connection is replaced. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -881,7 +898,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 17,
+    revision: 18,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -955,6 +972,7 @@ export interface ManagerServiceHandlers {
   runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
   runStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
+  goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
   showPersona(ctx: EpServeContext): unknown | Promise<unknown>;

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AgentHandle, AttachSession, LaunchSpec, RuntimeReference } from "@cotal-ai/core";
 import type { CustodialRuntime, RuntimeReapEvidence } from "./index.js";
-import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport } from "@cotal-ai/seat";
+import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport, type SeatRecord } from "@cotal-ai/seat";
 
 function defaultCustodyRoot(): string {
   return join(homedir(), ".cotal", "seats");
@@ -18,6 +18,14 @@ function defaultCustodyRoot(): string {
 export class CustodialPtyRuntime implements CustodialRuntime {
   readonly kind = "pty" as const;
   readonly supportsRelease = true;
+  /**
+   * Private cache of active SeatRecords keyed by custody reference id, populated on spawn and adopt
+   * and pruned on reap or release. When a managed seat cleanly exits, its custodian unlinks the
+   * on-disk custody file; this pinned record allows reapSeat to prove the kernel start identities and
+   * process group are gone without requiring the file to linger. An unadopted reference without a
+   * pinned record falls back to fail-closed absent handling (RuntimeReapUnproven).
+   */
+  private readonly records = new Map<string, SeatRecord>();
 
   constructor(private readonly root: string = process.env.COTAL_SEAT_ROOT ?? defaultCustodyRoot()) {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -42,21 +50,40 @@ export class CustodialPtyRuntime implements CustodialRuntime {
       cwd,
       ...(reference ? { id: reference.id } : {}),
     });
+    this.records.set(rec.id, rec);
     const seat = adoptSeatSync(rec);
-    return { ...seat, release: () => seat.close() } as AgentHandle;
+    return {
+      ...seat,
+      release: () => {
+        this.records.delete(rec.id);
+        seat.close();
+      },
+    } as AgentHandle;
   }
 
   adopt(reference: RuntimeReference): AgentHandle {
     if (process.platform !== "linux") throw unsupportedTransport();
     if (reference.kind !== "pty") throw new Error(`cannot adopt runtime kind "${reference.kind}" with pty`);
-    const seat = adoptSeatSync(loadSeat(this.root, reference.id));
-    return { ...seat, release: () => seat.close() } as AgentHandle;
+    const rec = loadSeat(this.root, reference.id);
+    this.records.set(rec.id, rec);
+    const seat = adoptSeatSync(rec);
+    return {
+      ...seat,
+      release: () => {
+        this.records.delete(rec.id);
+        seat.close();
+      },
+    } as AgentHandle;
   }
 
   async reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> {
     if (process.platform !== "linux") throw unsupportedTransport();
     if (reference.kind !== "pty") throw new Error(`cannot reap runtime kind "${reference.kind}" with pty`);
-    const evidence = await reapSeat(this.root, reference.id);
+    const pinnedRecord = this.records.get(reference.id);
+    const evidence = await reapSeat(this.root, reference.id, { pinnedRecord });
+    if (evidence.outcome === "reaped") {
+      this.records.delete(reference.id);
+    }
     return evidence.outcome === "absent" ? { outcome: "absent" } : { outcome: "reaped", detail: evidence.detail };
   }
 }

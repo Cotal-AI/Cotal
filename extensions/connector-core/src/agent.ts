@@ -28,8 +28,10 @@ import {
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
+  type GoalResultFact,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
+import { invokeUserManager } from "./manager-call.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -78,9 +80,9 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 /** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
  *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
  *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-function execBearerCmd(argv: string[]): Promise<string> {
+function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+    execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr.trim() || err.message));
       const bearer = stdout.trim();
       if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
@@ -1501,7 +1503,43 @@ export class MeshAgent extends EventEmitter {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     try {
-      r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
+      const input = clean && Object.keys(clean).length ? clean : undefined;
+      if (this.config.userAuth) {
+        const submit = async (signal?: AbortSignal) => {
+          const bearer = await execBearerCmd([
+            ...this.config.userAuth!.bearerCmd,
+            "--manager-call",
+            ...(this.config.managerInstanceId ? ["--manager-instance", this.config.managerInstanceId] : []),
+          ], signal);
+          return invokeUserManager(this.config, bearer, command, input, { ...opts, signal });
+        };
+        // Subscribe before submission on the renewing main connection. A long accepted launch
+        // must not inherit the short-lived control credential's expiry.
+        r = opts.follow
+          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
+              reconcile: async (goalId, attributed, context) => {
+                const instanceId = attributed.responder?.instanceId;
+                if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
+                const bearer = await execBearerCmd([
+                  ...this.config.userAuth!.bearerCmd,
+                  "--manager-call", "--manager-instance", instanceId,
+                ], context.signal, Math.min(30_000, context.deadlineMs));
+                // Validate the renewed bearer against the accepting identity, not mutable session state.
+                const config = {
+                  ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
+                  userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
+                };
+                const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
+                  signal: context.signal, deadlineMs: Math.min(opts.deadlineMs ?? 10_000, context.deadlineMs),
+                });
+                if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
+                return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+              },
+            })
+          : await submit();
+      } else {
+        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
+      }
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
       // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the

@@ -221,11 +221,12 @@ The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exc
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must
-match a fresh managed-ledger row. The public face mints only two elevated views, both still
-gated on ledger scope `admin`: `channel-writer` (`cotal channels set/default`) and
-`channel-purger` (the dashboard's per-click channel delete). God-view (`admin`), space-history
-`purger`, `deployer`, and `manager-service` stay loopback-only. A managed-agent secret exchange
-never mints a view on either face. This is not full remote channel management: `cotal web` still
+match a fresh managed-ledger row. The public face mints two elevated views, both still gated on
+ledger scope `admin`: `channel-writer` (`cotal channels set/default`) and `channel-purger` (the
+dashboard's per-click channel delete). It also mints the narrowing `manager-caller` view for humans
+or managed agents. That view adds no capability and binds the bearer to one live registered manager
+instance. God-view (`admin`), space-history `purger`, `deployer`, and `manager-service` stay
+loopback-only. A managed-agent secret exchange refuses every other view. This is not full remote channel management: `cotal web` still
 mints the read-only admin view at startup, so a remote dashboard that needs that god-view still
 fails even when a later delete would mint `channel-purger`.
 
@@ -370,12 +371,13 @@ connection as the matching non-agent profile instead of `agent`. `cotal web` and
 `cotal console` ask for the read-only admin view, `clean history` for the purger,
 `channels set/default` for the channel-writer (all gated on ledger scope `admin`);
 `up -f` deploys over the deployer view, gated on `spawn`, because deploying your own team
-is spawn-grade (the manager still refuses a manifest claiming another owner). Views exist
-only on a signed-in human exchange (an agent's managed exchange never mints one), are
-authorized against the fresh ledger row at every connect, and expire with the bearer, so
-narrowing or revoking a grant bites within minutes here too. On the public exchange face only
-`channel-writer` and `channel-purger` are served; `admin`, `purger`, `deployer`, and
-`manager-service` remain loopback-only.
+is spawn-grade (the manager still refuses a manifest claiming another owner). Elevated views exist
+only on a signed-in human exchange. The `manager-caller` view is the one managed-exchange exception
+because it narrows the agent's existing manager command set to one server-selected instance and adds
+no capability. All views are authorized against the fresh ledger row at every connect and expire
+with the bearer, so narrowing or revoking a grant bites within minutes here too. On the public
+exchange face only `channel-writer`, `channel-purger`, and `manager-caller` are served; `admin`,
+`purger`, `deployer`, and `manager-service` remain loopback-only.
 
 ### Remote manager authority
 

@@ -275,8 +275,13 @@ ordinary derived owner, a fixed server-selected manager actor, and one opaque ma
 The host, not the participant, issues the public-nkey JWT material via the replay-safe,
 lifecycle-bound prepare → activate → renew exchange, plus a one-shot target-pinned retirement
 request for a host-managed terminal. It never exports the space signer, a static
-provisioner credential, or generic storage authority. The manager may provision only descendants
-of that same owner, with host validation at each provision.
+provisioner credential, or generic storage authority. Remote registration publishes its service
+status at the registered revision and current process epoch, so manager-caller selection can find it.
+
+Stock participant supervision does not yet implement host-backed managed-agent enrollment or
+terminal release. Successful remote detached spawning requires a host composition for those
+operations; copying host secrets or actor-ledger files to a participant is not supported. Foreground
+spawning and operator-local hosted managers use their existing paths.
 
 The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
 dialed as a websocket. The manager-authority registration it runs first also takes its TLS
