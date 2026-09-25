@@ -43,8 +43,8 @@
     {
       "name": "S4 make the explicit core from-zero door silently adopt at the current end",
       "file": "extensions/connector-core/src/durable-source.ts",
-      "find": "    return this.read(cursor);\n  }\n\n  async read(cursor: string | undefined)",
-      "replace": "    return this.read(undefined);\n  }\n\n  async read(cursor: string | undefined)",
+      "find": "    return this.read(cursor);",
+      "replace": "    return this.read(undefined);",
       "expectRed": "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart",
       "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-start-source",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
