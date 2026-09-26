@@ -381,7 +381,7 @@ async function dm(peer: string, text: string, ep: CotalEndpoint = operator): Pro
 /** The events channel of a peer, derived from its principal exactly as the connector declares it. */
 async function joinEventsOf(peer: string, ep: CotalEndpoint = operator): Promise<string> {
   const seen = await settle(`roster:${peer}`, () => ep.getRoster().some((p) => p.card.name === peer));
-  check(`setup:${peer} joined the mesh`, seen);
+  check(`setup:${peer} joined the mesh`, seen, margin(`roster:${peer}`));
   const id = ep.getRoster().find((p) => p.card.name === peer)?.card.id ?? "";
   if (id === "") return "";
   const dot = id.indexOf(".");
@@ -409,7 +409,7 @@ try {
 
   await dm(A, "first turn");
   const published = await settle("A:first RUN_FINISHED", () => evTypes().includes("RUN_FINISHED"));
-  check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length });
+  check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length, ...margin("A:first RUN_FINISHED") });
   if (
     prerequisiteHeld(published, "the first bind", [
       "and the run it published opened and closed",
@@ -443,7 +443,7 @@ try {
   const survived = await settle("A:frames from the restarted thread", () => frames.length > framesBefore && threadsSeen().length > 1);
   const threadB = threadsSeen().find((t) => t !== threadA);
   check("the restarted app-server really is a NEW thread", threadB !== undefined && threadB !== threadA, threadsSeen());
-  check("the plane KEEPS PUBLISHING after the restart", survived && frames.some((f) => f.threadId === threadB), { threadB, survived });
+  check("the plane KEEPS PUBLISHING after the restart", survived && frames.some((f) => f.threadId === threadB), { threadB, survived, ...margin("A:frames from the restarted thread") });
   // The drain is not decoration: an observer left holding a run that never ends cannot tell a busy
   // agent from a dead one, and nothing later in this process will ever close it.
   check("and no run the dead thread opened was left open", openRuns().every((r) => !frames.some((f) => f.runId === r && f.threadId === threadA)), {
@@ -469,6 +469,8 @@ try {
   check("a mid-turn exit CLOSES the run it left open", opened && drained && openRuns().length === 0, {
     wasOpen: openAtExit,
     stillOpen: openRuns(),
+    opened: margin("A:a run is open mid-turn"),
+    closed: margin("A:the open run closes at exit"),
   });
   check("and there was a run to close, so the cell is not vacuous", openAtExit.length > 0, { openAtExit });
   }
@@ -509,6 +511,7 @@ try {
   const bound = await settle("B:binds once the file appears", () => errB.includes("the stream starts here"));
   check("a rollout that appeared AFTER the launch gave up still binds", bound, {
     tail: errB.slice(-200),
+    ...margin("B:binds once the file appears"),
   });
   if (
     prerequisiteHeld(bound, "the late-file bind", [
@@ -590,7 +593,7 @@ try {
     // Without the first thread's frames there is no dead thread to drain, announce, or move off
     // of, and every wait below would spend its budget on a successor nothing established.
   const cGaveUp = await settle("C:gives up on the successor file", () => errC.includes("no rollout file yet"), 60_000);
-  check("restart-late:the successor's rollout was still missing when the bind looked", cGaveUp, { tail: errC.slice(-300) });
+  check("restart-late:the successor's rollout was still missing when the bind looked", cGaveUp, { tail: errC.slice(-300), ...margin("C:gives up on the successor file") });
   // GIVING UP ON THE SUCCESSOR SAYS NOTHING ABOUT THE PREDECESSOR, whose process is dead: no record
   // will ever be appended to its file again, and a run left open on the wire is a reader waiting
   // forever for an end that cannot come. So the close belongs HERE, at the give-up, and not only on
@@ -599,6 +602,7 @@ try {
   const deadClosed = await settle("C:the predecessor run closes", () => openRunsIn(frames.slice(cFrom)).length === 0, 20_000);
   check("restart-late:the dead thread's run was CLOSED when the plane gave up on its successor", deadClosed, {
     open: openRunsIn(frames.slice(cFrom)),
+    ...margin("C:the predecessor run closes"),
   });
   // THE CONTROL, from the dead thread's own file: the crash lands mid-turn, so the file itself
   // carries a `task_started` with no `task_complete`. The close on the wire therefore cannot have
@@ -657,6 +661,7 @@ try {
   check("restart-late:the successor thread PUBLISHES once its file appears", moved, {
     threads: [...new Set(frames.slice(cFrom).map((f) => f.threadId))],
     tail: errC.slice(-300),
+    ...margin("C:the successor publishes"),
   });
   await dm(C, "successor turn three");
   // NAMED, because the three cells below all read `cFrames`, and a silent expiry leaves them
@@ -847,7 +852,7 @@ try {
     path: rolloutD,
   });
   const emitterDied = await settle("D:the emitter dies during the outage", () => errD.includes("AG-UI emitter stopped"), 60_000);
-  check("broker-outage:the armed seat LOSES its emitter when the broker drops", emitterDied, { tail: errD.slice(-400) });
+  check("broker-outage:the armed seat LOSES its emitter when the broker drops", emitterDied, { tail: errD.slice(-400), ...margin("D:the emitter dies during the outage") });
 
   const firstRestartAt = Date.now();
   const broker2Restarted = await startBroker2();
@@ -1682,7 +1687,7 @@ check(
   seatPids.length >= 5 && aliveBeforeTeardown.length === seatPids.length - stoppedOnPurpose.size,
   { started: seatPids.length, stoppedOnPurpose: stoppedOnPurpose.size, alive: aliveBeforeTeardown.length },
 );
-check("teardown:and not one of their process groups survived it", groupsGoneDuringTeardown, { still: seatPids.filter(alive) });
+check("teardown:and not one of their process groups survived it", groupsGoneDuringTeardown, { still: seatPids.filter(alive), ...margin("teardown:process groups gone") });
 check("teardown:the owned brokers exited before the store was touched", brokersExitedBeforeRemoval, {
   primary: { exitCode: nats.exitCode, signalCode: nats.signalCode },
   secondary: nats2 === undefined ? undefined : { exitCode: nats2.exitCode, signalCode: nats2.signalCode },
