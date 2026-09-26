@@ -216,66 +216,91 @@ try {
   {
     const foreign = endpoint();
     await foreign.start();
-    await foreign.multicastExpecting({
-      channel: `events.${PRINCIPAL}`,
-      parts: [{ kind: "text", text: "a body this emitter did not write" }],
-      id: randomUUID(),
-      expectedLastSubjectSeq: s3.tip,
-    });
-    await foreign.stop().catch(() => {});
 
-    const s4 = await session("ses_four");
-    c("control:a-FOREIGN-writer-on-our-subject-still-HALTS", s4.err !== undefined && /subject tip is no longer/.test(s4.err ?? ""), s4);
-    c("control:the-halt-names-a-CONCURRENT-emitter-under-this-principal", /CONCURRENT emitter/.test(s4.err ?? ""), s4.err);
-    c("control:the-halt-also-names-a-DISAGREEING-record-which-is-the-new-cause", /frontier record that disagrees/.test(s4.err ?? ""), s4.err);
+    // THE SUITE MUST NOT HAND ITS OWN SENTINEL TO THE ENDPOINT. `session()` returns `tip: -1` when
+    // an earlier block already halted the principal, and `multicastExpecting` correctly refuses a
+    // negative sequence at the wire boundary. Forwarding that refusal unguarded turns a red,
+    // correctly-named cell above into an uncaught throw here, which skips every remaining cell in
+    // this block and the completion banner with it. A corrupted expectation must fail an assertion
+    // instead, so a mutation that reddens session-2 or session-3 above is still graded on the cells
+    // below rather than erased by a crash neither cell asked for.
+    const s3TipIsUsable = Number.isSafeInteger(s3.tip) && s3.tip >= 0;
+    c("control:the-foreign-write-is-only-ATTEMPTED-when-session-3-LEFT-A-USABLE-TIP", s3TipIsUsable, s3);
 
-    // The message may not assert a guard that does not hold, and it may not invent holes in one
-    // that does. A per-principal lock DOES exist (`acquirePrincipalLock`, taken by
-    // `ensureEventWalDir` on the shipped connector path), so naming it is honest; claiming it
-    // PREVENTS this is not, because its FILE lives under a workspace root, so a second emitter
-    // started against a different root, or by a path that never takes the lock, meets no lock at
-    // all. Another host and a stale pid are NOT holes: `reclaimIfOwnerIsGone` refuses both, so the
-    // second emitter never starts. This comment said otherwise in an earlier version, which is why
-    // it is spelled out here rather than left to the reader.
-    //
-    // Three requirements, and the third is the one a later edit is most likely to break: the
-    // message may not claim the lock PREVENTS this, and it may not name a case that in fact
-    // REFUSES THE START. Another host and a stale pid are refusals, not ways past the lock, and a
-    // cause list that includes them sends an operator to look at machines instead of at roots.
-    c("control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
-      /lock refuses a second one/.test(s4.err ?? "") && /workspace root/.test(s4.err ?? "") &&
-      !/lock is meant to prevent/.test(s4.err ?? "") && !/two hosts/.test(s4.err ?? ""), s4.err);
+    if (s3TipIsUsable) {
+      await foreign.multicastExpecting({
+        channel: `events.${PRINCIPAL}`,
+        parts: [{ kind: "text", text: "a body this emitter did not write" }],
+        id: randomUUID(),
+        expectedLastSubjectSeq: s3.tip,
+      });
+      await foreign.stop().catch(() => {});
 
-    // A named remedy has to exist where it is named. Nothing in shipped code calls `abandon()`, so
-    // the halt cannot send an operator looking for a command; it has to hand them the directory.
-    // `includes(PRINCIPAL_DIR)` alone does NOT discriminate, and S9 proved it: a message naming
-    // `<PRINCIPAL_DIR>/<thread>/wal.json` contains the principal directory as a prefix and passes.
-    // Requiring the following word is better and still a prefix test, which a reviewer caught: a
-    // path ending `...principal wholeheartedly` satisfies it too. So the cell EXTRACTS the path the
-    // message names and compares it whole. A prefix test cannot decide where a path ends.
-    // Two things this pattern has to survive, both found by lenses rather than by me. `whole` alone
-    // is satisfied by a path ending `... wholeheartedly` or `... wholesale`, so the pattern pins the
-    // whole clause that follows rather than one word of it. And `\S+` drops any real workspace path
-    // containing a space, which would red this cell on a perfectly correct message; `.+?` with a
-    // pinned suffix takes the path as it is.
-    // ANCHORED ON THE REMEDY CLAUSE, not on the first `removing` in the message. An earlier version
-    // of this extractor keyed on `removing (.+?) whole`, and the moment the message gained a second
-    // `removing` ahead of the remedy ("so removing this state does not clear the halt") it captured
-    // from there and swept a sentence of prose into the path. A parser that assumes a word appears
-    // once is a parser the next edit to the message breaks, and the edit that broke it was the fix
-    // to the very sentence this cell exists to grade.
-    const located = /by hand it means removing (.+?) whole, and removing less/.exec(s4.err ?? "")?.[1];
-    c("control:the-halt-LOCATES-the-state-to-remove", located === PRINCIPAL_DIR, { located, dir: PRINCIPAL_DIR, err: s4.err });
+      const s4 = await session("ses_four");
+      c("control:a-FOREIGN-writer-on-our-subject-still-HALTS", s4.err !== undefined && /subject tip is no longer/.test(s4.err ?? ""), s4);
+      c("control:the-halt-names-a-CONCURRENT-emitter-under-this-principal", /CONCURRENT emitter/.test(s4.err ?? ""), s4.err);
+      c("control:the-halt-also-names-a-DISAGREEING-record-which-is-the-new-cause", /frontier record that disagrees/.test(s4.err ?? ""), s4.err);
 
-    // A LOCATED REMEDY IS NOT A VALID ONE. The cell above proves the message points where it says;
-    // it cannot tell you that following the instruction helps, and a cross-vendor lens executed it
-    // and found it does not. Removal abandons LOCAL state; it cannot move the broker's tip. So it
-    // clears the halt only when the subject is genuinely back to 0, which of the causes listed is
-    // true of the filtered purge alone. On any other cause the operator destroys the sibling logs a
-    // tip can be rebuilt from and gets the same halt back, which then recommends the same remedy.
-    c("control:the-halt-states-the-PRECONDITION-for-its-own-remedy",
-      /VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY/.test(s4.err ?? "") &&
-      /FILTERED PURGE alone/.test(s4.err ?? "") && /Purge the channel first/.test(s4.err ?? ""), s4.err);
+      // The message may not assert a guard that does not hold, and it may not invent holes in one
+      // that does. A per-principal lock DOES exist (`acquirePrincipalLock`, taken by
+      // `ensureEventWalDir` on the shipped connector path), so naming it is honest; claiming it
+      // PREVENTS this is not, because its FILE lives under a workspace root, so a second emitter
+      // started against a different root, or by a path that never takes the lock, meets no lock at
+      // all. Another host and a stale pid are NOT holes: `reclaimIfOwnerIsGone` refuses both, so the
+      // second emitter never starts. This comment said otherwise in an earlier version, which is why
+      // it is spelled out here rather than left to the reader.
+      //
+      // Three requirements, and the third is the one a later edit is most likely to break: the
+      // message may not claim the lock PREVENTS this, and it may not name a case that in fact
+      // REFUSES THE START. Another host and a stale pid are refusals, not ways past the lock, and a
+      // cause list that includes them sends an operator to look at machines instead of at roots.
+      c("control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
+        /lock refuses a second one/.test(s4.err ?? "") && /workspace root/.test(s4.err ?? "") &&
+        !/lock is meant to prevent/.test(s4.err ?? "") && !/two hosts/.test(s4.err ?? ""), s4.err);
+
+      // A named remedy has to exist where it is named. Nothing in shipped code calls `abandon()`, so
+      // the halt cannot send an operator looking for a command; it has to hand them the directory.
+      // `includes(PRINCIPAL_DIR)` alone does NOT discriminate, and S9 proved it: a message naming
+      // `<PRINCIPAL_DIR>/<thread>/wal.json` contains the principal directory as a prefix and passes.
+      // Requiring the following word is better and still a prefix test, which a reviewer caught: a
+      // path ending `...principal wholeheartedly` satisfies it too. So the cell EXTRACTS the path the
+      // message names and compares it whole. A prefix test cannot decide where a path ends.
+      // Two things this pattern has to survive, both found by lenses rather than by me. `whole` alone
+      // is satisfied by a path ending `... wholeheartedly` or `... wholesale`, so the pattern pins the
+      // whole clause that follows rather than one word of it. And `\S+` drops any real workspace path
+      // containing a space, which would red this cell on a perfectly correct message; `.+?` with a
+      // pinned suffix takes the path as it is.
+      // ANCHORED ON THE REMEDY CLAUSE, not on the first `removing` in the message. An earlier version
+      // of this extractor keyed on `removing (.+?) whole`, and the moment the message gained a second
+      // `removing` ahead of the remedy ("so removing this state does not clear the halt") it captured
+      // from there and swept a sentence of prose into the path. A parser that assumes a word appears
+      // once is a parser the next edit to the message breaks, and the edit that broke it was the fix
+      // to the very sentence this cell exists to grade.
+      const located = /by hand it means removing (.+?) whole, and removing less/.exec(s4.err ?? "")?.[1];
+      c("control:the-halt-LOCATES-the-state-to-remove", located === PRINCIPAL_DIR, { located, dir: PRINCIPAL_DIR, err: s4.err });
+
+      // A LOCATED REMEDY IS NOT A VALID ONE. The cell above proves the message points where it says;
+      // it cannot tell you that following the instruction helps, and a cross-vendor lens executed it
+      // and found it does not. Removal abandons LOCAL state; it cannot move the broker's tip. So it
+      // clears the halt only when the subject is genuinely back to 0, which of the causes listed is
+      // true of the filtered purge alone. On any other cause the operator destroys the sibling logs a
+      // tip can be rebuilt from and gets the same halt back, which then recommends the same remedy.
+      c("control:the-halt-states-the-PRECONDITION-for-its-own-remedy",
+        /VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY/.test(s4.err ?? "") &&
+        /FILTERED PURGE alone/.test(s4.err ?? "") && /Purge the channel first/.test(s4.err ?? ""), s4.err);
+    } else {
+      // THE FOREIGN WRITE IS NOT ATTEMPTED, so every cell below that would have graded ITS
+      // aftermath is reported red BY NAME rather than skipped. A skipped cell that reports nothing
+      // is a silent success; these six are cells a mutation that broke session 3 above DID reach,
+      // by breaking the prerequisite this block depends on, and they must say so in the count.
+      await foreign.stop().catch(() => {});
+      c("control:a-FOREIGN-writer-on-our-subject-still-HALTS", false, s3);
+      c("control:the-halt-names-a-CONCURRENT-emitter-under-this-principal", false, s3);
+      c("control:the-halt-also-names-a-DISAGREEING-record-which-is-the-new-cause", false, s3);
+      c("control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this", false, s3);
+      c("control:the-halt-LOCATES-the-state-to-remove", false, s3);
+      c("control:the-halt-states-the-PRECONDITION-for-its-own-remedy", false, s3);
+    }
   }
 
   // ------------------------------------------------------------------ THE REMEDY, EXECUTED
