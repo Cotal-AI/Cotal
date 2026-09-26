@@ -75,7 +75,9 @@ watching. See [transport.md](transport.md).
 
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
-holder's lease has not expired yet. `up` says so and exits non-zero instead of printing a healthy control plane over a
+holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
+as a denial naming the refused subject and operation, never as another daemon holding the lease.
+`up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
