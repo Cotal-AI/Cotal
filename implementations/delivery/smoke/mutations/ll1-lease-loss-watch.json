@@ -44,6 +44,16 @@
       "cell": "R4 a record for a different workspace root is refused before any dial, naming both roots",
       "note": "The refusal removed: R4's record names the suite's live broker under a different root, so the daemon dials it and comes up rather than exiting with both roots named; the cell times out on `done()` and its log never names the other root. R2 and R3 still pass (R2's record root matches; R3 refuses on --server first).",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the permission-denial branch is collapsed back into the conflict sentence (#374's own bug shape)",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "    } else if (isPermissionDenied(e)) {\n      const typed = e instanceof PermissionViolationError\n        ? e\n        : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError\n          ? (e as { cause: PermissionViolationError }).cause\n          : undefined;\n      const refused = typed\n        ? `${typed.operation} \"${typed.subject}\"`\n        : (e as Error).message;\n      console.error(\n        `✗ delivery: the lease write for shard ${shard} was refused (${refused}) — this credential ` +\n          `cannot write ${deliveryBucket(space)}.${leaseKey(shard)}. Not binding. Use a credential ` +\n          `holding the \"delivery\" profile.`,\n      );\n    } else {",
+      "replace": "    } else if (isPermissionDenied(e)) {\n      console.error(`✗ delivery: a live lease already exists for shard ${shard} — another delivery daemon is running. Not binding.`);\n    } else {",
+      "expectRed": "R6 the denial never says another daemon is running",
+      "cell": "R6 the denial never says another daemon is running",
+      "note": "The permission-denied branch's own message replaced with the CAS-loss conflict sentence, reproducing #374's original bug: a denial once again reports 'a live lease already exists ... another delivery daemon is running'. R6's other assertions (exit code, unwritten row) still pass since only the printed line changed, so only the two denial-content cells die.",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ],
   "why": [
