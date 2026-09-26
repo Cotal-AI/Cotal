@@ -12,7 +12,7 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, realpathSync, mkdirSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, realpathSync, mkdirSync, statSync, existsSync, chmodSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execSync, spawnSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -725,6 +725,116 @@ check("a restored file keeps its original mtime, not the time of the restore",
   { mtimeBefore, mtimeAfter, startedMs, movedMs: mtimeAfter - mtimeBefore });
 check("...and the content is unchanged too, so the time was not preserved by skipping the restore",
   readFileSync(timed, "utf8").includes("if (n > 10)"));
+
+// 10. #1337: the restore must not depend on the on-disk BACKUP surviving the run. A suite that
+// deletes the tool's own `.bak` (computed exactly as the tool computes it, under this suite's own
+// tmp directory) mid-run used to make `restore()` throw ENOENT, and the SAME throw from the catch's
+// own `restore()` call then escaped `proveOne` entirely: no verdict line, no exit status of the
+// tool's own, the process died with a raw stack, and the mutant stayed on disk. This is red at the
+// base for exactly that reason.
+writeFileSync(
+  join(root, "delete-backup-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "import { createHash } from 'node:crypto';",
+    "import { unlinkSync } from 'node:fs';",
+    "import { tmpdir } from 'node:os';",
+    "import { join, resolve } from 'node:path';",
+    "// Computed the way the tool computes it (mutation-proof.mjs, the `backup` assignment in proveOne).",
+    "const target = resolve(process.cwd(), 'src/impl.js');",
+    "const backup = join(tmpdir(), `mutation-proof-${createHash('sha1').update(target).digest('hex').slice(0, 12)}.bak`);",
+    "try { unlinkSync(backup); } catch {}",
+    "console.log('  ✓ admits a small value');",
+    "if (admit(5) !== true) { console.error('AssertionError: small values are admitted'); process.exit(1); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "if (admit(50) !== false) { console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+    "console.log('  ✓ done');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm delete-backup-fixture", { cwd: root });
+{
+  const impl = join(root, "src/impl.js");
+  const shaBaseline = shaOf(impl);
+  r = runTool([
+    "--command", `${process.execPath} delete-backup-suite.mjs`,
+    "--file", "src/impl.js",
+    "--find", "if (n > 10)\n    return false;",
+    "--replace", "if (false)\n    return false;",
+    "--expect-red", "oversized values are refused",
+  ]);
+  const out = stripAnsi(r.stdout);
+  check("a suite that deletes the tool's own backup mid-run still completes with a verdict, no stack trace",
+    r.status !== null && !(r.stderr ?? "").includes("at copyFileSync") && !(r.stderr ?? "").includes("at restore ("),
+    { status: r.status, signal: r.signal, stderr: (r.stderr ?? "").slice(-400) });
+  check("...and the run's own verdict is printed, KILLED (the in-memory restore does not change grading)",
+    verdictIs(out, "KILLED"), out.slice(-400));
+  check("...and the tree is exactly as it was, even though the on-disk backup was deleted",
+    execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "" && shaOf(impl) === shaBaseline);
+  check("...and no breadcrumb is left behind", breadcrumbsFor(root).length === 0,
+    breadcrumbsFor(root).map((entry) => entry.path));
+}
+
+// 11. #1337, the other half: a restore that CANNOT succeed (the target unwritable when restore()
+// runs) must not throw either. It must report ERROR, name the backup path, say the tree is still
+// mutated, and the process must exit non-zero with no stack trace on stderr — never the silent
+// mutant-left-behind crash this issue is about. This is red at the base too: the throw from
+// `copyFileSync` inside `restore()` escaped exactly the same way.
+writeFileSync(
+  join(root, "unwritable-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "import { chmodSync } from 'node:fs';",
+    "// Make the restore target unwritable BEFORE the tool's restore() runs, but ONLY under the mutant:",
+    "// the tool runs this suite once as the baseline and takes its backup afterwards, and a backup",
+    "// copied from a read-only file is read-only itself, which --recover then copies back over the",
+    "// target and leaves every later cell unable to write src/impl.js. Root ignores file permissions,",
+    "// so this cell only proves anything under a non-root uid; the fixture never runs as root here.",
+    "console.log('  ✓ admits a small value');",
+    "if (admit(5) !== true) { console.error('AssertionError: small values are admitted'); process.exit(1); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "if (admit(50) !== false) { chmodSync('src/impl.js', 0o444); console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+    "console.log('  ✓ done');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm unwritable-fixture", { cwd: root });
+{
+  const impl = join(root, "src/impl.js");
+  r = runTool([
+    "--command", `${process.execPath} unwritable-suite.mjs`,
+    "--file", "src/impl.js",
+    "--find", "if (n > 10)\n    return false;",
+    "--replace", "if (false)\n    return false;",
+    "--expect-red", "oversized values are refused",
+  ]);
+  // The cell itself restores the mode: a check() failure calls process.exit(1) from inside check(),
+  // which would otherwise skip this cleanup and leave every later cell unable to touch src/impl.js.
+  try { chmodSync(impl, 0o644); } catch {}
+  const out = stripAnsi(r.stdout);
+  const stderr = r.stderr ?? "";
+  check("a restore that cannot succeed reports exactly one ERROR verdict, not a crash",
+    out.split("\n").filter((l) => verdictIs(l + "\n", "ERROR")).length === 1, out.slice(-500));
+  check("...naming the backup path and that the tree is still mutated",
+    /backup at .*mutation-proof-.*\.bak/.test(out) && /still mutated/.test(out), out.slice(-500));
+  check("...with a non-zero exit and no stack trace on stderr",
+    r.status !== 0 && !stderr.includes("at copyFileSync") && !stderr.includes("at restore (") && !stderr.includes("at proveOne"),
+    { status: r.status, stderr: stderr.slice(-400) });
+  // Put the fixture back: the suite left the mutant in place (that is the point), so recover it the
+  // way an operator would, then confirm the tree really is clean again for the cells after this one.
+  execSync("git checkout -- src/impl.js", { cwd: root });
+  check("...and the scratch fixture itself is recoverable with plain git after the ERROR",
+    execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "");
+  // restore()'s catch above never reaches `clearBreadcrumb`/`rmSync(backup)` (the throw happens
+  // before either), so the on-disk breadcrumb and backup for src/impl.js are still sitting in
+  // tmpdir. Left alone they auto-recover — harmlessly, but noisily — on the very next tool
+  // invocation in this fixture tree, polluting a cell after this one with an unrelated "leftover
+  // breadcrumb" message. Clear them now with the tool's own recovery path, the way an operator
+  // finishing the cleanup would.
+  const rr = runTool(["--recover"]);
+  check("...and running --recover afterwards clears the stray breadcrumb and backup",
+    breadcrumbsFor(root).length === 0, breadcrumbsFor(root).map((entry) => entry.path));
+}
 
 // ---- the transcript echo attributes evidence to the RUN it came from, and keeps the cause ----
 //
