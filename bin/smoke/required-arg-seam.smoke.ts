@@ -2319,6 +2319,16 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { tls: undefined as any };\nconst alias = opts;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
   check("...while an untouched holder still reds, so mutability did not become a blanket",
     one(`const opts = { tls: undefined as any };\nconst n = 1;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...nor one KEPT in an array, whose element has no name for the alias rule to see",
+    one(`const opts = { tls: undefined as any };\nconst arr = [opts];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a property of another object, for the same reason",
+    one(`const opts = { tls: undefined as any };\nconst bag = { o: opts };\nbag.o.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a shorthand property, which captures the value under its own name",
+    one(`const opts = { tls: undefined as any };\nconst bag = { opts };\nbag.opts.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...while a SPREAD copy is not the object, so the holder is still answered from its declaration",
+    one(`const opts = { tls: undefined as any };\nconst copy = { ...opts };\ncopy.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...and an array spread of a holder that is never kept is the same copy",
+    one(`const opts = { tls: undefined as any };\nconst arr = [{ ...opts }];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   // The same text, reached through a NAME, is the same two facts spelled on two lines.
   check("a source NAMED and then taken apart is the text its declaration wrote",
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
