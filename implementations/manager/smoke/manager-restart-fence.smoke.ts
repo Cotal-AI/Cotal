@@ -73,7 +73,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; ep: SourceCotalEndpoint };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void>; ep: SourceCotalEndpoint };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -169,17 +169,35 @@ try {
 
   // ── restart: incarnation 2 (same root) ──
   // Issue #367: a renew already in flight when a clean stop begins must not leave the liveness
-  // lease key behind for the rest of the bucket TTL. Fire a renew and immediately stop without
-  // awaiting it first, exactly the race the triage timed against a live broker.
+  // lease key behind for the rest of the bucket TTL. The triage timed SIGTERM against the first
+  // renew tick; a suite cannot win that race by timing, so this cell manufactures the exact state
+  // the race produces: one `renewManagerLease` call performs TWO broker renews and reports the
+  // FIRST revision to the manager, so the broker's row ends one revision ahead of the manager's
+  // cached knowledge before `stop()` runs. A stop that releases at the cached revision (the
+  // mutation the bind-recovery fixture restores) now misses the row deterministically, not by luck.
+  const m1ep = M1.ep as unknown as { renewManagerLease: (info: unknown, revision: number) => Promise<number> };
+  const realRenew = m1ep.renewManagerLease.bind(m1ep);
+  let doubled = false;
+  m1ep.renewManagerLease = async (info, revision) => {
+    const second = await realRenew(info, await realRenew(info, revision));
+    doubled = true;
+    return second - 1;
+  };
   void M1.renewLease();
   await mgr.stop({ withAgents: true });
+  m1ep.renewManagerLease = realRenew;
+  check("...(a) prelude: the double renew really landed, row one revision past the cache", doubled, { doubled });
   const leaseAfterStop = await client.readOwnManagerLease(iid1);
   check("(a) a clean stop with a renew in flight still removes the lease key", leaseAfterStop === undefined, leaseAfterStop);
 
   // Cell (c) must run BEFORE the successor boots: the restarted incarnation legitimately re-holds
   // the same persisted instanceId, and this suite is one process, so a renew fired after that would
   // read back the successor's own live key rather than proving anything about the stopped one.
+  // Two fences make (c), and the fixture breaks them one at a time: `renewLease()` exercises the
+  // entry fence keyed on the stop flag, and `renewLeaseAttempt()` exercises the renew body itself,
+  // whose `gone` arm is the one a removed fence (the fixture's other entry) lets re-acquire.
   await M1.renewLease();
+  await M1.renewLeaseAttempt();
   const leaseAfterLateRenew = await client.readOwnManagerLease(iid1);
   check("(c) a renew that runs after the stop does not put the key back", leaseAfterLateRenew === undefined, leaseAfterLateRenew);
 
