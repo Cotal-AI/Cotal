@@ -47,10 +47,11 @@ import {
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
   instancePinnedInstrumentCapabilities, respondedButUnbound, replyRefusedBeforeEffect, EP_UNBOUND_RESPONDER, CotalEndpoint,
-  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, parseEpSubject,
+  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, parseEpSubject, EP_BIND_REFUSED,
   type EpCaller,
   type ResolvedService,
   type EpError,
+  type EpBindRefusedDetail,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh, connectOrThrow } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -90,7 +91,13 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  behaviour it is, which is exactly what happened: cell 7's warm-up was written as a bare single
  *  call and went red on an otherwise green sweep. Shared, so the next cell that needs a warm read
  *  cannot quietly reintroduce it. The tolerance is explicit and bounded; it is not a retry loop
- *  hiding a failure, because a genuine break exhausts all six attempts and still reports. */
+ *  hiding a failure, because a genuine break exhausts all six attempts and still reports.
+ *
+ *  Between attempts the helper now drops its own cached resolve for a refused reply, so the next
+ *  attempt resolves the endpoint again instead of repeating the bind that just lost the class
+ *  queue. Six exhausted attempts are therefore six independent resolutions, not one wrong bind
+ *  retried six times, so the genuine break argument holds by that mechanism and not by assertion
+ *  alone. */
 /** PUB count on the endpoint's own connection: the direct witness for "nothing was re-issued".
  *  One invoke on a cached resolve is exactly ONE publish; the self-heal path re-resolves (a
  *  describe plus the contract-store reads behind it) and invokes again, so it is many. Read before
@@ -148,19 +155,44 @@ const dispositionAgrees = (
   ranDelta: number,
 ): boolean => ranDelta === (replyRefusedBeforeEffect(reply?.error) ? 0 : 1);
 
+/** One `readTolerant` attempt's cache and refusal state, printed on the failure line so a CI log
+ *  shows whether the bind changed between attempts rather than only the last error (issue #1379).
+ *  `boundTo`/`servedBy` come from a surfaced `ai.cotal.ep.bind-refused` detail; absent on success
+ *  or on a thrown error that carried no such detail. */
+type ReadTolerantAttempt = {
+  attempt: number; boundTo?: string; servedBy?: string; cacheBefore?: string; cacheAfter?: string;
+};
+
 const readTolerant = async (
   ep: CotalEndpoint, label: string, attempts = 6,
-): Promise<{ ok: boolean; tries: number; last?: unknown }> => {
+): Promise<{ ok: boolean; tries: number; last?: unknown; perAttempt: ReadTolerantAttempt[] }> => {
   let last: unknown;
+  const perAttempt: ReadTolerantAttempt[] = [];
+  const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
   for (let i = 1; i <= attempts; i++) {
+    const cacheBefore = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "ps");
-      if (r.reply.ok === true) return { ok: true, tries: i };
+      if (r.reply.ok === true) return { ok: true, tries: i, perAttempt };
       last = r.reply.error;
-    } catch (e) { last = e instanceof Error ? e.message.slice(0, 120) : e; }
+      const detail = (r.reply.error?.details ?? []).find(
+        (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
+      );
+      // The reply refused before any effect ran, so the bind that just lost the class queue is
+      // still what this cache names. Drop it so the next attempt resolves the endpoint again
+      // instead of repeating the same wrong bind (issue #1379).
+      cache.delete(MANAGER_ENDPOINT);
+      perAttempt.push({
+        attempt: i, boundTo: detail?.boundTo.instanceId, servedBy: detail?.servedBy.instanceId,
+        cacheBefore, cacheAfter: cache.get(MANAGER_ENDPOINT)?.responder.instanceId,
+      });
+    } catch (e) {
+      last = e instanceof Error ? e.message.slice(0, 120) : e;
+      perAttempt.push({ attempt: i, cacheBefore, cacheAfter: cache.get(MANAGER_ENDPOINT)?.responder.instanceId });
+    }
   }
-  console.log(`   ${label}: no success in ${attempts} attempts`);
-  return { ok: false, tries: attempts, last };
+  console.log(`   ${label}: no success in ${attempts} attempts`, JSON.stringify(perAttempt));
+  return { ok: false, tries: attempts, last, perAttempt };
 };
 
 const space = `pin-${randomUUID().slice(0, 8)}`;
