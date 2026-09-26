@@ -18,8 +18,8 @@
     {
       "name": "dirty-root refusal no longer names the clean root requirement",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    console.error(\"mutation reproof: UNMEASURED — root must be clean and checked out at the requested head before comparison\");",
-      "replace": "    console.error(\"mutation reproof: UNMEASURED — root check failed\");",
+      "find": "    console.error(\"mutation reproof: UNMEASURED \u2014 root must be clean and checked out at the requested head before comparison\");",
+      "replace": "    console.error(\"mutation reproof: UNMEASURED \u2014 root check failed\");",
       "expectRed": "the dirty-root refusal output is unchanged",
       "cell": "the dirty-root refusal output is unchanged"
     },
@@ -358,6 +358,30 @@
       "find": "${unable.length ? `; not attributable to (could not discriminate): ${unable.join(\", \")}` : \"\"}",
       "replace": "",
       "expectRed": "the ordinary arm names the fixtures it is not attributing the miss to, disjoint from the ones it expected"
+    },
+    {
+      "name": "the instability probe never re-runs the command, so an unstable signature is called contamination",
+      "cell": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    entry = runCommand(command, snapshots.head.path, snapshotComparisonEnv());\n    repeatHeadRuns.set(command, entry);",
+      "replace": "    return undefined;",
+      "expectRed": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination"
+    },
+    {
+      "name": "the instability probe checks only that the repeat run is still red, so a token-carrying red with equal statuses reads as stable",
+      "cell": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  return repeatHash === undefined || repeatHash !== firstHash\n    ? unstableSignatureReason(command)\n    : undefined;",
+      "replace": "  return entry.status === 0 ? unstableSignatureReason(command) : undefined;",
+      "expectRed": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination"
+    },
+    {
+      "name": "the instability probe skips its cache, so every mismatch re-runs the command",
+      "cell": "the repeat run happens only on a mismatch: the stable command keeps its execution count, the unstable one gains exactly one",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  let entry = repeatHeadRuns.get(command);\n  if (!entry) {",
+      "replace": "  let entry;\n  {",
+      "expectRed": "the repeat run happens only on a mismatch: the stable command keeps its execution count, the unstable one gains exactly one"
     }
   ]
 }
