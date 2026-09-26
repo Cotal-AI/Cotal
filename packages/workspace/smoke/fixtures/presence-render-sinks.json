@@ -3576,6 +3576,27 @@
       "anchor": "unloaded.output}`);\n    rmSync(path);\n    rmSync(serviceStat",
       "class": "non-render/control",
       "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ux\") {\n    const unit = systemdUnitName(mesh);\n    const path = join(",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "writeFileSync(path, body, { mode: 0o600 })",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "{stopped.output}`);\n    rmSync(path);\n    rmSync(serviceStat",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
     }
   ]
 }
