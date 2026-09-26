@@ -517,7 +517,7 @@ const metadataProblems: string[] = [];
 for (const path of jsonFiles(ROOT)) {
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-  const cfg = parsed as { suite?: unknown; mutations?: unknown };
+  const cfg = parsed as { suite?: unknown; mutations?: unknown; command?: unknown };
   if (!Array.isArray(cfg.mutations)) continue;
   const rel = relative(ROOT, path);
   try {
