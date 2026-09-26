@@ -42,6 +42,15 @@
       "replace": "  try {\n    if (cwd) throw new Error(\"ignore selected mesh\");\n    const target = resolveMeshTarget(cwd, {});",
       "expectRed": "the ready card names the selected remote mesh and does not recommend starting a local one",
       "cell": "the ready card names the selected remote mesh and does not recommend starting a local one"
+    },
+    {
+      "name": "drop the manual-remedy locality branch",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  if (!loopback)\n    return `\\`cotal supervise --space ${space} --server ${server}\\` to run its control plane from here (and \\`cotal deliver --space ${space} --server ${server}\\` for the daemon)`;",
+      "replace": "  if (false)\n    return `\\`cotal supervise --space ${space} --server ${server}\\` to run its control plane from here (and \\`cotal deliver --space ${space} --server ${server}\\` for the daemon)`;",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "a non-loopback registered holder refuses, naming `cotal supervise`",
+      "cell": "a non-loopback registered holder refuses, naming `cotal supervise`"
     }
   ]
 }
