@@ -17,7 +17,7 @@ import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { launchFlags } from "@cotal-ai/workspace";
 import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
-import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
+import { READINESS_TIMEOUT_MS, SPAWN_INPUT_KEYS } from "@cotal-ai/manager";
 import type { CotalEndpoint } from "@cotal-ai/core";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -38,13 +38,8 @@ process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
 console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED from the environment" : "suite default"})`);
 process.env.COTAL_CAPABILITIES = "spawn";
 
-/** The manager `start` op's argument vocabulary (StartAgentOpts, minus the internal `resolved`).
- *  Types are erased at runtime, so this list is the golden — a StartAgentOpts change must
- *  consciously edit it. */
-const START_OP_KEYS = new Set([
-  "name", "identity", "agent", "defaultAgent", "role", "config", "model", "variant", "launchOptions", "resume", "events", "cwd",
-  "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
-]);
+/** The vocabulary is read from the served contract, so this smoke cannot carry a stale copy of it. */
+const START_OP_KEYS = new Set(SPAWN_INPUT_KEYS);
 
 // Routing chooses the manager that receives the request; it does not describe the seat passed to
 // the manager `start` op. Keep this exception paired with the CLI's spawn-only `--on` flag.
