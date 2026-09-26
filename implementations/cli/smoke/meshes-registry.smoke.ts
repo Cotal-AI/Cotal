@@ -863,6 +863,7 @@ try {
   removeMesh("claimed");
   removeMesh("claimed-live");
   removeMesh("claimed-catalog");
+  removeMesh("claimed-remote");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability
