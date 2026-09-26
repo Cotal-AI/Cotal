@@ -70,8 +70,9 @@ No channel traffic arrived during this seat's work. Nothing to record.
 
 ## Final
 
-- Head: see the commit that adds this section (`git log -1`).
+- Head: this commit. Its parent, `d9cf98aca4b49be972273e16cd450cfefbe35c3b`, carried everything
+  above; this commit only adds this line, so the tree it describes is the tree you are reading.
 - Lane: `lane/1972-remote-enrollment`, branched from Cotal origin/main 427a84872.
-- Commits on the lane: 10.
+- Commits on the lane: 11.
 - Scope delivered: the upstream half of §3.4 only. The Cloud handler, E0-E5 and its tables are
   out of scope and absent.
