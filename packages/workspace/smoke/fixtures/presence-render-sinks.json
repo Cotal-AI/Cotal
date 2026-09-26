@@ -3597,6 +3597,111 @@
       "anchor": "{stopped.output}`);\n    rmSync(path);\n    rmSync(serviceStat",
       "class": "non-render/control",
       "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code on the server's error response; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "res.writeHead(status, { \"content-type\": \"application/json\" })",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code on the server's JSON response; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "kind": "derived-output",
+      "anchor": "(p) => p.ts))) : \"—\";\n  renderTiles(counts, stalest);\n  $(\"online-c\").textCo",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: computes counts and stalest timestamps and refreshes the header counters; the tile view carries only counts, not progress claims."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "kind": "derived-output",
+      "anchor": "plural(msgCount, \"message\")",
+      "class": "presence-only-glyph/count",
+      "rationale": "Pluralizes an aggregate message count for the header; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "kind": "derived-output",
+      "anchor": "toggleAllChip(items)",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: toggles the select-all chip from the current selection; not a rendered status."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": " = 2; ctx.strokeStyle = rgba(col, 1); ctx.stroke();\n      }\n",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and width for a graph element; color carries presence class only, no textual claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": ", r); g.addColorStop(0, rgba(col, 1)); g.addColorStop(0.55, ",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: gradient stops from the presence color; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "a.status = p.status",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: stores the peer's raw status on the node record for later color/glyph lookups; not rendered as text."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "agents.set(id, a)",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: indexes the node record in the agents map; not a rendered status."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.shadowBlur = focus ? 20 : off ? 0 : idle ? 6 : 13",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: glow radius chosen from the node's presence state; visual emphasis only, no textual claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.shadowColor = col",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: glow color from the presence palette; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(MEM_LIVE, off ? 0.3 : 0.6)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(col, 0.85)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(col, 1)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(off ? MEM_OFF : MEM_LIVE, (off ? 0.3 : 0.42) * (lit ? 1 : 0.28))",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
     }
   ]
 }
