@@ -2298,6 +2298,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   check("...and an ELEMENT access is the same read, spelled with brackets",
     one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts["tls"] });`) === "missing-key");
+  check("...and an OPTIONAL chain spells the same read, and is answered the same",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "missing-key");
+  check("...while the same chain holding a real boolean is untouched",
+    one(`const opts = { tls: false };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "has-key");
+  check("...and a NON-NULL assertion is a spelling of the same read, not a different one",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts!.tls });`) === "missing-key");
+  check("...including the optional chain spelled with brackets",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.["tls"] });`) === "missing-key");
   check("...including through a folded const, the arithmetic every other key folds by",
     one(`const K = "tls";\nconst opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts[K] });`) === "missing-key");
   check("...while a member this file cannot NAME is refused, since any of them could be the key",
