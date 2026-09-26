@@ -6,10 +6,14 @@ import {
   LEASE_TTL_MS,
   accountFromCreds,
   credsClaims,
+  deliveryBucket,
   dialerFor,
   idFromCreds,
   defaultProbeTimeoutMs,
+  isCasLoss,
+  isPermissionDenied,
   isReachable,
+  leaseKey,
   mintCreds,
   newIdentity,
   formatSecretStoreIdentity,
@@ -23,6 +27,7 @@ import {
   type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
+import { PermissionViolationError } from "@nats-io/transport-node";
 import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writeIdentityPin, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
@@ -534,8 +539,26 @@ async function runStartedDelivery(
   let revision: number | undefined;
   try {
     revision = await ep.acquireDeliveryLease(shard);
-  } catch {
-    console.error(`✗ delivery: a live lease already exists for shard ${shard} — another delivery daemon is running. Not binding.`);
+  } catch (e) {
+    if (isCasLoss(e)) {
+      console.error(`✗ delivery: a live lease already exists for shard ${shard} — another delivery daemon is running. Not binding.`);
+    } else if (isPermissionDenied(e)) {
+      const typed = e instanceof PermissionViolationError
+        ? e
+        : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError
+          ? (e as { cause: PermissionViolationError }).cause
+          : undefined;
+      const refused = typed
+        ? `${typed.operation} "${typed.subject}"`
+        : (e as Error).message;
+      console.error(
+        `✗ delivery: the lease write for shard ${shard} was refused (${refused}) — this credential ` +
+          `cannot write ${deliveryBucket(space)}.${leaseKey(shard)}. Not binding. Use a credential ` +
+          `holding the "delivery" profile.`,
+      );
+    } else {
+      console.error(`✗ delivery: acquiring the lease for shard ${shard} failed: ${(e as Error).message}. Not binding.`);
+    }
     await ep.stop();
     process.exit(1);
     return;

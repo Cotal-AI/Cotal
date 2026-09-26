@@ -213,6 +213,44 @@ try {
   if (r5.proc.exitCode === null) { try { r5.proc.kill("SIGKILL"); } catch { /* gone */ } }
   clearRecord();
 
+  // R6: a credential that can connect and read the lease bucket but holds no publish on the lease
+  // key (#374). The lease row is still virgin here (no daemon before this point has ever acquired
+  // it), so a denial line naming a live conflict would be provably false, not merely misleading.
+  writeRecord({ server: SERVERS, root: wsRoot });
+  const observerPath = join(dir, "observer.creds");
+  writeFileSync(observerPath, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  let r6 = spawnDaemon(["--space", space, "--server", SERVERS, "--creds", observerPath], wsRoot);
+  let r6Log = await r6.done();
+  const leaseSubject = `$KV.${deliveryBucket(space)}.${leaseKey(0)}`;
+  check(
+    "R6 a permission denial on the lease write is reported as a denial naming the subject and operation",
+    r6Log.includes(`refused (publish "${leaseSubject}")`) && r6Log.includes(leaseSubject),
+    r6Log,
+  );
+  check(
+    "R6 the denial never says another daemon is running",
+    !r6Log.includes("a live lease already exists"),
+    r6Log,
+  );
+  check("R6 the observer daemon exited non-zero", r6.proc.exitCode !== null && r6.proc.exitCode !== 0, `exitCode=${r6.proc.exitCode}`);
+  {
+    const probeId = newIdentity();
+    const r6Probe = new CotalEndpoint({
+      space, servers: SERVERS, creds: await mintCreds(auth, probeId, "delivery"), channels: [],
+      consume: false, watchPresence: false, registerPresence: false,
+      card: { id: probeId.id, name: "r6-probe", role: "probe", kind: "endpoint" },
+    });
+    r6Probe.on("error", () => {});
+    await r6Probe.start();
+    try {
+      const row = await r6Probe.readDeliveryLease(0);
+      check("R6 the refused acquire never wrote the lease row", row === undefined, JSON.stringify(row));
+    } finally {
+      await r6Probe.stop();
+    }
+  }
+  clearRecord();
+
   // R1 + THE SUBJECT: a record naming this suite's broker and workspace root, and the daemon
   // spawned with NO `--server` — the exact registry-resolved dial the fix exists for. The subject's
   // own cells below then grade it (comes up + stays, exits when the broker dies, names the reason),
@@ -235,6 +273,23 @@ try {
   // (runDelivery process.exit), so "still alive after the startup window" means it came up and is serving.
   await wait(5000);
   check("the daemon comes up + stays running against a live broker", !daemonExited, daemonLog);
+
+  // C1: the conflict branch survives the #374 fix. A second daemon with the SAME `delivery` creds
+  // and the same arguments as the subject loses the CAS create (the subject already holds the row)
+  // and must still report a real conflict, not a permission denial, while the subject stays up.
+  {
+    const c1 = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
+    const c1Log = await c1.done();
+    check(
+      "C1 a genuine conflict still reports the conflict line byte for byte",
+      c1Log.includes(`✗ delivery: a live lease already exists for shard 0 — another delivery daemon is running. Not binding.`),
+      c1Log,
+    );
+    check("C1 the conflict daemon's log carries no permission denial", !c1Log.includes("permission denied"), c1Log);
+    check("C1 the conflict daemon exited non-zero", c1.proc.exitCode !== null && c1.proc.exitCode !== 0, `exitCode=${c1.proc.exitCode}`);
+    check("C1 the subject is still alive (conflict did not disturb the holder)", !daemonExited, daemonLog);
+  }
+
   check(
     "R1 the subject daemon dialed the RECORDED broker (banner), no --server given",
     daemonLog.includes(`is registered at ${SERVERS} (meshes entry)`),
