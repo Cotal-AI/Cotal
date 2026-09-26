@@ -104,8 +104,7 @@
       "expectRed": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
       "cell": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-attention:auth",
-      "completionMarker": "AUTH PER-CHANNEL ATTENTION E2E PASSED",
-      "note": "This restores the exact pre-#445 measure: health from the lease and the session-local membership map alone, the two conjuncts a SIGKILLed daemon satisfies for a whole lease TTL. The suite stages a daemon that stops without a lease release, so its KV row still reads ready:true, and the FIRST cell this mutant reddens is the daemon-gone one named above — a killed daemon again certifying itself active. The per-mutation command runs the auth suite that stages the daemon; the config-level command still grades this file's own suite."
+      "note": "This restores the exact pre-#445 measure: health from the lease and the session-local membership map alone, the two conjuncts a SIGKILLed daemon satisfies for a whole lease TTL. The suite stages a daemon that stops without a lease release, so its KV row still reads ready:true, and the FIRST cell this mutant reddens is the daemon-gone one named above — a killed daemon again certifying itself active. The per-mutation command runs the auth suite that stages the daemon; the config-level command still grades this file's own suite. No completionMarker: this suite fail-fasts at the first red cell and prints no line common to pass and fail, so declaring one would discard exactly the kill it was added to protect."
     }
   ]
 }
