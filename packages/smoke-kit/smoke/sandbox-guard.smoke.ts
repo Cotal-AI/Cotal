@@ -416,6 +416,7 @@ try {
       for (const use of code.matchAll(new RegExp(`(?<=[\\[,(]\\s*)${name}\\b`, "g"))) {
         if (use.index === undefined) continue;
         const call = callNameAt(code, use.index);
+        // A verb use the walk cannot classify is reported like shape 2, never dropped.
         if (!call) {
           if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, use.index));
           continue;
