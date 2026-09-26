@@ -145,6 +145,9 @@ export async function preflightConnectors(prepared: PreparedManifest): Promise<s
     const variantUsers = prepared.agents.filter((a) => a.agentType === type && a.variant);
     if (variantUsers.length && !connector.supportsModelVariant)
       problems.push(`${type} does not support model variants (used by ${variantUsers.map((a) => a.name).join(", ")})`);
+    const promptUsers = prepared.agents.filter((a) => a.agentType === type && a.prompt !== undefined);
+    if (promptUsers.length && !connector.supportsPrompt)
+      problems.push(`${type} does not support a kickoff prompt (used by ${promptUsers.map((a) => a.name).join(", ")})`);
   }
   return problems.join("; ");
 }

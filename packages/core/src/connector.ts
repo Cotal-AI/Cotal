@@ -64,7 +64,9 @@ export interface LaunchOpts {
   launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts (`cotal spawn --prompt`).
    *  A connector delivers it as the harness's first turn or throws at launch; it never ignores it,
-   *  because an operator who passed a prompt is waiting on the turn it starts. */
+   *  because an operator who passed a prompt is waiting on the turn it starts. Gated upstream by
+   *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
+   *  refused before any provisioning. */
   prompt?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
@@ -245,6 +247,10 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.prompt} as the harness's first turn.
+   *  Default-deny, so a prompt on a connector that does not declare it fails before any
+   *  provisioning rather than being accepted and never submitted. */
+  readonly supportsPrompt?: boolean;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *

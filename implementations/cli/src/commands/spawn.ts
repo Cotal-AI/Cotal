@@ -711,6 +711,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
     process.exit(1);
   }
+  if (values.prompt !== undefined && !connector.supportsPrompt) {
+    console.error(c.red(`✗ ${agentType} connector does not support an initial prompt (prompt)`));
+    process.exit(1);
+  }
 
   // Auth mode (`.cotal/auth` present): mint a stable identity + scoped creds for this agent
   // and pre-create its bind-only durables, via a short-lived privileged provisioner — the

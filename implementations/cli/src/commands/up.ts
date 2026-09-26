@@ -2014,6 +2014,14 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // the applying command refuses. Validate against the effective server; still no writes.
     // Announce only AFTER the dial-host check so a wrong-SAN dry-run does not print TLS: serving.
     assertServesDialHost(opts.transport, new URL(server).hostname);
+    // Connector preflight on the dry-run path too (#315): the real route refuses a manifest at
+    // preflightConnectors before anything boots; a dry run that plans a launch the applying
+    // command refuses is the same green-lit-a-refusal failure class.
+    const dryConn = await preflightConnectors(prepared);
+    if (dryConn) {
+      console.error(c.red(`✗ connector preflight failed: ${dryConn}`));
+      process.exit(1);
+    }
     if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
     console.log(renderUpPlan(eff, server));
     // The omission is part of the plan (#1417): a dry run that lists a manager the real boot

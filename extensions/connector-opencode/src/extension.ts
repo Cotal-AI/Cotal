@@ -108,6 +108,7 @@ export const opencodeConnector: Connector = {
   supportsFreshStart: true,
   requires: ["opencode"],
   supportsModelVariant: true,
+  supportsPrompt: true, // OpenCode serves a first turn from an initial message — see buildLaunch
   // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before
   // loading the plugin; readiness also checks that server's provider list before mesh presence.
   readinessTimeoutMs: 120_000,

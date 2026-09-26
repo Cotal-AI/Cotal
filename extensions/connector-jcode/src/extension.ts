@@ -115,6 +115,7 @@ export const jcodeConnector: Connector = {
   // verbatim to Jcode, which owns the capability and ladder decisions.
   supportsModelVariant: true,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
+  supportsPrompt: true, // Jcode serves a first turn from an initial message — see buildLaunch
   eventChannel,
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
