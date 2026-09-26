@@ -411,10 +411,34 @@ try {
     rawOpen.status !== 0 && /requires auth, but no credentials were supplied/.test(rawOpen.out),
     rawOpen,
   );
+  // The refusal itself, measured where it is decided rather than through the binary: issue #752's
+  // control input. `controlCaller` answers before any network or parse, so a string that is not a
+  // credential at all lands in the same branch a freshly minted file does. That is the proof the
+  // sentence cannot be evidence about the file's age, and these cells hold the sentence to saying
+  // what the invocation is missing and which routes supply it.
+  const { controlCaller } = await import("@cotal-ai/workspace");
+  const bareRefusal = controlCaller({ creds: "definitely-not-a-credential" });
+  ok(
+    "a bare --creds auth with no endpoint-caller triple is refused naming the missing triple and the routes that mint one",
+    "refusal" in bareRefusal && /endpoint-caller triple/.test(bareRefusal.refusal) &&
+      /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(bareRefusal.refusal) &&
+      /project folder/.test(bareRefusal.refusal) && /--space/.test(bareRefusal.refusal) &&
+      !/predates|re-mint/.test(bareRefusal.refusal),
+    bareRefusal,
+  );
+  const withCaller = controlCaller({ creds: "x", epCaller: { owner: "o", actor: "a", uid: "u" } });
+  ok(
+    "…and a --creds auth that already carries an endpoint-caller triple passes it through unchanged",
+    "caller" in withCaller && withCaller.caller.owner === "o" && withCaller.caller.actor === "a" && withCaller.caller.uid === "u",
+    withCaller,
+  );
   const rawCreds = runCli(["attach", "--name", SEAT, "--creds", credFile, "--server", SERVER, "--space", SPACE]);
   ok(
     "a raw --creds attach is refused at the control surface",
-    rawCreds.status !== 0 && /control surface/.test(rawCreds.out),
+    rawCreds.status !== 0 && /control surface/.test(rawCreds.out) &&
+      /endpoint-caller triple/.test(rawCreds.out) &&
+      /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(rawCreds.out) &&
+      /project folder/.test(rawCreds.out) && !/predates|re-mint/.test(rawCreds.out),
     rawCreds,
   );
   ok(
