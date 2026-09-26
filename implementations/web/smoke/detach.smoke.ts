@@ -8,11 +8,23 @@ import { appendedLogTail, detachedArgs, terminateDetachedWeb, waitForDetachedWeb
 const root = mkdtempSync(join(tmpdir(), "cotal-web-detach-"));
 const pidPath = join(root, "web.pid");
 const readyPath = join(root, "child.ready");
-const child = spawn(process.execPath, [
-  "-e",
-  `const fs=require("node:fs"); process.on("SIGTERM",()=>{}); fs.writeFileSync(${JSON.stringify(readyPath)}, "ready"); setInterval(()=>{}, 1000);`,
-], { detached: true, stdio: "ignore" });
-child.unref();
+
+/** A deliberately SIGTERM-resistant, detached, unref'd fixture child. It still ignores SIGTERM
+ *  (that resistance is what this suite tests), but it takes a deadline in milliseconds from its
+ *  own first argument and exits on its own once that deadline passes, so a copy that is never
+ *  collected by the suite's `finally` reaps itself instead of surviving forever. */
+const FIXTURE_DEADLINE_MS = 60_000;
+function spawnFixture(readyMarkerPath: string, deadlineMs: number) {
+  const child = spawn(process.execPath, [
+    "-e",
+    `const fs=require("node:fs"); process.on("SIGTERM",()=>{}); fs.writeFileSync(${JSON.stringify(readyMarkerPath)}, "ready"); const deadlineMs=Number(process.argv[1]); setTimeout(()=>process.exit(0), deadlineMs);`,
+    String(deadlineMs),
+  ], { detached: true, stdio: "ignore" });
+  child.unref();
+  return child;
+}
+
+const child = spawnFixture(readyPath, FIXTURE_DEADLINE_MS);
 
 const alive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
@@ -53,6 +65,16 @@ try {
   for (let i = 0; i < 100 && !existsSync(readyPath); i++) await sleep(10);
   assert.ok(existsSync(readyPath), "SIGTERM-resistant fixture child became ready");
   writeFileSync(pidPath, String(child.pid));
+
+  const selfReapReadyPath = join(root, "self-reap.ready");
+  const selfReapChild = spawnFixture(selfReapReadyPath, 500);
+  assert.ok(selfReapChild.pid, "self-reap fixture child has a pid");
+  let selfReaped = false;
+  for (let i = 0; i < 300 && !selfReaped; i++) {
+    await sleep(10);
+    selfReaped = !alive(selfReapChild.pid!);
+  }
+  assert.ok(selfReaped, "a leaked fixture child with a short deadline reaps itself, with no signal sent to it");
 
   await assert.rejects(
     waitForDetachedWeb(child, {
