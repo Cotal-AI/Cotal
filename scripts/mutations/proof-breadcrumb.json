@@ -55,8 +55,8 @@
       "file": "scripts/mutation-proof.mjs",
       "find": "checkAndRecoverBreadcrumbs(cwd);\nif (a.recover) {",
       "replace": "if (a.recover) {",
-      "cell": "next invocation recovers from breadcrumb",
-      "expectRed": "next invocation recovers from breadcrumb"
+      "cell": "...and running --recover afterwards clears the stray breadcrumb and backup",
+      "expectRed": "...and running --recover afterwards clears the stray breadcrumb and backup"
     },
     {
       "name": "a proof that restored its file leaves the breadcrumb behind",
