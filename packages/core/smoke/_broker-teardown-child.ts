@@ -14,8 +14,8 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 // ownership, so it reproduces the leak. Without it, the owned cells could pass against a broker that
 // was dying for some other reason entirely.
 const mode = process.argv[2];
-if (mode !== "clean" && mode !== "signal" && mode !== "unowned") {
-  throw new Error(`fixture needs mode "clean", "signal", or "unowned", got ${String(mode)}`);
+if (mode !== "clean" && mode !== "signal" && mode !== "unowned" && mode !== "release-only") {
+  throw new Error(`fixture needs mode "clean", "signal", "unowned", or "release-only", got ${String(mode)}`);
 }
 
 const port = await pickFreePort();
@@ -32,14 +32,25 @@ if (broker.exitCode !== null) throw new Error(`fixture: nats-server exited early
 // grading the exit path while claiming to grade the signal path.
 console.log(`READY ${process.pid} ${broker.pid} ${storeDir}`);
 
-if (mode !== "clean") await new Promise(() => {}); // idle until signalled; the handler does the rest
+if (mode !== "clean" && mode !== "release-only") await new Promise(() => {}); // idle until signalled; the handler does the rest
 
 // The normal path, modelled as a real suite runs it: the suite kills the broker itself and releases
 // ownership, then returns. This is NOT decoration. A spawned child holds the parent's event loop
 // open, so a suite that left the broker running would never exit at all, and `process.on("exit")`
 // would never fire. The exit handler is a backstop for an early return, never the mechanism for the
 // normal path, and the existing `finally` teardown is what does that work.
-release();
-broker.kill("SIGTERM");
-await new Promise((r) => setTimeout(r, 300));
-rmSync(storeDir, { recursive: true, force: true });
+if (mode === "release-only") {
+  // A suite that calls ONLY release, with no kill and no rmSync of its own: identical to `clean`
+  // except for this branch, so the difference between the two cells is exactly what release does.
+  // An explicit exit models the real trap: a broken release leaves the broker running, which would
+  // otherwise hold this process's event loop open forever (the same reason `clean` above needs its
+  // own kill to ever return), masking the leak as a hang instead of exposing it as a live orphan.
+  // A real suite hits the same shape by way of its test framework's own forced exit after the run.
+  release();
+  process.exit(0);
+} else {
+  release();
+  broker.kill("SIGTERM");
+  await new Promise((r) => setTimeout(r, 300));
+  rmSync(storeDir, { recursive: true, force: true });
+}
