@@ -193,7 +193,23 @@ try {
   // fence (the mutation target) is the only thing that does not.
   let releaseDone = () => {};
   const released = new Promise<void>((res) => { releaseDone = res; });
+  // HARDENING (fourth lifecycle): the release below must not run until the tracked renew's
+  // cache writes are all done. A release at the cached revision (the mutation entry 4 restores)
+  // only misses when the cached revision is BEHIND the row, and every write to `leaseRevision`
+  // that precedes the release in program order comes from the tracked renew above: its happy
+  // path reports `second - 1` while the row sits at `second`, and its catch path (a refused
+  // broker renew reconciling a still-owned row) ADOPTS the row's CURRENT revision, which would
+  // hand the mutant a revision that no longer misses. Awaiting the tracked renew's settlement
+  // inside the release wrapper pins the order structurally: `stop()` already awaits the tracked
+  // renew before it releases, so on the fixed path this gate is already open; and on the mutated
+  // path no code can write `leaseRevision` between that settlement and the release, because the
+  // late renew for (c) and any interval tick still pending are gated on `released` (the timer is
+  // cleared before the wrapper is ever entered). The row is one revision past every revision the
+  // manager can believe, on every ordering the host can pick.
+  let renewDone = () => {};
+  const renewSettled = new Promise<void>((res) => { renewDone = res; });
   m1ep.releaseManagerLease = async (instanceId, revision) => {
+    await renewSettled;
     // A finally, not a then: this must open the gate even when a mutation makes the CAS above throw
     // (entry 3 replaces the released call with one at the stale cached revision), or the late renew
     // below would wait forever on a release that never resolves.
@@ -205,9 +221,13 @@ try {
   // unaffected, and the untracked late renew for (c) sees only the gated version, never the doubled
   // one.
   m1ep.renewManagerLease = async (info, revision) => {
-    const second = await realRenew(info, await realRenew(info, revision));
-    doubled = true;
-    return second - 1;
+    // The finally feeds the release wrapper's gate above: settlement means every cache write this
+    // attempt will ever make has landed, not merely that its last broker call returned.
+    try {
+      const second = await realRenew(info, await realRenew(info, revision));
+      doubled = true;
+      return second - 1;
+    } finally { renewDone(); }
   };
   void M1.renewLease();
   m1ep.renewManagerLease = async (info, revision) => {
