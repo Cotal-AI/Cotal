@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -418,6 +418,24 @@ export const cotalAuthProvider: AuthProvider = {
     return body as RemoteRetainedAgentValidationResult;
   },
 
+  /** Client half of host-owned managed agent enrollment (#1972 §3.4). The request carries only the
+   *  digest of the standing actorToken — the participant wrote the plaintext at 0600 before calling
+   *  — so a refused or lost response never leaks an agent's exchange secret. Redirects are refused
+   *  for the same reason the retained-validation client refuses them: a 302 could walk the login
+   *  proof, and the enrollment it authorizes, onto another host. */
+  async enrollRemoteManagedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentEnrollmentRequest }): Promise<RemoteManagedAgentEnrollmentResult> {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "enrolling a managed agent");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as Promise<RemoteManagedAgentEnrollmentResult>;
+  },
+
+  /** Client half of host-owned terminal release preparation (#1972 phase P0/P1). The opId is derived
+   *  from the target lifecycle, so a retry after a dropped response re-enters the SAME host
+   *  operation rather than opening a second one. */
+  async prepareRemoteManagedAgentRetirement({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentPrepareRetirementRequest }): Promise<RemoteManagedAgentPrepareRetirementResult> {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "preparing a managed agent retirement");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent retirement preparation") as Promise<RemoteManagedAgentPrepareRetirementResult>;
+  },
+
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the
    *  space's owner secret; no IdP round trip). The spawn paths' "whose agents are these" answer. */
   async ownerForLogin({ store, dir, space }) {
@@ -684,6 +702,56 @@ function managerAuthorityUrl(base: string, space: string): string {
   const u = new URL(pinnedExchangeUrl(base, space));
   u.pathname = `${u.pathname.slice(0, -"/exchange".length)}/manager-service-authority`;
   return u.toString();
+}
+
+/** Resolve the manager-authority endpoint for one space: the local loopback service when this
+ *  machine hosts the space's user-auth material, else the registry entry's pinned public exchange.
+ *  `what` names the operation in a refusal so an operator reads which call could not be made. */
+async function managerAuthorityEndpoint(
+  store: SecretStore,
+  dir: string,
+  space: string,
+  what: string,
+): Promise<{ endpoint: string; idpUrl: string; authorization?: string }> {
+  const idp = loadPinnedIdp(dir);
+  const callout = await loadCalloutAuth(store, space);
+  if (idp && callout) {
+    const info = loadAuthServiceInfo(dir);
+    if (!info || !pidAlive(info.pid))
+      throw new Error(`the user-auth service for space "${space}" is not running - restart it with \`cotal up\` before ${what}`);
+    return { endpoint: `${info.url}/manager-service-authority`, idpUrl: idp.url, authorization: `Bearer ${info.cap}` };
+  }
+  const entry = findMesh(space);
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
+    throw new Error(`space "${space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${space} --from <url>\``);
+  return { endpoint: managerAuthorityUrl(ua.endpoints.url, space), idpUrl: ua.idp.url };
+}
+
+/** POST one typed manager-authority request with this machine's fresh login proof. Redirects are
+ *  refused: a 302 could walk the proof, and the authority it buys, onto a host the registry never
+ *  pinned. The parsed body comes back verbatim — the CALLER binds it to its own request. */
+async function postManagerAuthority(
+  endpoint: string,
+  idpUrl: string,
+  authorization: string | undefined,
+  request: unknown,
+  what: string,
+): Promise<unknown> {
+  const session = requireIdpSession(homeCotalDir(), idpUrl);
+  const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    redirect: "manual",
+    headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+    body: JSON.stringify({ idpToken: idpJwt, request }),
+    signal: AbortSignal.timeout(30_000),
+  }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
+  if (response.status >= 300 && response.status < 400)
+    throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`signed in, but ${what} was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+  return body;
 }
 
 /** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the

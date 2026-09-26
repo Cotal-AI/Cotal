@@ -9,6 +9,10 @@ import type {
   RemoteManagerGoalIndexScanResult,
   RemoteManagerMaintenanceRequest,
   RemoteManagerMaintenanceResult,
+  RemoteManagedAgentEnrollmentRequest,
+  RemoteManagedAgentEnrollmentResult,
+  RemoteManagedAgentPrepareRetirementRequest,
+  RemoteManagedAgentPrepareRetirementResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
 } from "./remote-manager-authority.js";
@@ -138,6 +142,29 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRetainedAgentValidationRequest;
   }): Promise<RemoteRetainedAgentValidationResult>;
+  /**
+   * Ask the host to enroll one FRESH managed agent under the authenticated owner (#1972). The
+   * participant has already generated the standing `actorToken` and written it at 0600, so the
+   * request carries only its digest; the host picks the lifecycle UID, authors the ledger grant,
+   * pre-creates the durables, and returns the stable non-secret metadata plus the space sentinel.
+   * Optional so a provider with no hosted storage composition fails loud at the caller rather than
+   * letting a local grant masquerade as a host-owned one.
+   */
+  enrollRemoteManagedAgent?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagedAgentEnrollmentRequest;
+  }): Promise<RemoteManagedAgentEnrollmentResult>;
+  /**
+   * Ask the host to PREPARE one managed agent's terminal retirement (#1972 phase P0/P1): revoke the
+   * managed grant UID-exactly and commit the resumable release while preserving the UID. Success
+   * means the terminal auth barrier may start. Never a retirement itself.
+   */
+  prepareRemoteManagedAgentRetirement?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagedAgentPrepareRetirementRequest;
+  }): Promise<RemoteManagedAgentPrepareRetirementResult>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).
