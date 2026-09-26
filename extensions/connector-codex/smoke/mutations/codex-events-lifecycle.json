@@ -106,6 +106,13 @@
       "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
       "expectRed": "broker-outage-live:setup:the replacement holder stays alive through recovery"
+    },
+    {
+      "name": "L16 the host drops the path's delimiter, so the reader accepts a bare token the way the old sentence-parsed reader did",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "from ${JSON.stringify(path)} (",
+      "replace": "from ${path} (",
+      "expectRed": "restart-late:and the dead thread's own file leaves a turn unfinished, so that close came from the seat"
     }
   ],
   "suite": [

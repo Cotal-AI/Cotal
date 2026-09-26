@@ -121,6 +121,14 @@ const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
  *  the path parser and leaves this one reading exactly what it read before. */
 const publishedThreads = (log: string): string[] => [...log.matchAll(/publishing thread (\S+) from/g)].map((m) => m[1]);
 
+/** The rollout path is read from the quoted JSON value the host writes for that purpose, not from
+ *  the prose sentence around it, so a wording or punctuation change in that sentence cannot disarm
+ *  a control that depends on this path. */
+const rolloutPathOf = (log: string, thread = "\\S+"): string | undefined => {
+  const m = new RegExp(`publishing thread ${thread} from ("(?:[^"\\\\]|\\\\.)*")`).exec(log);
+  return m ? (JSON.parse(m[1]) as string) : undefined;
+};
+
 /** How many times this seat has said it looked for a rollout file and found none. COUNTED, not
  *  tested for presence: a boundary that looked again is the seat's own report that it processed
  *  the boundary, and a cell judging "published nothing" needs that rather than a clock. */
@@ -603,7 +611,7 @@ try {
   // THE CONTROL, from the dead thread's own file: the crash lands mid-turn, so the file itself
   // carries a `task_started` with no `task_complete`. The close on the wire therefore cannot have
   // come from the record stream, which is what makes the cell above about the seat's drain.
-  const deadPath = new RegExp(`publishing thread ${deadThread} from (\\S+)`).exec(errC)?.[1];
+  const deadPath = rolloutPathOf(errC, deadThread);
   const deadDoc =
     deadPath !== undefined && existsSync(deadPath)
       ? readFileSync(deadPath, "utf8")
@@ -836,7 +844,7 @@ try {
   );
 
   writeFileSync(goD, "go");
-  const rolloutD = /publishing thread \S+ from (\S+)/.exec(errD)?.[1] ?? "";
+  const rolloutD = rolloutPathOf(errD) ?? "";
   const outageDone = await settle(
     "D:the outage turn is complete on disk",
     () => rolloutD !== "" && existsSync(rolloutD) && readFileSync(rolloutD, "utf8").includes("task_complete"),
@@ -1539,7 +1547,7 @@ try {
   ) {
     // Without the bind's announcement there is no thread to observe and no window that opened, so
     // the hold and the arrival wait below would measure a seat that never started.
-  const rolloutE = /publishing thread \S+ from (\S+)/.exec(errE)?.[1] ?? "";
+  const rolloutE = rolloutPathOf(errE) ?? "";
   const threadE = publishedThreads(errE)[0] ?? "";
   const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
