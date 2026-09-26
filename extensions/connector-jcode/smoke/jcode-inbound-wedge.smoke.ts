@@ -226,6 +226,12 @@ try {
 
   // --- Cell A: the initial automatic batch stays visible while its Cotal-owned run() is open ---
   child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(root, "ci.sock"));
+  // The post-join notice turn (#2001) must complete before Cell A probes, else presence can interleave (#2055).
+  await waitFor("the post-join notice turn completes before the initial-drive cell (#2001, #2055)", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("connected to the Cotal mesh"),
+    ) ? true : undefined,
+  );
   await waitFor("readiness is definitively idle with no stale activity before the initial-drive cell", () =>
     peerId && peerStatus === "idle" && peerActivity === "" ? peerId : undefined,
   );
@@ -256,6 +262,15 @@ try {
 
   // --- Cell B: advisory idle during a still-open Cotal-owned run() ---
   child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs), FAKE_JCODE_IDLE_DURING_TURN: "1" }, join(root, "control-a.sock"));
+  // The post-join notice turn (#2001) must complete before the first DM, else presence can interleave (#2055).
+  await waitFor("the post-join notice turn completes before the idle-during-drive cell (#2001, #2055)", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("connected to the Cotal mesh"),
+    ) ? true : undefined,
+  );
+  await waitFor("readiness is definitively idle with no stale activity before the idle-during-drive cell", () =>
+    peerId && peerStatus === "idle" && peerActivity === "" ? peerId : undefined,
+  );
   await waitFor("mesh presence for the idle-during-drive cell", () => peerId);
   check("Jcode recipient is live before the idle-during-drive probe", Boolean(peerId));
 
@@ -263,9 +278,19 @@ try {
   await waitFor("the recipient's long Harness turn", () =>
     turnRequests().find((entry) => String(entry.frame?.content).includes("OPEN_LONG_TURN_1075")),
   );
-  await waitFor("the fake Harness to pulse idle while that run is still open", () =>
-    entries().find((entry) => entry.ev === "idle_during_turn") ? true : undefined,
-  );
+  // The notice turn also pulses idle_during_turn (#2001), so this must land after OPEN_LONG_TURN_1075's
+  // own send_message request or it passes on the notice turn's pulse instead of this cell's (#2055).
+  await waitFor("the fake Harness to pulse idle while that run is still open", () => {
+    const all = entries();
+    const sendIdx = all.findIndex(
+      (entry) =>
+        entry.ev === "request" &&
+        entry.frame?.req === "send_message" &&
+        String(entry.frame?.content).includes("OPEN_LONG_TURN_1075"),
+    );
+    if (sendIdx === -1) return undefined;
+    return all.slice(sendIdx + 1).some((entry) => entry.ev === "idle_during_turn") ? true : undefined;
+  });
 
   const idleMarker = "MID_IDLE_PULSE_1075";
   const idleSentAt = Date.now();
@@ -291,6 +316,15 @@ try {
 
   // --- Cell C: TUI-owned working session, host not inside drive() ---
   child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: "10", FAKE_JCODE_EXTERNAL_TURN_MS: String(busyMs) }, join(root, "control-b.sock"));
+  // The post-join notice turn (#2001) must complete before the first DM, else presence can interleave (#2055).
+  await waitFor("the post-join notice turn completes before the TUI-owned cell (#2001, #2055)", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("connected to the Cotal mesh"),
+    ) ? true : undefined,
+  );
+  await waitFor("readiness is definitively idle with no stale activity before the TUI-owned cell", () =>
+    peerId && peerStatus === "idle" && peerActivity === "" ? peerId : undefined,
+  );
   await waitFor("mesh presence for the TUI-owned cell", () => peerId);
   await waitFor("the fake Harness to mark a TUI-owned working session", () =>
     entries().find((entry) => entry.ev === "external_turn" && entry.status === "working") ? true : undefined,

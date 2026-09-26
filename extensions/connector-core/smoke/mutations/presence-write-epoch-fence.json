@@ -19,6 +19,27 @@
       "replace": "    if (epoch !== this.presenceEpoch || this.stopped) return;\n",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "an OLDER put succeeding late does not clear a newer same-epoch refusal record"
+    },
+    {
+      "name": "F3 inOrder runs each write directly again instead of chaining it behind the presence chain, so setStatus/resetStatus/setCondition/setAttention/setChannelMode/setModel go back to firing their bodies unserialized: two overlapping calls interleave their puts and the record that lands last is whichever call's second put finished last, not the call made last (#636, #2055).",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {\n    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n    const next = this.presenceChain.then(write, write);\n    this.presenceChain = next.catch(() => {});\n    return next;\n  }",
+      "replace": "  private inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {\n    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n    return write();\n  }",
+      "expectRed": "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled"
+    },
+    {
+      "name": "F4 stop() no longer waits on the presence chain before publishing offline, so departure is not ordered behind a write already in flight: the offline put can start before an earlier admitted write's put has settled, and an observer can read a live status after the seat departed (#636).",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    await Promise.race([this.inOrder(() => this.ep.stop(), true), sleep(3_000)]);\n    await this.ep.stop();",
+      "replace": "    await this.ep.stop();",
+      "expectRed": "departure is ordered behind a status write already in flight"
+    },
+    {
+      "name": "F5 inOrder no longer refuses writes admitted after stop() began, so the straggler setStatus is queued onto the presence chain behind departure instead of rejecting at once with the stopping error: on an unfenced tree it sits out setStatus's ten-second requireConnected grace inside the chain (and a setAttention or setModel straggler would even land its put before the offline put), so a write made after departure began is reordered behind or dropped after offline instead of refused (#636). The mutation touches extensions/connector-core/src/agent.ts, which this suite imports as TS source through tsx, not as a built dist, so unlike the core entries above there is no dist compiled from the mutant and git alone is the recovery.",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n",
+      "replace": "",
+      "expectRed": "a presence write admitted after stop() began is refused and no put lands after offline"
     }
   ]
 }
