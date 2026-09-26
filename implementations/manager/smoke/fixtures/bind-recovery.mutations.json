@@ -21,6 +21,20 @@
       "find": "          this.emit(\"split-recovered\", {\n",
       "replace": "          this.emit(\"split-recovered-MUTANT-NOT-ANNOUNCED\", {\n",
       "expectRed": "it was announced to anyone listening"
+    },
+    {
+      "name": "issue #367: stop releases the lease at its cached revision again, so a renew in flight moves the row out from under the CAS delete and the key survives the clean stop",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.releaseOwnManagerLease();\n",
+      "replace": "    await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);\n",
+      "expectRed": "(a) a clean stop with a renew in flight still removes the lease key"
+    },
+    {
+      "name": "issue #367: the stop fence in renewLease's gone arm is removed, so a renew that runs after the stop re-acquires the key for a process that already stopped",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            if (this.leaseStopping) return;\n",
+      "replace": "",
+      "expectRed": "(c) a renew that runs after the stop does not put the key back"
     }
   ],
   "suite": [

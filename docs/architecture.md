@@ -207,6 +207,8 @@ laterally; the manager only births and configures them.
   broker cannot be asked at all it keeps serving and asks again, for as long as that takes. A
   manager that cannot reach its broker gains nothing by ending itself, and the seats it holds
   lose everything. Each change of state is one line in the manager's log, not one line per tick.
+  A clean stop waits for a renew already in flight and then releases the key at the broker's own
+  revision, so a same-root restart never waits out the bucket TTL.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
