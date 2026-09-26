@@ -11,7 +11,13 @@
  *   - the target string appears more than once   → you mutated something else as well
  *   - the suite dies EARLY for an unrelated reason → red, but not the red you claimed
  *   - the run never reached the new check at all → green that never executed the test
- *   - the restore silently fails                 → the next person inherits a broken tree
+ *   - the restore silently fails                 → the next person inherits a broken tree, or worse
+ *                                                  a throw during restore escapes with no verdict
+ *                                                  printed at all (#1337: fixed by writing the
+ *                                                  restore from the pre-mutation bytes already held
+ *                                                  in memory, which cannot go missing mid-run the
+ *                                                  way the on-disk backup copy can, and by never
+ *                                                  letting a restore failure raise instead of return)
  *   - the mutation applied and the run NEVER SAW IT → the file changed; the thing under test read a
  *                                                  DIFFERENT copy of it. `@cotal-ai/core` resolves
  *                                                  to `dist/`, so a suite under `implementations/*`
@@ -439,7 +445,11 @@ function proveOne(m, opts) {
   if (unknown.length) return { label, verdict: "ERROR", why: `unknown mutation key(s): ${unknown.join(", ")}` };
   if (!existsSync(path)) return { label, verdict: "ERROR", why: `target file not found: ${m.file}` };
 
-  const before = readFileSync(path, "utf8");
+  // Read as bytes as well as text: `before` (decoded utf8) drives the find/replace, `beforeBytes`
+  // is what restore() writes back, so a file that does not round-trip through utf8 still comes
+  // back byte-identical rather than through a lossy re-encode.
+  const beforeBytes = readFileSync(path);
+  const before = beforeBytes.toString("utf8");
   const hits = countOccurrences(before, m.find);
   // Assert the target is present AND unambiguous BEFORE grading anything. Zero means the mutation
   // would be a no-op and the verdict would be an accusation about nothing; more than one means the
@@ -466,30 +476,52 @@ function proveOne(m, opts) {
   // produced from the mutant, which is gitignored and therefore outside the recovery this tool
   // insists on before it starts. `afterRestore` runs AFTER the source is back, so whatever it
   // regenerates is regenerated from the original.
+  //
+  // Set by restore() when it fails, so the two call sites below can quote a reason instead of a
+  // bare "restore failed". Declared outside restore() so a throw inside it (caught below) can still
+  // leave a message behind for the verdict that reports it.
+  let restoreError;
+  // Never throws: it writes the ORIGINAL BYTES HELD IN MEMORY (`beforeBytes`), not a copy of the
+  // on-disk backup, so a lost backup file (deleted by the suite under test, reaped by whatever else
+  // cleans tmpfs, or just unreadable) can no longer stop the tree going back. Everything that can
+  // still fail (a write to an unwritable path, a sha mismatch) is caught here and reported as
+  // `false`, never as an exception — a throw escaping this function is exactly #1337: it reaches
+  // `proveOne`'s catch, whose own `restore()` call would throw the same way and escape THAT too,
+  // killing the process with no verdict printed and the mutant left in the tree.
   const restore = () => {
-    copyFileSync(backup, path);
-    const ok = sha(path) === shaBefore;
-    // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime
-    // becomes now even though the line above proves the content is what it was. Anything that
-    // compares source mtimes against a build then reports a stale artefact for a file nobody
-    // edited: `smoke:dist-freshness` does exactly that, and after a graded run it named
-    // `packages/core` stale and refused the 261-suite chain at its first entry.
-    //
-    // Only when the content is verified identical. If `ok` is false the file is NOT what it was,
-    // and back-dating it would hide a failed restore from the tools that compare timestamps —
-    // the one case where a bumped mtime is telling the truth.
-    if (ok) utimesSync(path, atimeBefore, mtimeBefore);
-    rmSync(backup, { force: true });
-    liveRestores.delete(restore);
-    clearBreadcrumb(path, cwd);
-    if (ok && m.afterRestore) {
-      const rr = run(m.afterRestore, cwd, opts.timeoutMs);
-      if (rr.status !== 0) {
-        say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
-        return false;
+    try {
+      writeFileSync(path, beforeBytes);
+      const ok = sha(path) === shaBefore;
+      // Restore the TIMESTAMP as well as the bytes. `writeFileSync` is a write, so the file's mtime
+      // becomes now even though the line above proves the content is what it was. Anything that
+      // compares source mtimes against a build then reports a stale artefact for a file nobody
+      // edited: `smoke:dist-freshness` does exactly that, and after a graded run it named
+      // `packages/core` stale and refused the 261-suite chain at its first entry.
+      //
+      // Only when the content is verified identical. If `ok` is false the file is NOT what it was,
+      // and back-dating it would hide a failed restore from the tools that compare timestamps —
+      // the one case where a bumped mtime is telling the truth.
+      if (ok) utimesSync(path, atimeBefore, mtimeBefore);
+      liveRestores.delete(restore);
+      clearBreadcrumb(path, cwd);
+      // Best-effort only: the on-disk backup and the breadcrumb stay as they are for `--recover` (a
+      // LATER process, which cannot read this one's memory) and the SIGKILL recovery cells, but this
+      // restore no longer depends on the backup surviving, so its own absence here is not a failure.
+      rmSync(backup, { force: true });
+      if (ok && m.afterRestore) {
+        const rr = run(m.afterRestore, cwd, opts.timeoutMs);
+        if (rr.status !== 0) {
+          say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
+          restoreError = new Error(`afterRestore exited ${rr.status}`);
+          return false;
+        }
       }
+      if (!ok) restoreError = new Error(`restored bytes do not match the pre-mutation sha (${m.file})`);
+      return ok;
+    } catch (err) {
+      restoreError = err;
+      return false;
     }
-    return ok;
   };
 
   // Declared OUTSIDE the try so the catch can read it. `const` inside the block made the catch's
@@ -520,7 +552,10 @@ function proveOne(m, opts) {
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
-    if (!restored) return { label, transcript, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
+    if (!restored) {
+      return { label, transcript, verdict: "ERROR",
+        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks };
+    }
 
     if (r.timedOut) return { label, transcript, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
@@ -670,7 +705,17 @@ function proveOne(m, opts) {
     }
     return { label, transcript, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
   } catch (e) {
-    restore();
+    // #1337: restore() used to throw here too (it copied the on-disk backup, which can be exactly
+    // as gone as it was on the call above), and the second throw had nothing left to catch it —
+    // it escaped `proveOne` outright, killing the process with a stack trace instead of a verdict.
+    // restore() no longer throws (see above), so its result is graded instead: if it also failed,
+    // that failure — not the harness error that triggered this catch — is the more urgent fact,
+    // since it means the tree is still mutated on exit.
+    const restored = restore();
+    if (!restored) {
+      return { label, transcript, verdict: "ERROR",
+        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"} (harness had already thrown: ${e.message})` };
+    }
     return { label, transcript, verdict: "ERROR", why: `harness threw: ${e.message}` };
   }
 }
