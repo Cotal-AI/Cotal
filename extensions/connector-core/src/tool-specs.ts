@@ -666,12 +666,23 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
         const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+        // #1229: rendering never refuses, but it must not present a partial or last-known roster
+        // as a complete one. `unpopulated` = the watch has not replayed its initial snapshot (a
+        // reconnect refill); `stale` = the bucket has been silent past the liveness window.
+        const view = agent.presenceView();
+        const viewSentence =
+          view.state === "unpopulated"
+            ? `The presence watch has not completed its initial snapshot in "${config.space}", so this list may be partial and a missing name is not an absence verdict.`
+            : view.state === "stale"
+              ? `The presence view in "${config.space}" has been silent since ${new Date(view.staleSince).toISOString()}, so the rows below are last-known.`
+              : "";
         const roster = agent.roster();
         if (!roster.length) {
           const empty = `No one is present in "${config.space}" yet.`;
-          return ok(writeFailure?.stuck
-            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.\n\n${empty}`
-            : empty);
+          const preface = writeFailure?.stuck
+            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.`
+            : viewSentence;
+          return ok(preface ? `${preface}\n\n${empty}` : empty);
         }
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
@@ -700,9 +711,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
         const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
-        return ok(writeFailure?.stuck
-          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.\n\n${rendered}`
-          : rendered);
+        const preface = writeFailure?.stuck
+          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.`
+          : viewSentence;
+        return ok(preface ? `${preface}\n\n${rendered}` : rendered);
       },
     },
     {
