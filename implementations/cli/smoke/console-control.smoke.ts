@@ -53,7 +53,7 @@ async function until<T>(probe: () => T | undefined, ms: number): Promise<T | und
 
 interface ManagerLike {
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(options?: { withAgents?: boolean }): Promise<void>;
   startAgent(o: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
   preparePreservation(attemptId: string): Promise<unknown>;
   abortPreservation(attemptId: string): void;

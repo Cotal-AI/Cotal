@@ -37,7 +37,7 @@ const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; con
 interface ManagerLike {
   readinessTimeoutMs: number;
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(options?: { withAgents?: boolean }): Promise<void>;
   startAgent(o: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
 }
 const { Manager } = (await import(pathToFileURL(join(repoRoot, "implementations", "manager", "dist", "index.js")).href)) as {
