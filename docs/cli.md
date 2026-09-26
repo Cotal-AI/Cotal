@@ -1001,6 +1001,10 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, copied unchanged from the manager row. Instance headers and errors go to stderr, so stdout contains only rows. Mutually exclusive with `--wide` |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
+A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
+that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
+entry, is the route that does.
+
 The human `ps` row is presentation text and is not a stable parsing target. Scripts use `--json`,
 which is the machine-readable row contract.
 
