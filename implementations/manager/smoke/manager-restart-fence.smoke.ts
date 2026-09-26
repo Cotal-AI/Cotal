@@ -183,39 +183,49 @@ try {
   const realRenew = m1ep.renewManagerLease.bind(m1ep);
   const realRelease = m1ep.releaseManagerLease.bind(m1ep);
   const realEpStop = m1ep.stop.bind(m1ep);
+  let doubled = false;
   // (c) A late renew must cross a stop that has already released the key and still find the gone
   // arm fenced: the fixture's other entry deletes that fence and expects THIS cell red. Both fences
   // guard paths a real SIGTERM can take, but a suite cannot win the timing, so this orders the same
-  // crossing by promises instead: the late renew's broker call is held until the stop's release has
-  // completed, then fires at a revision the release invalidated, on a connection held open until it
-  // settles. Unstopped code would re-acquire the key; the fence is the only thing that does not.
+  // crossing by promises instead of a race: the late renew's OWN broker call is held until the
+  // stop's release has actually completed, then fires at a revision the release invalidated, on a
+  // connection held open until it settles. Unstopped code would re-acquire the key; the gone-arm
+  // fence (the mutation target) is the only thing that does not.
   let releaseDone = () => {};
   const released = new Promise<void>((res) => { releaseDone = res; });
   m1ep.releaseManagerLease = async (instanceId, revision) => {
+    // A finally, not a then: this must open the gate even when a mutation makes the CAS above throw
+    // (entry 3 replaces the released call with one at the stale cached revision), or the late renew
+    // below would wait forever on a release that never resolves.
     try { await realRelease(instanceId, revision); } finally { releaseDone(); }
   };
-  const lateRenew = M1.renewLeaseAttempt().then(async () => {
-    // The attempt parked its renew call at the gate below; let it through and settle fully before
-    // stop() may close the endpoint, so its verdict (gone, not unknown) is always reached.
-    await lateRenewSettled;
-  });
-  let letLateRenewThrough = () => {};
-  const releaseGate = new Promise<void>((res) => { letLateRenewThrough = res; });
-  const lateRenewSettled = M1.renewLeaseAttempt();
-  m1ep.renewManagerLease = realRenew;
-  // Fire the LATE renew first and hold its broker call at the release gate: it must observe the
-  // row as released, not race the release.
+  // The doubled wrapper closes over `realRenew`, not over `m1ep.renewManagerLease`, so once
+  // `renewLease()` below has invoked it (its broker calls already running against `realRenew`
+  // directly), the slot can be swapped to the gated version immediately: the doubled call is
+  // unaffected, and the untracked late renew for (c) sees only the gated version, never the doubled
+  // one.
+  m1ep.renewManagerLease = async (info, revision) => {
+    const second = await realRenew(info, await realRenew(info, revision));
+    doubled = true;
+    return second - 1;
+  };
+  void M1.renewLease();
   m1ep.renewManagerLease = async (info, revision) => {
     await released;
     return realRenew(info, revision);
   };
-  void M1.renewLeaseAttempt();
-  m1ep.renewManagerLease = realRenew;
-  // stop() closes the endpoint last; keep it open until the late renew has fully settled.
+  // Fired here, BEFORE stop(): untracked (not through `renewLease()`'s entry fence, and not joined
+  // by stop's `leaseRenewTask`), so stop cannot wait it out. Its broker call is gated above and does
+  // not actually run until the release below has completed.
+  const lateRenewSettled = M1.renewLeaseAttempt();
+  // stop() closes the endpoint last (`await this.ep.stop()`); keep it open until the late renew has
+  // fully settled, so its verdict (gone, not unknown-from-a-closed-connection) is always reached.
   m1ep.stop = async () => { await lateRenewSettled.catch(() => {}); await realEpStop(); };
   await mgr.stop({ withAgents: true });
-  await lateRenewSettled.catch(() => {});
+  m1ep.renewManagerLease = realRenew;
+  m1ep.releaseManagerLease = realRelease;
   m1ep.stop = realEpStop;
+  check("...(a) prelude: the double renew really landed, row one revision past the cache", doubled, { doubled });
   const leaseAfterStop = await client.readOwnManagerLease(iid1);
   check("(a) a clean stop with a renew in flight still removes the lease key", leaseAfterStop === undefined, leaseAfterStop);
   check("(c) a renew that runs after the stop does not put the key back", leaseAfterStop === undefined, leaseAfterStop);
