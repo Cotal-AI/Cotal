@@ -3041,7 +3041,7 @@
     {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
-      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `npm i",
+      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `npm intermediary terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
     },
@@ -3055,7 +3055,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${ope",
+      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
     },
@@ -3111,7 +3111,7 @@
     {
       "path": "implementations/cli/src/console/ui/topo/model.ts",
       "kind": "derived-output",
-      "anchor": "byKey.set(key, {\n        key,\n        kind: \"agent\",\n        name: p.card.name,\n        id: p.card.id,\n  ",
+      "anchor": "byKey.set(key, {\n        key,\n        kind: \"agent\",\n        name: p.card.name,\n        id: p.card.id,\n        status: p.status,\n        role: p.card.role,\n        lastTs: 0,\n      })",
       "class": "non-render/control",
       "rationale": "Console state update: stores the peer record in the topology model map; not a rendered status."
     },
@@ -3601,7 +3601,7 @@
     {
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
-      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection",
+      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" })",
       "class": "non-render/control",
       "rationale": "HTTP response plumbing: writes the status code on the server's error response; no agent presence is rendered."
     },
