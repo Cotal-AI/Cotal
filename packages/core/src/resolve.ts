@@ -97,6 +97,20 @@ function isWellFormedUtf16(s: string): boolean {
   return true;
 }
 
+/** Maximum length of a display name, in UTF-16 code units.
+ *
+ *  Derived from the transport budget, not picked. The client's CONNECT line carries the user JWT
+ *  plus every payload the identity rides into (presence rows, message envelopes), and the broker
+ *  caps that line at `max_control_line` (65536 in the generated config, provision.ts). A name is
+ *  display data on that path, so an unbounded name is an unbounded CONNECT line: a 70,000-char
+ *  name was accepted end to end and the connect then hung (issue #375) — the broker drops the
+ *  oversized line silently and the client retries forever. 128 leaves every human name (~40 chars
+ *  at the extreme) 3× headroom while keeping dozens of in-flight name-bearing rows an order of
+ *  magnitude inside the 64 KB line. The grants themselves key on the principal, never the name
+ *  (event-channel.ts), so this bound guards the payload side of the budget.
+ */
+export const MAX_NAME_LENGTH = 128;
+
 /**
  * Validate a display name. A name must be non-empty, single-line, and free of surrounding
  * whitespace; `/` is reserved as the future `owner/name` separator (and already means "a path"
@@ -106,6 +120,11 @@ function isWellFormedUtf16(s: string): boolean {
 export function assertValidName(name: string): void {
   if (name.length === 0 || name !== name.trim())
     throw new Error(`invalid name ${JSON.stringify(name)}: must be non-empty with no surrounding whitespace`);
+  if (name.length > MAX_NAME_LENGTH)
+    throw new Error(
+      `invalid name ${JSON.stringify(name.slice(0, 32))}…: ${name.length} characters exceeds the ` +
+        `${MAX_NAME_LENGTH}-character limit (the CONNECT line budget that carries it)`,
+    );
   if (/[\r\n]/.test(name))
     throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
   if (name.includes("/"))

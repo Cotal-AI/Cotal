@@ -118,6 +118,11 @@ export function subjectMatches(pattern: string, subject: string): boolean {
  *  never named (and two distinct policy strings could collide on one token). Returns the channel
  *  unchanged when valid so callers can use it inline. */
 export function assertValidChannel(channel: string): string {
+  if (channel.length > MAX_CHANNEL_LENGTH)
+    throw new Error(
+      `invalid channel "${channel.slice(0, 32)}…": ${channel.length} characters exceeds the ` +
+        `${MAX_CHANNEL_LENGTH}-character limit (every grant line a channel mints rides the CONNECT line)`,
+    );
   const segs = channel.split(".");
   if (!channel.length || segs.some((s) => s.length === 0))
     throw new Error(`invalid channel "${channel}": empty segment (no leading/trailing/double dots)`);
@@ -135,6 +140,23 @@ export function assertValidChannel(channel: string): string {
   });
   return channel;
 }
+
+/** Maximum length of a policy channel, in UTF-16 code units (whole string, dots included).
+ *
+ *  Derived from the transport budget, not picked. A channel becomes at least one grant line in
+ *  every list it appears on (subscribe row, per-list JetStream consumer rows, publish row), and
+ *  those lines ride the user JWT inside the client's CONNECT line, which the broker caps at
+ *  `max_control_line` (65536 in the generated config, provision.ts). Measured on this repo: one
+ *  70,000-char channel inflated an agent credential to 193,754 bytes — ~2.8 JWT bytes per channel
+ *  character across its grant copies — and the connect then hung (issue #375), because the broker
+ *  drops an oversized CONNECT line silently and the client retries forever. At 4096 characters a
+ *  channel contributes ≈11.5 KB per grant-bearing copy; with the subscribe, publish and consumer
+ *  rows a channel can mint (~4 copies) that is ≈45 KB, which sits inside 65536 alongside the
+ *  ~4–8 KB many-channel baseline the provision.ts comment prices, with the margin it asks for.
+ *  The bound is on the whole string; a single segment cannot exceed the whole, so the per-segment
+ *  charset rule needs no separate length arm.
+ */
+export const MAX_CHANNEL_LENGTH = 4096;
 
 /** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
  *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
