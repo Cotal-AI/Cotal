@@ -153,7 +153,9 @@ type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> =>
   Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 let pass = 0, fail = 0;
+let cells = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  cells++;
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
@@ -1557,6 +1559,13 @@ try {
   check("explicit manager teardown deleted the managed row and shredded the token/sentinel/health files", rowGone && filesGone, { rowGone, filesGone });
   const revokedEx = await agentExchange("alpha", alphaToken, OWNER); // the OLD captured secret
   check("the old captured actor token is uniformly denied (401) after revocation", revokedEx.status === 401, { status: revokedEx.status, error: revokedEx.body.error });
+
+  // A count, because several cells above only run when the spawn before them succeeded: a regression
+  // that refuses every spawn DELETES them rather than failing them, and the run still prints a
+  // verdict. The focus mode (COTAL_USER_ENDPOINT_CLI_ONLY=1) skips the block between the switch and
+  // its closing brace, so it runs a different total than the full mode.
+  const EXPECTED = endpointCliFocus ? 40 : 119;
+  check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
