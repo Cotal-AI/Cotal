@@ -6,7 +6,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -239,7 +239,13 @@ try {
   // correct and stays silent. Membership is keyed on the workspace set rather than on an
   // `@cotal-ai/` name prefix, because the entry point `cotal-ai` carries no scope and a prefix test
   // would exempt the one package the closure is rooted at.
-  const packedTarballs = new Set(tarballs.map((path) => basename(path)));
+  // Provenance is keyed on the exact tarball: `resolved` is `file:` plus a path relative to the
+  // install prefix, so it is resolved against `current` and compared to the absolute paths this
+  // run packed. A same-named tarball elsewhere on disk must NOT satisfy the check, or the property
+  // proved degrades to "a file of this name resolved locally" (#1319).
+  const packedTarballs = new Set(tarballs);
+  const provenanceOf = (resolved: string | undefined): string | undefined =>
+    resolved?.startsWith("file:") ? resolve(current, resolved.slice("file:".length)) : undefined;
   const lock = JSON.parse(readFileSync(join(current, "node_modules", ".package-lock.json"), "utf8")) as { packages?: Record<string, { resolved?: string }> };
   let checked = 0;
   for (const [path, entry] of Object.entries(lock.packages ?? {})) {
@@ -247,8 +253,10 @@ try {
     if (!workspacePackages.has(name)) continue;
     checked += 1;
     // A missing `resolved` fails. An unrecorded source is an unanswered question, not a clean bill.
-    assert.ok(entry.resolved?.startsWith("file:") && packedTarballs.has(basename(entry.resolved)),
-      `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
+    assert.ok(entry.resolved !== undefined && packedTarballs.has(provenanceOf(entry.resolved) ?? ""),
+      entry.resolved?.startsWith("file:")
+        ? `${name} resolved from the local file ${provenanceOf(entry.resolved)} rather than from a tarball this run packed under ${packs}: provenance is not the packed closure`
+        : `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
   }
   // Without this the guard goes vacuous the day npm moves the hidden lockfile or reshapes its keys:
   // nothing would match, zero packages would be checked, and the loop above would pass in silence.
