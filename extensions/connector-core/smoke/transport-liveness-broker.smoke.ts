@@ -684,6 +684,9 @@ try {
     secondPutArrived && rejectEp.status === "idle",
     { secondPutArrived, epStatus: rejectEp.status },
   );
+  // Cell (d) rebinds orderingAgent, so this agent would otherwise be dropped unstopped and its
+  // heartbeat/self-heal timers would keep the process alive after the banner (#2055 lane).
+  await orderingAgent.stop();
 
   // Cell (d): the straggler rule. The stimulus is the same held-put stub: a setAttention is
   // admitted BEFORE stop() and its put held open, so departure queues behind it in the chain;
