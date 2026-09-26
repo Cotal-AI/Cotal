@@ -37,6 +37,38 @@
       "cell": "an unsuffixed broker-starting suite is refused without executing"
     },
     {
+      "name": "a source that invokes cotal up is no longer refused",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "    if (invokesCliUp(source)) return `${file} invokes cotal up`;\n",
+      "replace": "    void source;\n",
+      "expectRed": "a stack-starting source is refused for invoking cotal up",
+      "cell": "a stack-starting source is refused for invoking cotal up"
+    },
+    {
+      "name": "the up-argv scan stops exempting tab-completion queries",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "    .some((line) => UP_ARGV.test(line) && !COMPLETION_QUERY.test(line));",
+      "replace": "    .some((line) => UP_ARGV.test(line));",
+      "expectRed": "a tab-completion query on the up argv is not an invocation",
+      "cell": "a tab-completion query on the up argv is not an invocation"
+    },
+    {
+      "name": "a live segment that is not a suffix is admitted again",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "const LIVE_NAMED = /[:\\-]live(?=$|[:\\-])/;\n",
+      "replace": "const LIVE_NAMED = /(?:^|[:\\-])live(?=$|[:\\-])/;\n",
+      "expectRed": "a live segment inside a script name is refused, not only a suffix",
+      "cell": "a live segment inside a script name is refused, not only a suffix"
+    },
+    {
+      "name": "live-named source files are no longer refused by file name",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "    if (isLiveNamedSourceFile(file)) return `${file} is a live suite source`;\n",
+      "replace": "    void file;\n",
+      "expectRed": "a resolved source file named -live.smoke is refused without a live-named script",
+      "cell": "a resolved source file named -live.smoke is refused without a live-named script"
+    },
+    {
       "name": "node options before a suite path skip source inspection",
       "file": "scripts/mutation-command-safety.mjs",
       "find": "      if (flag?.startsWith(\"-\")) {\n        if (EVAL_FLAGS.has(flag)) break;\n        if (takesValue(flag) && !token.includes(\"=\")) j++;\n        continue;\n      }\n",

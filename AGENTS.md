@@ -44,6 +44,7 @@ is current before changing behavior.
 pnpm cotal <cmd>   # run the CLI via tsx bin/cotal.ts (base + manager commands)
 pnpm smoke         # core smoke test
 pnpm smoke:ci      # security/protocol smoke suite (the CI gate); needs nats-server on PATH
+pnpm smoke:ci:offline # the gate minus the suites that start a stack or drive real processes; prints what it excluded, and is not the gate
 pnpm typecheck     # tsc --noEmit across all packages
 pnpm build         # tsc build across all packages
 ```
