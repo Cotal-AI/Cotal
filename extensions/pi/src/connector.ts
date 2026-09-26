@@ -42,6 +42,7 @@ export const piConnector: Connector = {
   requires: ["pi"],
   supportsResume: true,
   supportsSessionContinuation: true,
+  supportsPrompt: true, // pi takes the prompt as its positional initial message — see buildLaunch
   eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.resume && opts.continueSession)

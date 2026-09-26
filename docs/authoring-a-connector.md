@@ -26,7 +26,7 @@ const myConnector: Connector = {
       env: { /* COTAL_* wiring from opts */ },
     };
   },
-  // optional: listModels, supportsModelVariant, supportsResume,
+  // optional: listModels, supportsModelVariant, supportsPrompt, supportsResume,
   // supportsSessionContinuation, supportsToolListAnnounce, eventChannel, pluginRoot
 };
 
@@ -36,7 +36,7 @@ registry.register(myConnector);          // registration runs on import, making 
 `buildLaunch(opts)` is the whole job: given a `LaunchOpts` (space, name, role, creds, channels,
 model, prompt…), return a `LaunchSpec` (the command, args, and environment) whose process connects to
 the broker as that mesh node. Everything else on the interface is optional and default-deny: declare
-`supportsModelVariant`/`supportsResume`/`supportsSessionContinuation`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
+`supportsModelVariant`/`supportsPrompt`/`supportsResume`/`supportsSessionContinuation`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
 fails loud before any provisioning), list `requires` so a missing CLI fails with a clear message, and
 implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your
 session publishes a structured event plane: it names the channel the manager grants that session

@@ -549,6 +549,8 @@ export interface ManagerResumeAgent {
       | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
     model?: string;
     variant?: string;
+    /** Kickoff prompt from the persona/manifest launch form; a stale-restart re-submits it. */
+    prompt?: string;
     subscribe?: string[];
     allowSubscribe: string[];
     allowPublish?: string[];
@@ -697,6 +699,7 @@ interface ManagedLaunch {
   cwd: string;
   model?: string;
   variant?: string;
+  prompt?: string;
   subscribe?: string[];
   allowSubscribe: string[];
   allowPublish?: string[];
@@ -4823,6 +4826,8 @@ export class Manager {
     }
     if (variant && !connector.supportsModelVariant)
       return { ok: false, error: `${agent} connector does not support model variants (variant)` };
+    if (prompt !== undefined && !connector.supportsPrompt)
+      return { ok: false, error: `${agent} connector does not support an initial prompt (prompt)` };
 
     // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
@@ -5154,6 +5159,9 @@ export class Manager {
           cwd,
           model,
           variant,
+          // The kickoff prompt is part of the launch form: a stale-restart re-submits it, so the
+          // recorded launch must carry it for the restart gate (and preserve) to see it.
+          prompt,
           subscribe,
           allowSubscribe,
           allowPublish,
@@ -5595,6 +5603,8 @@ export class Manager {
         return { ok: false, error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
       if (entry.launch.variant && !connector.supportsModelVariant)
         return { ok: false, error: `${connector.name} connector does not support model variants (variant)` };
+      if (entry.launch.prompt !== undefined && !connector.supportsPrompt)
+        return { ok: false, error: `${connector.name} connector does not support an initial prompt (prompt)` };
       let retainedSession: string | undefined;
       try {
         retainedSession = this.retainedSessionId(entry, connector);
