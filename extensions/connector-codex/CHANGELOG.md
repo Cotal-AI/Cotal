@@ -1,5 +1,13 @@
 # @cotal-ai/connector-codex
 
+## 0.55.0
+
+### Patch Changes
+
+- d5dd72a: The codex-host smoke tolerates a torn JSONL tail at every poll: the two remaining direct parse chains inside `waitFor` polls now read through `readJsonLines`, which drops a partial trailing line a live child is still appending.
+- 2525286: Every settle-dependent cell in the codex lifecycle smoke carries its wait's margin, so a timed-out wait fails as a timed-out wait.
+- 59ca157: The codex host logs the rollout path it publishes from as a quoted value, and the lifecycle smoke reads the path from that value instead of from the sentence around it.
+
 ## 0.54.0
 
 ### Patch Changes

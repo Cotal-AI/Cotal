@@ -1,5 +1,22 @@
 # @cotal-ai/connector-core
 
+## 0.55.0
+
+### Minor Changes
+
+- 357af9f: `cotal_spawn` accepts an optional manager instance id. Core resolves and invokes that exact instance without placing the pinned handle in the class cache, while malformed, unreachable, or credential-conflicting pins fail instead of falling back to class anycast.
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- 7c7c853: A dead AG-UI emitter holder reports itself not running, so a health read after a refused rebind or a failed start no longer sees a live event plane.
+- 8472dc3: `cotal_channels` reports a durable channel's delivery health from the daemon's own answer: `active` requires a live lease and a membership round-trip that lists the channel for this lifecycle, a daemon that answers nothing renders `degraded`, and a reader that cannot establish it (a responder-present error) renders `unknown` instead of omitting the clause. `CotalEndpoint.fetchMemberships()` is public for that round-trip (issue #445).
+- 67bbcc5: Report a Jcode session-journal fold as a terminal event without stopping the seat.
+- eddc5f0: Serialize presence writes from one agent so they land in the order they were made, and publish departure only after every write already in flight has settled. This fixes overlapping status writes interleaving their puts (#2055) and an offline record landing before an earlier in-flight status write (#636).
+- eddc5f0: Refuse a presence write admitted after stop() began, instead of queueing it behind departure: departure's offline publish is now itself a presence-chain entry ordered after every write already admitted, and any write admitted after it rejects at once with a fixed error, so a straggler can neither sit out the connect grace behind the chain nor land after the offline record (#636).
+- db9a969: Escalate consecutive presence write failures after one liveness TTL and label connector roster snapshots as not live until a write succeeds.
+- 5418d1f: Consult `presenceView()` on every roster read in the connector, so a partial reconnect refill is not rendered or enforced as a complete roster: `cotal_roster` and `cotal_orientation` label an `unpopulated` view as a snapshot still in progress and a `stale` view as last-known, and a send or DM to a name that cannot be verified waits once for the presence snapshot and is then refused with the observer's condition instead of reporting a live peer as absent.
+
 ## 0.54.0
 
 ### Minor Changes

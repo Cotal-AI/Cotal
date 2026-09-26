@@ -1,5 +1,29 @@
 # @cotal-ai/core
 
+## 0.55.0
+
+### Minor Changes
+
+- 2e13607: Let a remote participant supervisor spawn and terminally release a HOST-OWNED managed agent (#1972). A registered participant holds no ledger writer, no JetStream provisioner, and no signing seed, so `cotal spawn <actor> -d --on <instanceId>` previously failed in auth preflight and a despawn refused outright.
+
+  `@cotal-ai/core` adds the two closed wire operations and their parsers: `manager-managed-agent-enrollment` and `manager-managed-agent-prepare-retirement`. An enrollment carries the SHA-256 digest of the agent's standing actor token and never the token, and carries no lifecycle UID at all; a prepare-retirement's `opId` must be `managedRetirementOpId(target.lifecycleUid)`.
+
+  `@cotal-ai/auth` adds `authorizeRemoteManagedAgentEnrollment` and `authorizeRemoteManagedAgentPrepareRetirement`, which require `supervise` at the caller instance's current open manager gate with the host-issued registration proof, plus the loopback door `POST /manager-service-authority/verify-enrollment` (`VERIFY_ENROLLMENT_PATH`) that a host platform calls for the decision while it owns every write. The door derives the caller's scope from the local ledger rather than the request body. `dispatchManagerAuthorityRequest` refuses both kinds with `unimplemented`, since stock owns no such storage, and the provider gains the `enrollRemoteManagedAgent` and `prepareRemoteManagedAgentRetirement` clients.
+
+  `@cotal-ai/manager` adds the `remoteAuthority.enrollManagedAgent` hook and takes it in `provisionUserAgent`: the participant generates the actor token, writes it at 0600 before the request, sends only the digest, adopts the HOST's chosen lifecycle UID, and launches `agent-bearer --exchange-url`. `prepareAgentRetirement` now performs the host release instead of throwing.
+
+- 357af9f: `cotal_spawn` accepts an optional manager instance id. Core resolves and invokes that exact instance without placing the pinned handle in the class cache, while malformed, unreachable, or credential-conflicting pins fail instead of falling back to class anycast.
+
+### Patch Changes
+
+- 810814b: Warn when a per-member delivery durable binds on a plane with no ready delivery lease.
+- 8472dc3: `cotal_channels` reports a durable channel's delivery health from the daemon's own answer: `active` requires a live lease and a membership round-trip that lists the channel for this lifecycle, a daemon that answers nothing renders `degraded`, and a reader that cannot establish it (a responder-present error) renders `unknown` instead of omitting the clause. `CotalEndpoint.fetchMemberships()` is public for that round-trip (issue #445).
+- f272f71: Bound the display-name and policy-channel length at the shared validators (`MAX_NAME_LENGTH` 128, `MAX_CHANNEL_LENGTH` 4096), so an over-long name or channel is refused with the bound named instead of minting a credential that exceeds the broker's `max_control_line` and silently hanging the connect (issue #375). The mint itself refuses a user JWT whose byte size exceeds the control line minus the CONNECT envelope (`MAX_MINTED_JWT_BYTES`), so many individually valid channels cannot compose into a credential the broker drops.
+- a83dd80: Preflight reports a probe that ran out of its budget as a slow link instead of a trust failure: `probeConnect` now returns a distinct `timeout` reason, `preflightTarget` routes it to a new `slow-link` verdict without consulting the INFO greeting, and the rendered sentence names the connect budget and says the registry entry was kept, never a CA. A real certificate failure against a TLS-required mesh still renders the `tls-trust` guidance.
+- db9a969: Escalate consecutive presence write failures after one liveness TTL and label connector roster snapshots as not live until a write succeeds.
+- d3d6742: Name the compiler's generated-code shape and the overflowing property count when a wide but legal contract schema overflows the call stack at compile, instead of blaming the caller's schema. Flip the schema-profile Ajv pin to `allErrors: true`, which raises the stack-bounded compile ceiling roughly 3.4x at any given stack budget without changing any validation verdict.
+- fd58782: The session smoke now grades that a differently signed grant for the same session never re-releases the winner's credential.
+
 ## 0.54.0
 
 ### Minor Changes

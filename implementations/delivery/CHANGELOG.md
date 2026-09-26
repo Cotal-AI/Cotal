@@ -1,5 +1,27 @@
 # @cotal-ai/delivery
 
+## 0.55.0
+
+### Patch Changes
+
+- 065717c: `cotal deliver` now resolves the broker for `--space` through the mesh registry: a registered space is dialed at its recorded broker (with the record's TLS requirement), a mismatching `--server` or a record for another workspace root is refused before any dial, and an unreachable recorded broker is reported with its URL and the remedy that fits the record's origin. Spaces with no record keep the local-mesh default, and the hosted (injected-store) daemon still learns its target from argv alone.
+- 3e95455: `cotal deliver` no longer reports a refused lease write as "a live lease already exists". A CAS
+  conflict against a genuinely live lease still gets that message; a permission denial on the lease
+  write now names the refused operation and subject and says to use a credential holding the
+  `delivery` profile. Any other acquire failure is reported by shard and message, distinct from both.
+- Updated dependencies [810814b]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [a83dd80]
+- Updated dependencies [db9a969]
+- Updated dependencies [4f48629]
+- Updated dependencies [2e13607]
+- Updated dependencies [d3d6742]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/workspace@0.55.0
+
 ## 0.54.0
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @cotal-ai/connector-jcode
 
+## 0.55.0
+
+### Patch Changes
+
+- 40e7428: Give a Jcode seat launched with no spawn `--prompt` a scheduled turn after join: the post-join notice is now delivered as the seat's first driven turn instead of a no-reply append, so a persona subscribed to nothing is never parked on an unread append.
+- 67bbcc5: Report a Jcode session-journal fold as a terminal event without stopping the seat.
+
 ## 0.54.0
 
 ## 0.53.0

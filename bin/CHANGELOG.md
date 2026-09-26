@@ -1,5 +1,51 @@
 # cotal-ai
 
+## 0.55.0
+
+### Patch Changes
+
+- a83dd80: Preflight reports a probe that ran out of its budget as a slow link instead of a trust failure: `probeConnect` now returns a distinct `timeout` reason, `preflightTarget` routes it to a new `slow-link` verdict without consulting the INFO greeting, and the rendered sentence names the connect budget and says the registry entry was kept, never a CA. A real certificate failure against a TLS-required mesh still renders the `tls-trust` guidance.
+- 565a92f: Refuse an unmintable spawn name client-side before the manager round trip: `cotal spawn` now applies the core name door (the same predicate the manager applies) to the effective identity on both the foreground and `--detach` paths, keyed on the target mesh's auth mode, so a hyphenated name on a user-auth mesh fails immediately with the actor-token explanation and the `_` remedy instead of after the provisioning call.
+- Updated dependencies [a13c8bb]
+- Updated dependencies [065717c]
+- Updated dependencies [e1351c2]
+- Updated dependencies [810814b]
+- Updated dependencies [427a848]
+- Updated dependencies [7c7c853]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [391af1d]
+- Updated dependencies [d5ef965]
+- Updated dependencies [84e0175]
+- Updated dependencies [8120e34]
+- Updated dependencies [67bbcc5]
+- Updated dependencies [64ec80e]
+- Updated dependencies [3e95455]
+- Updated dependencies [e4f1d2d]
+- Updated dependencies [92ae52c]
+- Updated dependencies [4918b65]
+- Updated dependencies [17d066f]
+- Updated dependencies [a83dd80]
+- Updated dependencies [eddc5f0]
+- Updated dependencies [eddc5f0]
+- Updated dependencies [db9a969]
+- Updated dependencies [4f48629]
+- Updated dependencies [f7f23d3]
+- Updated dependencies [2e13607]
+- Updated dependencies [5418d1f]
+- Updated dependencies [d3d6742]
+- Updated dependencies [4de65c9]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+  - @cotal-ai/connector-core@0.55.0
+  - @cotal-ai/delivery@0.55.0
+  - @cotal-ai/cli@0.55.0
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/manager@0.55.0
+  - @cotal-ai/auth@0.55.0
+  - @cotal-ai/workspace@0.55.0
+  - @cotal-ai/runtime@0.55.0
+
 ## 0.54.0
 
 ### Patch Changes

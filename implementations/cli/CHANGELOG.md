@@ -1,5 +1,31 @@
 # @cotal-ai/cli
 
+## 0.55.0
+
+### Minor Changes
+
+- 17d066f: `cotal mint` can bound a credential's lifetime and re-mint for an existing identity. `--expires-in <seconds>` (or `--expires-at <unix-seconds>`) threads the lifetime the core mint seam already takes, so an out-of-band credential can satisfy a standing-renewal consumer that requires an `exp`; the two flags are mutually exclusive and an invalid value is refused before anything is written. `--identity <creds>` re-mints for the nkey the file carries (read by core's own creds loader), keeping the principal so every durable keyed to it survives. Fixes #1256
+
+### Patch Changes
+
+- e1351c2: Take a DM sender's display name and role from the roster by authenticated id instead of the message payload, so one peer cannot spoof another's name or role in the CLI DM lens or the web feed.
+- 427a848: Gate the event plane on the typed spawn contract behind the caller's admin tier on a user mesh (#373): a non-admin caller asking for `events: true` is refused before anything is provisioned, an omitted bit is served unarmed with a notice in the reply, and a space whose policy requires events refuses non-admin spawns outright. The CLI's detached spawn now sends the events bit only when the operator chose it and prints the reply's notice.
+- 391af1d: `cotal up` now names a manager it restored, distinctly from one it found already running (issue #883). `ensureManager` returns `started`/`pid` instead of collapsing the reuse and launch branches into the same `{ running: true }`, `ensureDelivery`/`ensureControlPlane` carry the same fields through, and a refresh that restores a missing manager prints `✓ restored in the background: manager (pid N)`; a refresh that finds everything running still prints only the `✓ mesh "<space>" already running` line.
+- d5ef965: `cotal up`'s refusal for a hand-registered space now names `cotal supervise --space <s> --server <url>` (and `cotal deliver`) when the registered broker is on another host, instead of `cotal meshes rm`, which would drop the registry route a live remote mesh is addressed by. A loopback registration keeps the prior wording.
+- 4de65c9: Refuse unsafe seed generations and keep staged seed payload paths inside the durable store.
+- Updated dependencies [810814b]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [a83dd80]
+- Updated dependencies [db9a969]
+- Updated dependencies [4f48629]
+- Updated dependencies [2e13607]
+- Updated dependencies [d3d6742]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/workspace@0.55.0
+
 ## 0.54.0
 
 ### Minor Changes
