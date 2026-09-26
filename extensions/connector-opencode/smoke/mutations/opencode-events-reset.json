@@ -22,9 +22,13 @@
     "session opened can stay open. The fixed arm narrows when an observer is left holding an endless",
     "run; it does not preclude it.",
     "",
-    "The ordering barrier between the two chains is NOT registered as a mutation. Removing it is a",
-    "race rather than a defect that reproduces on demand, and a mutation whose kill depends on",
-    "scheduling would report SURVIVED on a slow machine and read as a hole in the suite.",
+    "THE ORDERING BARRIER IS TWO AWAITS ON THE OLD HOLDER'S CHAIN, and R10 registers their joint",
+    "removal through one multi-site anchor (`allowMultiple`, as presence-render-census.json uses for",
+    "sites that share their text): dropping either await alone is masked by the other, so the pair is",
+    "the barrier and the pair is what the mutant drops. The kill is structural, not scheduled, for",
+    "the reason R4 gives: each suspension awaits a chain carrying a broker publish that cannot",
+    "resolve without an I/O turn, so the new session's first frame is already queued behind the old",
+    "close on every machine, and dropping both lets it pass every run.",
     "",
     "R4 REGISTERS THE SWAP RACE, and the reason it is safe to register is that its kill does NOT depend",
     "on scheduling, which is what the note above was right to worry about in general.",
@@ -126,6 +130,14 @@
       "find": "        await agent.whenConnected(20_000);\n",
       "replace": "",
       "expectRed": "boot:the first event arrives before the mesh link binds, and the emitter waits for the link instead of dying"
+    },
+    {
+      "name": "R10 both awaits on the old holder's chain are dropped, so the new session's first frame can pass the old session's close",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "await settleWithin(previous.",
+      "replace": "true; void settleWithin(previous.",
+      "allowMultiple": true,
+      "expectRed": "order:the old session's LAST run close precedes the new session's FIRST run open"
     }
   ]
 }
