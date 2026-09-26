@@ -388,6 +388,12 @@ function run(command, cwd, timeoutMs) {
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
+// The default counts a pass MARK: a `✓` that opens its line, after indentation and any colour code
+// (`  \x1b[32m✓\x1b[0m name`). A `✓` anywhere else is text. The glyph alone counted a label such as
+// "dead-on-arrival spawn reported as failure (not ✓ started)" as one more passed check, green or red
+// (#1348), which let a run one real check short of a `minTicks` floor clear it.
+const DEFAULT_PROGRESS_PATTERN = "^[ \\t]*(?:\\u001b\\[[0-9;]*m[ \\t]*)*✓";
+
 /**
  * How far into the suite did the run get? Counting a suite's own progress markers separates
  * "failed at my assertion" from "died before reaching it" and from "ran an older copy of the file".
@@ -398,7 +404,7 @@ const progressCount = (output, pattern) => {
   // progress line", since a suite's marks are line-initial) matches ONCE without it — against the
   // start of the whole transcript. The floor then compares 1 to 1 forever and silently never fires,
   // while the baseline banner prints "1 progress marks" as though it had measured something.
-  const re = new RegExp(pattern ?? "✓", "gm");
+  const re = new RegExp(pattern ?? DEFAULT_PROGRESS_PATTERN, "gm");
   return (output.match(re) ?? []).length;
 };
 

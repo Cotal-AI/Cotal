@@ -1,0 +1,28 @@
+{
+  "grades": "tool",
+  "guard": "with no progressPattern, a progress mark is a line-initial ✓, after indentation and any colour code, and a ✓ inside a label is not one",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "progressPattern": "^  ✓",
+  "why": "#1348: counting the glyph wherever it stood made a label such as \"reported as failure (not ✓ started)\" one more passed check on every run, which let a run one real check short of a minTicks floor clear it. The self-test counts marks through the tool's own baseline banner, so reverting the default reds its first new cell. This config sets its own progressPattern because the default is the thing under mutation.",
+  "mutations": [
+    {
+      "name": "the default counts every ✓ glyph again",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "  const re = new RegExp(pattern ?? DEFAULT_PROGRESS_PATTERN, \"gm\");",
+      "replace": "  const re = new RegExp(pattern ?? \"✓\", \"gm\");",
+      "expectRed": "the default progress count reads line-initial marks, not a ✓ inside a label",
+      "cell": "the default progress count reads line-initial marks, not a ✓ inside a label"
+    },
+    {
+      "name": "a coloured mark is no longer a mark",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "const DEFAULT_PROGRESS_PATTERN = \"^[ \\\\t]*(?:\\\\u001b\\\\[[0-9;]*m[ \\\\t]*)*✓\";",
+      "replace": "const DEFAULT_PROGRESS_PATTERN = \"^[ \\\\t]*✓\";",
+      "expectRed": "the default progress count reads line-initial marks, not a ✓ inside a label",
+      "cell": "the default progress count reads line-initial marks, not a ✓ inside a label"
+    }
+  ],
+  "suite": [
+    "scripts/mutation-proof.selftest.mjs"
+  ]
+}
