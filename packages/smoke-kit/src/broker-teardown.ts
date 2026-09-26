@@ -220,13 +220,19 @@ function arm(): void {
 
 /**
  * Take ownership of an already-spawned broker. Returns a `release` for the suite's own `finally`:
- * once the suite has torn the broker down itself, release stops this helper from touching it again.
+ * it kills the broker if the suite has not already torn it down itself, and forgets the entry. The
+ * store directory remains the suite's to remove, because a restart-shaped suite starts its next
+ * broker on the same directory and this helper must not remove a tree the next broker still needs.
+ * A second `SIGKILL` on an already-exited child is a no-op, so a site that kills and then releases
+ * is unchanged.
  */
 export function teardownOnSignal(child: ChildProcess, storeDir?: string): () => void {
   arm();
   const entry: Owned = { child, ...(storeDir === undefined ? {} : { storeDir }) };
   owned.add(entry);
-  return () => owned.delete(entry);
+  return () => {
+    if (owned.delete(entry)) killOwnedChild(child);
+  };
 }
 
 /** Own one exact temporary path before it receives credential or broker bytes. Unlike

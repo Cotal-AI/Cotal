@@ -54,7 +54,7 @@ interface Started {
 }
 
 /** Start the fixture and wait for it to report the broker it spawned. */
-async function start(mode: "clean" | "signal" | "unowned"): Promise<Started> {
+async function start(mode: "clean" | "signal" | "unowned" | "release-only"): Promise<Started> {
   const proc = spawn("node_modules/.bin/tsx", [FIXTURE, mode], { stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   proc.stdout.on("data", (d: Buffer) => (out += d.toString()));
@@ -63,7 +63,7 @@ async function start(mode: "clean" | "signal" | "unowned"): Promise<Started> {
   for (let i = 0; i < 200; i++) {
     const m = /READY (\d+) (\d+) (\S+)/.exec(out);
     if (m) return { proc, selfPid: Number(m[1]), brokerPid: Number(m[2]), storeDir: m[3] };
-    if (proc.exitCode !== null && mode !== "clean") throw new Error(`fixture(${mode}) exited before READY: ${err}`);
+    if (proc.exitCode !== null && mode !== "clean" && mode !== "release-only") throw new Error(`fixture(${mode}) exited before READY: ${err}`);
     await wait(100);
   }
   throw new Error(`fixture(${mode}) never printed READY: ${err}`);
@@ -160,6 +160,20 @@ try {
     check("clean exit: the broker is gone", !alive(s.brokerPid), `pid ${s.brokerPid}`);
     check("clean exit: its store dir is removed", !existsSync(s.storeDir), s.storeDir);
     check("clean exit: still exits 0, so a green run stays green", how.code === 0 && how.signal === null, JSON.stringify(how));
+    reapOwn(s.brokerPid, s.storeDir);
+  }
+
+  // 4b. The trap the issue reports: a suite written from scratch that calls ONLY release, with no
+  //     kill and no rmSync of its own. Before the fix this exits 0 with a live broker and its store
+  //     dir on disk; release must tear the broker down on its own. The directory stays the suite's,
+  //     as it already is for `teardownPathOnSignal`, because a restart-shaped suite starts its next
+  //     broker on the same directory and a release that removed it would break that class.
+  {
+    const s = await start("release-only");
+    await ended(s.proc);
+    await wait(500);
+    check("release-only: a suite that calls ONLY release still gets its broker torn down", !alive(s.brokerPid), `pid ${s.brokerPid}`);
+    check("release-only: LIMIT: its store dir is the suite's and is left on disk", existsSync(s.storeDir), s.storeDir);
     reapOwn(s.brokerPid, s.storeDir);
   }
 
