@@ -184,8 +184,13 @@ try {
   errdaemon.on("error", () => {});
   await errdaemon.start();
   const errSub = errdaemon.serveControl(CONTROL_DELIVERY, () => ({ ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" }), { boundReply: true });
+  // The stub's SUB is in flight when serveControl returns; a request published before the broker
+  // registers it takes the no-responders outcome (undefined), not the responder-present error this
+  // cell is about. Wait until the stub is the member that answers, bounded, before reading the row.
   let membershipsThrew = false;
-  try { await dagent.ep.fetchMemberships(); } catch { membershipsThrew = true; }
+  for (let i = 0; i < 50 && !membershipsThrew; i++) {
+    try { await dagent.ep.fetchMemberships(); await sleep(100); } catch { membershipsThrew = true; }
+  }
   const errRows = await dagent.listChannels();
   const errRow = errRows.find((c) => c.channel === "fx51-durable");
   check("a daemon answering errors (responder present, op refused) renders health unknown, never active/degraded/omitted (#445)",

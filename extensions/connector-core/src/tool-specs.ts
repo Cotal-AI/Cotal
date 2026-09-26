@@ -983,7 +983,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               : c.deliveryHealth === "active"
                 ? " · durable backstop active"
                 : c.deliveryHealth === "unknown"
-                  ? " · durable backstop health unknown — this reader cannot establish it (no delivery grant or no delivery plane here)"
+                  ? " · durable backstop health unknown — this reader cannot establish it (no delivery grant here, or the daemon answered with an error)"
                   : "";
           return `${c.joined ? "●" : "○"} #${c.channel}${desc} (${c.joined ? "subscribed" : "not subscribed"}, replay ${c.replay ? "on" : "off"})${mode}${unclosed}${health}`;
         });
