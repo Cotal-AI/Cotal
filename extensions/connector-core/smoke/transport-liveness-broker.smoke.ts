@@ -589,6 +589,19 @@ try {
       quietMs += 20;
     }
   };
+  // Settle whatever arrives in heldOrdering, in whatever order, until `done` flips true (set by a
+  // `.then()` on the real call(s) under test) or the bound elapses. Never calls takeOrdering, so
+  // nothing is left polling in the background after this returns — the same hazard quietOrdering
+  // above avoids, and for the same reason: an orphaned poller can steal a later put out from under
+  // an explicit takeOrdering() and stall the agent's presence chain forever.
+  const drainUntil = async (done: { v: boolean }, timeoutMs = 5_000): Promise<void> => {
+    const end = Date.now() + timeoutMs;
+    while (!done.v && Date.now() < end) {
+      const put = heldOrdering.shift();
+      if (put) { put.resolve(); continue; }
+      await sleep(20);
+    }
+  };
 
   // Cell (a): setStatus("working", "") and setStatus("idle"), neither awaited by the caller. The
   // working call's LAST put is held open; while it is held the idle call must not have started
@@ -600,13 +613,17 @@ try {
   const activityPut = await takeOrdering(); // setActivity("")
   activityPut.resolve();
   const statusPut = await takeOrdering(); // setStatus("working") — HELD
-  const idleStartedWhileHeld = heldOrdering.length > 0;
   const orderB = orderingAgent!.setStatus("idle").catch(() => {});
+  // Give an unserialized idle write every chance to land its put while the working call's last
+  // put is still held: this is the window the fix must keep empty.
+  await sleep(150);
+  const idleStartedWhileHeld = heldOrdering.length > 0;
   statusPut.resolve();
-  await orderA;
-  const idlePut = await takeOrdering(); // the idle call's one put, started only now
-  idlePut.resolve();
-  await orderB;
+  // Drain whatever remains (the idle call's own put, wherever it lands) until both calls settle;
+  // never assume a specific put belongs to a specific call, only that both calls need one more.
+  const orderingDone = { v: false };
+  void Promise.all([orderA, orderB]).then(() => { orderingDone.v = true; });
+  await drainUntil(orderingDone);
   check(
     "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
     !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.status === "idle",
@@ -619,17 +636,20 @@ try {
   // the held put settles the offline put arrives, is settled, and only then does stop() return.
   await quietOrdering();
   const orderC = orderingAgent!.setStatus("waiting", "ordered departure").catch(() => {});
-  const waitActivityPut = await takeOrdering(); // setActivity("ordered departure")
+  const heldPut = await takeOrdering(); // setActivity("ordered departure") — held
   const stopPromise = orderingAgent!.stop().catch(() => {});
+  // Give stop()'s offline publish every chance to start while the write already in flight is
+  // still held: this is the window the fix must keep empty.
   await sleep(150);
-  const offlineStartedWhileHeld = heldOrdering.length > 1;
-  waitActivityPut.resolve();
-  const waitStatusPut = await takeOrdering(); // setStatus("waiting") — the call's second put
-  waitStatusPut.resolve();
-  await orderC;
-  const offlinePut = await takeOrdering();
-  offlinePut.resolve();
-  await stopPromise;
+  const offlineStartedWhileHeld = heldOrdering.length > 0;
+  heldPut.resolve();
+  // Two more puts are owed after this (orderC's own second put, and the offline publish), in
+  // whichever order the tree under test produces — a defect-under-test can legitimately deliver
+  // them in either order, so drain until both calls have settled rather than assuming which put
+  // is which.
+  const departureDone = { v: false };
+  void Promise.all([orderC, stopPromise]).then(() => { departureDone.v = true; });
+  await drainUntil(departureDone);
   check(
     "departure is ordered behind a status write already in flight",
     !offlineStartedWhileHeld && orderingEp.status === "offline",
