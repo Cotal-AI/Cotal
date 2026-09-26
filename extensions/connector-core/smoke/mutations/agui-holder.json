@@ -71,6 +71,14 @@
       "find": "      return `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;",
       "replace": "      return `${String(st.dev)}:${String(st.ino)}:${st.size}:${await JsonlFileSource.sealAt(fh, st.size)}`;",
       "expectRed": "a beginning cursor reads retained complete records"
+    },
+    {
+      "name": "H5 running answers from the emitter again, ignoring the death record",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      return this.dead === undefined && this.emitter !== undefined && !this.emitter.stopped;\n",
+      "replace": "      return this.emitter !== undefined && !this.emitter.stopped;\n",
+      "expectRed": "rebind:a-holder-killed-by-the-refusal-is-not-reported-running",
+      "note": "Reverts #553: a holder killed by the rebind refusal keeps reporting its unstopped emitter's state, so the health read lies. The refusal itself and the errors array are unchanged, only the getter's answer regresses."
     }
   ]
 }
