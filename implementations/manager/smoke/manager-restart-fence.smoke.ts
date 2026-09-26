@@ -176,14 +176,17 @@ try {
   const leaseAfterStop = await client.readOwnManagerLease(iid1);
   check("(a) a clean stop with a renew in flight still removes the lease key", leaseAfterStop === undefined, leaseAfterStop);
 
+  // Cell (c) must run BEFORE the successor boots: the restarted incarnation legitimately re-holds
+  // the same persisted instanceId, and this suite is one process, so a renew fired after that would
+  // read back the successor's own live key rather than proving anything about the stopped one.
+  await M1.renewLease();
+  const leaseAfterLateRenew = await client.readOwnManagerLease(iid1);
+  check("(c) a renew that runs after the stop does not put the key back", leaseAfterLateRenew === undefined, leaseAfterLateRenew);
+
   const bootStarted = Date.now();
   mgr = await bootManager();
   const bootMs = Date.now() - bootStarted;
   check("(b) the successor boots at once after that stop, without waiting out the lease TTL", bootMs < MANAGER_LEASE_TTL_MS / 2, { bootMs, ttl: MANAGER_LEASE_TTL_MS });
-
-  await M1.renewLease();
-  const leaseAfterLateRenew = await client.readOwnManagerLease(iid1);
-  check("(c) a renew that runs after the stop does not put the key back", leaseAfterLateRenew === undefined, leaseAfterLateRenew);
 
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
