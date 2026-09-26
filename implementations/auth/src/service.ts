@@ -68,6 +68,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { issueRemoteManagerAuthority } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
@@ -119,6 +120,11 @@ export const INTERACTIVE_RETIRE_PATH = "/interactive-lifecycle/retire";
  *  revoked its grant, when the remote manager that should have requested it is gone (#2070). */
 export const MANAGED_RETIRE_PATH = "/managed-lifecycle/retire";
 
+/** Loopback-only host route a platform calls BEFORE it enrolls or releases a managed agent for a
+ *  remote manager (#1972 §2.2). The platform owns the writers; this door owns the decision. It
+ *  derives the caller's scope from the local ledger and never accepts one from the caller. */
+export const VERIFY_ENROLLMENT_PATH = "/manager-service-authority/verify-enrollment";
+
 /** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
 const FAILED_EXCHANGE_PER_MIN = 30;
@@ -161,6 +167,20 @@ export interface AuthAuthorityPlane {
     scope: string[];
     request: RemoteRetainedAgentValidationRequest;
   }) => Promise<RemoteRetainedAgentValidationRequest>;
+  /** Authorize one host-owned managed-agent enrollment (#1972). The plane reads the manager gate on
+   *  its own connection and verifies the proof against the data-account signing seed, so no secret
+   *  and no gate read ever crosses to the host platform that called the loopback door. */
+  verifyManagedAgentEnrollment: (args: {
+    owner: string;
+    scope: string[];
+    request: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest>;
+  /** Authorize one host-owned managed-agent terminal release preparation (#1972 phase P0/P1). */
+  verifyManagedAgentPrepareRetirement: (args: {
+    owner: string;
+    scope: string[];
+    request: import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest>;
   scanManagerGoalIndex: (args: {
     owner: string;
     scope: string[];
@@ -782,6 +802,34 @@ export async function openAuthAuthorityPlane(opts: {
         },
       });
     },
+    verifyManagedAgentEnrollment: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      return authorizeRemoteManagedAgentEnrollment({
+        owner,
+        scope,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+    },
+    verifyManagedAgentPrepareRetirement: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      return authorizeRemoteManagedAgentPrepareRetirement({
+        owner,
+        scope,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+    },
     scanManagerGoalIndex: async ({ owner, scope, request }) => {
       refuseIfFenced();
       const authorized = await authorizeRemoteManagerGoalIndexScan({
@@ -1031,6 +1079,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     managerServiceAuthority: plane.issueManagerServiceAuthority,
     maintainRemoteManager: plane.maintainRemoteManager,
     validateRetainedAgent: plane.validateRetainedAgent,
+    verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
+    verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
     scanManagerGoalIndex: plane.scanManagerGoalIndex,
     authorizeManagerAdmin: plane.authorizeManagerAdmin,
     secrets,
@@ -1130,6 +1180,8 @@ interface HandlerCtx {
   managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
   maintainRemoteManager: AuthAuthorityPlane["maintainRemoteManager"];
   validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
+  verifyManagedAgentEnrollment: AuthAuthorityPlane["verifyManagedAgentEnrollment"];
+  verifyManagedAgentPrepareRetirement: AuthAuthorityPlane["verifyManagedAgentPrepareRetirement"];
   scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
   authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
   secrets: SecretStore;
@@ -1158,6 +1210,13 @@ export async function dispatchManagerAuthorityRequest(
   const request = body.request as { kind?: unknown; actor?: unknown };
   if (typeof request.actor !== "string") throw new Error("manager-service authority request requires an actor");
   const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
+  // #1972: the managed-agent lifecycle operations mutate host storage (a database row, JetStream
+  // durables, a ledger grant), and stock holds none of that composition. A host platform intercepts
+  // these kinds on its own public route and calls the loopback verify-enrollment door for the
+  // decision. Refusing here keeps them from falling through to `managerServiceAuthority`, which
+  // would answer a manager-lifecycle phase for an agent-lifecycle request.
+  if (request.kind === "manager-managed-agent-enrollment" || request.kind === "manager-managed-agent-prepare-retirement")
+    throw new EpEnvelopeError("unimplemented", "managed agent enrollment and retirement preparation must be handled by host platform interception");
   if (request.kind === "manager-retained-agent-validation") {
     const retained = await ctx.validateRetainedAgent({
       owner,
@@ -1306,13 +1365,14 @@ const ROUTES = new Map<string, RouteHandler>([
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
   [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
+  [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /interactive-lifecycle/retire, /managed-lifecycle/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-service-authority/verify-enrollment, /interactive-lifecycle/retire, /managed-lifecycle/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
@@ -1383,6 +1443,99 @@ async function handleManagedLifecycleRetirement(
   } catch (e) {
     if (e instanceof EpEnvelopeError && e.code === "conflict") return send(res, 409, { error: e.message });
     throw e;
+  }
+}
+
+/** The envelope-error to HTTP mapping this door answers with. A code the catalog grows but this
+ *  table does not name becomes 403 rather than a 500: a refusal is a refusal, and a door that
+ *  answered 500 to a new permission code would read as a host fault to the platform calling it. */
+const VERIFY_ENROLLMENT_STATUS: Partial<Record<string, number>> = {
+  "unauthenticated": 401,
+  "permission-denied": 403,
+  "conflict": 409,
+  "failed-precondition": 412,
+  "bad-request": 400,
+};
+
+const VERIFY_ENROLLMENT_KEYS = new Set(["owner", "request"]);
+
+/**
+ * #1972 §2.2 item 3: the host platform's decision door for a remote manager's managed-agent
+ * enrollment or terminal-release preparation.
+ *
+ * The platform that owns the database, the durables, and the ledger terminates its own public
+ * route, authenticates the human there, and POSTs the resulting owner token plus the participant's
+ * verbatim request here. This process answers because it is the only one holding the manager gate
+ * connection and the data-account signing seed: the proof check and the gate read happen inside it,
+ * and no secret crosses back.
+ *
+ * The caller supplies an OWNER and a REQUEST, and nothing else. The caller's scope is derived from
+ * this machine's ledger (`ledgerAuthorizeGrant`), never accepted from the body — a platform bug that
+ * forwarded a participant-supplied scope array could otherwise hand `supervise` to any caller.
+ */
+async function handleVerifyManagedAgentEnrollment(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: HandlerCtx,
+): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return send(res, 401, { error: "missing/invalid exchange capability - managed agent enrollment verification is a loopback host action" });
+  const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return send(res, 400, { error: "managed agent enrollment verification needs { owner, request }" });
+  for (const key of Object.keys(body))
+    if (!VERIFY_ENROLLMENT_KEYS.has(key))
+      return send(res, 400, { error: `managed agent enrollment verification carries the unknown field "${key}"` });
+  const raw = body as { owner?: unknown; request?: unknown };
+  if (typeof raw.owner !== "string" || raw.request === null || typeof raw.request !== "object" || Array.isArray(raw.request))
+    return send(res, 400, { error: "managed agent enrollment verification needs a string owner and an object request" });
+  const request = raw.request as { kind?: unknown; actor?: unknown };
+  if (request.kind !== "manager-managed-agent-enrollment" && request.kind !== "manager-managed-agent-prepare-retirement")
+    return send(res, 400, { error: 'managed agent enrollment verification serves only kind "manager-managed-agent-enrollment" or "manager-managed-agent-prepare-retirement"' });
+  if (typeof request.actor !== "string")
+    return send(res, 400, { error: "managed agent enrollment verification request requires an actor" });
+  try {
+    const owner = assertDerivedOwnerToken(raw.owner);
+    // The SCOPE DERIVATION, internal by construction: the interactive row for this exact
+    // (owner, actor) on this machine's ledger decides, so `supervise` cannot be asserted by the
+    // caller. An ungranted actor throws the ledger's own operator-exact sentence.
+    const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
+    const scope = row.scope ?? [];
+    if (request.kind === "manager-managed-agent-enrollment") {
+      const verified = await ctx.verifyManagedAgentEnrollment({
+        owner,
+        scope,
+        request: raw.request as import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest,
+      });
+      return send(res, 200, {
+        authorized: true,
+        owner,
+        actor: verified.target.actor,
+        instanceId: verified.instanceId,
+        serveEpoch: verified.serveEpoch,
+      });
+    }
+    const verified = await ctx.verifyManagedAgentPrepareRetirement({
+      owner,
+      scope,
+      request: raw.request as import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest,
+    });
+    return send(res, 200, {
+      authorized: true,
+      owner,
+      actor: verified.target.actor,
+      instanceId: verified.instanceId,
+      serveEpoch: verified.serveEpoch,
+    });
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`auth-service: refused managed agent enrollment verification: ${reason}`);
+    const status = e instanceof EpEnvelopeError ? (VERIFY_ENROLLMENT_STATUS[e.code] ?? 403) : 403;
+    return send(res, status, { error: reason });
   }
 }
 
