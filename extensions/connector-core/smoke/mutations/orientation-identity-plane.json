@@ -73,6 +73,13 @@
       "find": "        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;\n",
       "replace": "        const writeFailure = undefined;\n",
       "expectRed": "cotal_roster labels its rows as last-known while this endpoint's presence writer is stuck"
+    },
+    {
+      "name": "O3 #1229 cotal_roster renders an unpopulated view as current — no partial-snapshot sentence, no absence-verdict caveat",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const view = agent.presenceView();\n        const viewSentence =\n          view.state === \"unpopulated\"\n            ? `The presence watch has not completed its initial snapshot in \"${config.space}\", so this list may be partial and a missing name is not an absence verdict.`\n            : view.state === \"stale\"\n              ? `The presence view in \"${config.space}\" has been silent since ${new Date(view.staleSince).toISOString()}, so the rows below are last-known.`\n              : \"\";\n",
+      "replace": "        const view = { state: \"current\", fresh: true } as const;\n        const viewSentence = \"\";\n",
+      "expectRed": "cotal_roster says the presence watch has not completed its initial snapshot under an unpopulated view (#1229)"
     }
   ]
 }

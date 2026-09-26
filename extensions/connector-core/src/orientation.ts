@@ -115,6 +115,15 @@ export function buildOrientation(
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
   const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+  // #1229: the roster's trust state, not just the writer's health, decides liveness. A stuck
+  // writer keeps precedence; otherwise an `unpopulated` or `stale` view carries the same shape.
+  const view = agent.presenceView();
+  const viewDetail =
+    view.state === "unpopulated"
+      ? "the presence watch has not completed its initial snapshot, so the peer list may be partial"
+      : view.state === "stale"
+        ? `the presence view has been silent since ${new Date(view.staleSince).toISOString()}, so the peer list is last-known`
+        : undefined;
 
   return {
     v: 1,
@@ -137,7 +146,9 @@ export function buildOrientation(
           live: false,
           detail: `bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms`,
         }
-      : { live: true },
+      : viewDetail
+        ? { live: false, detail: viewDetail }
+        : { live: true },
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },

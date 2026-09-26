@@ -64,6 +64,12 @@ recoverable warning. If consecutive writes keep failing for a full presence TTL,
 last-known until a write succeeds. A successful write resets the consecutive count and clears the
 condition. The condition is local diagnosis, not a new wire field.
 
+The same two tools also render the view's own trust state: under an `unpopulated` view `cotal_roster`
+says the presence watch has not completed its initial snapshot, so the list may be partial and a
+missing name is not an absence verdict, and under a `stale` view it names the silent-since instant
+and labels the rows last-known. A send or DM to a name the observer cannot verify is refused with
+that condition rather than sent, instead of being reported as an unknown peer.
+
 ## Three delivery modes
 
 Every delivery message is addressed one of three ways

@@ -25,6 +25,7 @@ import {
   type Presence,
   type PresenceCondition,
   type PresenceStatus,
+  type PresenceView,
   type TransportState,
   type AttentionMode,
   type ChannelMode,
@@ -1382,7 +1383,7 @@ export class MeshAgent extends EventEmitter {
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> {
     await this.requireConnected();
     const clean = normalizeMentions(mentions);
-    if (clean) this.assertKnownMentions(clean);
+    if (clean) await this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
   }
 
@@ -1412,14 +1413,35 @@ export class MeshAgent extends EventEmitter {
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
    *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has seen
    *  — an offline peer lingers in the roster, but one never observed (or not yet filled in
-   *  after connect) throws. See docs/architecture.md. */
-  private assertKnownMentions(mentions: string[]): void {
-    const names = new Set(this.ep.getRoster().map((p) => p.card.name.toLowerCase()));
-    const unknown = mentions.filter((m) => !names.has(m));
-    if (unknown.length)
+   *  after connect) throws. See docs/architecture.md.
+   *
+   *  #1229: the roster can only support an ABSENCE verdict while `presenceView()` is `current`.
+   *  `clearConnectionScoped()` empties it on every reconnect and the watch refills entry by
+   *  entry, so a refusal under an unsafe view would reject a mention of a live peer. A name
+   * already in the roster is accepted in every state; an absent name under `unpopulated`
+   *  waits once for the initial snapshot and re-reads; a still-unverifiable name refuses with
+   *  the observer's own condition (never "no such peer") and the send does not go out. */
+  private async assertKnownMentions(mentions: string[]): Promise<void> {
+    const names = () => new Set(this.ep.getRoster().map((p) => p.card.name.toLowerCase()));
+    const view = this.ep.presenceView();
+    if (view.state === "unpopulated") {
+      const unknown = mentions.filter((m) => !names().has(m));
+      if (unknown.length) await this.ep.waitForPresenceSnapshot();
+    }
+    const after = this.ep.presenceView();
+    const unknown = mentions.filter((m) => !names().has(m));
+    if (!unknown.length) return;
+    if (after.state === "current")
       throw new Error(
         `unknown mention${unknown.length > 1 ? "s" : ""}: ${unknown.map((u) => `@${u}`).join(", ")} — no such peer observed in space "${this.config.space}"`,
       );
+    const condition =
+      after.state === "stale"
+        ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
+        : "the presence view is unpopulated — the watch has not completed its initial snapshot";
+    throw new Error(
+      `cannot verify mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")} in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The send was not published.`,
+    );
   }
 
   async anycast(role: string, text: string): Promise<CotalMessage> {
@@ -1436,8 +1458,28 @@ export class MeshAgent extends EventEmitter {
 
   async dm(target: string, text: string): Promise<{ msg: CotalMessage; peer: Presence }> {
     await this.requireConnected();
-    const peer = this.resolvePeer(target);
-    if (!peer) throw new Error(`no peer "${target}" in space "${this.config.space}"`);
+    // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
+    // the roster may be a reconnect refill in progress, so wait once for the snapshot and
+    // re-resolve; a still-unverifiable target refuses naming the observer's condition (never
+    // "no peer"), and the DM does not go out.
+    const view = this.ep.presenceView();
+    let peer = this.resolvePeer(target);
+    if (!peer && view.state === "unpopulated") {
+      await this.ep.waitForPresenceSnapshot();
+      peer = this.resolvePeer(target);
+    }
+    if (!peer) {
+      const after = this.ep.presenceView();
+      if (after.state === "current")
+        throw new Error(`no peer "${target}" in space "${this.config.space}"`);
+      const condition =
+        after.state === "stale"
+          ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
+          : "the presence view is unpopulated — the watch has not completed its initial snapshot";
+      throw new Error(
+        `cannot verify peer "${target}" in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The DM was not sent.`,
+      );
+    }
     const msg = await this.ep.unicast(peer.card.id, text, { contextId: this._contextId });
     return { msg, peer };
   }
@@ -1900,6 +1942,12 @@ export class MeshAgent extends EventEmitter {
   /** The full roster, including ourselves. */
   roster(): Presence[] {
     return this.ep.getRoster();
+  }
+
+  /** Trust state of this observer's presence watch (`CotalEndpoint.presenceView()`): the roster
+   *  above can only support an absence verdict while this is `current` (#1229). */
+  presenceView(): PresenceView {
+    return this.ep.presenceView();
   }
 
   /** Our last self-reported presence status. */

@@ -45,6 +45,15 @@
       "expectRed": "cotal_send on a typo says new channel so the caller can TELL",
       "cell": "cotal_send on a typo says new channel so the caller can TELL",
       "note": "If every name is 'existing', the tool receipt is identical to the old success line."
+    },
+    {
+      "name": "N4 #1229 assertKnownMentions refuses an absent name in every view state with the old sentence",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (!unknown.length) return;\n    if (after.state === \"current\")\n      throw new Error(\n        `unknown mention${unknown.length > 1 ? \"s\" : \"\"}: ${unknown.map((u) => `@${u}`).join(\", \")} — no such peer observed in space \"${this.config.space}\"`,\n      );",
+      "replace": "    if (!unknown.length) return;\n    throw new Error(\n      `unknown mention${unknown.length > 1 ? \"s\" : \"\"}: ${unknown.map((u) => `@${u}`).join(\", \")} — no such peer observed in space \"${this.config.space}\"`,\n    );",
+      "expectRed": "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
+      "cell": "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
+      "note": "#1229: the unpopulated wait-and-recheck exists so a mention of a live peer is not rejected while the roster refills after a reconnect. Dropping the wait restores the reported defect: cell (e) sees the old 'unknown mention' refusal under a view that cannot support an absence verdict."
     }
   ]
 }
