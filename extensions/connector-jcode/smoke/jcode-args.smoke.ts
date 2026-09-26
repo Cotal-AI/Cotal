@@ -14,7 +14,7 @@ let pass = 0;
 let fail = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
   try {
-    assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+    assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
     pass++;
     console.log(`  ✓ ${name}`);
   } catch (error) {

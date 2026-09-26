@@ -99,7 +99,7 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
     return;
   }
   fail++;
-  console.log(`  ✗ FAIL: ${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  console.log(`  ✗ FAIL: ${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
 };
 function readJsonLines<T>(path: string): T[] {
   if (!existsSync(path)) return [];
