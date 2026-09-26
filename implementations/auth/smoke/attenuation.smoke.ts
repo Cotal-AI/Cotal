@@ -23,6 +23,7 @@ import {
   ledgerAuthorizeAgentExchange,
   managedActorLedgerDir,
 } from "../src/index.js";
+import { mintLifecycleUid } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail?: unknown) {
@@ -277,6 +278,19 @@ try {
       owner: OWNER, actor: "taskbot", scope: [], role: "reviewer", parent: CLI,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: tb.tokenHash,
     }).role === "reviewer");
+  // ---- the lifecycle uid is CALLER-supplied in the managed space (issue #702) ----
+  rejects("a managed grant without a lifecycle uid is refused (the ledger never mints one)",
+    () => grantManagedActor(dir, {
+      owner: OWNER, actor: "uidless", scope: [], parent: CLI,
+      allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash,
+    } as Omit<Parameters<typeof grantManagedActor>[1], "lifecycleUid">),
+    "lifecycleUid");
+  const ctlUid = mintLifecycleUid();
+  check("the control row carrying the caller's uid is written with exactly that uid",
+    grantManagedActor(dir, {
+      owner: OWNER, actor: "uidctl", scope: [], parent: CLI,
+      allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: ctlUid,
+    }).lifecycleUid === ctlUid);
   grantActor(dir, {
     owner: OWNER, actor: "cli", scope: ["spawn"], allowSubscribe: ["general", "review.>"], allowPublish: ["general"],
   });
