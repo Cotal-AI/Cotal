@@ -32,8 +32,8 @@
     {
       "name": "issue #367: the stop fence in renewLease's gone arm is removed, so a renew that runs after the stop re-acquires the key for a process that already stopped",
       "file": "implementations/manager/src/manager.ts",
-      "find": "              // that point would put a stopping process's key straight back.\n              if (this.leaseStopping) return;\n",
-      "replace": "              // that point would put a stopping process's key straight back.\n",
+      "find": "            // that point would put a stopping process's key straight back.\n            if (this.leaseStopping) return;\n",
+      "replace": "            // that point would put a stopping process's key straight back.\n",
       "expectRed": "(c) a renew that runs after the stop does not put the key back"
     }
   ],
