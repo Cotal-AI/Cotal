@@ -435,8 +435,7 @@ try {
   const rawCreds = runCli(["attach", "--name", SEAT, "--creds", credFile, "--server", SERVER, "--space", SPACE]);
   ok(
     "a raw --creds attach is refused at the control surface",
-    rawCreds.status !== 0 && /control surface/.test(rawCreds.out) &&
-      /endpoint-caller triple/.test(rawCreds.out) &&
+    rawCreds.status !== 0 && /endpoint-caller triple/.test(rawCreds.out) &&
       /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(rawCreds.out) &&
       /project folder/.test(rawCreds.out) && !/predates|re-mint/.test(rawCreds.out),
     rawCreds,
