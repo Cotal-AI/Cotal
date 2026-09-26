@@ -19,10 +19,10 @@
       "name": "CONTROL the shutlaunch thread-start wait is live in its suite file",
       "file": "extensions/connector-codex/smoke/codex-host.smoke.ts",
       "find": "    !existsSync(shutLaunchLog)\n      ? undefined\n      : readJsonLines<LogEntry>(shutLaunchLog)\n          .find((e) => e.ev === \"recv\" && e.method === \"thread/start\"),",
-      "replace": "    undefined,",
+      "replace": "    { ev: \"recv\", method: \"thread/start\" } as LogEntry,",
       "expectRed": "a shutdown during the launch exits cleanly, not fatally",
       "cell": "a shutdown during the launch exits cleanly, not fatally",
-      "note": "Positive control for the same-file reach requirement. It proves the suite still reaches the shutlaunch poll site by breaking the wait predicate so waitFor never resolves, reding the named cell. The proof restores the direct split/filter/map JSONL parse at this site.",
+      "note": "Positive control for the same-file reach requirement. It proves the suite still reaches the shutlaunch poll site by making the wait predicate resolve instantly with a bogus entry, so the shutdown lands before the thread is up and the named cell reds. (A never-resolving predicate was tried first: the waitFor timeout crashes this fail-fast suite before the cell prints, which the grader reports as WRONG-RED, not KILLED.)",
       "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
     }
   ]
