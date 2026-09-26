@@ -23,6 +23,8 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, posix, win32 } from "node:path";
 import { defaultAgentType } from "@cotal-ai/workspace";
 import { isPathSpec } from "../src/commands/ext.js";
+import { seedGeneration, seedStorePath } from "../src/seed/paths.js";
+import { stageSeedPayload } from "../src/seed/store.js";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -91,6 +93,58 @@ check("path spec: POSIX absolute (the POSIX seed-store spec) classifies as a pat
 check("path spec: relative classifies as a path", isPathSpec("./local-ext", posix.isAbsolute) && isPathSpec(".\\local-ext", win32.isAbsolute));
 check("path spec: a registry name is NOT a path (scoped)", !isPathSpec("@cotal-ai/connector-x", win32.isAbsolute) && !isPathSpec("@cotal-ai/connector-x", posix.isAbsolute));
 check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("connector-x@1.2.3", win32.isAbsolute) && !isPathSpec("connector-x@1.2.3", posix.isAbsolute));
+
+// ── seed-store generation path safety (unit) ──────────────────────────────────────────────────────
+{
+  const cfg = track(freshCfg());
+  const storeRoot = join(cfg, "cotal", "seed", "store");
+  const error = (run: () => unknown): string => {
+    try {
+      run();
+      return "";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const priorConfig = process.env.XDG_CONFIG_HOME;
+  const priorArgv = process.argv[1];
+  process.env.XDG_CONFIG_HOME = cfg;
+  const craftedRoot = join(cfg, "crafted-cli");
+  const craftedEntry = join(craftedRoot, "dist", "cotal.js");
+  mkdirSync(dirname(craftedEntry), { recursive: true });
+  writeFileSync(craftedEntry, "");
+  const craftedGeneration = (generation: string): string => {
+    writeJson(join(craftedRoot, "package.json"), { name: "cotal-ai", version: generation });
+    process.argv[1] = craftedEntry;
+    return error(() => seedGeneration());
+  };
+  const generationTraversal = craftedGeneration("../../escaped");
+  check("seed generation: reconcile input refuses a traversal version before any write", /not plausible semver/.test(generationTraversal) && generationTraversal.includes("package.json"), generationTraversal);
+  const generationDotSegment = craftedGeneration("0.36.0+..");
+  check("seed generation: reconcile input refuses a semver build-metadata dot segment", /"\.\." segment/.test(generationDotSegment), generationDotSegment);
+  const generationSeparator = craftedGeneration("0.36.0+safe/escaped");
+  check("seed generation: reconcile input refuses a semver build-metadata separator", /path separator/.test(generationSeparator), generationSeparator);
+  const generationWindowsSeparator = craftedGeneration("0.36.0+safe\\escaped");
+  check("seed generation: reconcile input refuses a Windows build-metadata separator", /path separator/.test(generationWindowsSeparator), generationWindowsSeparator);
+  writeJson(join(craftedRoot, "package.json"), { name: "cotal-ai", version: "0.36.0" });
+  check("seed generation: normal version remains accepted", seedGeneration() === "0.36.0");
+  process.argv[1] = priorArgv;
+  const traversal = error(() => seedStorePath("../../escaped", "claude"));
+  check("seed path: containment refuses a traversal destination before a write", /not strictly inside/.test(traversal) && traversal.includes(storeRoot), traversal);
+  const buildTraversal = error(() => seedStorePath("0.36.0+../../../escaped", "claude"));
+  check("seed path: containment refuses a semver build-metadata traversal", /not strictly inside/.test(buildTraversal), buildTraversal);
+
+  // Bypass seedGeneration deliberately: containment is the writer's second guard, before its first
+  // remove/copy/rename/announce, even if a future caller supplies an unchecked generation.
+  const outside = join(cfg, "cotal", "escaped", "claude");
+  const stageTraversal = error(() => stageSeedPayload("../../escaped", "claude", { force: true }));
+  check("seed path: staging containment refuses traversal before any write", /not strictly inside/.test(stageTraversal) && !existsSync(outside), stageTraversal);
+
+  const control = seedStorePath("0.36.0", "claude");
+  check("seed path: a normal generation remains under its store root", control === join(storeRoot, "0.36.0", "claude"), control);
+  if (priorConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = priorConfig;
+}
 
 // ── 1. first-run auto-seed + state files ─────────────────────────────────────────────────────────
 {

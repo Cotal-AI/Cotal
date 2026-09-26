@@ -179,7 +179,8 @@ also emits `dist/web/vendor/vendor-manifest.json` (name/version/license/sha512) 
 inventory of its vendored browser libs (marked/DOMPurify ship as opaque `dist` bytes, not runtime deps).
 `seed/paths.ts:shippedSourceDir` resolves the live `extensions/<pkg>` dir in a
 source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install. The reconcile copies
-that payload into the durable store `seed/store/<version>/<name>` and `ext add --install-links` reifies
+that payload into the durable store `seed/store/<version>/<name>`. The version is validated as one safe
+path segment, and the destination is checked to stay inside the store before anything is written. `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
 junction-links each `@cotal-ai/*` peer to the binary's own copy. Before the first lazy import in each
 process, materialization rechecks those links by realpath and rebinds stale links under the extension
