@@ -35,6 +35,14 @@
       "replace": "  const rows = (cap.routes?.length ? cap.routes : [\"one\"]).map((r) => `${spacePrefix(space)}.${plane(caller)}.${r}.${e}.${cmd}${tail}`);",
       "expectRed": "request row: instance-only omits every class/scatter row",
       "note": "The view is useful only if every manager request is confined to the selected instance."
+    },
+    {
+      "name": "drop the mint-time bound on the composed user JWT",
+      "file": "packages/core/src/provision.ts",
+      "find": "  if (userJwtBytes > MAX_MINTED_JWT_BYTES) {",
+      "replace": "  if (false) {",
+      "expectRed": "six 4096-char allowSubscribe channels (each individually valid) are refused at the mint, naming the size and the bound",
+      "note": "Every individual channel passes assertValidChannel and the composed JWT still exceeds the 65536-byte control line (six 4096-character channels minted a 71,569-byte JWT); only the byte check on the assembled JWT catches the composition, so removing it must red the six-channel cell first."
     }
   ]
 }

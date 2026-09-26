@@ -10,10 +10,11 @@
  * Run: pnpm smoke:ep-grants   (no broker; part of smoke:ci)
  */
 import {
-  createSpaceAuth, mintCreds, newIdentity,
+  createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid,
   epRequestGrantRows, epJournalGrantRow, epCallerReplyGrantRow, epGoalProgressGrantRow,
   epCallerGrantRows, epServeSubscribeRows, epServePublishRows, epServeGrantRows,
   epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, permissionsFor,
+  MAX_CONTROL_LINE_BYTES, CONNECT_ENVELOPE_OVERHEAD_BYTES, MAX_MINTED_JWT_BYTES,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
 
@@ -195,6 +196,35 @@ const decode = (creds: string): { pub: { allow: string[] }; sub: { allow: string
   const payload = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
   return (JSON.parse(Buffer.from(payload, "base64").toString()) as { nats: { pub: { allow: string[] }; sub: { allow: string[] } } }).nats;
 };
+
+// ── mint-time bound on the COMPOSED credential (issue #375's review finding): every individual
+// channel can pass assertValidChannel and the composed JWT still exceed the CONNECT line, because
+// nothing bounded the COUNT of channels one agent's allowSubscribe may carry. Broker-free: this
+// exercises the byte-size refusal in mintCreds directly, no live connect. ──
+function sixDistinctChannels(): string[] {
+  return [0, 1, 2, 3, 4, 5].map((i) => { const tag = `-ch${i}`; return "a".repeat(4096 - tag.length) + tag; });
+}
+{
+  const channels = sixDistinctChannels();
+  let refusedMessage: string | undefined;
+  try {
+    await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: mintLifecycleUid(), allowSubscribe: channels });
+  } catch (e) { refusedMessage = (e as Error).message; }
+  c("six 4096-char allowSubscribe channels (each individually valid) are refused at the mint, naming the size and the bound",
+    refusedMessage !== undefined && refusedMessage.includes("bytes") && refusedMessage.includes(String(MAX_MINTED_JWT_BYTES)) && refusedMessage.includes("6 allowSubscribe"),
+    refusedMessage);
+}
+{
+  const channels = sixDistinctChannels().slice(0, 5); // the reviewer's fitting shape
+  const creds = await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: mintLifecycleUid(), allowSubscribe: channels });
+  const jwt = /BEGIN NATS USER JWT-+\s+(\S+)/.exec(creds)![1];
+  const decoded = decode(creds);
+  c("a mint that fits (five 4096-char allowSubscribe channels) succeeds and its decoded JWT is under the bound",
+    decoded.pub.allow.length > 0 && Buffer.byteLength(jwt, "utf8") < MAX_MINTED_JWT_BYTES);
+}
+c("the mint bound equals the control line minus the documented CONNECT envelope overhead (both read from source, so a drift is a red cell)",
+  MAX_MINTED_JWT_BYTES === MAX_CONTROL_LINE_BYTES - CONNECT_ENVELOPE_OVERHEAD_BYTES);
+
 const withCaps = decode(await mintCreds(auth, newIdentity(), "agent", {
   principal: { owner: "u_abc", actor: "cli" },
   endpointCapabilities: [spawnCap],

@@ -182,7 +182,9 @@ surfacing boundary (§9). Reference implementation: `parseSubject` in
 **Channel tokens.** A channel is dotted; each segment is sanitized. The literal wildcards
 `*` and `>` are preserved only as whole segments for subscription and allow-list patterns;
 `>` is valid only as the final segment. A publish target MUST be concrete, with no `*` or
-`>`; a subscription MAY be wildcard.
+`>`; a subscription MAY be wildcard. A channel is at most 4096 characters in total
+(`MAX_CHANNEL_LENGTH`): every grant line a channel mints rides the minted credential's
+CONNECT line (§13.9), so an unbounded channel is an unbounded connect.
 
 **Reserved prefixes.** Application messages MUST NOT use subjects beginning with `$JS.`,
 `$KV.`, `$SYS.`, `$O.`, or `_INBOX.`. (`$O.` is the Object Store data/meta subject prefix
@@ -353,7 +355,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | Field | Type | Req | Notes |
 | --- | --- | --- | --- |
 | `id` | string | MUST | instance id (§2) |
-| `name` | string | MUST | display name |
+| `name` | string | MUST | display name; at most 128 characters (`MAX_NAME_LENGTH`, refused at the shared validator; an unbounded name rides the CONNECT line until the broker drops it silently, §13.9) |
 | `kind` | `agent` or `endpoint` | MUST | participation class |
 | `role` | string | MAY | service role |
 | `description` | string | MAY | one-line summary |
@@ -3055,7 +3057,10 @@ every baseline grant plus capabilities on 3 endpoints x 12 commands each, each t
 command in both `self` and `owner` modes, plus journaled submissions and per-goal read
 scopes for all of them. Minting MUST fail loud before emitting a credential that exceeds the
 policy gate (reference: 16 KiB); the transport bound is the CONNECT control line
-(`max_control_line`, §13.12) and the policy gate MUST be the tighter of the two. The fixture
+(`max_control_line`, §13.12) and the policy gate MUST be the tighter of the two. The mint
+MUST also refuse, before any issuance record is written, a user JWT whose byte size exceeds the
+control line minus the CONNECT envelope (`MAX_MINTED_JWT_BYTES`), so a composition of individually
+valid grants can never produce a credential the broker drops silently. The fixture
 set additionally includes a **maximum-command serve credential** (a 12-command endpoint's
 per-command rows, below); the §13.12 operator assertion uses the largest encoded CONNECT
 line in the set.

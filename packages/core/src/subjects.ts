@@ -118,6 +118,11 @@ export function subjectMatches(pattern: string, subject: string): boolean {
  *  never named (and two distinct policy strings could collide on one token). Returns the channel
  *  unchanged when valid so callers can use it inline. */
 export function assertValidChannel(channel: string): string {
+  if (channel.length > MAX_CHANNEL_LENGTH)
+    throw new Error(
+      `invalid channel "${channel.slice(0, 32)}…": ${channel.length} characters exceeds the ` +
+        `${MAX_CHANNEL_LENGTH}-character limit (every grant line a channel mints rides the CONNECT line)`,
+    );
   const segs = channel.split(".");
   if (!channel.length || segs.some((s) => s.length === 0))
     throw new Error(`invalid channel "${channel}": empty segment (no leading/trailing/double dots)`);
@@ -135,6 +140,25 @@ export function assertValidChannel(channel: string): string {
   });
   return channel;
 }
+
+/** Maximum length of a policy channel, in UTF-16 code units (whole string, dots included).
+ *
+ *  Derived from the transport budget, not picked. A channel becomes at least one grant row in
+ *  every list it appears on (a `chatSubject`-shaped row per allowSubscribe/allowPublish
+ *  entry, plus the per-channel JetStream history-consumer create row on the subscribe side),
+ *  and those rows ride the user JWT inside the client's CONNECT line, which the broker caps at
+ *  `max_control_line` (`MAX_CONTROL_LINE_BYTES`, provision.ts). Measured on this repo (decoded
+ *  JWT, not the encoded credential): a channel on `allowSubscribe` alone contributes 2 grant
+ *  rows and ~11.1 KB per 4096 characters; the same channel on BOTH `allowSubscribe` and
+ *  `allowPublish` contributes a 3rd row and ~16.6 KB. This bound refuses the absurd single input
+ *  early with a message that names it - it is NOT what keeps a real credential under the cap.
+ *  The COMPOSITION is bounded at the mint (`MAX_MINTED_JWT_BYTES`, provision.ts): a caller may
+ *  legally list many channels each under this bound, and only the mint-time byte check on the
+ *  assembled JWT catches that (issue #375's review finding).
+ *  The bound is on the whole string; a single segment cannot exceed the whole, so the per-segment
+ *  charset rule needs no separate length arm.
+ */
+export const MAX_CHANNEL_LENGTH = 4096;
 
 /** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
  *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys

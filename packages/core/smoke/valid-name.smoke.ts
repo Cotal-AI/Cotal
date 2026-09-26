@@ -17,7 +17,8 @@
  *
  * Run: pnpm smoke:valid-name
  */
-import { assertValidName } from "../src/resolve.js";
+import { assertValidName, MAX_NAME_LENGTH } from "../src/resolve.js";
+import { assertValidChannel, MAX_CHANNEL_LENGTH } from "../src/subjects.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -30,9 +31,20 @@ const refuses = (label: string, name: string, mustMention: RegExp) => {
   try { assertValidName(name); } catch (e) { err = e; }
   c(label, err instanceof Error && mustMention.test(err.message), err instanceof Error ? err.message : "did not throw");
 };
+/** Same shape as `refuses`, for the channel rule — asserts WHICH refusal fired. */
+const refusesChannel = (label: string, channel: string, mustMention: RegExp) => {
+  let err: unknown;
+  try { assertValidChannel(channel); } catch (e) { err = e; }
+  c(label, err instanceof Error && mustMention.test(err.message), err instanceof Error ? err.message : "did not throw");
+};
 const accepts = (label: string, name: string) => {
   let err: unknown;
   try { assertValidName(name); } catch (e) { err = e; }
+  c(label, err === undefined, err instanceof Error ? `threw: ${err.message}` : undefined);
+};
+const acceptsChannel = (label: string, channel: string) => {
+  let err: unknown;
+  try { assertValidChannel(channel); } catch (e) { err = e; }
   c(label, err === undefined, err instanceof Error ? `threw: ${err.message}` : undefined);
 };
 
@@ -68,6 +80,31 @@ refuses("a name with surrounding whitespace is refused", " ada ", /non-empty|whi
 refuses("a multi-line name is refused", "ada\nlovelace", /single line/);
 refuses("a name containing '/' is refused", "owner/name", /reserved/);
 refuses("a name containing a backslash is refused", "a\\b", /reserved/);
+
+// ── The length bounds (issue #375): derived from the CONNECT control-line budget, not picked. An
+//    unbounded name or channel rode into payloads and minted grant lines until the credential
+//    exceeded max_control_line (65536) — the broker drops the oversized CONNECT silently and the
+//    client retries forever, an operator-visible hang with no error. The cells pin the boundary
+//    both sides: at the bound is still a valid name/channel, one past it is refused AND the refusal
+//    names the bound, so a cell cannot pass by crediting a neighbouring rule.
+accepts(`a name of exactly MAX_NAME_LENGTH (${MAX_NAME_LENGTH}) characters is accepted`, "n".repeat(MAX_NAME_LENGTH));
+refuses(
+  `a name one past MAX_NAME_LENGTH (${MAX_NAME_LENGTH + 1}) is refused naming the limit`,
+  "n".repeat(MAX_NAME_LENGTH + 1),
+  new RegExp(`${MAX_NAME_LENGTH}-character limit`),
+);
+acceptsChannel(`a channel of exactly MAX_CHANNEL_LENGTH (${MAX_CHANNEL_LENGTH}) characters is accepted`, "c".repeat(MAX_CHANNEL_LENGTH));
+refusesChannel(
+  `a channel one past MAX_CHANNEL_LENGTH (${MAX_CHANNEL_LENGTH + 1}) is refused naming the limit`,
+  "c".repeat(MAX_CHANNEL_LENGTH + 1),
+  new RegExp(`${MAX_CHANNEL_LENGTH}-character limit`),
+);
+// A long-but-in-bounds dotted channel stays valid: the bound is on the whole string and must not
+// accidentally become a per-segment or per-dot rule.
+acceptsChannel(
+  `a dotted channel at MAX_CHANNEL_LENGTH with interior dots is accepted`,
+  `${"cc".repeat(MAX_CHANNEL_LENGTH / 2 - 1)}.x`,
+);
 
 console.log(`valid-name smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

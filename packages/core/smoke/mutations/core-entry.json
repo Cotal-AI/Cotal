@@ -111,6 +111,30 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "dm-history-subject smoke: ",
       "cell": "an undefined object member publishes and the stored row drops just that key"
+    },
+    {
+      "name": "drop the display-name length bound",
+      "file": "packages/core/src/resolve.ts",
+      "find": "  if (name.length > MAX_NAME_LENGTH)",
+      "replace": "  if (false)",
+      "expectRed": "a name one past MAX_NAME_LENGTH (129) is refused naming the limit",
+      "command": "pnpm smoke:valid-name",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "valid-name smoke: ",
+      "cell": "a name one past MAX_NAME_LENGTH (129) is refused naming the limit",
+      "note": "The issue #375 mutant exactly: without the bound a 70,000-character name is accepted end to end and the credential it rides hangs the connect past max_control_line. The valid-name suite imports ../src/resolve.js by source path, so the mutation is seen without a build; afterRestore keeps dist consistent with the restored source per the fixture census rule."
+    },
+    {
+      "name": "drop the policy-channel length bound",
+      "file": "packages/core/src/subjects.ts",
+      "find": "  if (channel.length > MAX_CHANNEL_LENGTH)",
+      "replace": "  if (false)",
+      "expectRed": "a channel one past MAX_CHANNEL_LENGTH (4097) is refused naming the limit",
+      "command": "pnpm smoke:valid-name",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "valid-name smoke: ",
+      "cell": "a channel one past MAX_CHANNEL_LENGTH (4097) is refused naming the limit",
+      "note": "The channel twin of the name bound: one 70,000-character channel minted a 193,754-byte credential (measured on this repo), 3x past the 65536 control line, and the connect timed out at 10s. The suite imports ../src/subjects.js by source path; the refusal cell names the bound so a neighbouring rule cannot take the credit."
     }
   ],
   "grades": "tool"
