@@ -41,6 +41,9 @@ const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_mo
 const sourceExt = /\.(?:ts|tsx|js|mjs|mts)$/;
 const statusTokens = new Set(["working", "waiting", "idle", "offline"]);
 const probeDir = join(root, "implementations/cli/src/commands");
+const webProbeDir = join(root, "implementations/web/src");
+// A probe is [id, fileName, expectedKind, source, dir?]. expectedKind "none" marks a negative
+// probe: an exemption whose tainted argument must NOT become a candidate anywhere in the file.
 const PROBES = [
   ["direct-interpolation", "direct-interpolation.ts", "derived-output", 'export const probe = (p: any) => `${p.status}`;\n'],
   ["status-word", "status-word.ts", "indexed-map", 'const STATUS: any = {}; export const probe = (p: any) => STATUS[p.status].word;\n'],
@@ -48,11 +51,20 @@ const PROBES = [
   ["literal-branch", "literal-branch.ts", "status-token", 'export const probe = (mesh: string) => mesh === "working" ? "working" : mesh;\n'],
   ["table-map", "table-map.ts", "indexed-map", 'const label: any = { working: "working", waiting: "waiting", idle: "idle" }; export const probe = (p: any, el: any) => { el.textContent = label[p.status]; };\n'],
   ["alias-jsx", "alias-jsx.tsx", "derived-output", 'export const probe = (p: any) => { const state = p.status; return <span>{state}</span>; };\n'],
+  ["web-set-attribute", "web-probe-set-attribute.ts", "derived-output", 'export const probe = (p: any, el: any) => { el.setAttribute("data-status", p.status); };\n', webProbeDir],
+  ["web-insert-adjacent-text", "web-probe-insert-adjacent-text.ts", "derived-output", 'export const probe = (p: any, el: any) => { el.insertAdjacentText("beforeend", p.status); };\n', webProbeDir],
+  ["web-dataset-assignment", "web-probe-dataset-assignment.ts", "derived-output", 'export const probe = (p: any, el: any) => { el.dataset.status = p.status; };\n', webProbeDir],
+  ["web-style-property", "web-probe-style-property.ts", "derived-output", 'export const probe = (p: any, el: any) => { el.style.setProperty("--peer-status", p.status); };\n', webProbeDir],
+  ["negative-has", "negative-has.ts", "none", 'export const probe = (p: any, set: Set<string>) => set.has(p.status);\n'],
+  ["negative-includes", "negative-includes.ts", "none", 'export const probe = (p: any, words: string[]) => words.includes(p.status);\n'],
+  ["negative-starts-with", "negative-starts-with.ts", "none", 'export const probe = (p: any, label: string) => label.startsWith(p.status);\n'],
 ] as const;
 
-/** Honest boundary: this is broad finite-syntax enumeration, not arbitrary semantic dataflow. It
- * covers the AST classes below and proves them with adversarial shipped-root probes. A new syntax
- * class still requires extending this reader and its probe corpus. */
+/** Honest boundary: this is broad finite-syntax enumeration, not arbitrary semantic dataflow. A
+ * tainted value flowing into any call argument or any assignment whose left side is a member
+ * expression is a candidate unless one of the named call exemptions above applies, and each
+ * exemption has a negative probe in PROBES. The scanner does not decide that a shape is not a
+ * render; classification lives in the checked manifest. */
 function* shippedSources(path: string): Generator<string> {
   const stat = statSync(path);
   if (stat.isFile()) {
@@ -154,7 +166,17 @@ function calleeName(expr: ts.LeftHandSideExpression): string | undefined {
   return undefined;
 }
 
-const outputCall = /^(?:print|log|error|warn|info|ok|err|esc|render|format|label|badge|status|notify|write|push|setText|text)$/i;
+/** Exemptions from call-argument candidacy, each with a negative probe in PROBES. A call whose
+ * tainted argument is exempt here is provably not a render sink; everything else that receives a
+ * tainted argument is a candidate, whatever its callee name. */
+const exemptCalls = new Set([
+  "has", // .has(x) evaluates to a boolean membership test; it renders nothing
+  "includes", // .includes(x) is a boolean substring/element test; it renders nothing
+  "startsWith", // .startsWith(x) is a boolean prefix test; it renders nothing
+  "endsWith", // .endsWith(x) is a boolean suffix test; it renders nothing
+  "at", // .at(x) indexes a sequence; the result is data access, not a render
+  "indexOf", // .indexOf(x) yields a number for comparison; it renders nothing
+]);
 const rendererNames = new Set(manifest.renderers.map((renderer) => renderer.name));
 
 function collectCandidates(file: string): Candidate[] {
@@ -222,7 +244,7 @@ function collectCandidates(file: string): Candidate[] {
     if (ts.isCallExpression(node)) {
       const name = calleeName(node.expression);
       if (registeredRendererCall(node)) add("renderer-call", node);
-      else if (node.arguments.some((arg) => directlyTainted(arg)) && name && outputCall.test(name)) add("derived-output", node);
+      else if (node.arguments.some((arg) => directlyTainted(arg)) && !(name && exemptCalls.has(name))) add("derived-output", node);
     }
 
     if (ts.isTemplateExpression(node) && node.templateSpans.some((span) => usesTaint(span.expression) && !containsIndexedStatusMap(span.expression))) add("derived-output", node);
@@ -230,7 +252,7 @@ function collectCandidates(file: string): Candidate[] {
     if (ts.isJsxExpression(node) && node.expression && usesTaint(node.expression) && !containsIndexedStatusMap(node.expression)) add("derived-output", node);
     if (ts.isJsxAttribute(node) && node.initializer && ts.isJsxExpression(node.initializer) && node.initializer.expression && usesTaint(node.initializer.expression) && !containsIndexedStatusMap(node.initializer.expression)) add("derived-output", node);
     if (ts.isReturnStatement(node) && node.expression && directlyTainted(node.expression)) add("derived-output", node);
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(node.left) && ["textContent", "innerHTML", "innerText"].includes(node.left.name.text) && usesTaint(node.right) && !containsIndexedStatusMap(node.right)) add("derived-output", node);
+    if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.EqualsToken || node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) && (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) && usesTaint(node.right) && !containsIndexedStatusMap(node.right)) add("derived-output", node);
 
     ts.forEachChild(node, visit);
   };
@@ -249,8 +271,8 @@ const selectedProbe = process.env.COTAL_PRESENCE_RENDER_PROBE_CASE;
 if (selectedProbe) {
   const probe = PROBES.find(([id]) => id === selectedProbe);
   assert.ok(probe, `unknown presence-render probe case: ${selectedProbe}`);
-  const [, name, expectedKind, source] = probe;
-  const path = join(probeDir, `presence-render-probe-${name}`);
+  const [, name, expectedKind, source, dir] = probe;
+  const path = join(dir ?? probeDir, `presence-render-probe-${name}`);
   const rel = relative(root, path).split("\\").join("/");
   try {
     writeFileSync(path, source);
@@ -275,6 +297,10 @@ const probeKind = process.env.COTAL_PRESENCE_RENDER_EXPECT_KIND as CandidateKind
 const activeRenderRoots = probeOnly ? [join(root, probeOnly)] : renderRoots;
 const candidates = activeRenderRoots.flatMap((path) => [...shippedSources(path)]).flatMap(collectCandidates);
 if (probeOnly) {
+  if (probeKind === "none") {
+    assert.equal(candidates.length, 0, `negative presence-render probe produced a candidate; its exemption is not honoured: ${probeOnly}: ${JSON.stringify(candidates)}`);
+    process.exit(0);
+  }
   assert.ok(candidates.some((candidate) => candidate.kind === probeKind), `AST probe scanner missed ${probeKind} in shipped presence renderer: ${probeOnly}`);
   process.exit(0);
 }
@@ -341,11 +367,25 @@ assert.deepEqual(actual, manifest.expected, "presence render census count drifte
 console.log(`presence-render AST census: ${actual.total} candidates (${actual["honest-text"]} honest-text, ${actual["presence-only-glyph/count"]} presence-only-glyph/count, ${actual["command-ack"]} command-ack, ${actual["non-render/control"]} non-render/control)`);
 
 if (process.env.COTAL_PRESENCE_RENDER_PROBE_CHILD !== "1") {
-  for (const [, name, expectedKind, source] of PROBES) {
-    const path = join(probeDir, `presence-render-probe-${name}`);
+  for (const [, name, expectedKind, source, dir] of PROBES) {
+    const path = join(dir ?? probeDir, `presence-render-probe-${name}`);
     try {
       writeFileSync(path, source);
       const rel = relative(root, path).split("\\").join("/");
+      if (expectedKind === "none") {
+        // A negative probe asserts its exemption is honoured: the scan of the probe file alone
+        // must find no candidate, so the full-census run below stays green with the file present.
+        const scan = spawnSync("pnpm", ["exec", "tsx", self], {
+          cwd: root,
+          env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: "none" },
+          encoding: "utf8",
+          timeout: 120_000,
+        });
+        assert.equal(scan.status, 0, `negative presence-render probe was flagged; its exemption is not honoured: ${rel}\n${scan.stdout ?? ""}${scan.stderr ?? ""}`);
+        const run = spawnSync("pnpm", ["exec", "tsx", self], { cwd: root, env: { ...cleanEnv, COTAL_PRESENCE_RENDER_PROBE_CHILD: "1" }, encoding: "utf8", timeout: 120_000 });
+        assert.equal(run.status, 0, `negative presence-render probe escaped into the full census and red it: ${rel}\n${run.stdout ?? ""}${run.stderr ?? ""}`);
+        continue;
+      }
       const scan = spawnSync("pnpm", ["exec", "tsx", self], {
         cwd: root,
         env: { ...cleanEnv, COTAL_PRESENCE_RENDER_SINGLE_PROBE: rel, COTAL_PRESENCE_RENDER_EXPECT_KIND: expectedKind },
