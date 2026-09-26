@@ -829,7 +829,7 @@ try {
       absentRefusal === "" && doors.daemonRenewalOwner === true,
       { absentRefusal, daemonRenewalOwner: doors.daemonRenewalOwner });
 
-    await sr1.stop().catch(() => {});
+    await sr1.stop({ withAgents: true }).catch(() => {});
   }
 
 

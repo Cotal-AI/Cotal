@@ -147,7 +147,7 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
   try { await session?.close(); } catch { /* down */ }
-  try { await mgr.stop(); } catch { /* down */ }
+  try { await mgr.stop({ withAgents: true }); } catch { /* down */ }
   await broker.stop();
   rmSync(dir, { recursive: true, force: true });
 }
