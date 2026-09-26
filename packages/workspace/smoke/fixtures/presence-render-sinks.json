@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 390,
+    "total": 509,
     "honest-text": 35,
-    "presence-only-glyph/count": 41,
+    "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 304
+    "non-render/control": 407
   },
   "renderers": [
     {
