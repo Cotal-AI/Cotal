@@ -213,12 +213,21 @@ try {
   if (r5.proc.exitCode === null) { try { r5.proc.kill("SIGKILL"); } catch { /* gone */ } }
   clearRecord();
 
-  // R6: a credential that can connect and read the lease bucket but holds no publish on the lease
-  // key (#374). The lease row is still virgin here (no daemon before this point has ever acquired
-  // it), so a denial line naming a live conflict would be provably false, not merely misleading.
+  // R6: a credential that can connect and start the endpoint but holds no publish on the lease
+  // key (#374's own repro shape: an agent-profile credential). The lease row is still virgin here
+  // (no daemon before this point has ever acquired it), so a denial line naming a live conflict
+  // would be provably false, not merely misleading. (The `observer` profile is refused earlier,
+  // at the daemon's own standing-renewal creds-source admission — it carries no exp — so this
+  // uses `provisionAgent` the way packages/core/smoke/delivery-lease.smoke.ts does, with a bounded
+  // lifetime and no publish grant at all.)
   writeRecord({ server: SERVERS, root: wsRoot });
+  const observerId = newIdentity();
+  const observerNoop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
+  const observerCreds = await provisionAgent(observerNoop, auth, observerId, {
+    subscribe: [], allowSubscribe: [], lifecycleUid: mintLifecycleUid(), expiresInSeconds: 300,
+  });
   const observerPath = join(dir, "observer.creds");
-  writeFileSync(observerPath, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  writeFileSync(observerPath, observerCreds, { mode: 0o600 });
   let r6 = spawnDaemon(["--space", space, "--server", SERVERS, "--creds", observerPath], wsRoot);
   let r6Log = await r6.done();
   const leaseSubject = `$KV.${deliveryBucket(space)}.${leaseKey(0)}`;
