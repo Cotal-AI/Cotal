@@ -47,6 +47,7 @@ function agentStub(over: { roster?: any[]; unread?: number; presenceWriteFailure
     transportConnected: true,
     presenceWriteFailure: over.presenceWriteFailure,
     roster: () => over.roster ?? [],
+    presenceView: () => ({ state: "current", fresh: true }),
     inboxCount: () => over.unread ?? 0,
   } as unknown as MeshAgent;
 }

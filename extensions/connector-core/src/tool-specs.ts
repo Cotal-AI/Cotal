@@ -662,16 +662,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_roster",
       title: "Cotal: who's present",
       description:
-        "List the agents currently present in your Cotal space, with their role, status, and current activity.",
+        "List your Cotal space's roster with each agent's role, status, and activity. When the presence view is stale or not yet populated, or the presence writer is stuck, the roster is last-known and current presence is unknown.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
         const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
         const roster = agent.roster();
-        if (!roster.length) {
-          const empty = `No one is present in "${config.space}" yet.`;
-          return ok(writeFailure?.stuck
-            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.\n\n${empty}`
-            : empty);
+        const view = agent.presenceView();
+        if (!roster.length && view.state === "current" && !writeFailure?.stuck) {
+          return ok(`No one is present in "${config.space}" yet.`);
         }
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
@@ -699,9 +697,16 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
-        const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
+        // Freshness and a stuck presence writer are independent: retain both warnings.
+        const header =
+          view.state === "current" && !writeFailure?.stuck
+            ? `Present in "${config.space}" (${roster.length}):`
+            : `Last-known roster for "${config.space}" (${roster.length}) - presence ${
+                view.state === "current" ? "writer is stuck" : view.state === "stale" ? "view is stale" : "view is not yet populated"
+              }, ${roster.length ? "so these statuses are last-known, NOT current:" : "so current presence is unknown."}`;
+        const rendered = lines.length ? `${header}\n${lines.join("\n")}` : header;
         return ok(writeFailure?.stuck
-          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.\n\n${rendered}`
+          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. ${roster.length ? "The roster below" : "This empty roster"} is last-known until a write succeeds or the broker store is repaired.\n\n${rendered}`
           : rendered);
       },
     },
