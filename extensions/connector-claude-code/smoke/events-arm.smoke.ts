@@ -142,6 +142,10 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
     claudeConnector.eventChannel!(principal) === eventChannel(principal),
     { connector: claudeConnector.eventChannel!(principal), core: eventChannel(principal) },
   );
+  // A by-value sample cannot see a clone that delegates for that sample and diverges elsewhere.
+  // The property that matters, one function deciding the subject, is asserted by identity here as
+  // it is on the Codex side.
+  check("and it is core's own derivation by identity, not a clone that agrees on one sample", claudeConnector.eventChannel === eventChannel);
   // The whole point of keying on the principal: a display name is not one. Two seats can share a
   // name; they cannot share an allocated actor. If these two ever collapsed to one string the
   // channel would fuse two principals onto one subject.
@@ -155,7 +159,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 // A regression that makes `buildLaunch` throw on every input does not fail those cells, it deletes
 // them, and the run still prints a summary. Change the cases above and change this number
 // deliberately.
-const EXPECTED = 17;
+const EXPECTED = 18;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED,
