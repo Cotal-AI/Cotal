@@ -3261,6 +3261,111 @@
       "anchor": "``);\n    const fields = readUnitFields(path, \"# cotal-mesh:\", \"# cotal-root:\", `# ${MARKER}`);\n    if (!fields.marked",
       "class": "non-render/control",
       "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "``);\n    const fields = readUnitFields(path, \"<!-- cotal-mesh:\", \"<!-- cotal-root:\", `<!-- ${MARKER} -->`);\n    if (!fields.marked",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "abel}.plist`);\n    if (!existsSync(path))\n      throw new Error(",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "abel}.plist`);\n    if (!existsSync(path)) return out;\n    const ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "alized.\n  const entry = findMesh(mesh);\n  if (!entry)\n    thro",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "arm.\n    snapshotMeshEntry(mesh, stateDir);\n    preseedService(stateDir);\n    const envFile = writeEnvFile(mesh, server,",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "chmodSync(path, 0o600)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "e as the Linux arm.\n    snapshotMeshEntry(mesh, stateDir);\n    preseedService(sta",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "e status`\");\n    return install(values);\n  }\n  if (sub === \"sta",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "envFileName(mesh)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "escapeSystemdSpecifiers(envFile)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "escapeSystemdSpecifiers(root)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "existsSync(pidPath)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "f (existsSync(path) && !readUnitFields(path, \"# cotal-mesh:\", \"# cotal-root:\", `# ${MARKER}`).marked)\n      throw new",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "f (existsSync(path) && !readUnitFields(path, \"<!-- cotal-mesh:\", \"<!-- cotal-root:\", `<!-- ${MARKER} -->`).marked)\n      throw new",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),\n      linger: ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
     }
   ]
 }
