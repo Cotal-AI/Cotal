@@ -2960,6 +2960,104 @@
       "anchor": "ep.setStatus(status)",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "c.cyan(r.mesh)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Colors the mesh column of a roster table row; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "c.yellow(r.status)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Colors the status word by its presence class; color alone carries no progress claim beyond presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: snapshots seat state before stopping components; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "mayBeRunning(delivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "mayBeRunning(manager, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "mayBeRunning(retryDelivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "omponent)))\n      await stopLocalProcess(component, context);\n    // Wire-truth quie",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "processAlive(manager, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "stopLocalProcess(delivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "stopLocalProcess(retryDelivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "uiescence))\n      await stopLocalProcess(component, context);\n    // Fail-closed: a ",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/ext.ts",
+      "kind": "derived-output",
+      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `npm i",
+      "class": "non-render/control",
+      "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "dim(meshLine)",
+      "class": "non-render/control",
+      "rationale": "Terminal command plumbing: dims the selected-mesh summary line; no agent status is printed here."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${ope",
+      "class": "non-render/control",
+      "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
     }
   ]
 }
