@@ -98,6 +98,13 @@ check("stale-auth preflight copy names `cotal doctor auth` (the repair surface)"
   const msg = renderWorkspaceError({ kind: "preflight", failure: "stale-auth", target: t, pruned: false });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
+// TIMEOUT (#851 cell c): a probe that ran out of its own budget is never a stale-entry signal,
+// whatever the source — a slow or jittery link is not a dead broker.
+for (const s of [...REGISTRY, ...NON_REGISTRY])
+  check(`timeout + ${s} → NO prune + 'slow-link'`, (() => {
+    const r = classifyPreflightFailure(s, "timeout", true);
+    return r.prune === false && r.kind === "slow-link";
+  })());
 check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
   const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1", hasAuth: true });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
@@ -288,6 +295,65 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     loadMeshes(),
   );
   delayed.close();
+}
+
+// ── S11 held-open TLS peer (#851 cell a): accepts TCP, greets INFO {tls_required:true}, then never
+// answers the TLS client hello. This is the issue's exact shape — the earlier collapse to
+// `unreachable` made the classifier re-read the same INFO and misreport `tls-trust` (a CA hint) for
+// a pure timeout. The fix must discriminate the timeout and never consult INFO for it. ──────────
+{
+  const { createServer } = await import("node:net");
+  const held = await new Promise<{ port: number; close: () => void }>((resolve) => {
+    const srv = createServer((sock) => {
+      sock.on("error", () => { /* client resets when its own probe budget expires; not a test failure */ });
+      sock.write('INFO {"server_id":"s11","tls_required":true,"version":"2"}\r\n');
+      // Hold the socket open; never answer the TLS client hello, never close.
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      resolve({ port, close: () => srv.close() });
+    });
+  });
+  const heldServer = `nats://127.0.0.1:${held.port}`;
+  recordMesh({
+    space: "s11-held",
+    server: heldServer,
+    root: "/tmp/s11-held",
+    mode: "open",
+    tlsRequired: true,
+    origin: "up",
+    ts: new Date(0).toISOString(),
+  });
+  const heldT: MeshTarget = {
+    ...T,
+    space: "s11-held",
+    server: heldServer,
+    root: "/tmp/s11-held",
+    mode: "open",
+    tlsRequired: true,
+    source: "registry",
+    origin: "up",
+  };
+  const heldR = await preflightTarget(heldT);
+  check(
+    "S11 held-open TLS peer: preflightTarget → slow-link, prune:false (#851 cell a)",
+    !heldR.ok && heldR.kind === "slow-link" && heldR.prune === false,
+    heldR,
+  );
+  check(
+    "S11 held-open TLS peer: registry entry still present (#851 cell a)",
+    loadMeshes().some((m) => m.space === "s11-held"),
+    loadMeshes(),
+  );
+  check(
+    "S11 held-open TLS peer: rendered sentence names no CA (#851 cell d)",
+    (() => {
+      const msg = preflightMessage("slow-link", heldT, false);
+      return !/CA|certificate|trust/i.test(msg) && msg.includes("registry entry was kept");
+    })(),
+    preflightMessage("slow-link", heldT, false),
+  );
+  held.close();
 }
 
 rmSync(home, { recursive: true, force: true });
