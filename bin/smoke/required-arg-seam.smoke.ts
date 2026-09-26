@@ -1364,6 +1364,18 @@ function mutableHere(id: ts.Identifier): boolean {
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && isName(n.initializer)) {
       found = true; return; // a second name for the same object, whose writes are not watched here
     }
+    // KEPT somewhere is a second name too, and this rule followed the name rather than the object:
+    // `const arr = [opts]; arr[0].tls = false` reached the same object by a route with no name in
+    // it at all, and the declaration was then read as stating the key undefined about a program
+    // that does not throw. A SPREAD is not this: it hands over a copy, so a write through it says
+    // nothing about the object here, and shorthand `{ opts }` captures the value under a key, so it
+    // is a keep just like a named property.
+    if ((ts.isArrayLiteralExpression(n) && n.elements.some((e) => isName(e)))
+      || (ts.isObjectLiteralExpression(n) && n.properties.some((q) =>
+        (ts.isPropertyAssignment(q) && isName(q.initializer))
+        || ts.isShorthandPropertyAssignment(q) && q.name.text === id.text))) {
+      found = true; return;
+    }
     ts.forEachChild(n, visit);
   };
   visit(id.getSourceFile());
@@ -2328,7 +2340,7 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   check("...while a SPREAD copy is not the object, so the holder is still answered from its declaration",
     one(`const opts = { tls: undefined as any };\nconst copy = { ...opts };\ncopy.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   check("...and an array spread of a holder that is never kept is the same copy",
-    one(`const opts = { tls: undefined as any };\nconst arr = [{ ...opts }];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+    one(`const opts = { tls: undefined as any };\nconst inner = [{ ...opts }];\nconst arr = [...inner];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   // The same text, reached through a NAME, is the same two facts spelled on two lines.
   check("a source NAMED and then taken apart is the text its declaration wrote",
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
