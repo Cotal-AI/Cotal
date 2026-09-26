@@ -16,6 +16,7 @@ import {
   parseShareSelection,
   principalKey,
   mintLifecycleUid,
+  spawnNameError,
   provisionAgent,
   provisionAgentDurables,
   registry,
@@ -369,6 +370,20 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
 /** Comma-list flag → string[] (shared by both spawn modes). */
 const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
 
+/** #867: the name a spawn sends must already be a mintable identity, and the check must not wait
+ *  for the manager's round trip. `spawnNameError` is the SAME predicate the manager applies at its
+ *  door (manager.ts `start`), so the operator sees core's own refusal — offending character,
+ *  reservation reason, and the `_` remedy — before any request leaves. A courtesy only: the
+ *  manager door stays the enforcement point; this is why the CLI passes the target mesh's auth
+ *  mode rather than restating the grammar (static mode keys the actor on the nkey, not the name). */
+function refuseUnmintableNameOrExit(name: string, userMode: boolean): void {
+  const refusal = spawnNameError(name, { userMode });
+  if (refusal) {
+    console.error(c.red(`✗ ${refusal}`));
+    process.exit(1);
+  }
+}
+
 /** The `--detach` mode: hand the launch to the running manager over the control plane. One grammar
  *  with the foreground path; the persona file is resolved (and is the access default) manager-side,
  *  overridden by the same flags, which ride the `start` op. Replaces the removed `cotal start`. */
@@ -398,6 +413,10 @@ async function spawnDetached(
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
+  // #867: refuse an unmintable identity BEFORE the round trip. On this path the persona is
+  //  resolved manager-side, so the effective identity is `--name` alone — when it is absent the
+  //  manager applies the same spawnNameError to the file's `name:` at its own door.
+  if (values.name !== undefined) refuseUnmintableNameOrExit(values.name, t.mode === "user");
   const eventsRequired = policy?.events === "required";
   if (eventsRequired && events === false) {
     console.error(c.red(`✗ space "${t.space}" requires the event plane by registration policy; --no-events is not allowed`));
@@ -631,6 +650,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
     process.exit(1);
   }
+  // #867: same door as the detached path — the effective identity (flag or file) must be mintable
+  //  before any provision work; core's own refusal names the offender and the `_` remedy.
+  refuseUnmintableNameOrExit(requested, target.mode === "user");
 
   // Preflight: fail with one sentence if the mesh is down or won't take our creds, instead of
   // crashing mid-connect with a raw NATS Authorization Violation.
