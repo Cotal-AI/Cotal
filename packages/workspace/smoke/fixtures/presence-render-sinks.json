@@ -2890,6 +2890,76 @@
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": ";\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": ";\n    } finally {\n      this._status = status;\n    }\n  }\n\n  private a",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "ransition at all.\n      this._status = status;\n      // The turn rela",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.ep.setStatus(status)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: hands the status to the embedded endpoint, which owns the wire protocol; no rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "tion(null);\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "agent.setStatus(agent.status, activity)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: reapplies the recorded status while updating activity only; no rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "agent.setStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: publishes status and activity to the mesh; no rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "agent.yieldTurn(status, { to, note, turn })",
+      "class": "non-render/control",
+      "rationale": "Run-turn bookkeeping: reports the turn's status to the workflow run; not a rendered presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "statusGlyph(p.status)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph for one peer in a roster line; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "kind": "derived-output",
+      "anchor": "ep.setStatus(status)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
     }
   ]
 }
