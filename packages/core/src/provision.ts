@@ -2120,10 +2120,13 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
  *  `$JS` is an ENUMERATED allow-list, never `$JS.>`: STREAM.CREATE + INFO for the space streams/buckets,
  *  DM/DLV/TASK consumer CREATE/DURABLE.CREATE/INFO — and deliberately NO `MSG.NEXT`/`MSG.GET`/`ACK` on
  *  DM/DLV (it creates the bind-only mailbox but never reads it), and NO STREAM.DELETE/PURGE/MSG.DELETE
- *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY seven streams and no others:
+ *  (it provisions, it does not tear down). STREAM.UPDATE is held on EXACTLY eight streams and no others:
  *  the three TTL'd KV buckets (presence + the two leases, #286: an existing bucket's `max_age` cannot be
- *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it) and the four hardened
- *  authority stores (records, issued, accepted, admission), each updated once at creation.
+ *  fixed by `kvm.create`, so reconciling a pre-TTL deployment requires updating it), the four hardened
+ *  authority stores (records, issued, accepted, admission), each updated once at creation, and the
+ *  artifact Object Store, whose legacy 4 GiB `max_bytes` `ensureArtifactStore` reconciles to -1 (the
+ *  reservation a positive cap holds against the broker's `max_file_store` is what stopped a tenth space
+ *  from being provisioned; `Objm.create` cannot fix an existing bucket's cap either).
  *  Stated positively on purpose: this docblock previously read "NO …/UPDATE", which was already untrue of
  *  the records stream and became untrue of the buckets, and a comment that denies a credential's real
  *  power is worse than none — it is the document a reader trusts instead of checking. KV value-writes are
@@ -2155,8 +2158,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // The artifact Object Store joins the list: `setupSpaceStreams` creates it, and under auth mode the
   // provisioner is the cred doing that creating. Its backing stream is `OBJ_<bucket>` - named
   // explicitly, because `$O.<bucket>.>` is outside the `cotal.<space>.>` grammar and no space-prefix
-  // grant reaches it. CREATE + INFO only: the provisioner never publishes an object, never creates a
-  // consumer on it, and never deletes it. That confinement is load-bearing rather than tidy - the
+  // grant reaches it. CREATE + INFO here, plus the ONE STREAM.UPDATE below (the legacy-cap reconcile):
+  // the provisioner never publishes an object, never creates a consumer on it, and never deletes it.
+  // That confinement is load-bearing rather than tidy - the
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
@@ -2177,7 +2181,15 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // the grant never learned about it. Same defect one seam out — a bucket the code knows to maintain
   // and the credential is not allowed to.
   const ttlStreams = ttlBuckets(space).map(([bucket]) => `KV_${bucket}`);
-  const streamReconcile = ttlStreams.map((s) => `$JS.API.STREAM.UPDATE.${s}`);
+  // ...plus the artifact Object Store. `ensureArtifactStore` creates it at `max_bytes: -1` so it
+  // reserves nothing against the broker's `max_file_store`, and reconciles a store left at the legacy
+  // stock 4 GiB to -1 so an EXISTING mesh releases that reservation too. `Objm.create` never updates
+  // an existing bucket's config (measured: create at 1024 then create at 4096 leaves 1024), so the
+  // reconcile is a STREAM.UPDATE and needs this grant — without it the provisioner dies on a
+  // permissions violation on the first `cotal up` after the upgrade. Still CREATE/INFO/UPDATE only:
+  // no publish, no CONSUMER.CREATE (a push consumer's caller-chosen `deliver_subject` would export
+  // every artifact in the space), no DELETE/PURGE.
+  const streamReconcile = [...ttlStreams, OBJ].map((s) => `$JS.API.STREAM.UPDATE.${s}`);
   // #404: one EXACT reserved key on each TTL bucket is the post-update enforcement canary. The
   // provisioner still cannot write presence identities or lease keys; it can only write this fixed
   // maintenance key, which expires through the policy the reconcile is proving.

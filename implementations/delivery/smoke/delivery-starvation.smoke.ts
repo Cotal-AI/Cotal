@@ -133,18 +133,17 @@ const credsPathD = join(dir, "delivery-d.creds");
 const credsPathE = join(dir, "delivery-e.creds");
 const credsPathF = join(dir, "delivery-f.creds");
 
-// Cells G and H REUSE earlier cells' spaces rather than adding a seventh and an eighth, and the
-// reason is a hard resource ceiling rather than tidiness: `setupSpaceStreams` gives every space a
-// 4 GiB-capped artifact Object Store, JetStream RESERVES that against the server's store, and eight
-// of them exceed what one test broker can promise, the suite fails to provision with "insufficient
-// storage resources available" before a single cell runs. Measured, not predicted.
+// Cells G and H REUSE earlier cells' spaces rather than adding a seventh and an eighth. That used to
+// be forced by a hard resource ceiling — every space's artifact Object Store was created at 4 GiB,
+// JetStream RESERVED the whole cap against the server's store the moment the space was provisioned,
+// and eight of them exceeded what one test broker could promise, so the suite failed with
+// "insufficient storage resources available" before a single cell ran. The artifact store now carries
+// `max_bytes: -1` and reserves nothing, so the ceiling is gone: the six spaces reserve 384 MiB, six
+// 64 MiB membership buckets, and an eighth space would no longer be refused for it.
 //
-// SO THE RUNNING COST IS SIX, NOT EIGHT: `setupSpaceStreams` is called six times, and spaceG/spaceH
-// below are ALIASES of A's and C's spaces. Six still reserves about 24.4 GiB, 6 x (4 GiB artifact
-// store + 64 MiB membership bucket), before a cell runs, which a small or busy TMPDIR cannot promise.
-// That refusal used to surface as a bare broker string with no cell attached, and it read as a daemon
-// regression to three separate readers, so the catch at the foot of this file now reports it BY NAME
-// and prints the size an operator has to act on.
+// The reuse stays because it was always sound on its own merits, which is the second reason below —
+// not because the suite still cannot afford eight spaces. `setupSpaceStreams` is called six times and
+// spaceG/spaceH are ALIASES of A's and C's spaces.
 //
 // Reuse is sound here for the one reason that made separate spaces necessary in the first place.
 // The isolation those comments describe is specifically about the 30s lease-bucket TTL refusing the
@@ -1370,15 +1369,20 @@ try {
   // first version tested the counters AFTER `fail++` had already run, so it could never be true.
   const gradedBeforeThrow = pass + fail;
   fail++;
-  // A PROVISIONING REFUSAL IS AN ENVIRONMENT REPORT, NOT A VERDICT ON THE DAEMON. JetStream RESERVES
-  // each space's 4 GiB artifact cap against the server's store the moment the space is provisioned,
-  // so on a small or busy filesystem the suite is refused before a single cell runs. That arrived as
-  // a bare "insufficient storage resources available" with no cell and nothing naming the cause,
-  // and it read exactly like a product failure: a CI mutation baseline was refused on it while the
-  // same commit passed 94/0 locally, and the first hypothesis on both sides was that the daemon had
-  // regressed. It had not. Measured at this commit, one variable changed and nothing else: on a 16
-  // GiB tmpfs the run exits 1 here, and with TMPDIR on a roomy filesystem it is 94 passed 0 failed.
-  // So the suite now says which it is, and says where to look.
+  // A PROVISIONING REFUSAL IS AN ENVIRONMENT REPORT, NOT A VERDICT ON THE DAEMON. The refusal this
+  // guard was built for was the artifact store's 4 GiB cap: JetStream reserved every space's whole cap
+  // against the server's store the moment the space was provisioned, so six spaces demanded about 24.4
+  // GiB before a cell ran and a small or busy filesystem refused the suite outright. It arrived as a
+  // bare "insufficient storage resources available" with no cell and nothing naming the cause, and it
+  // read exactly like a product failure: a CI mutation baseline was refused on it while the same
+  // commit passed 94/0 locally, and the first hypothesis on both sides was that the daemon had
+  // regressed. It had not.
+  //
+  // That reservation is GONE — the artifact store now carries `max_bytes: -1` — so this suite's
+  // provisioning demand is 384 MiB of reservation rather than 24.4 GiB, and the refusal it names
+  // should no longer be reachable on any plausible filesystem. The guard stays because the broker can
+  // still refuse for a genuinely full store, and because "the environment refused before any cell
+  // ran" is the one diagnosis a reader cannot make from a bare broker string.
   const why = (e as Error).message;
   // GATED ON THE PROVISIONING PHASE, not on the message alone. A reviewer pointed out that matching
   // the broker's storage string ANYWHERE would relabel a genuine product failure as an environment
@@ -1390,11 +1394,12 @@ try {
   if (isProvisioningRefusal(gradedBeforeThrow, why)) {
     console.error(`  ✗ the BROKER refused to provision this suite's spaces: ${why}`);
     console.error(`     This is the test environment, not the daemon. This suite provisions SIX spaces (cells`);
-    console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 4 GiB artifact`);
-    console.error(`     Object Store plus a 64 MiB membership bucket, so the store must promise about 24.4 GiB`);
-    console.error(`     before a single cell runs, plus whatever headroom JetStream wants on top.`);
+    console.error(`     G and H alias earlier ones rather than adding more), and each reserves a 64 MiB membership`);
+    console.error(`     bucket - 384 MiB in total - before a single cell runs. The artifact Object Store reserves`);
+    console.error(`     NOTHING (max_bytes -1), so a refusal here now means the store is genuinely out of room`);
+    console.error(`     rather than promised away to empty caps.`);
     console.error(`     The broker's JetStream directory is under TMPDIR, currently ${tmpdir()}.`);
-    console.error(`     Point TMPDIR at a filesystem with 24 GiB+ free (and NOT under the workstation root,`);
+    console.error(`     Point TMPDIR at a filesystem with room to spare (and NOT under the workstation root,`);
     console.error(`     which the daemon's own root walk would then pick up) and re-run before reading this`);
     console.error(`     as a defect.`);
   } else {

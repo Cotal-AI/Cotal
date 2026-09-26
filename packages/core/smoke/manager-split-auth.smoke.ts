@@ -67,6 +67,8 @@ import {
   epRequestSubject,
   BASELINE_LIFECYCLE_ENDPOINT,
   eprStreamName,
+  artifactBucket,
+  objectStoreStream,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -264,7 +266,13 @@ try {
   // The THIRD TTL'd bucket. Its behavioural reconcile is covered elsewhere, but the grant matrix is
   // what this suite is for, and a matrix missing one of the three streams it grants is not a matrix.
   check("STREAM.UPDATE the delivery-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${deliveryBucket(space)}`, prov.id) === "allowed");
-  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
+  // The artifact Object Store: `ensureArtifactStore` creates it at `max_bytes: -1` (reserving nothing
+  // against the broker's `max_file_store`) and UPDATES a store left at the legacy stock 4 GiB to -1, so
+  // an existing mesh releases that reservation. `Objm.create` cannot change an existing bucket's cap,
+  // so the reconcile needs this grant or the first `cotal up` after the upgrade dies on a permissions
+  // violation. It is the ONLY non-TTL, non-authority stream the provisioner may update.
+  check("STREAM.UPDATE the artifact object store ALLOWED (legacy cap reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${objectStoreStream(artifactBucket(space))}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets + the artifact store)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
 

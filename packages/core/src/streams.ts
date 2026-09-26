@@ -120,18 +120,12 @@ export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Bucket-level `max_bytes` cap on the per-space artifact Object Store (`cotal_artifacts_<space>`).
- *
- *  THIS NUMBER IS THE ONLY THING BOUNDING ARTIFACT STORAGE, so it is a decision rather than a
- *  default. A fresh Object Store bucket ships `max_bytes: -1`, and the space account is provisioned
- *  `disk_storage: -1`, so nothing above it says no: without this cap an artifact flood grows until
- *  the disk does, starving the chat/DM/delivery streams that share it.
- *
- *  4 GiB is roughly sixteen artifacts at the 256 MiB per-artifact ceiling, which is generous for the
- *  transfer use case (screenshots, reports, build outputs) and small enough that filling it is a
- *  visible event rather than a silent disk exhaustion. `discard: new` on the bucket means hitting it
- *  REFUSES the write rather than evicting older artifacts — the loud failure, not the silent one
- *  where a reference published yesterday quietly stops resolving. */
-export const ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
+/** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
+ *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
+ *  {@link ensureArtifactStore} recognizes it and reconciles it to `-1`, releasing the reservation.
+ *  It is not a cap this code sets on anything, and it is deliberately not exported: nothing outside
+ *  the reconcile has a use for a number that is only ever a legacy value to be migrated away from. */
+const LEGACY_ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export interface ClearSpaceHistoryResult {
   chat: number;
@@ -526,21 +520,49 @@ export async function reconcileSpaceTtls(opts: {
  * options does the same.
  *
  * That makes create-alone actively dangerous here, because {@link setupSpaceStreams} is idempotent
- * and re-runs on every `cotal up`. A store that predates this cap, or that an operator widened by
- * hand, would be adopted forever: the code would look like it enforces a 4 GiB ceiling while the
- * broker enforced whatever was there first, and nothing would ever say so. The cap is the ONLY thing
- * bounding artifact storage (account disk is provisioned unlimited), so an unenforced cap is not a
- * smaller cap — it is no cap.
+ * and re-runs on every `cotal up`: a store an operator shaped by hand would be adopted forever while
+ * the code read as if it had configured it. So: create, then read the config back and refuse loudly
+ * on drift. Same create-or-verify discipline `ensureAuthorityStores` already uses, and the same
+ * reason: an idempotent setup path must either converge the resource or report that it cannot.
  *
- * So: create, then read the config back and refuse loudly on drift. Same create-or-verify discipline
- * `ensureAuthorityStores` already uses, and the same reason: an idempotent setup path must either
- * converge the resource or report that it cannot.
+ * THE STORE CARRIES NO BYTE CAP (`max_bytes: -1`), AND THAT IS THE POINT. A stream created with a
+ * positive `max_bytes` has that whole number RESERVED against the server's `max_file_store` the
+ * moment it is created, empty or not, and once the reservations would pass the cap nats-server
+ * refuses the next stream with JetStream error 10047 (`insufficient storage resources available`).
+ * Reproduced: under `max_file_store: 9 GiB`, two spaces provisioned, the third refused with 10047,
+ * `reserved_storage` 8.19 GiB and 0 bytes actually stored. A per-space quota that reserves 4 GiB
+ * therefore bounds how many SPACES a broker can hold rather than how many bytes a space can write.
+ *
+ * At `-1` the store reserves nothing and its writes are refused once the broker's REAL file-store
+ * usage reaches `max_file_store` — which is how the space's chat, DM, inbox and delivery streams are
+ * already bounded (`baseConfig` in `backup-config.ts` gives them `max_bytes: -1`). `discard: new`
+ * still means reaching that bound REFUSES the put rather than evicting an artifact whose reference
+ * is already published.
+ *
+ * A store at exactly the legacy stock 4 GiB is UPDATED to `-1` and read back, which is what releases
+ * the reservation on an existing mesh. Any OTHER positive `max_bytes` is somebody's deliberate
+ * decision and is still refused as drift: this path never silently widens a bound it did not set.
  */
 export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
   const bucket = artifactBucket(space);
   const stream = objectStoreStream(bucket);
-  await new Objm(jetstream(nc)).create(bucket, { max_bytes: ARTIFACT_STORE_MAX_BYTES });
-  const { config } = await (await jetstreamManager(nc)).streams.info(stream);
+  const jsm = await jetstreamManager(nc);
+  await new Objm(jetstream(nc)).create(bucket, { max_bytes: -1 });
+  let { config } = await jsm.streams.info(stream);
+  // LEGACY RECONCILE, and only the legacy value. A store created by the code that set a 4 GiB cap is
+  // still holding 4 GiB of the broker's `max_file_store` reserved against it, so leaving it alone
+  // would leave the defect in place on every existing mesh. Update it to -1 and READ IT BACK: an
+  // update the broker accepts without applying is the failure this path must not report as success.
+  if (config.max_bytes === LEGACY_ARTIFACT_STORE_MAX_BYTES) {
+    await jsm.streams.update(stream, { ...config, max_bytes: -1 });
+    ({ config } = await jsm.streams.info(stream));
+    if (config.max_bytes !== -1)
+      throw new Error(
+        `artifact store ${stream} is still at the legacy ${LEGACY_ARTIFACT_STORE_MAX_BYTES}-byte cap after ` +
+        `the reconcile (max_bytes read back as ${config.max_bytes}): the STREAM.UPDATE did not take, so the ` +
+        `broker is still reserving that capacity against its file store`,
+      );
+  }
   const drift: string[] = [];
   // SUBJECTS FIRST, because they decide whether this is an object store AT ALL. A stream created
   // under the right name with the right cap and the right discard, but bound to other subjects, is
@@ -553,8 +575,11 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // stream. Nothing about the cap would look wrong; the bytes would simply not be the space's own.
   if (config.mirror) drift.push("it is a MIRROR of another stream");
   if (config.sources?.length) drift.push(`it SOURCES ${config.sources.length} other stream(s)`);
-  if (config.max_bytes !== ARTIFACT_STORE_MAX_BYTES)
-    drift.push(`max_bytes is ${config.max_bytes}, expected ${ARTIFACT_STORE_MAX_BYTES}`);
+  // A positive cap that is NOT the legacy stock value was set deliberately by someone else, and the
+  // reconcile above has already converged the one value this code is entitled to change. Refuse it
+  // rather than widening it: a bound this code did not set is not a bound it may remove.
+  if (config.max_bytes !== -1)
+    drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
   // `discard: new` is what makes a full store REFUSE a put instead of evicting a live artifact whose
   // reference is already published. Drift here is silent data loss, not a capacity difference.
   if (String(config.discard) !== "new") drift.push(`discard is ${config.discard}, expected new`);
@@ -583,14 +608,14 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // sealed"), so a sealed store cannot arrive through the create path - only by a later update. That
   // narrows it to a deliberate operator action, which is exactly the drift worth naming.
   if (config.sealed === true) drift.push("the stream is SEALED (writes permanently refused)");
-  // The message-count and size limits must stay unbounded, because THE CAP IS SUPPOSED TO BE THE
-  // OPERATIVE BOUND. Reproduced: max_msgs=2 accepts setup, the first 1-byte object succeeds (chunk +
-  // meta = 2 messages), and the second fails "maximum messages exceeded" with 4 GiB still free. A
-  // hidden limit that overrides the advertised capacity makes the number this code reports a lie -
+  // The message-count and size limits must stay unbounded, because THE BROKER'S FILE STORE IS
+  // SUPPOSED TO BE THE OPERATIVE BOUND. Reproduced: max_msgs=2 accepts setup, the first 1-byte object
+  // succeeds (chunk + meta = 2 messages), and the second fails "maximum messages exceeded" with the
+  // whole file store free. A hidden limit that refuses artifacts long before the broker is full is
   // loud rather than silent, but still a bound nobody configured deliberately.
   for (const [field, value] of [["max_msgs", config.max_msgs], ["max_msgs_per_subject", config.max_msgs_per_subject],
                                 ["max_msg_size", config.max_msg_size]] as const)
-    if (value !== -1) drift.push(`${field} is ${value}, expected -1 (max_bytes is the only bound this store advertises)`);
+    if (value !== -1) drift.push(`${field} is ${value}, expected -1 (the broker's file-store cap is this store's only bound)`);
   if (drift.length)
     throw new Error(
       `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +

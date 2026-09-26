@@ -18,9 +18,10 @@
  *
  * The CONTROL phase runs the IDENTICAL path over a UNIFIED root (manager and daemon share one
  * root, the stock single-host composition): adoption succeeds, proving the phase-1 refusal is
- * caused by the divergence and not by the rig. Each phase gets its own space AND its own broker:
- * the per-space artifact store reserves 4 GiB of JetStream capacity, so two spaces on one broker
- * overrun a small CI disk - and a virgin broker per phase also rules out cross-phase carryover.
+ * caused by the divergence and not by the rig. Each phase gets its own space AND its own broker, so a
+ * virgin broker per phase rules out cross-phase carryover. Capacity used to force the same split -
+ * the per-space artifact store reserved 4 GiB of JetStream capacity, so two spaces on one broker
+ * overran a small CI disk - and that reservation is gone.
  *
  * COTAL_HOME is sandboxed and ambient COTAL_* is scrubbed; kills ONLY the PIDs it spawns.
  * Run: pnpm smoke:manager-two-root-renewal   (needs `nats-server` on PATH; auth mode; ~60s)

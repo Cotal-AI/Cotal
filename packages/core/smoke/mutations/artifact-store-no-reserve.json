@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "packages/core/smoke/artifact-store-no-reserve.smoke.ts"
+  ],
+  "guard": "The per-space artifact Object Store is created with `max_bytes: -1` so it reserves nothing against the broker's `max_file_store`; a store left at the legacy stock 4 GiB is reconciled to -1 and read back; any other positive cap is still refused as drift rather than widened.",
+  "command": "pnpm smoke:artifact-store-no-reserve",
+  "completionMarker": "artifact-store-no-reserve:",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/artifact-store-no-reserve.json",
+  "why": [
+    "The suite imports `setupSpaceStreams` from `src`, so no build is needed and each mutant is what the suite runs.",
+    "Each mutation is one of the three load-bearing decisions, and each reddens a DIFFERENT cell, which is what",
+    "separates them. Restoring the 4 GiB create cap reinstates the reservation, so the provisioning cell cannot",
+    "fit its spaces. Removing the legacy reconcile leaves an existing mesh holding its 4 GiB forever, so the",
+    "reconcile cell sees the cap unchanged. Widening the reconcile to ANY positive value silently removes a bound",
+    "an operator set deliberately, so the refusal cell stops refusing - the dangerous mutation, because it is the",
+    "one whose result still looks like a working fix."
+  ],
+  "mutations": [
+    {
+      "name": "the 4 GiB create cap is restored, so every store reserves again",
+      "file": "packages/core/src/streams.ts",
+      "find": "  await new Objm(jetstream(nc)).create(bucket, { max_bytes: -1 });\n",
+      "replace": "  await new Objm(jetstream(nc)).create(bucket, { max_bytes: LEGACY_ARTIFACT_STORE_MAX_BYTES });\n",
+      "expectRed": "6 spaces provision under a file store SMALLER than the old 4 GiB per-space reservation",
+      "cell": "6 spaces provision under a file store SMALLER than the old 4 GiB per-space reservation",
+      "note": "This is the defect exactly as it shipped: the broker refuses the second space with JetStream error 10047 while every store is empty."
+    },
+    {
+      "name": "the legacy reconcile is removed, so an existing mesh keeps its reservation",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (config.max_bytes === LEGACY_ARTIFACT_STORE_MAX_BYTES) {\n    await jsm.streams.update(stream, { ...config, max_bytes: -1 });\n    ({ config } = await jsm.streams.info(stream));\n",
+      "replace": "  if (false as boolean) {\n    ({ config } = await jsm.streams.info(stream));\n",
+      "expectRed": "setup reconciles the legacy 4 GiB store to -1",
+      "cell": "setup reconciles the legacy 4 GiB store to -1",
+      "note": "Without the update the store is left at 4 GiB and then refused as drift, so the fix would ship correct for fresh spaces and inert on every mesh that already exists."
+    },
+    {
+      "name": "the reconcile is widened to ANY positive cap, silently removing a deliberate bound",
+      "file": "packages/core/src/streams.ts",
+      "find": "  if (config.max_bytes === LEGACY_ARTIFACT_STORE_MAX_BYTES) {\n",
+      "replace": "  if (config.max_bytes > 0) {\n",
+      "expectRed": "a store at any other positive max_bytes is still REFUSED as drift",
+      "cell": "a store at any other positive max_bytes is still REFUSED as drift",
+      "note": "The mutant passes every other cell in the suite: it provisions, it reconciles, it round-trips. Only this cell sees that a cap nobody in this code set has been removed without anyone saying so."
+    }
+  ]
+}
