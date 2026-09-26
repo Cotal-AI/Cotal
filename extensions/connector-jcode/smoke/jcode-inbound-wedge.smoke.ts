@@ -214,7 +214,6 @@ try {
   let peerPresenceAt = 0;
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; status?: string; activity?: string } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") {
-      console.error("FX43-EV", Date.now(), event.type, event.presence.status, JSON.stringify(event.presence.activity));
       peerId = event.presence.card.id;
       peerStatus = event.presence.status ?? "";
       peerActivity = event.presence.activity ?? "";
@@ -233,13 +232,8 @@ try {
       (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("connected to the Cotal mesh"),
     ) ? true : undefined,
   );
-  const __fx43Peer = (): boolean => {
-    if (peerId && peerStatus === "idle" && peerActivity === "") return true;
-    if (Date.now() % 50 < 1) console.error("FX43-DEBUG presence:", JSON.stringify({ peerId, peerStatus, peerActivity }));
-    return false;
-  };
   await waitFor("readiness is definitively idle with no stale activity before the initial-drive cell", () =>
-    __fx43Peer() ? peerId : undefined,
+    peerId && peerStatus === "idle" && peerActivity === "" ? peerId : undefined,
   );
 
   const initialSentAt = Date.now();
