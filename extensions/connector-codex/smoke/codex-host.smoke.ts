@@ -924,10 +924,7 @@ try {
   await waitFor("shutlaunch thread started", () =>
     !existsSync(shutLaunchLog)
       ? undefined
-      : readFileSync(shutLaunchLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as LogEntry)
+      : readJsonLines<LogEntry>(shutLaunchLog)
           .find((e) => e.ev === "recv" && e.method === "thread/start"),
     30_000,
   );
@@ -1160,13 +1157,7 @@ try {
     },
     stdio: ["ignore", "ignore", "inherit"],
   }));
-  const tuiEntries = (): LogEntry[] =>
-    !existsSync(tuiLog)
-      ? []
-      : readFileSync(tuiLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as LogEntry);
+  const tuiEntries = (): LogEntry[] => readJsonLines<LogEntry>(tuiLog);
   const tuiLaunch = await waitFor("codex TUI launch", () => tuiEntries().find((e) => e.ev === "tui"), 30_000);
   const tuiArgv = (tuiLaunch.argv ?? []) as string[];
   const startedThread = tuiEntries().find((e) => e.ev === "recv" && e.method === "thread/start");
