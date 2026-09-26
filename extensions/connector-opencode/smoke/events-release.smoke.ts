@@ -41,7 +41,7 @@ import { join } from "node:path";
 import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { bootPlugin } from "./_boot-plugin.js";
 import { SESSION_RETIRED, WAL_KEPT, WAL_REAPED } from "../src/plugin.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
@@ -207,7 +207,7 @@ let nats2: ChildProcess | undefined;
 let releaseBroker2: (() => void) | undefined;
 let relayServer: ReturnType<typeof createNetServer> | undefined;
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space: SPACE, file: { defaults: { replay: false } } });
 
   // ── 1. THE REAPING LIFETIME, in one process ────────────────────────────────────────────────────

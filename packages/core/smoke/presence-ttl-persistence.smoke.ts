@@ -20,7 +20,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { isReachable, reconcileBucketTtl, TtlPersistenceError } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "./_ephemeral-only.js";
 
 scrubAmbientBrokerEnv();
@@ -46,7 +46,7 @@ const walk = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
 });
 
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(100); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   const nc = await connect({ servers });
   const jsm = await jetstreamManager(nc);
   const js = jetstream(nc);

@@ -13,7 +13,7 @@
  * pointing straight at `.ts`, so there is no build step, no build ordering, and no second copy that
  * can disagree with this one.
  */
-export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "./broker-teardown.js";
+export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "./broker-teardown.js";
 export { EXEMPT_MARKER, enumerateSpawnSites, inScope, isAdopted, type SpawnSite } from "./spawn-sites.js";
 export {
   assertSmokeSandboxDown,

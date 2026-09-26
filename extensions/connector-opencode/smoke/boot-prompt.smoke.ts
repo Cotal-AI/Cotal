@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { bootPlugin } from "./_boot-plugin.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
@@ -216,7 +216,7 @@ const enterFocus = async (hooks: PluginHooks): Promise<boolean> => {
   return false;
 };
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { general: { replay: false } } } });
   watcher = new CotalEndpoint({ space, servers, card: { id: "watch", name: "watch", role: "watcher", kind: "agent" }, channels: ["general"], heartbeatMs: 500, ttlMs: 30_000 });
   watcher.on("error", () => undefined);

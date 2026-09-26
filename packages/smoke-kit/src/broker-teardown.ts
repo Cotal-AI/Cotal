@@ -245,3 +245,40 @@ export function teardownPathOnSignal(path: string): () => void {
   owned.add(entry);
   return () => owned.delete(entry);
 }
+
+/**
+ * Poll `probe` until it answers `true`, or throw once `attempts` calls have all answered `false`.
+ *
+ * This is the other half of the readiness loop every suite hand-rolls as
+ * `for (let i = 0; i < N; i++) { if (await isReachable(servers)) break; await sleep(ms); }` — a
+ * shape with no exhaustion arm, so a suite that spent the whole wait finding the broker down still
+ * falls through and dials it anyway, and the first thing to speak is a nats-core dial error with a
+ * stack into `node_modules` instead of a sentence naming the broker. See issue #1249.
+ *
+ * `probe` is the caller's own reachability check (typically `() => isReachable(servers)`), passed
+ * in rather than imported, so this package keeps declaring no dependencies (`core-boundary.smoke.ts`
+ * enforces that). `attempts` and `delayMs` are the site's own numbers — unchanged by adopting this.
+ *
+ * `output`, when given, is the site's own collected broker stdout/stderr (as the issue's second
+ * comment describes: a suite that already throws on exhaustion still throws away the one thing that
+ * would make the failure diagnosable — was the port merely stolen, or did the broker fail to start
+ * and say why). On exhaustion the thrown message includes that output trimmed to its last 2000
+ * bytes, or the words `no broker output collected` when `output()` returns an empty string.
+ */
+export async function awaitBrokerReady(
+  probe: () => Promise<boolean>,
+  opts: { servers: string; attempts: number; delayMs: number; output?: () => string },
+): Promise<void> {
+  const { servers, attempts, delayMs, output } = opts;
+  const started = Date.now();
+  for (let i = 0; i < attempts; i++) {
+    if (await probe()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  }
+  const elapsedMs = Date.now() - started;
+  const collected = output?.() ?? "";
+  const tail = collected === "" ? "no broker output collected" : collected.slice(-2000);
+  throw new Error(
+    `nats-server at ${servers} never became reachable after ${attempts} attempts (${elapsedMs}ms elapsed) - ${tail}`,
+  );
+}
