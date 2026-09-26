@@ -239,17 +239,24 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
 })());
 
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
-// A TCP peer that greets with INFO {tls_required:true} only after 1.5s. probeConnect fails
-// (not a real NATS TLS handshake) → unreachable; without the confirm budget this would prune.
+// A TCP peer that greets with INFO {tls_required:true} only after 1.5s and then answers the TLS
+// client hello with a non-TLS byte string, so the handshake fails CONCLUSIVELY (a protocol error,
+// not a timeout). probeConnect → unreachable; without the confirm budget on the INFO read this
+// would prune. A peer that never answers the hello is a pure timeout, which #851 routes to
+// slow-link before INFO is consulted at all (S11 below); this peer must not be that shape.
 {
   const { createServer } = await import("node:net");
   const delayed = await new Promise<{ port: number; close: () => void }>((resolve) => {
     const srv = createServer((sock) => {
+      sock.on("error", () => { /* client tears down on its own error; not a test failure */ });
       setTimeout(() => {
         try {
           sock.write('INFO {"server_id":"s10","tls_required":true,"version":"2"}\r\n');
         } catch { /* client gone */ }
       }, 1_500);
+      sock.once("data", () => {
+        try { sock.write("-ERR not a tls record\r\n"); } catch { /* client gone */ }
+      });
     });
     srv.listen(0, "127.0.0.1", () => {
       const port = (srv.address() as { port: number }).port;
