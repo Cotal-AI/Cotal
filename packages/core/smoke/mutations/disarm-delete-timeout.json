@@ -10,9 +10,7 @@
     "The live crash was TimeoutError from consumer.delete in disarmMembershipWatch on a live",
     "observer. The old catch rethrew any timeout while the connection was still open.",
     "",
-    "A1 restores that live throw. A2 swallows the timeout without emitting the error event.",
-    "",
-    "the workspace preflight re-read INFO and report a CA problem for a slow link. It rebuilds core"
+    "A1 restores that live throw. A2 swallows the timeout without emitting the error event."
   ],
   "mutations": [
     {
