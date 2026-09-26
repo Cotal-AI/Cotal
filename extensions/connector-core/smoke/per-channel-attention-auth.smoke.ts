@@ -13,7 +13,6 @@
  *   - reset on restart: a fresh agent seeds from config only.
  * Run: pnpm smoke:channel-attention:auth
  */
-import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,8 +54,17 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 let pass = 0;
+let fail = 0;
+// Counting convention (not assert-throw): this suite is graded by mutation-proof through
+// connection-status.mutations.json's #445 entry, whose completion marker is a line the suite must
+// print whether it passes or fails. A fail-fast check would exit at the first red and never reach it.
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+  if (!cond) {
+    fail++;
+    process.exitCode = 1;
+    console.log(`  ✗ FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+    return;
+  }
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -263,7 +271,6 @@ try {
   check("restart drops runtime override, keeps file defaults",
     fresh.channelMode("normal-ch") === undefined && fresh.channelMode("quiet-ch") === "quiet" && fresh.channelMode("muted-ch") === "muted");
 
-  console.log(`\nAUTH PER-CHANNEL ATTENTION E2E PASSED ✅  (${pass} checks)`);
   await agent.stop();
   await pub.stop();
   await mgr.stop({ withAgents: true });
@@ -273,4 +280,12 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-process.exit(0);
+const EXPECTED_CELLS = 22;
+const ran = pass + fail;
+console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
+console.log(`SUITE COMPLETE: ${ran} cells`);
+if (ran !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+  process.exit(1);
+}
+process.exit(fail === 0 ? 0 : 1);
