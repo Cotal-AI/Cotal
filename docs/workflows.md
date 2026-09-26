@@ -278,7 +278,10 @@ durable, including the diagnostic for a journal with no run record. That durable
 the takeover, and an attempt reads it many times, so reads under one takeover run one at a time in
 the hosting process and a replay removes a durable of its own name that an interrupted earlier read
 left behind. A durable that survives a replay's own delete belongs to a reader the process cannot
-account for, and reading its tail is refused.
+account for, and reading its tail is refused. A drive handles that refusal as a takeover does: the
+reads behind its steps, and the diagnostic for a journal with no run record, replay up to three
+times before the refusal is raised. An operator read runs under a takeover minted for that read and
+reports the refusal on its first read.
 
 A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open
 pause, then a second credential pinned to that token for the answer and settlement.
