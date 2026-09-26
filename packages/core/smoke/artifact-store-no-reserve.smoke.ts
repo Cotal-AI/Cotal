@@ -69,6 +69,18 @@ const check = (name: string, pass: boolean, extra?: unknown) => {
   if (pass) { ok++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log("  ✗ FAIL:", name, extra ?? ""); }
 };
+/** Run `setupSpaceStreams` and RETURN its refusal rather than throwing.
+ *
+ *  Every phase below goes through this, and the reason is that a suite whose cells are reached by a
+ *  throw cannot grade the thing it is about. `ensureArtifactStore` refuses by throwing, so a broken
+ *  reconcile kills the process on the line BEFORE the cell that would have named it: the run still
+ *  exits nonzero, but it reports an uncaught stack instead of a failed claim, and a mutation that
+ *  removes the reconcile then reddens nothing by name. Measured: the mutation proof reported
+ *  WRONG-RED for exactly that reason until each phase caught its own refusal. */
+const trySetup = async (opts: { servers: string; space: string; creds?: string }): Promise<string> => {
+  try { await setupSpaceStreams(opts); return ""; }
+  catch (e) { return (e as Error).message; }
+};
 
 /** Start a broker, run `body`, and always tear it down. Each phase gets its own broker because
  *  `max_file_store` is fixed at start and the phases need different caps. An auth-mode broker
@@ -128,8 +140,9 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
   let provisioned = 0;
   let refusal = "";
   for (const space of spaces) {
-    try { await setupSpaceStreams({ servers, space }); provisioned++; }
-    catch (e) { refusal = (e as Error).message; break; }
+    refusal = await trySetup({ servers, space });
+    if (refusal !== "") break;
+    provisioned++;
   }
   check(`${SPACES} spaces provision under a ${(FILE_STORE_CAP / 2 ** 30).toFixed(0)} GiB file store that the old 4 GiB reservation could not fit`,
     provisioned === SPACES, `${provisioned} provisioned; refusal: ${refusal}`);
@@ -142,13 +155,17 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
   check("...and it is exactly the membership buckets, with nothing reserved for artifacts",
     reserved === SPACES * 64 * 1024 * 1024, reserved);
 
-  // Each store individually, so a total that happened to add up cannot hide a capped store.
-  const caps = await Promise.all(spaces.map((s) => maxBytesOf(servers, s)));
-  check("every space's artifact store carries max_bytes -1", caps.every((c) => c === -1), caps);
+  // Each store individually, so a total that happened to add up cannot hide a capped store. Only the
+  // spaces that actually got provisioned exist to be read, so a partial run grades what it has rather
+  // than dying on a missing stream and losing the cells below.
+  const created = spaces.slice(0, provisioned);
+  const caps = await Promise.all(created.map((s) => maxBytesOf(servers, s)));
+  check("every space's artifact store carries max_bytes -1",
+    created.length > 0 && caps.every((c) => c === -1), caps);
 
   // CELL 5. A round trip, because a store that reserves nothing and also stores nothing is no fix.
   const nc = await connect({ servers });
-  const os = await new Objm(jetstream(nc)).create(artifactBucket(spaces[0]));
+  const os = await new Objm(jetstream(nc)).create(artifactBucket(created[0] ?? spaces[0]));
   const payload = new Uint8Array([7, 8, 9, 10]);
   await os.put({ name: "round-trip" }, bytesStream(payload));
   const got = await os.get("round-trip");
@@ -159,7 +176,7 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
   check("an artifact still put/get round-trips through the uncapped store",
     read.equals(Buffer.from(payload)), read);
 
-  for (const space of spaces) await deleteSpace({ servers, space });
+  for (const space of created) await deleteSpace({ servers, space });
 });
 
 console.log("\nthe legacy reconcile and its boundary (open mode):");
@@ -174,15 +191,17 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
   check("a store planted at the legacy 4 GiB reserves that capacity at the broker",
     before === LEGACY_CAP, before);
 
-  await setupSpaceStreams({ servers, space: legacy });
+  const legacyRefusal = await trySetup({ servers, space: legacy });
   const after = await reservedStorage(servers);
-  check("setup reconciles the legacy 4 GiB store to -1", (await maxBytesOf(servers, legacy)) === -1);
+  check("setup reconciles the legacy 4 GiB store to -1",
+    legacyRefusal === "" && (await maxBytesOf(servers, legacy)) === -1, legacyRefusal);
   check("...and the broker RELEASES the 4 GiB it had reserved",
     after === before - LEGACY_CAP + 64 * 1024 * 1024, `before=${before} after=${after}`);
 
   // A second pass must be a no-op, because setup re-runs on every `cotal up`.
-  await setupSpaceStreams({ servers, space: legacy });
-  check("a repeat setup leaves the reconciled store alone", (await maxBytesOf(servers, legacy)) === -1);
+  const repeatRefusal = await trySetup({ servers, space: legacy });
+  check("a repeat setup leaves the reconciled store alone",
+    repeatRefusal === "" && (await maxBytesOf(servers, legacy)) === -1, repeatRefusal);
   await deleteSpace({ servers, space: legacy });
 
   // CELL 4. Any OTHER positive cap is somebody's deliberate decision. Refused, and left untouched.
@@ -190,9 +209,7 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
   const dnc = await connect({ servers });
   await new Objm(jetstream(dnc)).create(artifactBucket(deliberate), { max_bytes: DELIBERATE_CAP });
   await dnc.close();
-  let refusal = "";
-  try { await setupSpaceStreams({ servers, space: deliberate }); refusal = "WIDENED IT"; }
-  catch (e) { refusal = (e as Error).message; }
+  const refusal = (await trySetup({ servers, space: deliberate })) || "WIDENED IT";
   check("a store at any other positive max_bytes is still REFUSED as drift",
     refusal.includes("has drifted") && refusal.includes(String(DELIBERATE_CAP)), refusal);
   check("the refused store is left exactly as it was, never silently widened",
@@ -213,8 +230,7 @@ await onBroker({ authSpace: AUTH_SPACE }, undefined, async ({ servers, creds }) 
   check("the provisioner can CREATE a store at the legacy cap (staging the old deployment)",
     (await maxBytesOf(servers, space, creds)) === LEGACY_CAP);
 
-  let err = "";
-  try { await setupSpaceStreams({ servers, space, creds }); } catch (e) { err = (e as Error).message; }
+  const err = await trySetup({ servers, space, creds });
   check("the provisioner credential is AUTHORIZED to reconcile the legacy cap to -1",
     err === "" && (await maxBytesOf(servers, space, creds)) === -1, err);
   await deleteSpace({ servers, space, creds });
@@ -231,7 +247,9 @@ const PUT_CAP = 256 * 1024 * 1024;
 const MEMBERSHIP_RESERVED = 64 * 1024 * 1024;
 await onBroker("open", PUT_CAP, async ({ servers }) => {
   const space = "fullresv";
-  await setupSpaceStreams({ servers, space });
+  const setupRefusal = await trySetup({ servers, space });
+  check("the space provisions under a cap small enough to fill (the rig, stated)", setupRefusal === "", setupRefusal);
+  if (setupRefusal !== "") return;
   const nc = await connect({ servers });
   const os = await new Objm(jetstream(nc)).create(artifactBucket(space));
   const blob = new Uint8Array(8 * 1024 * 1024);
