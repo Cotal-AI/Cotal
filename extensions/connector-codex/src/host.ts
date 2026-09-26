@@ -819,7 +819,7 @@ export async function runCodexHost(): Promise<void> {
       // (the file is created by the primer inject and bound immediately after). On a late bind it
       // is the turns that ran while the file did not exist, and a reader comparing the panel to the
       // terminal deserves to know why they differ rather than to guess.
-      log(`AG-UI: publishing thread ${threadId} from ${path} (the stream starts here, anything already written is not republished)`);
+      log(`AG-UI: publishing thread ${threadId} from ${JSON.stringify(path)} (the stream starts here, anything already written is not republished)`);
     } finally {
       binding = false;
       const retry = missedBind;
