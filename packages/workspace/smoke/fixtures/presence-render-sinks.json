@@ -3702,6 +3702,27 @@
       "anchor": "ctx.strokeStyle = rgba(off ? MEM_OFF : MEM_LIVE, (off ? 0.3 : 0.42) * (lit ? 1 : 0.28))",
       "class": "presence-only-glyph/count",
       "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "mem.map(memberRow)",
+      "class": "non-render/control",
+      "rationale": "Dashboard data shaping: maps member records to row models for the sidebar; rendering classifies at the row sink, not here."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "rgba(col, 0.55)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "rgba(col, 0.85)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
     }
   ]
 }
