@@ -114,7 +114,7 @@
     {
       "name": "pre-red attribution ignores the same command's base-to-head transition",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "      const transition = compareSnapshots(headRun, baseRun);",
+      "find": "      const transition = compareSnapshots(fixtureCommand, headRun, baseRun);",
       "replace": "      const transition = { kind: \"inherited\", baseStatus: baseRun.status };",
       "expectRed": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling",
       "cell": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling"
