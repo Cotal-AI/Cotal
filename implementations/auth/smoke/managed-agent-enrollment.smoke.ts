@@ -223,25 +223,25 @@ try {
     check("POSITIVE CONTROL: a current registration with supervise authorizes the enrollment",
       ok.value?.target.actor === "worker" && ok.value.instanceId === INSTANCE, ok);
 
-    await refuses("a request naming another host space is refused",
+    await refuses("enrollment: a request naming another host space is refused",
       () => enroll(enrollment({ space: "other" })), "permission-denied", /not host space/);
     await refuses('a row without "supervise" is refused even holding spawn and admin',
       () => enroll(enrollment(), ["spawn", "admin"]), "permission-denied", /scope "supervise"/);
-    await refuses("an instance with no gate at all is refused",
+    await refuses("enrollment: an instance with no gate at all is refused",
       () => enroll(enrollment({ instanceId: ABSENT_INSTANCE, registrationProof: proofFor(ABSENT_INSTANCE) })), "failed-precondition", /no current open manager gate/);
-    await refuses("a FROZEN gate is refused (a takeover in flight is not a registration)",
+    await refuses("enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)",
       () => enroll(enrollment({ instanceId: FROZEN_INSTANCE, registrationProof: proofFor(FROZEN_INSTANCE) })), "failed-precondition", /no current open manager gate/);
-    await refuses("a gate held by another owner's serve principal is refused",
+    await refuses("enrollment: a gate held by another owner's serve principal is refused",
       () => enroll(enrollment({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not serve principal/);
-    await refuses("a stale serve epoch is refused as a conflict",
+    await refuses("enrollment: a stale serve epoch is refused as a conflict",
       () => enroll(enrollment({ serveEpoch: EPOCH - 1, registrationProof: proofFor(INSTANCE, "cli", REVISION, EPOCH - 1) })), "conflict", new RegExp(`epoch ${EPOCH - 1} is stale; current is ${EPOCH}`));
-    await refuses("a forged registration proof is refused",
+    await refuses("enrollment: a forged registration proof is refused",
       () => enroll(enrollment({ registrationProof: `sha256:${"f".repeat(64)}` })), "permission-denied", /does not match current host registration/);
     // The proof is HOST-issued for a specific registration revision. A participant that recomputed
     // it from lifecycle coordinates alone (which it can see) would have a client-computable proof.
-    await refuses("a proof computed for a superseded registration revision is refused",
+    await refuses("enrollment: a proof computed for a superseded registration revision is refused",
       () => enroll(enrollment({ registrationProof: proofFor(INSTANCE, "cli", REVISION - 1) })), "permission-denied", /does not match current host registration/);
-    await refuses("a proof computed under another owner is refused",
+    await refuses("enrollment: a proof computed under another owner is refused",
       () => enroll(enrollment({ registrationProof: proofFor(INSTANCE, "cli", REVISION, EPOCH, OTHER_OWNER) })), "permission-denied", /does not match current host registration/);
   }
 
@@ -251,25 +251,25 @@ try {
     check("POSITIVE CONTROL: a current registration with supervise authorizes the release preparation",
       ok.value?.target.lifecycleUid === TARGET_UID && ok.value.opId === managedRetirementOpId(TARGET_UID), ok);
 
-    await refuses("a target owner that is not the authenticated owner is refused",
+    await refuses("release: a target owner that is not the authenticated owner is refused",
       () => release(prepare({ target: { owner: OTHER_OWNER, actor: "worker", lifecycleUid: TARGET_UID } })), "permission-denied", /does not match authenticated owner/);
     // The opId is DERIVED, so a well-formed opId for a DIFFERENT lifecycle is the real attack: it
     // would open a second barrier over one head. The parser catches it, and so does the helper.
-    await refuses("an opId derived for another lifecycle is refused",
+    await refuses("release: an opId derived for another lifecycle is refused",
       () => release(prepare({ opId: managedRetirementOpId(mintLifecycleUid()) })), "bad-request", /derived terminal operation id/);
     await refuses('prepare-retirement without "supervise" is refused',
       () => release(prepare(), ["spawn", "admin"]), "permission-denied", /scope "supervise"/);
-    await refuses("a request naming another host space is refused",
+    await refuses("release: a request naming another host space is refused",
       () => release(prepare({ space: "other" })), "permission-denied", /not host space/);
-    await refuses("an absent gate is refused",
+    await refuses("release: an absent gate is refused",
       () => release(prepare({ instanceId: ABSENT_INSTANCE, registrationProof: proofFor(ABSENT_INSTANCE) })), "failed-precondition", /no current open manager gate/);
-    await refuses("a FROZEN gate is refused",
+    await refuses("release: a FROZEN gate is refused",
       () => release(prepare({ instanceId: FROZEN_INSTANCE, registrationProof: proofFor(FROZEN_INSTANCE) })), "failed-precondition", /no current open manager gate/);
-    await refuses("a foreign gate principal is refused",
+    await refuses("release: a foreign gate principal is refused",
       () => release(prepare({ instanceId: FOREIGN_INSTANCE, registrationProof: proofFor(FOREIGN_INSTANCE) })), "permission-denied", /not serve principal/);
-    await refuses("a stale serve epoch is refused as a conflict",
+    await refuses("release: a stale serve epoch is refused as a conflict",
       () => release(prepare({ serveEpoch: EPOCH + 1, registrationProof: proofFor(INSTANCE, "cli", REVISION, EPOCH + 1) })), "conflict", new RegExp(`epoch ${EPOCH + 1} is stale; current is ${EPOCH}`));
-    await refuses("a forged registration proof is refused",
+    await refuses("release: a forged registration proof is refused",
       () => release(prepare({ registrationProof: `sha256:${"f".repeat(64)}` })), "permission-denied", /does not match current host registration/);
   }
 
