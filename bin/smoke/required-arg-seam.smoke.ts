@@ -1328,8 +1328,9 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
 /** Can the OBJECT this name holds have changed since the declaration wrote it out?
  *
  *  Reading a member off the declaration's text is a statement about the value AT THE CALL, and four
- *  three ordinary things break that link: a property written afterwards, the object handed to a call
- *  that can keep it, and a second name for the same object. Through any of them, `const opts
+ *  ordinary things break that link: a property written afterwards, the object handed to a call
+ *  that can keep it, a second name for the same object, and the object kept in a literal (an array
+ *  element, the value of a property, a shorthand property). Through any of them, `const opts
  *  = { tls: undefined }; opts.tls = false;` would be reported as stating the key undefined while the
  *  program works, which is the untrue-assertion direction, and this reader flinches from that harder
  *  than from a miss: a miss fails to catch a broken program, an untrue assertion spends the
@@ -1340,9 +1341,15 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
  *  so no delete can turn one of its reds into a false one. A branch for it would have been dead
  *  weight with a cell that could not tell whether it ran.
  *
- *  Stated residual, since it is not a route this closes: the alias rule follows the name, not the
- *  object, so a second name taken in a shape not listed here (a property of something else, an
- *  element of an array) keeps its own mutations out of view. */
+ *  The same guard has a second cost, next to the one above: once a name is mutable, the reader
+ *  stops claiming from the declaration in BOTH directions, so a write that introduces `undefined`
+ *  into a good value is a miss rather than a red. Declining is the cheaper half of that trade, but
+ *  it is still a cost, and it is paid on every mutable name alike.
+ *
+ *  Stated residual, since these are not routes this closes: a holder returned from a function and a
+ *  holder stored into a class field are both out of view at the head, so their mutations are not
+ *  watched and their declarations are still declined from. A spread is NOT a keep: it hands over
+ *  a copy, so a write through it says nothing about the object here. */
 function mutableHere(id: ts.Identifier): boolean {
   const memberOf = (e: ts.Expression): boolean => {
     const x = unwrap(e);
