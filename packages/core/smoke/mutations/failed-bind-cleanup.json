@@ -1,8 +1,9 @@
 {
   "suite": [
-    "packages/core/smoke/failed-bind-cleanup.smoke.ts"
+    "packages/core/smoke/failed-bind-cleanup.smoke.ts",
+    "packages/workspace/smoke/preflight.smoke.ts"
   ],
-  "guard": "a post-connect bind failure announces transport and connection down before the partial connection closes",
+  "guard": "a post-connect bind failure announces transport and connection down before the partial connection closes; and a probe that ran out of its own budget is reported as a timeout, never collapsed into unreachable (#851)",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:failed-bind-cleanup",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/failed-bind-cleanup.json",
   "mutations": [
@@ -14,6 +15,21 @@
       "expectRed": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down",
       "cell": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a probe timeout collapses to unreachable again, so a TLS-required target's slow link reads as a trust failure (#851)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (e !== undefined && isTimeoutError(e)) return { ok: false, reason: \"timeout\" };",
+      "replace": "  if (e !== undefined && isTimeoutError(e)) return { ok: false, reason: \"unreachable\" };",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:preflight",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "S11 held-open TLS peer: preflightTarget → slow-link, prune:false (#851 cell a)"
     }
+  ],
+  "why": [
+    "The second entry is the #851 collapse: a probe timeout reported as `unreachable` makes the workspace",
+    "preflight re-read the INFO greeting and report a CA problem for a slow link. Its command rebuilds core",
+    "first because the preflight suite imports core through its dist, and it declares no completion marker:",
+    "that suite is fail-fast and prints its count line only on a green run."
   ]
 }

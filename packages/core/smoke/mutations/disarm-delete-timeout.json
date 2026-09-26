@@ -1,7 +1,6 @@
 {
   "suite": [
-    "packages/core/smoke/disarm-delete-timeout.smoke.ts",
-    "packages/workspace/smoke/preflight.smoke.ts"
+    "packages/core/smoke/disarm-delete-timeout.smoke.ts"
   ],
   "guard": "a CONSUMER.DELETE timeout during membership-watch disarm is best-effort cleanup, not a process kill",
   "command": "pnpm smoke:disarm-delete-timeout",
@@ -13,11 +12,7 @@
     "",
     "A1 restores that live throw. A2 swallows the timeout without emitting the error event.",
     "",
-    "A3 shares the timeout predicate with #851: a probe timeout collapsed to `unreachable` again makes",
-    "the workspace preflight re-read INFO and report a CA problem for a slow link. It rebuilds core",
-    "first because the preflight suite imports workspace and core through their dist.",
-    "A3 declares no completion marker: the preflight suite is fail-fast, and its count line prints only",
-    "on a green run, so a marker there would grade every real kill INCONCLUSIVE."
+    "the workspace preflight re-read INFO and report a CA problem for a slow link. It rebuilds core"
   ],
   "mutations": [
     {
@@ -33,15 +28,6 @@
       "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }",
       "replace": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            /* swallowed */\n          } else {\n            throw err;\n          }",
       "expectRed": "the timeout is surfaced as an endpoint error event"
-    },
-    {
-      "name": "A3 a probe timeout collapses to unreachable again, so a TLS-required target's slow link reads as a trust failure (#851)",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "  if (e !== undefined && isTimeoutError(e)) return { ok: false, reason: \"timeout\" };",
-      "replace": "  if (e !== undefined && isTimeoutError(e)) return { ok: false, reason: \"unreachable\" };",
-      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:preflight",
-      "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "expectRed": "S11 held-open TLS peer: preflightTarget → slow-link, prune:false (#851 cell a)"
     }
   ]
 }
