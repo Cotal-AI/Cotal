@@ -46,7 +46,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
 process.env.COTAL_HOME = home;
 const {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
-  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry,
+  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
 } = await import("@cotal-ai/core");
 const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
 const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
@@ -73,7 +73,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; ep: SourceCotalEndpoint };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -168,8 +168,23 @@ try {
     readerWarm.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
 
   // ── restart: incarnation 2 (same root) ──
+  // Issue #367: a renew already in flight when a clean stop begins must not leave the liveness
+  // lease key behind for the rest of the bucket TTL. Fire a renew and immediately stop without
+  // awaiting it first, exactly the race the triage timed against a live broker.
+  void M1.renewLease();
   await mgr.stop({ withAgents: true });
+  const leaseAfterStop = await client.readOwnManagerLease(iid1);
+  check("(a) a clean stop with a renew in flight still removes the lease key", leaseAfterStop === undefined, leaseAfterStop);
+
+  const bootStarted = Date.now();
   mgr = await bootManager();
+  const bootMs = Date.now() - bootStarted;
+  check("(b) the successor boots at once after that stop, without waiting out the lease TTL", bootMs < MANAGER_LEASE_TTL_MS / 2, { bootMs, ttl: MANAGER_LEASE_TTL_MS });
+
+  await M1.renewLease();
+  const leaseAfterLateRenew = await client.readOwnManagerLease(iid1);
+  check("(c) a renew that runs after the stop does not put the key back", leaseAfterLateRenew === undefined, leaseAfterLateRenew);
+
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
   const epoch2 = M2.serviceServe!.grant.epoch;
