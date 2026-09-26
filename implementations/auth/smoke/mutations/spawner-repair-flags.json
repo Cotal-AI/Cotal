@@ -78,6 +78,15 @@
       "expectRed": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
       "cell": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
       "note": "The arm nobody had looked at, found by a security lens reading the sibling branch of the one being fixed. It is the worst arm to be silent on: the revoke deleted the row, so nothing is left for `cotal actor list` to show and the operator re-grants from memory."
+    },
+    {
+      "name": "S6 the managed grant mints a lifecycle uid instead of refusing the omitted field",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "  if (row.lifecycleUid === undefined || row.lifecycleUid === \"\")\n    throw new Error(\"grantManagedActor: a managed grant must carry the lifecycle uid the spawn path provisioned under; the ledger never mints one\");\n  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid, grantedAt: new Date().toISOString() };",
+      "replace": "  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid ?? mintLifecycleUid(), grantedAt: new Date().toISOString() };",
+      "expectRed": "a managed grant without a lifecycle uid is refused (the ledger never mints one)",
+      "cell": "a managed grant without a lifecycle uid is refused (the ledger never mints one)",
+      "note": "Issue #702, replayed byte for byte: the pre-fix line shipped for the life of the field. Under it the omitted-field call SUCCEEDS and returns a row whose uid the server invented, so the refusal cell reddens as `expected rejection` — the exact red the reproduction at the base showed. The control cell (the caller's uid reaches the row) stays green under the mutant, which is why the refusal cell is the one named."
     }
   ]
 }
