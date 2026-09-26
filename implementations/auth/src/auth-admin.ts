@@ -180,6 +180,26 @@ export function authorizeRetirementOperation(targetLifecycleUid: string, opId: s
     throw new EpEnvelopeError("permission-denied", `retireLifecycle operation ${opId} is not the derived terminal operation ${expected} for lifecycle ${targetLifecycleUid}; nothing was applied`);
 }
 
+/** In-flight terminal retirements keyed by opId, bound to their operation coordinates. */
+export type RetirementFlights = Map<string, { owner: string; actor: string; lifecycleUid: string; promise: ReturnType<typeof runAgentRetirementBarrier> }>;
+
+/** Join the in-flight barrier for `op.opId`, or start and register it. Returns undefined when that
+ *  opId is already in flight for DIFFERENT coordinates: the caller refuses, nothing is started. */
+export function joinOrStartRetirement(
+  flights: RetirementFlights,
+  reg: LifecycleRegistry,
+  op: Parameters<typeof runAgentRetirementBarrier>[1],
+  retirement: RetirementDeps,
+): ReturnType<typeof runAgentRetirementBarrier> | undefined {
+  const existing = flights.get(op.opId);
+  if (existing !== undefined)
+    return existing.owner === op.owner && existing.actor === op.actor && existing.lifecycleUid === op.lifecycleUid ? existing.promise : undefined;
+  const flight = runAgentRetirementBarrier(reg, op, retirement);
+  void flight.catch(() => {}).finally(() => { if (flights.get(op.opId)?.promise === flight) flights.delete(op.opId); });
+  flights.set(op.opId, { owner: op.owner, actor: op.actor, lifecycleUid: op.lifecycleUid, promise: flight });
+  return flight;
+}
+
 export interface AuthAdminListener {
   close(): Promise<void>;
 }
@@ -195,6 +215,7 @@ export async function openAuthAdminListener(opts: {
   dataAccount: { pub: string; signingSeed: string };
   reg: LifecycleRegistry;
   retirement: RetirementDeps;
+  barrierFlight: RetirementFlights;
   log: (line: string) => void;
 }): Promise<AuthAdminListener> {
   const { space, log } = opts;
@@ -271,7 +292,9 @@ export async function openAuthAdminListener(opts: {
   // The flight remains BOUND to its operation coordinates (owner, actor, lifecycleUid) as defense in
   // depth. The rail now derives one opId per target before this map, so different lifecycles cannot
   // collide here. A coordinate-identical nudge, retry, or boot race still joins the one barrier run.
-  const barrierFlight = new Map<string, { owner: string; actor: string; lifecycleUid: string; promise: ReturnType<typeof runAgentRetirementBarrier> }>();
+  // Owned by the plane and shared with the loopback managed-retire door, so the rail and the door
+  // never run two barrier executions of one opId in this process (#2070).
+  const barrierFlight = opts.barrierFlight;
 
   const handle = async (request: ParsedEpRequest, body: Uint8Array): Promise<{ ok: boolean; id?: string; data?: unknown; error?: string }> => {
     if (request.command !== EP_CMD_RETIRE_LIFECYCLE)
@@ -351,23 +374,16 @@ export async function openAuthAdminListener(opts: {
     // opId resumable and a re-request idempotent). The drain, cleaner, and repair credentials
     // all come from the plane's reviewed deps - this listener holds none of those rights.
     const existing = barrierFlight.get(args.opId);
-    if (existing !== undefined &&
-        (existing.owner !== target.owner || existing.actor !== target.actor || existing.lifecycleUid !== target.lifecycleUid))
-      return { ok: false, error: `operation id ${args.opId} is already in flight for a different lifecycle (${existing.owner}/${existing.actor} ${existing.lifecycleUid}); this despawn of "${target.owner}/${target.actor}" (${target.lifecycleUid}) was a FULL no-op - nothing was retired and it is still running. NEXT: retry the despawn (the manager derives a distinct operation id per lifecycle).` };
-    let flight = existing?.promise;
-    if (flight === undefined) {
-      // A despawn cannot know the target's pool work, and the barrier never takes a pool hint: it
-      // DISCOVERS the real (endpoint, pools) cleaner inventory from the target's own accepted pool
-      // obligations (#F). Discovery is never a gap - the barrier never closes a frontier over
-      // un-cleaned accepted pool work (SPEC 13.1/13.9).
-      flight = runAgentRetirementBarrier(opts.reg, {
-        owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid, opId: args.opId,
-        frontierStreams: retirementFrontierStreams(space),
-      }, opts.retirement);
-      const settle = flight;
-      void settle.catch(() => {}).finally(() => { if (barrierFlight.get(args.opId)?.promise === settle) barrierFlight.delete(args.opId); });
-      barrierFlight.set(args.opId, { owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid, promise: flight });
-    }
+    // A despawn cannot know the target's pool work, and the barrier never takes a pool hint: it
+    // DISCOVERS the real (endpoint, pools) cleaner inventory from the target's own accepted pool
+    // obligations (#F). Discovery is never a gap - the barrier never closes a frontier over
+    // un-cleaned accepted pool work (SPEC 13.1/13.9).
+    const flight = joinOrStartRetirement(barrierFlight, opts.reg, {
+      owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid, opId: args.opId,
+      frontierStreams: retirementFrontierStreams(space),
+    }, opts.retirement);
+    if (flight === undefined)
+      return { ok: false, error: `operation id ${args.opId} is already in flight for a different lifecycle (${existing?.owner}/${existing?.actor} ${existing?.lifecycleUid}); this despawn of "${target.owner}/${target.actor}" (${target.lifecycleUid}) was a FULL no-op - nothing was retired and it is still running. NEXT: retry the despawn (the manager derives a distinct operation id per lifecycle).` };
     const result = await flight;
     log(`auth-admin: retired ${target.owner}/${target.actor} (${target.lifecycleUid}) by despawn request from ${requester} (op ${args.opId})`);
     return { ok: true, data: { retired: true, lifecycleUid: target.lifecycleUid, opId: result.opId, evictedPrincipals: result.evictedPrincipals } };

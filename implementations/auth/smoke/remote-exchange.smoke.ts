@@ -486,11 +486,26 @@ try {
   check("GET /jwks is served on the public face", publicJwks.status === 200);
   check("…with the exact cache contract max-age=300", publicJwks.headers.get("cache-control") === "max-age=300");
   let notFound = 0;
-  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/interactive-lifecycle/retire", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
+  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/interactive-lifecycle/retire", "/managed-lifecycle/retire", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
     if ((await get(`${PUBLIC}${p}`)).status === 404) notFound++;
   }
-  check("every non-route path 404s on the public face (13/13, incl. private retirement + prototype-chain probes)", notFound === 13, { notFound });
+  check("every non-route path 404s on the public face (14/14, incl. both private retirement doors + prototype-chain probes)", notFound === 14, { notFound });
   check("GET at /exchange is refused (POST only)", (await get(`${PUBLIC}/exchange`)).status === 405);
+  // The loopback managed-retire door (#2070): the same request guards as the interactive door, on
+  // the loopback face only. Its outcome table runs against the real plane in managed-retire-door.smoke.ts.
+  const MRD = `${LOOPBACK}/managed-lifecycle/retire`;
+  const mrdProbe = { owner: "u_" + "a".repeat(26), actor: "ghost", lifecycleUid: "a".repeat(26) };
+  const capHdr = { authorization: `Bearer ${info!.cap}` };
+  check("managed-retire door: GET is refused (POST only)", (await get(MRD)).status === 405);
+  check("managed-retire door: a browser Origin is refused (403)", (await post(MRD, mrdProbe, { ...capHdr, origin: "https://evil.example" })).status === 403);
+  check("managed-retire door: a non-JSON content type is refused (415)", (await post(MRD, JSON.stringify(mrdProbe), { ...capHdr, "content-type": "text/plain" })).status === 415);
+  check("managed-retire door: a missing capability is refused (401)", (await post(MRD, mrdProbe)).status === 401);
+  check("managed-retire door: a wrong capability is refused (401)", (await post(MRD, mrdProbe, { authorization: "Bearer wrong" })).status === 401);
+  check("managed-retire door: an unknown extra field is refused (400)", (await post(MRD, { ...mrdProbe, takeover: true }, capHdr)).status === 400);
+  check("managed-retire door: a missing field is refused (400)", (await post(MRD, { owner: mrdProbe.owner, actor: mrdProbe.actor }, capHdr)).status === 400);
+  const mrdOk = await post(MRD, mrdProbe, capHdr);
+  check("POSITIVE CONTROL: a well-formed capped request reaches the plane (no head, so notStarted)",
+    mrdOk.status === 200 && mrdOk.body.notStarted === true && mrdOk.body.retired === false, mrdOk);
   check("POST at /jwks is refused (GET only)", (await post(`${PUBLIC}/jwks`, {})).status === 405);
 
   // ---------- G. per-peer isolation + budget separation ----------
@@ -580,7 +595,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 67;
+const EXPECTED = 75;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

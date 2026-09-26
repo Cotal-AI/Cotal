@@ -1357,7 +1357,12 @@ free the alias, and a successor activates only with a freshly reserved UID. `ret
 the head therefore ASSERTS completed cleanup: replacing a retired predecessor needs no
 further proof, because nothing reaches `retired` without the barrier. Every boundary of
 this sequence is crash-resumable through the durable `op` intent, and only the same
-operation resumes it. Chat/DM/presence subjects stay
+operation resumes it. A **managed** lifecycle's terminal retirement has exactly one operation
+identity, `managedRetirementOpId(uid)`, whichever entry point requests it: the participant
+manager's `retire-lifecycle` rail request (§13.2) or the host's loopback managed-retire door, which
+finishes the retirement when that manager is gone and requires the managed grant to be revoked at
+that UID first. Both entry points create or resume the same durable operation, and one process
+never executes it twice concurrently. Chat/DM/presence subjects stay
 alias-keyed, so without the revoke-and-verified-evict step a still-connected stale process
 could keep speaking as the recycled alias. Where the deployment cannot revoke the credential
 or cannot verify eviction, alias reuse is **forbidden**: a same-name respawn fails loud.

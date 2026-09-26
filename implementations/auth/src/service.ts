@@ -57,7 +57,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -85,11 +85,12 @@ import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
-import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
+import { joinOrStartRetirement, openAuthAdminListener, type AuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
   findInteractiveActor,
+  findManagedActor,
   ledgerAclResolver,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
@@ -113,6 +114,10 @@ export const JWKS_MAX_AGE_SEC = 300;
 
 /** Loopback-only operator route used by `cotal actor grant/revoke` before rotating or deleting an interactive lifecycle. */
 export const INTERACTIVE_RETIRE_PATH = "/interactive-lifecycle/retire";
+
+/** Loopback-only host route that finishes a managed lifecycle's terminal retirement after the host
+ *  revoked its grant, when the remote manager that should have requested it is gone (#2070). */
+export const MANAGED_RETIRE_PATH = "/managed-lifecycle/retire";
 
 /** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
@@ -148,6 +153,7 @@ export interface AuthAuthorityPlane {
     notStarted?: boolean;
     alreadyRetired?: boolean;
   }>;
+  retireManagedLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   issueManagerServiceAuthority: (args: { owner: string; scope: string[]; request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
   maintainRemoteManager: (args: { owner: string; scope: string[]; request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
   validateRetainedAgent: (args: {
@@ -396,6 +402,9 @@ export async function openAuthAuthorityPlane(opts: {
     await writer.close();
     throw e;
   }
+  // ONE in-flight map for the rail and the loopback managed-retire door: both run the same
+  // `managedRetirementOpId(uid)` operation, and a process must never execute it twice at once.
+  const retirementFlights: RetirementFlights = new Map();
   // The AUTH CONTROL RAIL (#29 piece 3, SPEC 13.2 CONTROL_AUTH_ADMIN): serve the generic
   // "retire a lifecycle" op over a dedicated minimal listener credential. Every executing right
   // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
@@ -403,7 +412,7 @@ export async function openAuthAuthorityPlane(opts: {
   // the FRESH space-manager-lease holder check) and dispatches.
   let authAdmin: AuthAdminListener | undefined;
   try {
-    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, log });
+    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, log });
   } catch (e) {
     closing = true;
     await recordsScanner.close();
@@ -523,6 +532,36 @@ export async function openAuthAuthorityPlane(opts: {
         opId,
         frontierStreams: retirementFrontierStreams(space),
       }, retirement);
+      return { retired: true, lifecycleUid };
+    },
+    retireManagedLifecycle: async (args) => {
+      refuseIfFenced();
+      const owner = assertDerivedOwnerToken(args.owner);
+      const actor = assertValidOwnerToken(args.actor);
+      const lifecycleUid = assertLifecycleToken(args.lifecycleUid);
+      // The `prepareAgentRetirement` contract: the host revokes the managed grant FIRST. Only a
+      // grant still live AT THIS uid blocks; a row at another uid is a successor the head decides.
+      if (findManagedActor(opts.dir, owner, actor)?.lifecycleUid === lifecycleUid)
+        throw new EpEnvelopeError("conflict", `managed actor "${owner}/${actor}" is still granted at lifecycle ${lifecycleUid}; revoke the grant before retiring it`);
+      const head = await readLifecycleHeadForOperation(barrierReg, owner, actor);
+      if (head === undefined)
+        return { retired: false, lifecycleUid, notStarted: true };
+      if (head.mapping.lifecycleUid !== lifecycleUid) {
+        if (head.mapping.state === "retired")
+          return { retired: false, lifecycleUid, notStarted: true };
+        throw new EpEnvelopeError("conflict", `managed lifecycle retirement for "${owner}/${actor}" names ${lifecycleUid}, but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`);
+      }
+      if (head.mapping.state === "retired")
+        return { retired: true, lifecycleUid, alreadyRetired: true };
+      // The rail's opId, not the interactive digest: a host door call and a late participant rail call
+      // create or resume ONE barrier operation and join ONE in-process flight.
+      const opId = managedRetirementOpId(lifecycleUid);
+      const flight = joinOrStartRetirement(retirementFlights, barrierReg, {
+        owner, actor, lifecycleUid, opId, frontierStreams: retirementFrontierStreams(space),
+      }, retirement);
+      if (flight === undefined)
+        throw new EpEnvelopeError("conflict", `managed retirement operation ${opId} is already in flight for different coordinates`);
+      await flight;
       return { retired: true, lifecycleUid };
     },
     issueManagerServiceAuthority: async ({ owner, scope, request }) => {
@@ -996,6 +1035,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     authorizeManagerAdmin: plane.authorizeManagerAdmin,
     secrets,
     retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
+    retireManagedLifecycle: plane.retireManagedLifecycle,
     cap,
     failures,
     badCaps,
@@ -1094,6 +1134,7 @@ interface HandlerCtx {
   authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
+  retireManagedLifecycle: AuthAuthorityPlane["retireManagedLifecycle"];
   cap: string;
   failures: number[];
   badCaps: number[];
@@ -1264,13 +1305,14 @@ const ROUTES = new Map<string, RouteHandler>([
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
+  [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /interactive-lifecycle/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /interactive-lifecycle/retire, /managed-lifecycle/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
@@ -1308,6 +1350,40 @@ async function handleInteractiveLifecycleRetirement(
     return send(res, 409, { error: `interactive actor "${owner}/${actor}" is current at lifecycle ${row.lifecycleUid ?? "<missing>"}, not ${lifecycleUid}` });
   const result = await ctx.retireInteractiveLifecycle({ owner, actor, lifecycleUid });
   return send(res, 200, result);
+}
+
+/** The host's terminal step for a managed lifecycle whose remote manager is gone: the same request
+ *  guards as the interactive door, but it requires the managed grant to be REVOKED first (the
+ *  `prepareAgentRetirement` contract) and runs the rail's `managedRetirementOpId(uid)` operation. */
+async function handleManagedLifecycleRetirement(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: HandlerCtx,
+): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return send(res, 401, { error: "missing/invalid exchange capability - managed lifecycle retirement is a loopback host action" });
+  const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return send(res, 400, { error: "managed lifecycle retirement needs { owner, actor, lifecycleUid }" });
+  for (const key of Object.keys(body))
+    if (!INTERACTIVE_RETIRE_KEYS.has(key))
+      return send(res, 400, { error: `managed lifecycle retirement carries the unknown field "${key}"` });
+  const raw = body as { owner?: unknown; actor?: unknown; lifecycleUid?: unknown };
+  if (typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
+    return send(res, 400, { error: "managed lifecycle retirement needs string { owner, actor, lifecycleUid }" });
+  const owner = assertDerivedOwnerToken(raw.owner);
+  const actor = assertValidOwnerToken(raw.actor);
+  const lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
+  try {
+    return send(res, 200, await ctx.retireManagedLifecycle({ owner, actor, lifecycleUid }));
+  } catch (e) {
+    if (e instanceof EpEnvelopeError && e.code === "conflict") return send(res, 409, { error: e.message });
+    throw e;
+  }
 }
 
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the

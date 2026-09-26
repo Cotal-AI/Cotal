@@ -784,3 +784,6 @@ smoke:persona-root
 # a `default` that cannot launch is a capability claim the operator has no way to check.
 # Appended at the end: no ordering dependency, and appending keeps two branches from conflicting.
 smoke:status-persona-root
+# #2070: the host's loopback managed-retire door (outcome table, crash resume, one flight with the
+# rail). Appended at the end: no ordering dependency, and appending keeps two branches from conflicting.
+smoke:managed-retire-door:auth
