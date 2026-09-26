@@ -205,11 +205,49 @@ try {
   ok("the refusal names the `cotal down manager` remedy", /`cotal down manager` first, then `cotal up --no-manager`/.test(refusedOut), refusedOut);
   ok("the manager the refresh refused to touch is left running", alive(pidOf(recordName(MANAGER_PIDFILE))), recordName(MANAGER_PIDFILE));
 
+  // 2d) #883: a refresh that RESTORES a missing manager must say so, distinctly from a refresh that
+  //     finds everything already running — the two used to print the byte-identical summary line.
+  const managerPidFile = record(MANAGER_PIDFILE);
+  const preRestartPid = pidOf(recordName(MANAGER_PIDFILE));
+  process.kill(preRestartPid, "SIGTERM");
+  let managerDead = false;
+  for (let i = 0; i < 24 && !managerDead; i++) {
+    await sleep(500);
+    managerDead = !alive(preRestartPid);
+  }
+  ok("the manager is dead before the restore refresh", managerDead, preRestartPid);
+  const restored = cli("up", "--server", SERVER);
+  const restoredOut = plain(restored.stdout + restored.stderr);
+  ok("a refresh that restores a missing manager exits 0", restored.status === 0, restoredOut);
+  const restoreMatch = /✓ restored in the background: manager \(pid (\d+)\)/.exec(restoredOut);
+  ok("the refresh names the restored manager with a pid", restoreMatch !== null, restoredOut);
+  const restoredPid = Number(restoreMatch?.[1]);
+  ok("the restored pid is alive", alive(restoredPid), restoredPid);
+  ok("the restored pid matches the new pidfile", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, {
+    restoredPid,
+    pidfile: pidOf(recordName(MANAGER_PIDFILE)),
+  });
+  pids[pids.indexOf(preRestartPid)] = restoredPid;
+
+  // 2e) the SAME refresh, run again with nothing to heal, must print only the already-running line
+  //     and NOT the restore line - the no-op case this defect used to make indistinguishable from 2d.
+  const noop = cli("up", "--server", SERVER);
+  const noopOut = plain(noop.stdout + noop.stderr);
+  ok("a no-op refresh exits 0", noop.status === 0, noopOut);
+  ok("a no-op refresh does not print the restore line", !/✓ restored in the background: manager/.test(noopOut), noopOut);
+  ok(
+    "a no-op refresh prints the already-running line",
+    new RegExp(`✓ mesh "${DEFAULT_SPACE}" already running at`).test(noopOut),
+    noopOut,
+  );
+  ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
+
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
   let dead = false;
+
   for (let i = 0; i < 24 && !dead; i++) {
     await sleep(500);
     dead = pids.every((p) => !alive(p)) && !(await portOpen());

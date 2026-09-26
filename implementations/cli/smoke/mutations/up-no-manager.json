@@ -13,7 +13,7 @@
     {
       "name": "drop the flag's effect in ensureControlPlane (ensureManager runs anyway)",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "  if (o.noManager) return { running: false, responderBound: delivery.responderBound };\n",
+      "find": "  if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };\n",
       "replace": "",
       "expectRed": "broker-only up reports the exact running component set (no manager)",
       "cell": "broker-only up reports the exact running component set (no manager)",

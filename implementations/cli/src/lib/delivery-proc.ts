@@ -185,8 +185,12 @@ export function startDeliveryDetached(o: Opts = {}): number {
  *  the same question, and collapsing them into one boolean is how a mesh came to report healthy for
  *  22 hours while none of those three operations could complete. `responderBound` is false when the
  *  readiness wait elapsed without the lease flipping ready, and absent when no daemon applies. */
-export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean; responderBound?: boolean }> {
+export async function ensureDelivery(
+  o: Opts = {},
+  probe: LivenessProbe = probeLiveness,
+): Promise<{ running: boolean; started?: boolean; pid?: number; responderBound?: boolean }> {
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
+
   const space = o.space ?? folderSpace();
   if (oldHostingManagerVerdict(probe, space) === "stop-it") {
     console.error(
@@ -271,7 +275,7 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   // there" (unchanged for every existing caller), but a caller that needs the responder — anything
   // that is about to spawn, retire or join — can now ask instead of assuming, which it could not do
   // when this returned a bare `running: true` over an admittedly unbound responder.
-  return { running: true, responderBound: ready };
+  return { running: true, started: launched !== undefined, ...(launched !== undefined ? { pid: launched } : {}), responderBound: ready };
 }
 
 /** Stop the detached delivery daemon if we started one, and drop its creds from the store. The pid
@@ -386,7 +390,15 @@ export async function stopDelivery(
  *  manager, so there is no manager pidfile to leave stale and no slot to strand. The preflight still
  *  runs above it — an old Plane-3-hosting manager must not double-bind the daemon's durables even on a
  *  host that wants no manager of its own. */
-export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean; responderBound?: boolean }> {
+export async function ensureControlPlane(
+  o: Opts = {},
+): Promise<{
+  running: boolean;
+  started?: boolean;
+  pid?: number;
+  delivery?: { started: boolean; pid?: number };
+  responderBound?: boolean;
+}> {
   // One space for all three steps. The preflight used to resolve its own from the cwd while the two
   // ensures took `o.space`; with per-space records that would preflight one tenant's manager and then
   // start another's.
@@ -397,7 +409,11 @@ export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boole
   // dependency every spawn/retirement/join needs had not come up — the boot line inside
   // `ensureDelivery` was the only trace, and it read as a progress note.
   const delivery = await ensureDelivery({ ...o, space });
-  if (o.noManager) return { running: false, responderBound: delivery.responderBound };
+  const deliveryStarted = { started: delivery.started ?? false, ...(delivery.pid !== undefined ? { pid: delivery.pid } : {}) };
+  if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
+  // `started`/`pid` distinguish a manager `ensureManager` just launched from one it found already
+  // alive (#883) — carried through unchanged so the caller can name a restore instead of reprinting
+  // the same line for both.
   const manager = await ensureManager({ ...o, space });
-  return { ...manager, responderBound: delivery.responderBound };
+  return { ...manager, delivery: deliveryStarted, responderBound: delivery.responderBound };
 }
