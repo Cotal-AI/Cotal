@@ -29,6 +29,7 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
+  CONTROL_DELIVERY,
   DEV_OWNER,
 } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
@@ -148,33 +149,42 @@ try {
   const deadRow = deadRows.find((c) => c.channel === "fx51-durable");
   check("daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)", deadRow?.deliveryHealth === "degraded", deadRow);
   check("…while hasDurableMembership still true (session-local residue)", dagent.ep.hasDurableMembership("fx51-durable") === true);
-  await dagent.stop();
 
-  // A reader without the durable-plane grant cannot establish health at all: the lease read throws,
-  // so the row renders "unknown" — never active, degraded, or silently omitted.
+  // The cannot-establish ("unknown") arm, driven through the route the fix actually has: a
+  // responder-PRESENT error on fetchMemberships(). Every minted agent profile carries a read of the
+  // delivery KV (provision.ts grants DLVKV to any agent), so "a reader without the delivery grant"
+  // is not a shape provisionAgent can mint — the grant arm is covered by reading only. What a suite
+  // CAN manufacture is a daemon that answers ctl.delivery with an error: a plain endpoint serving
+  // the delivery control subject with {ok:false}, exactly as a shard-rechecking (quiesced) daemon's
+  // responder does from behind its may-act fence. The agent's fetchMemberships() then throws
+  // (responder present, errored) and health cannot be established.
+  // First the premise probe: the blind reader's lease read does NOT throw (DLVKV rides every
+  // agent profile), so its row can only read degraded/active — never the no-grant throw.
   const blind = new CotalEndpoint({ space, servers, creds: blindCreds, card: { name: "Blind", kind: "agent", id: blindId.id }, channels: [], lifecycleUid: blindUid, watchPresence: false, registerPresence: false });
   blind.on("error", () => {});
   await blind.start();
-  let leaseThrew = false;
-  try { await blind.readDeliveryLease(0); } catch { leaseThrew = true; }
+  let blindLeaseThrew = false;
+  try { await blind.readDeliveryLease(0); } catch { blindLeaseThrew = true; }
   await blind.stop();
-  const blindCfg: AgentConfig = {
-    space, name: "Blind", role: "generalist", servers, creds: blindCreds,
-    subscribe: ["fx51-durable"], allowSubscribe: ["fx51-durable"], allowPublish: [], kind: "agent", tls: false, id: blindId.id, lifecycleUid: blindUid,
-  };
-  const blindAgent = new MeshAgent(blindCfg);
-  blindAgent.on("error", () => {});
-  let blindRow: { deliveryHealth?: string } | undefined;
-  if (leaseThrew) {
-    blindAgent.start();
-    for (let i = 0; i < 50; i++) { if (blindAgent.connected) break; await sleep(200); }
-    await sleep(500);
-    const rows = await blindAgent.listChannels();
-    blindRow = rows.find((c) => c.channel === "fx51-durable");
-    await blindAgent.stop();
-  }
-  check("a reader without the delivery grant renders health unknown, never active/degraded/omitted (#445)",
-    leaseThrew && blindRow?.deliveryHealth === "unknown", { leaseThrew, blindRow });
+  check("every minted agent profile reads the delivery KV, so the no-grant premise is unmintable (unknown is covered by reading)", blindLeaseThrew === false, { blindLeaseThrew });
+
+  // A daemon-shaped responder that answers every control op with an error — the wire shape a
+  // shard-rechecking daemon presents from behind its may-act fence. The row must render unknown,
+  // never active, degraded, or omitted. No startPlane3: the stub is the ONLY member of the
+  // delivery queue group (the real daemon is stopped above), so it is guaranteed the request.
+  const errdaemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery2", role: "delivery", kind: "endpoint" } });
+  errdaemon.on("error", () => {});
+  await errdaemon.start();
+  const errSub = errdaemon.serveControl(CONTROL_DELIVERY, () => ({ ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" }), { boundReply: true });
+  let membershipsThrew = false;
+  try { await dagent.ep.fetchMemberships(); } catch { membershipsThrew = true; }
+  const errRows = await dagent.listChannels();
+  const errRow = errRows.find((c) => c.channel === "fx51-durable");
+  check("a daemon answering errors (responder present, op refused) renders health unknown, never active/degraded/omitted (#445)",
+    membershipsThrew && errRow?.deliveryHealth === "unknown", { membershipsThrew, errRow });
+  try { errSub.unsubscribe(); } catch { /* already gone */ }
+  await errdaemon.stop();
+  await dagent.stop();
 
   // ---- boot seed from config (before connecting) ----
   const agent = new MeshAgent(cfg);
