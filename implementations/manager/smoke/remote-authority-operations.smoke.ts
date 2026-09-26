@@ -128,7 +128,7 @@ assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra
 assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, eviction: { ...maintenanceResult.eviction, verifiedGone: true, remaining: 1 } }, maintenanceRequest, owner), /contradictory/);
 
 let remoteChecks = 0;
-let adminDecision: true | Error = true;
+let adminDecision: boolean | Error = true;
 const remoteOnly = new Manager({
   space: "demo", runtime: "pty",
   remoteAuthority: {
@@ -151,6 +151,8 @@ const remoteOnly = new Manager({
   managerServiceDefs(): Array<{ command: string; handler(ctx: unknown): Promise<unknown> | unknown }>;
   serveGated<T>(ctx: unknown, fn: () => T | Promise<T>): Promise<T>;
   findManagedByTarget(): unknown;
+  serveSpawnGoal(ctx: unknown, run: (hooks: never) => Promise<unknown>): unknown;
+  startAgent(opts: unknown): Promise<unknown>;
   despawnAuthorized(): { ok: true; data: unknown };
   attachAuthorized(): Promise<{ ok: true; data: unknown }>;
   inputAuthorized(): unknown;
@@ -194,5 +196,46 @@ for (const command of ["despawn", "attach", "input", "turn"]) {
 assert.deepEqual(effects, []);
 assert.equal(remoteChecks, 10);
 
-console.log("remote authority operations: 34 passed, 0 failed");
+// #373: the typed `spawn` handler gates the event plane on the caller's admin tier BEFORE
+// startAgent (which mints credentials — "no credential minted" is asserted as "startAgent was
+// never called"). serveSpawnGoal is stubbed the way findManagedByTarget is above (the goal-writer
+// machinery is not under test here); startAgent is stubbed to record its opts. adminDecision at
+// the top of this file drives the tier through remoteAuthority.authorizeAdmin, the same
+// epAdminReach read the despawn/attach family exercises.
+remoteOnly.serveSpawnGoal = (_ctx, run) => run({} as never);
+const startOpts: unknown[] = [];
+const startAgentReply = { ok: true as const, data: { eventsNotice: "event plane not armed: arming it on spawn needs the admin tier; the spawn was served with events: false" } };
+remoteOnly.startAgent = async (opts) => { startOpts.push(opts); return startAgentReply; };
+const spawnCtx = (events?: boolean) => ({
+  subject: { caller: epCaller, command: "spawn", route: "inst", target: { mode: "owner" as const } },
+  request: { args: { name: "probe", ...(events !== undefined ? { events } : {}) }, target: { owner: foreignTarget.userOwner, actor: "worker", lifecycleUid: mintLifecycleUid() } },
+});
+const spawn = (events?: boolean) => Promise.resolve(handlers.get("spawn")!(spawnCtx(events) as never));
+// (a) non-admin, events: true — refused in the adminGated voice, nothing provisioned.
+adminDecision = false;
+let reply = await spawn(true) as { ok: boolean; error?: string };
+assert.equal(reply.ok, false);
+assert.match(reply.error!, /spawn is operator reach; the caller's current ledger grant does not carry "admin" \(SPEC 13\.2\)/);
+assert.match(reply.error!, /events: arming the event plane needs the admin tier/);
+assert.equal(startOpts.length, 0);
+// (b) admin, events: true — served, the bit passed through untouched.
+adminDecision = true;
+reply = await spawn(true) as { ok: boolean };
+assert.equal(reply.ok, true);
+assert.deepEqual((startOpts[0] as { events?: boolean }).events, true);
+// (c) non-admin, events omitted — served DISARMED, with the notice naming why.
+adminDecision = false;
+reply = await spawn() as { ok: boolean; data?: { eventsNotice?: string } };
+assert.equal(reply.ok, true);
+assert.deepEqual((startOpts[1] as { events?: boolean }).events, false);
+assert.match((startOpts[1] as { eventsNotice?: string }).eventsNotice!, /event plane not armed/);
+assert.equal(reply.data, startAgentReply.data);
+// (d) non-admin, events: false — the explicit opt-out is served silently (no notice armed).
+reply = await spawn(false) as { ok: boolean };
+assert.equal(reply.ok, true);
+assert.deepEqual((startOpts[2] as { events?: boolean }).events, false);
+assert.equal((startOpts[2] as { eventsNotice?: string }).eventsNotice, undefined);
+assert.equal(remoteChecks, 14);
+
+console.log("remote authority operations: 38 passed, 0 failed");
 emitSentinel({ passed: cells(), failed: 0 });
