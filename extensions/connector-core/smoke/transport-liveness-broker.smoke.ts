@@ -728,7 +728,7 @@ try {
   // Give stop()'s offline publish every chance to start while the write admitted before it is
   // still held: this is the window the fix must keep empty.
   await sleep(150);
-  const offlineStartedWhileHeld = heldStraggler.length > 0;
+  const offlineStartedWhileHeldStraggler = heldStraggler.length > 0;
   attentionPut.resolve();
   const offlinePut = await takeStraggler(); // departure's put: ordered AFTER the held write
   offlinePut.resolve();
@@ -740,8 +740,8 @@ try {
   stragglerEp.kv = liveStragglerKv;
   check(
     "a presence write admitted after stop() began is refused and no put lands after offline",
-    stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeld && !putAfterOffline,
-    { stragglerRefusal, offlineStartedWhileHeld, putAfterOffline },
+    stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
+    { stragglerRefusal, offlineStartedWhileHeldStraggler, putAfterOffline },
   );
 } finally {
   await orderingAgent?.stop().catch(() => {});

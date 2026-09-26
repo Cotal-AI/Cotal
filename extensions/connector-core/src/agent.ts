@@ -683,12 +683,14 @@ export class MeshAgent extends EventEmitter {
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
-    // #636: departure is ordered behind presence writes already in flight. Waiting on the chain
-    // bounded keeps a wedged write from hanging shutdown; a write admitted after this wait still
-    // runs and lands after offline (departure is ordered, not terminal — a stop() fence that
-    // rejected later writes would need a rule for what a straggler's write means, and none is
-    // settled yet).
-    await Promise.race([this.presenceChain, sleep(3_000)]);
+    // #636: departure is the last write. Running it THROUGH the chain (as its own inOrder entry,
+    // not merely awaited alongside it) orders offline behind every write already admitted,
+    // whichever method admitted it — setStatus's requireConnected included. The race is bounded so
+    // a wedged write cannot hang shutdown; on the timeout path the chain is abandoned but the
+    // endpoint must still stop, so ep.stop() runs directly once there. Every write admitted AFTER
+    // this point is refused at once by inOrder() (see there) rather than queued behind departure,
+    // so a straggler cannot land after offline and does not sit out setStatus's connect grace.
+    await Promise.race([this.inOrder(() => this.ep.stop(), true), sleep(3_000)]);
     await this.ep.stop();
   }
 
@@ -1907,8 +1909,17 @@ export class MeshAgent extends EventEmitter {
 
   /** Run one presence write through the chain (#636): the write starts only after every earlier
    *  admitted write has settled, and a rejection is swallowed at the TAIL only, so it propagates
-   *  to this write's own caller while the next admitted write still runs. */
-  private inOrder(write: () => Promise<void>): Promise<void> {
+   *  to this write's own caller while the next admitted write still runs.
+   *
+   *  The straggler rule: departure is the last write, later writes are refused, not reordered.
+   *  Once `stop()` has begun, any write admitted here rejects AT ONCE (no put queued, no wait on
+   *  the chain) with a fixed error, instead of running after — or, for a write that calls
+   *  `requireConnected` (e.g. `setStatus`), sitting out the ten-second connect grace before
+   *  rejecting anyway. `stop()` itself submits departure's own put through this same method (the
+   *  `forDeparture` escape) so departure keeps landing after every write already admitted, even
+   *  though `_stopping` is already true by the time it does. */
+  private inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {
+    if (this._stopping && !forDeparture) return Promise.reject(new Error("agent is stopping; presence writes are refused"));
     const next = this.presenceChain.then(write, write);
     this.presenceChain = next.catch(() => {});
     return next;
