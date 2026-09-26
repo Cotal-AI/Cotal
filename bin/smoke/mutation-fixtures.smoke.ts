@@ -104,7 +104,156 @@ function jsonFiles(dir: string, out: string[] = [], root = ROOT, skip = SUBMODUL
   return out;
 }
 
-type Mutation = { name?: string; file?: string; find?: string; allowMultiple?: boolean };
+type Mutation = {
+  name?: string; file?: string; find?: string; allowMultiple?: boolean;
+  command?: string; afterRestore?: string;
+};
+
+/**
+ * The workspace package index the `unrestored` check needs: name -> manifest facts.
+ *
+ * A BUILD IN THE COMMAND IS HOW A MUTANT REACHES `dist/`. `mutation-proof` restores the mutated
+ * SOURCE bytes after the run and rebuilds derived artefacts only when the mutation declares
+ * `afterRestore`, so a fixture whose command builds the package that owns the mutated file — with
+ * no `afterRestore` that rebuilds it — leaves a `dist/` compiled FROM THE MUTANT in the tree once
+ * the source is back. `dist/` is gitignored, so git is not the recovery for it, and the repo's
+ * freshness check is an mtime ordering test that a newer-but-wrong build passes (issue #1116,
+ * second defect). The tool's own header states the rule; this bucket is what enforces it on the
+ * fixtures, because the offender set was measured to GROW (four added in fifteen hours, none
+ * fixed), which makes a sweep stale before it merges and a gate the only durable shape.
+ */
+type WorkspacePackage = {
+  name: string;
+  dir: string;
+  /** Every `exports` target (or `main`) lives under `./dist/`: a build output, not the source. */
+  exportsFromDist: boolean;
+  dependencies: Set<string>;
+  peerDependencies: Set<string>;
+};
+
+const workspacePackages = new Map<string, WorkspacePackage>();
+function readWorkspacePackages(): void {
+  for (const path of jsonFiles(ROOT)) {
+    if (!path.endsWith("package.json")) continue;
+    let raw: { name?: unknown; exports?: unknown; main?: unknown; dependencies?: unknown; peerDependencies?: unknown };
+    try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    if (typeof raw.name !== "string" || !raw.name) continue;
+    // Exports maps are nested ({ ".": { "import": "./dist/index.js" } }), so the dist test walks
+    // the values recursively rather than reading only string leaves of the top level.
+    const exportsFromDist = (() => {
+      const pointsAtDist = (v: unknown): boolean => {
+        if (typeof v === "string") return v.startsWith("./dist/");
+        if (v && typeof v === "object") return Object.values(v).some(pointsAtDist);
+        return false;
+      };
+      if (raw.exports !== undefined) return pointsAtDist(raw.exports);
+      return typeof raw.main === "string" && raw.main.startsWith("./dist/");
+    })();
+    workspacePackages.set(raw.name, {
+      name: raw.name,
+      dir: dirname(path),
+      exportsFromDist,
+      dependencies: new Set(Object.keys(raw.dependencies ?? {})),
+      peerDependencies: new Set(Object.keys(raw.peerDependencies ?? {})),
+    });
+  }
+}
+readWorkspacePackages();
+
+function closureOf(name: string): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: string): void => {
+    if (out.has(n)) return;
+    out.add(n);
+    const pkg = workspacePackages.get(n);
+    if (!pkg) return;
+    for (const dep of [...pkg.dependencies, ...pkg.peerDependencies]) visit(dep);
+  };
+  visit(name);
+  return out;
+}
+
+function dependentsOf(name: string): Set<string> {
+  const out = new Set([name]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const pkg of workspacePackages.values()) {
+      if (out.has(pkg.name)) continue;
+      if ([...pkg.dependencies, ...pkg.peerDependencies].some((d) => out.has(d))) {
+        out.add(pkg.name);
+        grew = true;
+      }
+    }
+  }
+  return out;
+}
+
+/** Every workspace package a command's `pnpm ... build` segments build, `"ALL"` for no filter. */
+function commandBuilds(command: unknown): Set<string> | "ALL" | null {
+  if (typeof command !== "string" || !command.includes("pnpm") || !/\bbuild\b/.test(command)) return null;
+  const built = new Set<string>();
+  let unfiltered = false;
+  for (const segment of command.split(/&&|\|\||;/)) {
+    if (!segment.includes("pnpm") || !/\bbuild\b/.test(segment)) continue;
+    const filters = [...segment.matchAll(/--filter[= ](\S+)/g)].map((m) => m[1]);
+    if (!filters.length) { unfiltered = true; continue; }
+    for (const filter of filters) {
+      const closure = filter.endsWith("...");
+      const dependents = filter.startsWith("...");
+      const name = filter.replace(/^\.\.\./, "").replace(/\.\.\.$/, "");
+      if (closure) for (const n of closureOf(name)) built.add(n);
+      else if (dependents) for (const n of dependentsOf(name)) built.add(n);
+      else built.add(name);
+    }
+  }
+  if (unfiltered) return "ALL";
+  return built.size ? built : null;
+}
+
+function owningPackage(file: string): WorkspacePackage | undefined {
+  const pkg = workspacePackages.get(dirname(join(ROOT, file)));
+  if (pkg) return pkg;
+  const parent = dirname(dirname(join(ROOT, file)));
+  return parent === dirname(join(ROOT, file)) ? undefined : owningPackageFrom(parent);
+}
+
+function owningPackageFrom(dir: string): WorkspacePackage | undefined {
+  for (;;) {
+    for (const pkg of workspacePackages.values()) if (pkg.dir === dir) return pkg;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Can this mutation leave a `dist/` compiled from the mutant, with no `afterRestore` to rebuild it?
+ *
+ * Returns the diagnosis when it can, undefined when it cannot. SHARED by the per-fixture walk and
+ * the self-check cells below, so the cells exercise the exact code the production path runs. The
+ * rule mirrors the measurement in issue #1116: the owning package exports from `dist`, the mutated
+ * file is under that package's `src/`, the effective command (`m.command ?? cfg.command`) builds
+ * that package, and no declared `afterRestore` builds it by the same rule.
+ */
+function unrestoredReason(
+  m: { file?: unknown; command?: unknown; afterRestore?: unknown },
+  cfgCommand: unknown,
+): string | undefined {
+  if (typeof m.file !== "string") return undefined;
+  const owner = owningPackage(m.file);
+  if (!owner || !owner.exportsFromDist) return undefined;
+  if (!join(ROOT, m.file).startsWith(join(owner.dir, "src") + "/")) return undefined;
+  const builds = commandBuilds(m.command ?? cfgCommand);
+  if (!builds || (builds !== "ALL" && !builds.has(owner.name))) return undefined;
+  const restoredBy = commandBuilds(m.afterRestore);
+  if (restoredBy === "ALL" || (restoredBy && restoredBy.has(owner.name))) return undefined;
+  return (
+    `command \`${(m.command ?? cfgCommand) as string}\` builds ${owner.name} from the mutated source,\n` +
+    `        and no \`afterRestore\` rebuilds it, so the run can leave a \`dist/\` compiled FROM THE\n` +
+    `        MUTANT once the source is restored. \`dist/\` is gitignored, so git is not the recovery.\n` +
+    `        Add "afterRestore": "pnpm --filter ${owner.name} build" to this mutation.`
+  );
+}
 
 /**
  * Does this anchor include a comment?
@@ -284,6 +433,63 @@ try {
   rmSync(nested, { recursive: true, force: true });
 }
 
+// SELF-CHECK for the `unrestored` bucket. These cells build their fixtures by hand, as objects
+// through the same `unrestoredReason` the production walk calls, because a bucket added to the
+// loop but wrong in its rule would otherwise ship green on the strength of the fixture sweep
+// alone — the sweep counts offenders, it does not prove the counterfactuals: the matching
+// `afterRestore`, the closure filter, the source-exporting package, the file outside `src/`, the
+// command with no build. Each cell is one of those, in both directions where the negative matters.
+{
+  const flagged = unrestoredReason(
+    { file: "packages/core/src/endpoint.ts" },
+    "pnpm --filter @cotal-ai/core build && pnpm smoke:some-suite",
+  );
+  cell(
+    "a command that builds the mutated dist-exporting package with no afterRestore is flagged",
+    flagged?.includes("builds @cotal-ai/core") === true,
+  );
+  cell(
+    "the same command with a matching afterRestore is not flagged",
+    unrestoredReason(
+      { file: "packages/core/src/endpoint.ts", afterRestore: "pnpm --filter @cotal-ai/core build" },
+      "pnpm --filter @cotal-ai/core build && pnpm smoke:some-suite",
+    ) === undefined,
+  );
+  cell(
+    "a per-mutation command overriding the config command is judged on its own build",
+    unrestoredReason(
+      { file: "packages/core/src/endpoint.ts", command: "pnpm --filter @cotal-ai/core build && pnpm smoke:some-suite" },
+      "pnpm smoke:some-suite",
+    )?.includes("builds @cotal-ai/core") === true,
+  );
+  const closure = unrestoredReason(
+    { file: "packages/core/src/endpoint.ts" },
+    "pnpm --filter @cotal-ai/cli... build && pnpm smoke:some-suite",
+  );
+  cell(
+    "a closure filter (cli...) that covers core flags a core mutation with no core rebuild",
+    closure?.includes("builds @cotal-ai/core") === true,
+  );
+  cell(
+    "a source-exporting package (smoke-kit) is never flagged",
+    unrestoredReason(
+      { file: "packages/smoke-kit/src/index.ts" },
+      "pnpm --filter @cotal-ai/smoke-kit build && pnpm smoke:some-suite",
+    ) === undefined,
+  );
+  cell(
+    "a mutated file outside src/ is not flagged even when the command builds its package",
+    unrestoredReason(
+      { file: "packages/core/smoke/delivery-reconnect.smoke.ts" },
+      "pnpm --filter @cotal-ai/core build && pnpm smoke:some-suite",
+    ) === undefined,
+  );
+  cell(
+    "a command with no build is not flagged",
+    unrestoredReason({ file: "packages/core/src/endpoint.ts" }, "pnpm smoke:some-suite") === undefined,
+  );
+}
+
 // The real entry point, which the three cells above do not cover: they build their input by hand,
 // so they show the walker obeys a skip set, not that the production walk is given one. This cell
 // closes that -- and it is only observable when the submodule is actually checked out, so when it
@@ -306,7 +512,7 @@ if (populated.length) {
   console.log("    observe. It is UNOBSERVED, not passed, and on CI it is always this branch.");
 }
 
-const fixtures: { path: string; suite: string[]; mutations: Mutation[] }[] = [];
+const fixtures: { path: string; suite: string[]; mutations: Mutation[]; cfgCommand?: unknown }[] = [];
 const metadataProblems: string[] = [];
 for (const path of jsonFiles(ROOT)) {
   let parsed: unknown;
@@ -315,7 +521,7 @@ for (const path of jsonFiles(ROOT)) {
   if (!Array.isArray(cfg.mutations)) continue;
   const rel = relative(ROOT, path);
   try {
-    fixtures.push({ path, suite: parseSuiteSources(ROOT, rel, cfg.suite), mutations: cfg.mutations as Mutation[] });
+    fixtures.push({ path, suite: parseSuiteSources(ROOT, rel, cfg.suite), mutations: cfg.mutations as Mutation[], cfgCommand: cfg.command });
   } catch (error) {
     metadataProblems.push(error instanceof Error ? error.message : `${rel}: ${String(error)}`);
   }
@@ -341,8 +547,9 @@ const stale: string[] = [];
 const ambiguous: string[] = [];
 const missing: string[] = [];
 const prose: string[] = [];
+const unrestored: string[] = [];
 
-for (const { path, mutations } of fixtures) {
+for (const { path, mutations, cfgCommand } of fixtures) {
   const rel = relative(ROOT, path);
   const problems: string[] = [];
   let here = 0;
@@ -409,6 +616,16 @@ for (const { path, mutations } of fixtures) {
         `        Or set \`allowMultiple\` to say you meant every site.`,
       );
     }
+
+    // The mutant can outlive the run. Checked after the anchor checks because a rotted anchor
+    // grades ERROR and never reaches a build, while an anchored mutation whose command builds
+    // the package it edits WILL reach one — and leave a `dist/` compiled from the mutant unless
+    // an `afterRestore` rebuilds it. This is the bucket that keeps that hazard out of the tree.
+    const unrestoredDiagnosis = unrestoredReason(m, cfgCommand);
+    if (unrestoredDiagnosis) {
+      unrestored.push(where);
+      problems.push(`  ✗ [${i}] BUILD IS NOT RESTORED — no \`afterRestore\` rebuilds the mutated package\n` + `        ${unrestoredDiagnosis}`);
+    }
   });
 
   // One line per fixture either way. A walker that prints only failures reports the same thing on
@@ -418,12 +635,13 @@ for (const { path, mutations } of fixtures) {
   else console.log(`  ✓ ${rel} — ${here} anchor(s) present and unique`);
 }
 
-const failed = stale.length + ambiguous.length + missing.length + prose.length + selfChecks.length;
+const failed = stale.length + ambiguous.length + missing.length + prose.length + unrestored.length + selfChecks.length;
 console.log(`\n${fixtures.length} fixture file(s), ${checked} anchor(s) checked at this commit`);
 console.log(`  dead anchors:        ${stale.length}`);
 console.log(`  ambiguous anchors:   ${ambiguous.length}`);
 console.log(`  anchors spanning prose: ${prose.length}`);
 console.log(`  missing file/key:    ${missing.length}`);
+console.log(`  unrestored builds:   ${unrestored.length}`);
 console.log(`  walk self-checks failed: ${selfChecks.length}`);
 // The caveat belongs where the verdict is read, not only in the prologue: a ✓ reads as "the
 // fixtures are good" unless it says otherwise in the same breath.
