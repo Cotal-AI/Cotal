@@ -3,11 +3,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-if (process.platform !== "linux") {
-  console.log("LEGACY PTY CUSTODY skipped (M1 residual is /proc state after SIGKILL; Windows unit tests are not that oracle)");
-  process.exit(0);
-}
-
 let pass = 0;
 let fail = 0;
 const check = (name: string, condition: boolean, detail?: unknown): void => {
@@ -75,7 +70,11 @@ try {
   check("legacy PTY exposes no durable reference a successor can adopt", ids.hasReference === false, ids);
   process.kill(ids.managerPid, "SIGKILL");
   check("the fixture killed its actual manager process", await until(() => state(ids.managerPid) === "gone", 5_000), { managerPid: ids.managerPid, state: state(ids.managerPid) });
-  check("M1 red: legacy manager death ends the manager-owned counter PTY", await until(() => state(ids.childPid) === "gone" || state(ids.childPid) === "Z", 5_000), { childPid: ids.childPid, state: state(ids.childPid) });
+  if (process.platform === "linux") {
+    check("M1 red: legacy manager death ends the manager-owned counter PTY", await until(() => state(ids.childPid) === "gone" || state(ids.childPid) === "Z", 5_000), { childPid: ids.childPid, state: state(ids.childPid) });
+  } else {
+    console.log("  – skipped: M1 red: legacy manager death ends the manager-owned counter PTY (the Z residue is /proc state after SIGKILL, Linux-only)");
+  }
 } finally {
   try {
     const ids = JSON.parse(readFileSync(ready, "utf8")) as { childPid: number };
