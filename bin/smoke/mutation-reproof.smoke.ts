@@ -2670,23 +2670,24 @@ try {
 
   // 28c. The second run happens only on a mismatch and only once. Each suite appends to a counter
   //      file under a directory the cell passes through the environment, so root, base and head
-  //      executions all land in one observable place. The stable command (base green, head red)
-  //      keeps its execution count — the probe never fires for it; the unstable one gains exactly
-  //      one repeat over its non-probe count.
+  //      executions all land in one observable place. The unstable suite is the fixture's own
+  //      command, so its root refusal reaches the probe twice: from the provenance comparison and
+  //      again from the head-versus-base comparison. Two callers, one repeat, because the second
+  //      reads the cache. The stable command (base green, head red) never reaches the probe.
   {
     const countDir = mkdtempSync(join(tmpdir(), "mutation-reproof-run-counts-")); repos.push(countDir);
     const { root, base, head } = makeSingle(
       (r) => {
         writeFileSync(join(r, "counted.mjs"), "export const value = 1;\n");
-        // The head commit flips the suite's verdict, so head runs are red while base runs are green:
-        // compareSnapshots returns attributable on the status pair and never reaches the probe.
+        // The head commit flips this suite's verdict, so head runs are red while base runs are
+        // green: compareSnapshots returns attributable on the status pair and never probes.
         writeFileSync(join(r, "suites", "counted.suite.mjs"), "import { appendFileSync, mkdirSync } from 'node:fs';\nconst dir = process.env.MUTATION_REPROOF_COUNT_DIR;\nmkdirSync(dir, { recursive: true });\nappendFileSync(dir + '/stable.log', 'x');\nprocess.exit(0);\n");
-        // The unstable suite fails everywhere with a fresh token, so every signature comparison
-        // mismatches and the probe fires exactly once for its command.
+        // Red everywhere with a fresh token: the root baseline refuses on it, and every signature
+        // comparison of it mismatches.
         writeFileSync(join(r, "suites", "counted-unstable.suite.mjs"), "import { appendFileSync, mkdirSync } from 'node:fs';\nimport { randomUUID } from 'node:crypto';\nconst dir = process.env.MUTATION_REPROOF_COUNT_DIR;\nmkdirSync(dir, { recursive: true });\nappendFileSync(dir + '/unstable.log', 'x');\nconsole.error(`AssertionError: seat ${randomUUID()} never answered`);\nprocess.exit(1);\n");
-        writeFileSync(join(r, "smoke", "mutations", "counted.mutations.json"), JSON.stringify({ suite: ["suites/counted.suite.mjs"], command: "node suites/counted.suite.mjs", mutations: [
-          { name: "stable", file: "counted.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "stable count" },
-          { name: "unstable", file: "counted.mjs", find: "export const value = 1;", replace: "export const value = 3;", command: "node suites/counted-unstable.suite.mjs", expectRed: "never answered" },
+        writeFileSync(join(r, "smoke", "mutations", "counted.mutations.json"), JSON.stringify({ suite: ["suites/counted.suite.mjs", "suites/counted-unstable.suite.mjs"], command: "node suites/counted-unstable.suite.mjs", mutations: [
+          { name: "unstable", file: "counted.mjs", find: "export const value = 1;", replace: "export const value = 3;", expectRed: "never answered" },
+          { name: "stable", file: "counted.mjs", find: "export const value = 1;", replace: "export const value = 2;", command: "node suites/counted.suite.mjs", expectRed: "stable count" },
         ] }, null, 2));
       },
       (r) => writeFileSync(join(r, "suites", "counted.suite.mjs"), "import { appendFileSync, mkdirSync } from 'node:fs';\nconst dir = process.env.MUTATION_REPROOF_COUNT_DIR;\nmkdirSync(dir, { recursive: true });\nappendFileSync(dir + '/stable.log', 'x');\nconsole.error('AssertionError: stable count red');\nprocess.exit(1);\n"),
@@ -2698,8 +2699,9 @@ try {
       "the repeat run happens only on a mismatch: the stable command keeps its execution count, the unstable one gains exactly one",
       status === 1
         && eq(attributablePreRedPaths(out), ["smoke/mutations/counted.mutations.json"])
-        && stableCount() === 3 // root baseline + head run + base run; the status pair never reaches the probe
-        && unstableCount() === 3, // head run + base run + exactly one repeat
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/counted.mutations.json"])
+        && stableCount() === 2 // head run + base run; the status pair never reaches the probe
+        && unstableCount() === 4, // root baseline + head run + base run + one repeat shared by both callers
       `status=${status} stable=${stableCount()} unstable=${unstableCount()}\n${out}`,
     );
   }
