@@ -224,7 +224,7 @@ try {
   check("interactive lifecycle retirement refuses a UID other than the current actor row", retireWrongUid.status === 409, await retireWrongUid.text());
   // The flagless grant is the FULL one: all channels + spawn + the stock role (the golden path —
   // login, grant, spawn just works; narrowing is the operator's explicit act).
-  check("flagless grant defaults to the full envelope", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("spawn"), grant.out);
+  check("flagless grant defaults to the full envelope, scope spawn and role:default", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("scope [spawn, role:default]"), grant.out);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the

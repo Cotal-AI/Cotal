@@ -1729,7 +1729,7 @@ cotal actor list
 | `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
-A bare `grant` is the **full** envelope (all channels, may spawn); the flags narrow it. A
+A bare `grant` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role); the flags narrow it. A
 re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
 every field out: the new scope plus the row's current read set, post set, role and label
 (`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
