@@ -415,6 +415,11 @@ spawning identity's own grant already covers the child's event channel. The refu
 exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
 admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
 
+Arming the event plane through a typed spawn request (`manager.spawn` with `events`, including
+the CLI's `cotal spawn --detach --events`) additionally requires the caller's admin tier on a
+user mesh. A non-admin caller that asks for the plane is refused before anything is provisioned,
+and one that stays silent gets a spawn without it, with the reply saying so.
+
 ## Resume a session
 
 `--resume <session-id>` pulls an existing Claude session, its context and transcript,
