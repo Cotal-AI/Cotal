@@ -359,6 +359,8 @@ export function materialCredential(
   // requiring each credential to expire no later than the minimum makes the legitimate supervisor
   // impossible to materialize. Recompute the envelope minimum and then bind this JWT to its own
   // advertised expiry. A forged later envelope or a JWT/entry disagreement still fails closed.
+  // There is no clock here on purpose: a credential past its `exp` is refused by the broker when
+  // the manager connects with it, which is where expiry is enforced.
   if (claims.exp !== credential.exp || !Number.isFinite(envelopeExpiry) || material.expiresAt !== envelopeExpiry || credential.exp * 1000 < material.expiresAt)
     throw new Error(`manager-service ${name} expiry does not match the material envelope`);
   return credsFromJwt(credential.jwt, identity);
