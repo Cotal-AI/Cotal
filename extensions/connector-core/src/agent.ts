@@ -2002,7 +2002,7 @@ export class MeshAgent extends EventEmitter {
       replay: boolean;
       joined: boolean;
       durableUnclosed: boolean;
-      deliveryHealth?: "active" | "degraded";
+      deliveryHealth?: "active" | "degraded" | "unknown";
       messages: number;
       mode: ChannelMode | "normal";
     }[]
@@ -2010,29 +2010,55 @@ export class MeshAgent extends EventEmitter {
     const mine = this.ep.joinedChannels();
     const pending = this.ep.pendingDurableLeaves();
     const unclosed = new Set(pending);
-    // Non-gating delivery-health signal: read the server-side daemon's lease ONCE (a durable-joined
-    // channel must not render as ordinary "subscribed, replay on" when the daemon is down). A read that
-    // throws = open mode / no delivery bucket / no grant → no health surface (left undefined).
+    // Non-gating delivery-health signal (#445): "active" requires an AFFIRMATIVE bounded round-trip
+    // to the delivery daemon's ctl.delivery responder — the one signal a killed daemon cannot leave
+    // behind. The lease read alone was residue (a SIGKILLed daemon's KV row stays `ready: true` for
+    // the bucket TTL) and the session-local membership map never notices daemon death at all, so
+    // together they certified a corpse. Two separable facts, read separately:
+    //   `leaseReadable` — the reader may read the delivery plane (an under-granted read throws);
+    //   `daemonMemberships` — the daemon's OWN answer (undefined ⇒ no responder answered, so no
+    //   daemon is serving this plane; a throw ⇒ responder-present error, fail closed below).
     let leaseLive = false;
-    let daemonKnown = false;
+    let leaseReadable = false;
+    let daemonMemberships: { channel: string }[] | undefined;
     try {
       // "ready" (responder bound), not mere lease existence (single-flight slot claimed mid-startup).
       leaseLive = (await this.ep.readDeliveryLease(0))?.ready === true;
-      daemonKnown = true;
+      leaseReadable = true;
     } catch {
       /* open dev mode or no delivery plane here — health surface does not apply */
     }
-    // Membership-aware: "active" requires BOTH a live daemon lease AND an established owner membership.
-    // A joined durable channel whose boot self-join hasn't landed yet (daemon was down at connect, now
-    // reconciling) has no backstop for this owner even if the lease is live — render it degraded, never
-    // a false "active" off the lease alone (ux honesty blocker).
-    const health = (channel: string, joined: boolean): "active" | "degraded" | undefined =>
-      daemonKnown && joined && this.ep.channelDeliveryClass(channel) === "durable"
-        ? (leaseLive && this.ep.hasDurableMembership(channel) ? "active" : "degraded")
+    if (leaseReadable) {
+      try {
+        daemonMemberships = await this.ep.fetchMemberships();
+      } catch {
+        /* responder present but errored — health cannot be established, never "active" */
+        daemonMemberships = undefined;
+        leaseReadable = false;
+      }
+    }
+    // Membership-aware: "active" requires a daemon that ANSWERED and lists this channel for this
+    // lifecycle (the round-trip is scoped to it), plus a live lease (the lease still carries
+    // information the round-trip does not: it distinguishes a serving daemon from one whose loops
+    // are still binding). A SIGKILLed daemon leaves the lease row behind with ready:true and the
+    // local map set, but answers nothing — degraded. A joined durable channel whose health cannot
+    // be established (the reader lacks the grant, or the responder errored) renders "unknown",
+    // distinct from the degraded of a daemon that answered but holds no membership for this owner —
+    // and from the undefined of a channel where health does not apply (not durable-class, not
+    // joined, open mode).
+    const health = (channel: string, joined: boolean): "active" | "degraded" | "unknown" | undefined =>
+      joined && this.ep.channelDeliveryClass(channel) === "durable"
+        ? !leaseReadable
+          ? "unknown"
+          : daemonMemberships === undefined
+            ? "degraded"
+            : daemonMemberships.some((m) => m.channel === channel) && leaseLive
+              ? "active"
+              : "degraded"
         : undefined;
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
-      durableUnclosed: boolean; deliveryHealth?: "active" | "degraded"; messages: number; mode: ChannelMode | "normal";
+      durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
       return {
