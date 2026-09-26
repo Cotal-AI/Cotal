@@ -684,6 +684,65 @@ try {
     secondPutArrived && rejectEp.status === "idle",
     { secondPutArrived, epStatus: rejectEp.status },
   );
+
+  // Cell (d): the straggler rule. The stimulus is the same held-put stub: a setAttention is
+  // admitted BEFORE stop() and its put held open, so departure queues behind it in the chain;
+  // then a setStatus is admitted AFTER stop() began. That later write must refuse at once with
+  // the stopping error and never queue a put (a setStatus without the refusal instead sits out
+  // the ten-second requireConnected grace inside the chain, and a setModel or setAttention
+  // without it queues its put BEFORE the offline put and lands first — the reviewer's finding).
+  // The offline publish itself must not start until the held put settles: departure is the last
+  // write, later writes are refused, not reordered (#636).
+  orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-straggler-${port}` });
+  await orderingAgent.start(100);
+  await until(() => orderingAgent!.connected, 30_000);
+  const stragglerEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const heldStraggler: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const liveStragglerKv = stragglerEp.kv;
+  stragglerEp.kv = { put: () => new Promise<void>((resolve, reject) => heldStraggler.push({ resolve, reject })) };
+  const takeStraggler = async () => { await until(() => heldStraggler.length > 0, 10_000); return heldStraggler.shift()!; };
+  // The same quiet the ordering cells use: settle everything (the heartbeat's puts) until none
+  // has arrived for 300ms, polling the array directly so no orphaned poller can steal a put.
+  const quietStraggler = async (): Promise<void> => {
+    let quietMs = 0;
+    while (quietMs < 300) {
+      const put = heldStraggler.shift();
+      if (put) { put.resolve(); quietMs = 0; continue; }
+      await sleep(20);
+      quietMs += 20;
+    }
+  };
+  await quietStraggler();
+  // A write admitted BEFORE stop(): its put parks and is held open.
+  const stragglerAttention = orderingAgent!.setAttention("focus").catch(() => {});
+  const attentionPut = await takeStraggler(); // setAttention's presence put — HELD
+  const stragglerStop = orderingAgent!.stop().catch(() => {});
+  // A write admitted AFTER stop() began: refused, synchronously-shaped, no put queued. The race
+  // is bounded so a tree without the refusal still reaches the assertions below (it would leave
+  // this write parked in the chain behind departure instead).
+  const stragglerWrite = orderingAgent!.setStatus("working", "straggler").catch((e) => e as Error);
+  const stragglerRefusal = await Promise.race([
+    stragglerWrite.then((r) => (r instanceof Error && r.message === "agent is stopping; presence writes are refused" ? r.message : "wrong error")),
+    sleep(1_500).then(() => "no refusal"),
+  ]);
+  // Give stop()'s offline publish every chance to start while the write admitted before it is
+  // still held: this is the window the fix must keep empty.
+  await sleep(150);
+  const offlineStartedWhileHeld = heldStraggler.length > 0;
+  attentionPut.resolve();
+  const offlinePut = await takeStraggler(); // departure's put: ordered AFTER the held write
+  offlinePut.resolve();
+  await stragglerStop;
+  await stragglerWrite; // settles (refused, or rejected in-chain on an unfenced tree) with no put
+  await sleep(300); // nothing may land after offline: the straggler was refused, the heartbeat is stopped
+  const putAfterOffline = heldStraggler.length > 0;
+  for (const held of heldStraggler.splice(0)) held.resolve();
+  stragglerEp.kv = liveStragglerKv;
+  check(
+    "a presence write admitted after stop() began is refused and no put lands after offline",
+    stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeld && !putAfterOffline,
+    { stragglerRefusal, offlineStartedWhileHeld, putAfterOffline },
+  );
 } finally {
   await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
@@ -699,7 +758,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 26;
+const EXPECTED_CELLS = 27;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
