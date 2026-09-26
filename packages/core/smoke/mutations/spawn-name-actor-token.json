@@ -87,6 +87,15 @@
       "note": "CORRECT TODAY — it reproduces the validator's current alphabet exactly, so every BEHAVIOURAL cell stays green. It first ran as a SURVIVOR, with the harness's positive control confirming the file was loaded, which made it a real coverage gap rather than an unreachable mutant. That is the finding: a restatement that is right today is indistinguishable from delegation today, and diverges only after someone changes the token grammar — the one moment nobody is reading this door. It is now killed by structural cells over the shipped source (comments stripped, since the docstring names the validator)."
     },
     {
+      "name": "M7 the CLI's client-side preflight is removed",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  if (values.name !== undefined) refuseUnmintableNameOrExit(values.name, t.mode === \"user\");",
+      "replace": "",
+      "expectRed": "the CLI calls the shared name door (call sites: detached + foreground)",
+      "cell": "the CLI calls the shared name door (call sites: detached + foreground)",
+      "note": "The #867 residual. The detached CLI sent `identity: values.name` to the manager with no client-side check, so the operator read the manager's refusal only after the round trip. The suite cannot drive a live CLI against a user-auth manager (broker-free by design), so the wiring is pinned structurally: the cell counts the shared door's call sites in the CLI's shipped source, comments stripped, and reddens when the call is deleted. The behavioural half of the fix is pinned by the user/static-mode cells above, at the shared predicate with the exact argument shapes both call sites pass. The mutation-proof fixture census asks for an afterRestore when the mutated package is built: this entry mutates a source file under implementations/cli, whose smoke command (pnpm smoke:spawn-name-actor) runs tsx directly on the source with no build step, so no rebuild is needed."
+    },
+    {
       "name": "M4 user mode accepts the reserved character again",
       "file": "packages/core/src/agent-file.ts",
       "find": "  if (!opts.userMode) return undefined;",
