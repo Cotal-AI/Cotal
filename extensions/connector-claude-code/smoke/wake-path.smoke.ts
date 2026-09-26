@@ -42,7 +42,7 @@ import { createRequire } from "node:module";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** The real per-event hook entry Claude Code runs, and the loader that can execute its TS. */
@@ -226,7 +226,7 @@ const dmOtto = async (text: string): Promise<void> => {
 const stillPending = (text: string): boolean => agent.peekInbox("all").some((i: InboxItem) => i.text.includes(text));
 
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   await pub.start();
   agent.start();

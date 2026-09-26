@@ -32,7 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable } from "@cotal-ai/core";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, awaitBrokerReady, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -259,10 +259,7 @@ try {
     existsSync(join(CONFIG, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-codex")),
   );
 
-  for (let i = 0; i < 60; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 60, delayMs: 200 });
   await operator.start();
 
   // The real command, with nothing pointed at this worktree: the connector must come from the

@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
 import { MeshAgent, type InboxItem } from "@cotal-ai/connector-core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createWakePolicy } from "../src/hooks.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,10 +69,7 @@ publisher.on("error", () => {});
 const pending = (text: string): boolean => agent.peekInbox("all").some((item: InboxItem) => item.text.includes(text));
 
 try {
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({
     servers,
     space,
