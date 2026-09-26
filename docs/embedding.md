@@ -295,6 +295,34 @@ The same composition supplies `remoteAuthority.agentBearerExchangeUrl`, the pinn
 base used by retained children. Remote adoption launches `agent-bearer --exchange-url <base>`; it must
 not select the local `--dir` arm, which depends on a host-only auth-service process record.
 
+A host that lets a remote participant spawn FRESH managed agents implements
+`remoteAuthority.enrollManagedAgent`. The participant generates the standing actor token, writes it
+at mode 0600, and passes only its SHA-256 digest with the requested actor, label, role,
+capabilities, and channel lists, so the plaintext secret never leaves the participant machine. There
+is deliberately no `lifecycleUid` input: the host selects the UID, because only the host sees the
+retirement tombstones that make a UID permanently unusable, and a participant-chosen UID could aim a
+fresh grant at a dead incarnation. The host authors the ledger grant, pre-creates the lifecycle-keyed
+durables, clamps the requested lists to what the spawning owner already holds, and returns the owner,
+actor, chosen `lifecycleUid`, the space sentinel credentials, the effective lists, and
+`agentBearerExchangeUrl`. The manager binds every returned coordinate, re-keys the secret family onto
+the returned UID, and launches `agent-bearer --exchange-url <base>`. When the hook is absent a
+signerless manager refuses the user-mode spawn rather than authoring a local grant the host knows
+nothing about.
+
+Both managed-agent operations ride the one verified `POST /manager-service-authority` transport as
+`kind: "manager-managed-agent-enrollment"` and `kind: "manager-managed-agent-prepare-retirement"`.
+Stock `dispatchManagerAuthorityRequest` refuses both with `unimplemented`: they mutate host storage,
+and stock holds none of that composition. A host terminates its own public route, authenticates the
+human there, and asks the auth service for the decision at
+`POST /manager-service-authority/verify-enrollment` (exported as `VERIFY_ENROLLMENT_PATH` from
+`@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only `{ owner, request }`. That
+door has the managed retirement door's guards, derives the caller's scope from the local ledger rather
+than the body, checks the manager gate and registration proof in-process, and answers
+`{ authorized: true, owner, actor, instanceId, serveEpoch }`. `authorizeRemoteManagedAgentEnrollment`
+and `authorizeRemoteManagedAgentPrepareRetirement` are exported too, for a host that composes the
+decision without the HTTP hop. Both require ledger scope `supervise`; `spawn` and `admin` do not
+imply it.
+
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays
 that tuple over the current registered manager lifecycle. HTTPS does not separately authenticate the

@@ -1223,6 +1223,29 @@ deregistration when its retained credential is not healthy. A restart MUST drive
 through the host operation before advancing its epoch. A registration blocked by a foreign frozen
 manager governance slot MAY request guarded host reconciliation and retry exactly once.
 
+The typed protocol also carries two host-owned MANAGED-AGENT operations,
+`manager-managed-agent-enrollment` and `manager-managed-agent-prepare-retirement`. Both name the
+authenticated owner's own managed agent and both require the caller's current `supervise` scope;
+`spawn` and `admin` never imply it. Both MUST be authorized against the caller instance's CURRENT
+open manager gate: the gate's principal MUST equal the server-derived serve principal, its process
+epoch MUST equal the request's `serveEpoch`, and the request's registration proof MUST match the
+proof the host issued for that registration revision and epoch. An enrollment request MUST carry the
+SHA-256 digest of the agent's standing actor token and never the token itself, and MUST NOT carry a
+lifecycle UID: the HOST selects it, because only the host can observe the retirement tombstones that
+make a UID permanently unusable. A prepare-retirement request MUST name a target owner equal to the
+authenticated owner, and its `opId` MUST equal `managedRetirementOpId(target.lifecycleUid)`,
+recomputed by the host rather than trusted, so one lifecycle never carries two terminal operations.
+
+These two operations mutate host-owned storage, so an implementation that owns no such storage MUST
+refuse them with `unimplemented` rather than answering a manager-lifecycle phase for them. A host
+platform that owns the writers MAY intercept them on its own authenticated route and obtain the
+decision alone from the auth service's loopback door
+`POST /manager-service-authority/verify-enrollment`, which carries the same loopback guards as the
+managed-retire door (POST only, no `Origin`, JSON, the per-start capability, a closed
+`{ owner, request }` body). That door MUST derive the caller's capability scope from its own ledger
+and MUST NOT accept a scope from the caller. It decides only: it mints nothing, writes nothing, and
+returns no secret.
+
 The host, not the participant, issues every data-account credential requiring the account signing
 key. The only remote path is the lifecycle- and instance-bound typed protocol of §13.6; a broader
 bearer or a generic credential-mint endpoint is non-conformant. Its gate is frozen before staged
