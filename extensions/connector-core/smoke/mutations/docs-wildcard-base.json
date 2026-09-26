@@ -84,7 +84,8 @@
       "replace": "    if (false) out.push(t);",
       "expectRed": "‘$SYS.>’ resolves to its base subject",
       "cell": "‘$SYS.>’ resolves to its base subject",
-      "note": "The whole of the code claim these cells defend. `$SYS.>` is written nowhere in the corpus, so without the base expansion the query retrieves zero sections -- not a worse ranking, nothing at all."
+      "note": "The whole of the code claim these cells defend. `$SYS.>` is written nowhere in the corpus, so without the base expansion the query retrieves zero sections -- not a worse ranking, nothing at all.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
       "name": "the limit argument is ignored and the default five is hardcoded",
@@ -93,7 +94,8 @@
       "replace": "    if (hits.length >= 5) break;",
       "expectRed": "‘$SYS.>’ reaches the spec section documenting the reserved $SYS prefix",
       "cell": "‘$SYS.>’ reaches the spec section documenting the reserved $SYS prefix",
-      "note": "Aimed at the reachability cell alone and no broader: every other cell in the suite searches at the default, so only the one call that widens the window can see this. It is also the mutation that would silently restore the red -- the repair is that the spec is REACHABLE, and a hardcoded window is exactly what makes reachable and ranked the same claim again."
+      "note": "Aimed at the reachability cell alone and no broader: every other cell in the suite searches at the default, so only the one call that widens the window can see this. It is also the mutation that would silently restore the red -- the repair is that the spec is REACHABLE, and a hardcoded window is exactly what makes reachable and ranked the same claim again.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
       "name": "the limit is hardcoded at SIX, the value the old ten-hit window had slack for",
@@ -102,7 +104,8 @@
       "replace": "    if (hits.length >= 6) break;",
       "expectRed": "a limit of one returns one section",
       "cell": "a limit of one returns one section",
-      "note": "A REVIEWER FOUND THIS AS A SURVIVOR AND IT IS THE POINT OF THE ROUND. The previous cell asked for the spec inside the first TEN hits; the spec sits at rank six, so the assertion was carrying four slots of slack against one afternoon's corpus and any hardcoded cut of six or more left every cell green. Mutation 2 above only killed because five happened to be below the spec's current rank -- it was grading the corpus, which is the exact defect this whole config exists to remove, one layer down. The reachability cell is now UNWINDOWED and claims no rank at all, and the limit argument is asserted against a COUNT instead, which no corpus fact can drift."
+      "note": "A REVIEWER FOUND THIS AS A SURVIVOR AND IT IS THE POINT OF THE ROUND. The previous cell asked for the spec inside the first TEN hits; the spec sits at rank six, so the assertion was carrying four slots of slack against one afternoon's corpus and any hardcoded cut of six or more left every cell green. Mutation 2 above only killed because five happened to be below the spec's current rank -- it was grading the corpus, which is the exact defect this whole config exists to remove, one layer down. The reachability cell is now UNWINDOWED and claims no rank at all, and the limit argument is asserted against a COUNT instead, which no corpus fact can drift.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
       "name": "the limit is not applied at all, so every query returns the whole ranked corpus",
@@ -111,7 +114,8 @@
       "replace": "    if (false) break;",
       "expectRed": "a limit of one returns one section",
       "cell": "a limit of one returns one section",
-      "note": "The other direction, and it is the one that reads as harmless: nothing is lost, everything is found, and a docs tool that answers a search with sixty-five sections has blown the context it was called to protect. The reachability cell CANNOT see this -- an unwindowed query is exactly what it asks for -- which is why the count cells are its pair rather than a duplicate of it."
+      "note": "The other direction, and it is the one that reads as harmless: nothing is lost, everything is found, and a docs tool that answers a search with sixty-five sections has blown the context it was called to protect. The reachability cell CANNOT see this -- an unwindowed query is exactly what it asks for -- which is why the count cells are its pair rather than a duplicate of it.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     }
   ]
 }

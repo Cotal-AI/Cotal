@@ -14,7 +14,8 @@
       "replace": "    void reportEndpoint;",
       "cell": "manager surfaces endpoint warnings through its supervisor diagnostic",
       "expectRed": "manager surfaces endpoint warnings through its supervisor diagnostic",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "web stops subscribing to recoverable endpoint warnings",
@@ -23,7 +24,8 @@
       "replace": "  void reportEndpoint;",
       "cell": "web surfaces endpoint warnings through its operator stderr",
       "expectRed": "web surfaces endpoint warnings through its operator stderr",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
       "name": "feedback intake stops subscribing to recoverable endpoint warnings",
@@ -32,7 +34,8 @@
       "replace": "  void ep;",
       "cell": "feedback intake surfaces endpoint warnings through daemon stderr",
       "expectRed": "feedback intake surfaces endpoint warnings through daemon stderr",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/delivery build"
     },
     {
       "name": "transient CLI endpoints stop subscribing to recoverable warnings",
@@ -41,7 +44,8 @@
       "replace": "  void ep;",
       "cell": "transient CLI commands surface endpoint warnings",
       "expectRed": "transient CLI commands surface endpoint warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "spawn manifest probe stops subscribing to recoverable warnings",
@@ -50,7 +54,8 @@
       "replace": "  void ep;",
       "cell": "spawn manifest probe surfaces recoverable warnings without blocking deploy",
       "expectRed": "spawn manifest probe surfaces recoverable warnings without blocking deploy",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "join provisioner loses its explicit warning disposition",
@@ -59,7 +64,8 @@
       "replace": "      void ignoreProvisionerWarning;",
       "cell": "join provisioner deliberately ignores recoverable side-channel warnings",
       "expectRed": "join provisioner deliberately ignores recoverable side-channel warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "join session stops subscribing to recoverable warnings",
@@ -68,7 +74,8 @@
       "replace": "  void print;",
       "cell": "join session surfaces recoverable warnings through prompt-safe output",
       "expectRed": "join session surfaces recoverable warnings through prompt-safe output",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "status snapshot loses its explicit warning disposition",
@@ -77,7 +84,8 @@
       "replace": "  void ignoreSnapshotWarning;",
       "cell": "status snapshot deliberately ignores recoverable side-channel warnings",
       "expectRed": "status snapshot deliberately ignores recoverable side-channel warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "status component probe loses its explicit warning disposition",
@@ -86,7 +94,8 @@
       "replace": "  void ignoreComponentWarning;",
       "cell": "status component probe deliberately ignores recoverable side-channel warnings",
       "expectRed": "status component probe deliberately ignores recoverable side-channel warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "spawn naming probe loses its explicit warning disposition",
@@ -95,7 +104,8 @@
       "replace": "  void ignoreNameProbeWarning;",
       "cell": "spawn naming probe deliberately ignores recoverable advisory warnings",
       "expectRed": "spawn naming probe deliberately ignores recoverable advisory warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "static spawn provisioner stops subscribing to recoverable warnings",
@@ -104,7 +114,8 @@
       "replace": "    void reportStaticProvisioner;",
       "cell": "static spawn provisioner surfaces recoverable warnings",
       "expectRed": "static spawn provisioner surfaces recoverable warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "user spawn provisioner stops subscribing to recoverable warnings",
@@ -113,7 +124,8 @@
       "replace": "    void reportUserProvisioner;",
       "cell": "user spawn provisioner surfaces recoverable warnings",
       "expectRed": "user spawn provisioner surfaces recoverable warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "MeshView stops consuming endpoint warnings",
@@ -122,7 +134,8 @@
       "replace": "    void this.onWarning;",
       "cell": "MeshView consumes endpoint warnings into its shared operator model",
       "expectRed": "MeshView consumes endpoint warnings into its shared operator model",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "plain console stops subscribing to MeshView warnings",
@@ -131,7 +144,8 @@
       "replace": "  void view;",
       "cell": "plain console renders MeshView warnings",
       "expectRed": "plain console renders MeshView warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "delivery daemon loses its recoverable warning subscription",
@@ -140,7 +154,8 @@
       "replace": "  void say;",
       "cell": "delivery daemon remains subscribed to recoverable endpoint warnings",
       "expectRed": "delivery daemon remains subscribed to recoverable endpoint warnings",
-      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts"
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/delivery build"
     },
     {
       "name": "MeshAgent stops subscribing to recoverable endpoint warnings",

@@ -12,7 +12,8 @@
       "find": "    await agentStart;",
       "replace": "    void agentStart;",
       "expectRed": "the startup failure names mesh readiness and the unreachable broker",
-      "cell": "the startup failure names mesh readiness and the unreachable broker"
+      "cell": "the startup failure names mesh readiness and the unreachable broker",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
     }
   ]
 }

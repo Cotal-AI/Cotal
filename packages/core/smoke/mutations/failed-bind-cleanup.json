@@ -12,7 +12,8 @@
       "find": "    this.emit(\"transport\", { connected: false } satisfies TransportState);\n    this.emit(\"connection\", { connected: false });",
       "replace": "",
       "expectRed": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down",
-      "cell": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down"
+      "cell": "FAILED-BIND EDGES: post-connect bind failure announces transport and connection down",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

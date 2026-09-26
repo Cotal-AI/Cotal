@@ -51,7 +51,8 @@
       "expectRed": "two live remote managers refuse and name the count",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
       "completionMarker": "remote-exchange smoke:",
-      "note": "The absent selector must never choose by enumeration order when several owner-bound managers are live."
+      "note": "The absent selector must never choose by enumeration order when several owner-bound managers are live.",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
     {
       "name": "an unavailable owner remote manager falls through to the co-located manager",
@@ -61,7 +62,8 @@
       "expectRed": "an unavailable owner remote manager refuses with the explicit-selector remedy instead of falling through local",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
       "completionMarker": "remote-exchange smoke:",
-      "note": "Any owner-specific remote gate establishes precedence even when it is frozen, retired, or deregistered."
+      "note": "Any owner-specific remote gate establishes precedence even when it is frozen, retired, or deregistered.",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
     }
   ]
 }

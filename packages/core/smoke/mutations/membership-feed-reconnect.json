@@ -19,7 +19,8 @@
       "replace": "",
       "expectRed": "the membership feed watch stays live across reconnect",
       "cell": "the membership feed watch stays live across reconnect",
-      "note": "The old iterator is retired and the intent never gets a successor, so the post-reconnect membership-rw write produces no callback."
+      "note": "The old iterator is retired and the intent never gets a successor, so the post-reconnect membership-rw write produces no callback.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "public stop/close race forgets consumer identity before fresh cleanup",
@@ -28,7 +29,8 @@
       "replace": "    let pending = info.num_pending;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",
-      "note": "The consumer identity must survive its closed connection so the endpoint-owned public stop can finish only after fresh-epoch deletion."
+      "note": "The consumer identity must survive its closed connection so the endpoint-owned public stop can finish only after fresh-epoch deletion.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "closed epoch delete rejects public stop instead of deferring cleanup",
@@ -37,7 +39,8 @@
       "replace": "          throw err;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",
-      "note": "A closed epoch is deferred cleanup, not deletion success and not a caller-visible stop failure."
+      "note": "A closed epoch is deferred cleanup, not deletion success and not a caller-visible stop failure.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "endpoint shutdown leaves public membership stop pending while broker is down",
@@ -46,7 +49,8 @@
       "replace": "      watch.resolveStop = undefined;\n      watch.rejectStop = undefined;\n",
       "expectRed": "endpoint shutdown while broker is down settles the public membership stop",
       "cell": "endpoint shutdown while broker is down settles the public membership stop",
-      "note": "Permanent endpoint shutdown has no possible fresh cleanup epoch; it must terminate a pending public stop rather than hanging the process."
+      "note": "Permanent endpoint shutdown has no possible fresh cleanup epoch; it must terminate a pending public stop rather than hanging the process.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "the rebuild keeps the manager-lease KV handle bound to the drained connection",
@@ -55,7 +59,8 @@
       "replace": "",
       "expectRed": "the manager lease renews after reconnect",
       "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",
-      "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained."
+      "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "delivery durable bind drops the plane lease read",
@@ -64,7 +69,8 @@
       "replace": "",
       "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
       "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
-      "note": "Without the liveness read the stale durable binds silently, restoring the reported unnamed empty-inbox behavior."
+      "note": "Without the liveness read the stale durable binds silently, restoring the reported unnamed empty-inbox behavior.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "delivery durable bind inverts ready lease acceptance",
@@ -73,7 +79,8 @@
       "replace": "    const liveDeliveryPlane = lease?.ready !== true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
       "expectRed": "a quiet delivery durable binds while the plane holds a ready lease",
       "cell": "a quiet delivery durable binds while the plane holds a ready lease without raising a warning",
-      "note": "A ready live plane is the positive control and must remain the only lease state that binds silently."
+      "note": "A ready live plane is the positive control and must remain the only lease state that binds silently.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "delivery durable bind treats a missing lease row as live",
@@ -82,7 +89,8 @@
       "replace": "    const liveDeliveryPlane = lease === undefined || lease.ready === true;\n",
       "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
       "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
-      "note": "A missing lease is the stale-plane signal and must not collapse into a healthy quiet plane without a warning."
+      "note": "A missing lease is the stale-plane signal and must not collapse into a healthy quiet plane without a warning.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }
