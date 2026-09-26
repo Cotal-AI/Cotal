@@ -81,8 +81,8 @@
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
       "find": "  if (!args.scope.includes(\"supervise\"))\n    throw new EpEnvelopeError(\"permission-denied\", 'managed agent prepare-retirement needs scope \"supervise\"; spawn/admin do not imply it');\n",
       "replace": "",
-      "expectRed": "FAIL: release: prepare-retirement without \"supervise\" is refused",
-      "cell": "release: prepare-retirement without \"supervise\" is refused"
+      "expectRed": "FAIL: prepare-retirement without \"supervise\" is refused",
+      "cell": "prepare-retirement without \"supervise\" is refused"
     },
     {
       "name": "prepare-retirement accepts a foreign target owner",
