@@ -35,7 +35,7 @@ export const INFRASTRUCTURE_MARKERS = Object.freeze([
 const SMOKE_TOKEN = /\bsmoke:[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*/g;
 // A `live` SEGMENT, not only a suffix: `smoke:evict-live:auth` is as live as `smoke:foo:live`. The
 // first segment after `smoke` names the area (`smoke:live-suite`), so a leading `live` is not one.
-const LIVE_NAMED = /[:\-]live(?=$|[:\-])/;
+const LIVE_NAMED = /(?<=smoke:[A-Za-z0-9_-]*[:\-])live(?=$|[:\-])/;
 // A resolved source file whose basename ends `-live.smoke.<ext>` is live by file, with or without a
 // live-named script pointing at it (`smoke:up-tls-routes` -> `up-tls-routes-live.smoke.ts`).
 const LIVE_SOURCE_FILE = /-live\.smoke\.[cm]?[jt]s$/;

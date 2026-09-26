@@ -55,10 +55,18 @@
     {
       "name": "the live-name rule collapses back to a suffix",
       "file": "scripts/mutation-command-safety.mjs",
-      "find": "const LIVE_NAMED = /[:\\-]live(?=$|[:\\-])/;\n",
+      "find": "const LIVE_NAMED = /(?<=smoke:[A-Za-z0-9_-]*[:\\-])live(?=$|[:\\-])/;\n",
       "replace": "const LIVE_NAMED = /(?::live|-live)$/;\n",
       "expectRed": "a live segment inside a script name is refused, not only a suffix",
       "cell": "a live segment inside a script name is refused, not only a suffix"
+    },
+    {
+      "name": "the live-name rule starts matching the first segment again",
+      "file": "scripts/mutation-command-safety.mjs",
+      "find": "const LIVE_NAMED = /(?<=smoke:[A-Za-z0-9_-]*[:\\-])live(?=$|[:\\-])/;\n",
+      "replace": "const LIVE_NAMED = /(?<=smoke:)[A-Za-z0-9_-]*[:\\-]?live(?=$|[:\\-])/;\n",
+      "expectRed": "a first segment naming the area is not a live marker",
+      "cell": "a first segment naming the area is not a live marker"
     },
     {
       "name": "live-named source files are no longer refused by file name",

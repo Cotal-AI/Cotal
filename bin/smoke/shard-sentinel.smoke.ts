@@ -10,20 +10,26 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuite, formatSentinel as kitFormat, parseSentinel as kitParse } from "@cotal-ai/smoke-kit";
+import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.mjs";
 import { formatSentinel, parseSentinel } from "./sentinel.mjs";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const SHARD = fileURLToPath(new URL("./shard.mjs", import.meta.url));
 const SENTINEL = formatSentinel({ passed: 3, failed: 0 });
 
 // Suite bodies the classifier reads as FILES (never executed under --offline: that is the point).
-// `cotal(["up", ...])` as text is the stack-starting shape; the throw proves a live suite that DID
-// run cannot hide. Bodies are written into the run dir so liveShapedCommandReason resolves them
-// under the run's cwd exactly as it resolves real suites under the repo.
+// The stack body is assembled from parts (verb via JSON.stringify) so this suite's OWN source has
+// no line in the stack-starting shape it tests: the suite must not classify itself out of the
+// offline gate or refuse its own mutation fixture as live-shaped. The throw proves a live suite
+// that DID run cannot hide. Bodies are written into the run dir so liveShapedCommandReason
+// resolves them under the run's cwd exactly as it resolves real suites under the repo.
+const UP_VERB = JSON.stringify("up");
 const fixtureFiles: Record<string, string> = {
-  "stack.mjs": `cotal(["up", "--detach"]);\n`,
+  "stack.mjs": `cotal([${UP_VERB}, "--detach"]);\n`,
   "live.mjs": `throw new Error("OFFLINE CONTROL RAN THE LIVE FIXTURE");\n`,
   "green.mjs": `console.log(${JSON.stringify(SENTINEL)});\n`,
 };
@@ -150,6 +156,11 @@ check(
   !offlineEmpty.timedOut && offlineEmpty.status === 2 && offlineEmpty.out.includes("--offline refused"),
   offlineEmpty.out.slice(-300),
 );
+check(
+  "the suite does not classify itself out of the offline gate",
+  liveShapedCommandReason("pnpm smoke:shard-sentinel", { cwd: ROOT }) === null,
+  "the sentinel suite itself is live-shaped: the stack fixture body must stay assembled from parts, never spelled out",
+);
 
 const extraTally = parseSentinel("FROZEN-EXPORTS SMOKE OK ✅  (12 passed, 0 failed; 3 arrays + 4 plain-objects scanned)\n");
 check("a parenthetical tally still counts when extra text follows failed", extraTally?.kind === "legacy" && extraTally.cells === 12 && extraTally.passed === 12);
@@ -202,7 +213,7 @@ check(
   parseSentinel("docs said 12 ok, 0 failed yesterday\n") === null,
 );
 
-const EXPECTED = 31;
+const EXPECTED = 32;
   check(
     `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
     passed() + failed() === EXPECTED,

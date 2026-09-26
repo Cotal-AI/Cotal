@@ -50,6 +50,7 @@ const files: Record<string, string> = {
       "smoke:safe-options": "node --enable-source-maps suites/safe.mjs",
       "smoke:evict-live:auth": "node suites/evict.mjs",
       "smoke:quiet-file": "node suites/quiet-live.smoke.mjs",
+      "smoke:live-suite": "node suites/graders.mjs",
       "smoke:stack": "node suites/stack.mjs",
       "smoke:completion": "node suites/completion.mjs",
     },
@@ -59,6 +60,7 @@ const files: Record<string, string> = {
   "suites/safe.mjs": "console.log('safe');\n",
   "suites/evict.mjs": "console.log('evict');\n",
   "suites/quiet-live.smoke.mjs": "console.log('live by file name only');\n",
+  "suites/graders.mjs": "console.log('a classifier-grading suite, not a live one');\n",
   "suites/stack.mjs": "const r = cotal([\"up\", \"--detach\"]);\n",
   "suites/completion.mjs": "const exactUp = await completionOut([\"up\"]);\n",
 };
@@ -139,6 +141,11 @@ check(
   "a live segment inside a script name is refused, not only a suffix",
   liveShapedCommandReason("pnpm smoke:evict-live:auth", opts) === "smoke:evict-live:auth is live-named",
   liveShapedCommandReason("pnpm smoke:evict-live:auth", opts),
+);
+check(
+  "a first segment naming the area is not a live marker",
+  liveShapedCommandReason("pnpm smoke:live-suite", opts) === null,
+  liveShapedCommandReason("pnpm smoke:live-suite", opts),
 );
 check(
   "a resolved source file named -live.smoke is refused without a live-named script",
