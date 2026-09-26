@@ -127,15 +127,22 @@ type WorkspacePackage = {
   dir: string;
   /** Every `exports` target (or `main`) lives under `./dist/`: a build output, not the source. */
   exportsFromDist: boolean;
-  dependencies: Set<string>;
-  peerDependencies: Set<string>;
+  /** Every workspace package this one names under any dependency key. pnpm's `<name>...` and
+   *  `...<name>` selectors follow devDependencies and optionalDependencies as well as dependencies
+   *  and peerDependencies (`pnpm --filter @cotal-ai/cli... list` selects `@cotal-ai/auth`, a
+   *  devDependency of the CLI), so an edge set of the runtime keys alone under-counts what a build
+   *  compiles. */
+  dependsOn: Set<string>;
 };
 
 const workspacePackages = new Map<string, WorkspacePackage>();
 function readWorkspacePackages(): void {
   for (const path of jsonFiles(ROOT)) {
     if (!path.endsWith("package.json")) continue;
-    let raw: { name?: unknown; exports?: unknown; main?: unknown; dependencies?: unknown; peerDependencies?: unknown };
+    let raw: {
+      name?: unknown; exports?: unknown; main?: unknown;
+      dependencies?: unknown; peerDependencies?: unknown; devDependencies?: unknown; optionalDependencies?: unknown;
+    };
     try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
     if (typeof raw.name !== "string" || !raw.name) continue;
     // Exports maps are nested ({ ".": { "import": "./dist/index.js" } }), so the dist test walks
@@ -153,8 +160,10 @@ function readWorkspacePackages(): void {
       name: raw.name,
       dir: dirname(path),
       exportsFromDist,
-      dependencies: new Set(Object.keys(raw.dependencies ?? {})),
-      peerDependencies: new Set(Object.keys(raw.peerDependencies ?? {})),
+      dependsOn: new Set(
+        [raw.dependencies, raw.peerDependencies, raw.devDependencies, raw.optionalDependencies]
+          .flatMap((group) => (group && typeof group === "object" ? Object.keys(group) : [])),
+      ),
     });
   }
 }
@@ -167,7 +176,7 @@ function closureOf(name: string): Set<string> {
     out.add(n);
     const pkg = workspacePackages.get(n);
     if (!pkg) return;
-    for (const dep of [...pkg.dependencies, ...pkg.peerDependencies]) visit(dep);
+    for (const dep of pkg.dependsOn) visit(dep);
   };
   visit(name);
   return out;
@@ -179,7 +188,7 @@ function dependentsOf(name: string): Set<string> {
     grew = false;
     for (const pkg of workspacePackages.values()) {
       if (out.has(pkg.name)) continue;
-      if ([...pkg.dependencies, ...pkg.peerDependencies].some((d) => out.has(d))) {
+      if ([...pkg.dependsOn].some((d) => out.has(d))) {
         out.add(pkg.name);
         grew = true;
       }
@@ -195,7 +204,10 @@ function commandBuilds(command: unknown): Set<string> | "ALL" | null {
   let unfiltered = false;
   for (const segment of command.split(/&&|\|\||;/)) {
     if (!segment.includes("pnpm") || !/\bbuild\b/.test(segment)) continue;
-    const filters = [...segment.matchAll(/--filter[= ](\S+)/g)].map((m) => m[1]);
+    // `mutation-proof` runs the command through a shell, which strips the quotes a fixture may put
+    // around a filter before pnpm reads it. The census reads the same bare name, or a quoted filter
+    // would name no package on both sides: the build it hides and the restore it fails to credit.
+    const filters = [...segment.matchAll(/--filter[= ](\S+)/g)].map((m) => m[1].replace(/^(["'])(.*)\1$/, "$2"));
     if (!filters.length) { unfiltered = true; continue; }
     for (const filter of filters) {
       const closure = filter.endsWith("...");
@@ -469,6 +481,27 @@ try {
   cell(
     "a closure filter (cli...) that covers core flags a core mutation with no core rebuild",
     closure?.includes("builds @cotal-ai/core") === true,
+  );
+  // `@cotal-ai/auth` is a devDependency of the CLI and nothing else in that closure names it, so
+  // this cell is red whenever the edge set stops at the runtime keys.
+  cell(
+    "a closure filter reaches a package the filtered one names only under devDependencies",
+    unrestoredReason(
+      { file: "implementations/auth/src/index.ts" },
+      "pnpm --filter @cotal-ai/cli... build && pnpm smoke:some-suite",
+    )?.includes("builds @cotal-ai/auth") === true,
+  );
+  const quoted = 'pnpm --filter "@cotal-ai/delivery..." build && pnpm smoke:some-suite';
+  cell(
+    "a quoted closure filter builds the mutated package and is flagged with no afterRestore",
+    unrestoredReason({ file: "implementations/delivery/src/watchdog.ts" }, quoted)?.includes("builds @cotal-ai/delivery") === true,
+  );
+  cell(
+    "the same quoted filter as afterRestore is credited as the rebuild",
+    unrestoredReason(
+      { file: "implementations/delivery/src/watchdog.ts", afterRestore: 'pnpm --filter "@cotal-ai/delivery..." build' },
+      quoted,
+    ) === undefined,
   );
   cell(
     "a source-exporting package (smoke-kit) is never flagged",

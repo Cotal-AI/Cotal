@@ -150,6 +150,22 @@
       "replace": "      const closure = false as boolean;\n      const dependents = filter.startsWith(\"...\");",
       "expectRed": "a closure filter (cli...) that covers core flags a core mutation with no core rebuild",
       "cell": "a closure filter (cli...) that covers core flags a core mutation with no core rebuild"
+    },
+    {
+      "name": "the quote strip is removed, so a quoted filter names no package and blinds the build and the restore alike",
+      "file": "bin/smoke/mutation-fixtures.smoke.ts",
+      "find": "    const filters = [...segment.matchAll(/--filter[= ](\\S+)/g)].map((m) => m[1].replace(/^([\"'])(.*)\\1$/, \"$2\"));",
+      "replace": "    const filters = [...segment.matchAll(/--filter[= ](\\S+)/g)].map((m) => m[1]);",
+      "expectRed": "a quoted closure filter builds the mutated package and is flagged with no afterRestore",
+      "cell": "a quoted closure filter builds the mutated package and is flagged with no afterRestore"
+    },
+    {
+      "name": "the edge set drops devDependencies and optionalDependencies, so a closure no longer reaches what pnpm builds through them",
+      "file": "bin/smoke/mutation-fixtures.smoke.ts",
+      "find": "        [raw.dependencies, raw.peerDependencies, raw.devDependencies, raw.optionalDependencies]\n          .flatMap(",
+      "replace": "        [raw.dependencies, raw.peerDependencies]\n          .flatMap(",
+      "expectRed": "a closure filter reaches a package the filtered one names only under devDependencies",
+      "cell": "a closure filter reaches a package the filtered one names only under devDependencies"
     }
   ]
 }
