@@ -270,6 +270,11 @@ const SPAWN_INPUT_SCHEMA = {
   },
 } as const;
 
+/** The `start` op's argument vocabulary as the served contract declares it: every property name
+ *  `SPAWN_INPUT_SCHEMA` accepts. Exported so a parity check reads the vocabulary from here rather
+ *  than carrying a second, driftable copy of it. */
+export const SPAWN_INPUT_KEYS: readonly string[] = Object.keys(SPAWN_INPUT_SCHEMA.properties);
+
 /** `spawn` success output (P2 item 2): the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
  *  (name + the owner/actor/uid addressing triple item 1 addresses by) plus the goal coordinates
  *  (goalId = the request id), the accepted readiness budget a synchronous follower must outlive,
