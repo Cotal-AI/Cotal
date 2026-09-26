@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 390,
+    "total": 509,
     "honest-text": 35,
-    "presence-only-glyph/count": 41,
+    "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 304
+    "non-render/control": 407
   },
   "renderers": [
     {
@@ -2890,6 +2890,839 @@
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": ";\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": ";\n    } finally {\n      this._status = status;\n    }\n  }\n\n  private a",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "ransition at all.\n      this._status = status;\n      // The turn rela",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.ep.setStatus(status)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: hands the status to the embedded endpoint, which owns the wire protocol; no rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "tion(null);\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "agent.setStatus(agent.status, activity)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: reapplies the recorded status while updating activity only; no rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "agent.setStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: publishes status and activity to the mesh; no rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "agent.yieldTurn(status, { to, note, turn })",
+      "class": "non-render/control",
+      "rationale": "Run-turn bookkeeping: reports the turn's status to the workflow run; not a rendered presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "statusGlyph(p.status)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph for one peer in a roster line; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "kind": "derived-output",
+      "anchor": "ep.setStatus(status)",
+      "class": "non-render/control",
+      "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "c.cyan(r.mesh)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Colors the mesh column of a roster table row; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "c.yellow(r.status)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Colors the status word by its presence class; color alone carries no progress claim beyond presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: snapshots seat state before stopping components; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "mayBeRunning(delivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "mayBeRunning(manager, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "mayBeRunning(retryDelivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "omponent)))\n      await stopLocalProcess(component, context);\n    // Wire-truth quie",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "processAlive(manager, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "stopLocalProcess(delivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "stopLocalProcess(retryDelivery, context)",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "uiescence))\n      await stopLocalProcess(component, context);\n    // Fail-closed: a ",
+      "class": "non-render/control",
+      "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/ext.ts",
+      "kind": "derived-output",
+      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `npm intermediary terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
+      "class": "non-render/control",
+      "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "dim(meshLine)",
+      "class": "non-render/control",
+      "rationale": "Terminal command plumbing: dims the selected-mesh summary line; no agent status is printed here."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
+      "class": "non-render/control",
+      "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "bump(activeChannel, cur)",
+      "class": "non-render/control",
+      "rationale": "Console state update: bumps the active channel's unread counter in the store, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "runCommand(line, ctx, !!canWrite, !!canControl)",
+      "class": "non-render/control",
+      "rationale": "Console control flow: dispatches the input line with permission flags; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "Math.abs(dx)",
+      "class": "non-render/control",
+      "rationale": "Console geometry: absolute delta for node positioning math; no status text involved."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "Math.abs(dy)",
+      "class": "non-render/control",
+      "rationale": "Console geometry: absolute delta for node positioning math; no status text involved."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "stamp(grid[p.y], x, label, { color: \"cyan\", inverse: true, bold: true })",
+      "class": "presence-only-glyph/count",
+      "rationale": "Places the local-node label tile; the styling marks the self node without any progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "stamp(grid[p.y], x, label.slice(0, 1), { color: STATUS[n.status ?? \"offline\"].color })",
+      "class": "presence-only-glyph/count",
+      "rationale": "Places a one-character peer tile whose color is the only status signal; no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "byKey.set(key, n)",
+      "class": "non-render/control",
+      "rationale": "Console state update: indexes a node record in the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "byKey.set(key, {\n        key,\n        kind: \"agent\",\n        name: p.card.name,\n        id: p.card.id,\n        status: p.status,\n        role: p.card.role,\n        lastTs: 0,\n      })",
+      "class": "non-render/control",
+      "rationale": "Console state update: stores the peer record in the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "edge.lastTs = Math.max(edge.lastTs, e.ts)",
+      "class": "non-render/control",
+      "rationale": "Console state update: keeps the newest edge timestamp in the topology model; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "edges.get(key)",
+      "class": "non-render/control",
+      "rationale": "Console state lookup: reads an edge record from the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "edges.set(key, edge)",
+      "class": "non-render/control",
+      "rationale": "Console state update: stores an edge record in the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/lib/seat-restore.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(seat.checkpoint.repository.status)",
+      "class": "non-render/control",
+      "rationale": "Persistence payload: serializes the git status string into a checkpoint file; no terminal or DOM rendering."
+    },
+    {
+      "path": "implementations/cli/src/lib/seat-restore.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(status)",
+      "class": "non-render/control",
+      "rationale": "Persistence payload: serializes the status into a checkpoint file; no terminal or DOM rendering."
+    },
+    {
+      "path": "implementations/cli/src/view/mesh-view.ts",
+      "kind": "derived-output",
+      "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
+      "class": "non-render/control",
+      "rationale": "Console state update: keeps the newest presence timestamp in the mesh view model; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "   mkdirSync(dir, { recursive: true });\n    if (existsSync(path) && !readUnitFields(path, \"# cotal-mesh:\", \"# co",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "   mkdirSync(dir, { recursive: true });\n    if (existsSync(path) && !readUnitFields(path, \"<!-- cotal-mesh:\", \"<",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": " => `ai.cotal.manager.${spaceKey(mesh)}`;\n\n/** The machine fac",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": " void {\n  const entry = findMesh(mesh);\n  if (!entry)\n    thro",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ");\n    const stateDir = serviceStateDir(dir, mesh);\n    // Same validate-f",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ");\n    const stateDir = serviceStateDir(dir, mesh);\n    // Validate FIRST,",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "/[\\r\\n]/.test(values.mesh)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ";\n    return;\n  }\n  if (process.platform === \"darwin\") {\n    assertLaunchd();\n    const label = launchdLabel(mesh);\n    const dir = launchAgentsDir();\n    const path = join(dir, `${label}.plist`);\n    const sta",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": ";\n    return;\n  }\n  if (process.platform === \"darwin\") {\n    assertLaunchd();\n    const label = launchdLabel(mesh);\n    const dir = launchAgentsDir();\n    const path = join(dir, `${label}.plist`);\n    if (!exis",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "Dir();\n    const path = join(dir, unit);\n    const stateDir = s",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "Dir();\n    const path = join(dir, unit);\n    if (!existsSync(pa",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "HOME</key><string>${esc(join(stateDir, \"config\"))}</string>`,\n      `   ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(entry, null, 2)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "Number.isInteger(pid)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "``);\n    const fields = readUnitFields(path, \"# cotal-mesh:\", \"# cotal-root:\", `# ${MARKER}`);\n    if (!fields.marked",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "``);\n    const fields = readUnitFields(path, \"<!-- cotal-mesh:\", \"<!-- cotal-root:\", `<!-- ${MARKER} -->`);\n    if (!fields.marked",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "abel}.plist`);\n    if (!existsSync(path))\n      throw new Error(",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "abel}.plist`);\n    if (!existsSync(path)) return out;\n    const ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "alized.\n  const entry = findMesh(mesh);\n  if (!entry)\n    thro",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "arm.\n    snapshotMeshEntry(mesh, stateDir);\n    preseedService(stateDir);\n    const envFile = writeEnvFile(mesh, server,",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "chmodSync(path, 0o600)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "e as the Linux arm.\n    snapshotMeshEntry(mesh, stateDir);\n    preseedService(sta",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "e status`\");\n    return install(values);\n  }\n  if (sub === \"sta",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "envFileName(mesh)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "escapeSystemdSpecifiers(envFile)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "escapeSystemdSpecifiers(root)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "existsSync(pidPath)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "f (existsSync(path) && !readUnitFields(path, \"# cotal-mesh:\", \"# cotal-root:\", `# ${MARKER}`).marked)\n      throw new",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "f (existsSync(path) && !readUnitFields(path, \"<!-- cotal-mesh:\", \"<!-- cotal-root:\", `<!-- ${MARKER} -->`).marked)\n      throw new",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),\n      linger: ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),\n    };\n  }\n  t",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "in(dir, unit);\n    if (!existsSync(path))\n      throw new Error(",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ing => `cotal-manager@${spaceKey(mesh)}.env`;\n\nfunction writeE",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ing => `cotal-manager@${spaceKey(mesh)}.service`;\n/** The laun",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "itDir, \"cotal-service\", spaceKey(mesh));\n\n/** The 0600 Environ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "join(userUnitDir(), unit)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "linger(values, mesh)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "managerHealthFor(root, mesh)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "n\") {\n    const label = launchdLabel(mesh);\n    const path = join(",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "nit.\n    snapshotMeshEntry(mesh, stateDir);\n    preseedService(stateDir);\n    const envFile = writeEnvFile(mesh, server,",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "nloaded.output}`);\n    rmSync(path);\n    rmSync(serviceStateDir(dir, fields.mesh), { recursive: true, force: true });\n    console",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ocess.platform === \"linux\") {\n    assertSystemdUser();\n    const unit = systemdUnitName(mesh);\n    const dir = userUnitDir();\n    const path = join(dir, unit);\n    c",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ocess.platform === \"linux\") {\n    assertSystemdUser();\n    const unit = systemdUnitName(mesh);\n    const dir = userUnitDir();\n    const path = join(dir, unit);\n    i",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ommand to own it`);\n    writeFileSync(path, body);\n    systemctl([\"daemon",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ommand to own it`);\n    writeFileSync(path, body);\n    void envFile;\n    ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "orks from the unit.\n    snapshotMeshEntry(mesh, stateDir);\n    preseedService(sta",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "out;\n    const fields = readUnitFields(path, \"# cotal-mesh:\", \"# cotal-root:\", `# ${MARKER}`);\n    // The mesh field ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "out;\n    const fields = readUnitFields(path, \"<!-- cotal-mesh:\", \"<!-- cotal-root:\", `<!-- ${MARKER} -->`);\n    // Same required-r",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "parsePid(raw)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "probeLiveness(pid)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "r);\n    const envFile = writeEnvFile(mesh, server, stateDir);\n    const body = [\n   ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "r);\n    const envFile = writeEnvFile(mesh, server, stateDir);\n    const esc = (t: st",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "readFileSync(pidPath, \"utf8\")",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "readProcessCommand(pid)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "spaceSegment(mesh)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "stopped.output}`);\n    rmSync(path);\n    rmSync(serviceStateDir(dir, fields.mesh), { recursive: true, force: true });\n    systemc",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "systemdUnitStatus(unit)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "tDir(), unit);\n    if (!existsSync(path)) return out;\n    const ",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "uninstall(values)",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "unloaded.output}`);\n    rmSync(path);\n    rmSync(serviceStat",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "ux\") {\n    const unit = systemdUnitName(mesh);\n    const path = join(",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "writeFileSync(path, body, { mode: 0o600 })",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "{stopped.output}`);\n    rmSync(path);\n    rmSync(serviceStat",
+      "class": "non-render/control",
+      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" })",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code on the server's error response; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "res.writeHead(status, { \"content-type\": \"application/json\" })",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code on the server's JSON response; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "kind": "derived-output",
+      "anchor": "(p) => p.ts))) : \"—\";\n  renderTiles(counts, stalest);\n  $(\"online-c\").textCo",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: computes counts and stalest timestamps and refreshes the header counters; the tile view carries only counts, not progress claims."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "kind": "derived-output",
+      "anchor": "plural(msgCount, \"message\")",
+      "class": "presence-only-glyph/count",
+      "rationale": "Pluralizes an aggregate message count for the header; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/app.js",
+      "kind": "derived-output",
+      "anchor": "toggleAllChip(items)",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: toggles the select-all chip from the current selection; not a rendered status."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": " = 2; ctx.strokeStyle = rgba(col, 1); ctx.stroke();\n      }\n",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and width for a graph element; color carries presence class only, no textual claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": ", r); g.addColorStop(0, rgba(col, 1)); g.addColorStop(0.55, ",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: gradient stops from the presence color; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "a.status = p.status",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: stores the peer's raw status on the node record for later color/glyph lookups; not rendered as text."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "agents.set(id, a)",
+      "class": "non-render/control",
+      "rationale": "Dashboard state update: indexes the node record in the agents map; not a rendered status."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.shadowBlur = focus ? 20 : off ? 0 : idle ? 6 : 13",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: glow radius chosen from the node's presence state; visual emphasis only, no textual claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.shadowColor = col",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: glow color from the presence palette; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(MEM_LIVE, off ? 0.3 : 0.6)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(col, 0.85)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(col, 1)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "ctx.strokeStyle = rgba(off ? MEM_OFF : MEM_LIVE, (off ? 0.3 : 0.42) * (lit ? 1 : 0.28))",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: stroke color and alpha for a graph element; presence emphasis only."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "mem.map(memberRow)",
+      "class": "non-render/control",
+      "rationale": "Dashboard data shaping: maps member records to row models for the sidebar; rendering classifies at the row sink, not here."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "rgba(col, 0.55)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
+    },
+    {
+      "path": "implementations/web/src/web/graph.js",
+      "kind": "derived-output",
+      "anchor": "rgba(col, 0.85)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
     }
   ]
 }

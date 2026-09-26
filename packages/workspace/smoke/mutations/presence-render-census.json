@@ -78,8 +78,8 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 390,",
-      "replace": "    \"total\": 389,",
+      "find": "    \"total\": 509,",
+      "replace": "    \"total\": 508,",
       "expectRed": "presence render census count drifted"
     },
     {
@@ -88,6 +88,22 @@
       "find": "      \"anchor\": \"one.\\n      if (prev === \\\"working\\\" && status === \\\"idle\\\") t\"",
       "replace": "      \"anchor\": \"\\\"working\\\"\"",
       "expectRed": "manifest anchor must exist exactly once in extensions/connector-core/src/agent.ts but occurs 3 time(s)"
+    },
+    {
+      "name": "M11 web call arm restored to the callee-name allow-list hides the setAttribute probe",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "      else if (node.arguments.some((arg) => directlyTainted(arg)) && !(name && exemptCalls.has(name))) add(\"derived-output\", node);",
+      "replace": "      else if (node.arguments.some((arg) => directlyTainted(arg)) && name && exemptCalls.has(name)) add(\"derived-output\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=web-set-attribute pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed derived-output in shipped presence renderer: implementations/web/src/presence-render-probe-web-probe-set-attribute.ts"
+    },
+    {
+      "name": "M12 assignment arm restored to the three-name property list hides the dataset probe",
+      "file": "packages/workspace/smoke/presence-render-census.smoke.ts",
+      "find": "    if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.EqualsToken || node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) && (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) && usesTaint(node.right) && !containsIndexedStatusMap(node.right)) add(\"derived-output\", node);",
+      "replace": "    if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.EqualsToken || node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) && (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) && ts.isPropertyAccessExpression(node.left) && [\"textContent\", \"innerHTML\", \"innerText\"].includes(node.left.name.text) && usesTaint(node.right) && !containsIndexedStatusMap(node.right)) add(\"derived-output\", node);",
+      "command": "COTAL_PRESENCE_RENDER_PROBE_CASE=web-dataset-assignment pnpm smoke:presence-render-census",
+      "expectRed": "AST probe scanner missed derived-output in shipped presence renderer: implementations/web/src/presence-render-probe-web-probe-dataset-assignment.ts"
     }
   ],
   "suite": [
