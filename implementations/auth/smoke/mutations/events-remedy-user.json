@@ -43,8 +43,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
       "replace": "            `spawn: \\`cotal mint <reader> --profile agent --allow-subscribe ${foreign[0]!} --provision\\`, where there is no actor ledger for \\`actor grant\\` to write to.`,",
-      "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
-      "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+      "expectRed": "the user-mesh refusal prints the user-mesh route (actor grant), never the static mint route",
+      "cell": "the user-mesh refusal prints the user-mesh route (actor grant), never the static mint route",
       "note": "The opposite polarity of E9, and the only one this suite can see: a user mesh handed the static `mint` route, whose authority lives in the actor ledger the route does not write to. The helper takes no mode any more, so the mutant inlines the wrong route rather than passing a wrong flag. MARK COUNT: named cell plus cascade. Both mutants take the suite from 84 marks to 58. The named cell reds first and that is the evidence; the cells after it are a different run, because an empty parsed grant command feeds the real ledger writer on its defaults. The twenty-six are not twenty-six independent findings and are not read as any.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }

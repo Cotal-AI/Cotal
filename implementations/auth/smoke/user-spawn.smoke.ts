@@ -1290,13 +1290,18 @@ try {
   check("the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
     grantCmd.length > 0 && flag("allow-subscribe") === VICTIM && flag("allow-publish") === "" && flag("scope") === "" && ownerFlag === OWNER,
     { grantCmd, sub: flag("allow-subscribe"), pub: flag("allow-publish"), scope: flag("scope"), owner: ownerFlag });
+  // The static suite grades the same selector at its resume door (the remedy there is `cotal mint`,
+  // not `cotal actor grant`, chosen off the MANAGER's mesh); this is the user-mesh mirror, so R2 in
+  // the remedy fixture has its own cell.
+  const remedyText = overText.error ?? "";
+  check("the user-mesh refusal prints the user-mesh route (actor grant), never the static mint route",
+    /cotal actor grant /.test(remedyText) && !/cotal mint /.test(remedyText), remedyText.slice(0, 600));
   // A THIRD claim, and the one no cell read until now: the RATIONALE. The two cells above grade the
   // printed command and the row it writes; both stay green while the sentence explaining WHY every
   // field must be spelled out understates how wide the default is. It said `spawn` scope when
   // `runActor` omitting `--scope` writes `spawn,role:default` - dropping a DELEGATION capability
   // from a sentence whose only job is calibration. An operator auditing a past omitted-scope grant
   // by that sentence concludes it "only got spawn" and closes a question that is open.
-  const remedyText = overText.error ?? "";
   check("the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
     /spawn,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
   const READER = "evtreader";
@@ -1564,7 +1569,7 @@ try {
   // that refuses every spawn DELETES them rather than failing them, and the run still prints a
   // verdict. The focus mode (COTAL_USER_ENDPOINT_CLI_ONLY=1) skips the block between the switch and
   // its closing brace, so it runs a different total than the full mode.
-  const EXPECTED = endpointCliFocus ? 40 : 119;
+  const EXPECTED = endpointCliFocus ? 40 : 120;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
