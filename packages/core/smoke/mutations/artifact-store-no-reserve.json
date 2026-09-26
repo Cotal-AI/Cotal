@@ -21,8 +21,8 @@
       "file": "packages/core/src/streams.ts",
       "find": "  await new Objm(jetstream(nc)).create(bucket, { max_bytes: -1 });\n",
       "replace": "  await new Objm(jetstream(nc)).create(bucket, { max_bytes: LEGACY_ARTIFACT_STORE_MAX_BYTES });\n",
-      "expectRed": "6 spaces provision under a 5 GiB file store that the old 4 GiB reservation could not fit",
-      "cell": "6 spaces provision under a 5 GiB file store that the old 4 GiB reservation could not fit",
+      "expectRed": "6 spaces provision under a file store SMALLER than the old 4 GiB per-space reservation",
+      "cell": "6 spaces provision under a file store SMALLER than the old 4 GiB per-space reservation",
       "note": "This is the defect exactly as it shipped: the broker refuses the second space with JetStream error 10047 while every store is empty."
     },
     {

@@ -55,12 +55,20 @@ const LEGACY_CAP = 4 * 1024 * 1024 * 1024;
 const DELIBERATE_CAP = 3 * 1024 * 1024 * 1024;
 /** The broker's file-store cap for the provisioning cells.
  *
- *  CHOSEN SO THE FIRST CELL IS A REGRESSION TEST AND NOT A TAUTOLOGY. Each space also creates a
- *  64 MiB membership bucket, which genuinely reserves. Under the old code a space cost 4 GiB + 64 MiB,
- *  so 5 GiB fitted exactly ONE space; with the artifact store at -1 a space costs 64 MiB, so six fit
- *  with room to spare. Six spaces under 5 GiB is therefore impossible on the old code and easy on the
- *  new one. The cap is never filled with real bytes, so the suite needs no disk for it. */
-const FILE_STORE_CAP = 5 * 1024 * 1024 * 1024;
+ *  CHOSEN BELOW 4 GiB, AND THAT IS WHAT MAKES THE FIRST CELL A REGRESSION TEST RATHER THAN A
+ *  TAUTOLOGY. A `max_bytes` the server cannot promise is refused outright, so under the old code the
+ *  FIRST space could not be provisioned at all here, never mind six. A roomier cap would not prove it:
+ *  at 5 GiB the old 4 GiB create would be admitted and then reconciled away, and the cell would pass
+ *  on a mutant that reinstated it. Measured — restoring the create cap under a 5 GiB cap left this
+ *  cell green, and the mutation proof reported it as WRONG-RED.
+ *
+ *  Each space's 64 MiB membership bucket genuinely reserves, so six spaces need 384 MiB of the 1 GiB.
+ *  The cap is never filled with real bytes, so the suite needs no disk for it. */
+const FILE_STORE_CAP = 1024 * 1024 * 1024;
+/** The reconcile phase's cap, which must be ROOMY where the provisioning phase's must be tight: it
+ *  plants a store at the legacy 4 GiB on purpose, and the broker refuses a `max_bytes` it cannot
+ *  promise. 6 GiB holds that reservation with room for the membership bucket beside it. */
+const RECONCILE_STORE_CAP = 6 * 1024 * 1024 * 1024;
 const SPACES = 6;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -133,9 +141,9 @@ const bytesStream = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
 
 console.log("provisioning under a real max_file_store (open mode):");
 await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
-  // CELL 1, the regression. Under the old code each space reserved 4 GiB + 64 MiB, so one space fitted
-  // under this cap and the second was refused with 10047. Six is only reachable with the artifact
-  // store reserving nothing.
+  // CELL 1, the regression. Under the old code each space's store was created at 4 GiB, which is more
+  // than this whole file store, so the broker refused the very first space with 10047. Six spaces are
+  // reachable only because the store now reserves nothing.
   const spaces = Array.from({ length: SPACES }, (_, i) => `noresv${i}`);
   let provisioned = 0;
   let refusal = "";
@@ -144,7 +152,7 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
     if (refusal !== "") break;
     provisioned++;
   }
-  check(`${SPACES} spaces provision under a ${(FILE_STORE_CAP / 2 ** 30).toFixed(0)} GiB file store that the old 4 GiB reservation could not fit`,
+  check(`${SPACES} spaces provision under a file store SMALLER than the old 4 GiB per-space reservation`,
     provisioned === SPACES, `${provisioned} provisioned; refusal: ${refusal}`);
 
   // CELL 2. The broker's own reserved figure, not a config inspection. Only the 64 MiB membership
@@ -180,7 +188,7 @@ await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
 });
 
 console.log("\nthe legacy reconcile and its boundary (open mode):");
-await onBroker("open", FILE_STORE_CAP, async ({ servers }) => {
+await onBroker("open", RECONCILE_STORE_CAP, async ({ servers }) => {
   // CELL 3. A store created by the OLD code, reconciled to -1 — and the RESERVATION RELEASED, which is
   // the fact that matters and the one a config read cannot see. Measured at the broker before and after.
   const legacy = "legacyresv";
