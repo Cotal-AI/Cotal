@@ -49,7 +49,8 @@
       "replace": "const NUMBER_SEPARATOR = \"-\";",
       "expectRed": "the SECOND spawn of a LIVE name is accepted",
       "cell": "the SECOND spawn of a LIVE name is accepted (the `-` separator made this impossible)",
-      "note": "The shipped defect, posed against the live authed path rather than against the two functions. Expect the accept, the mint and the join to redden together and the allocator control to stay green."
+      "note": "The shipped defect, posed against the live authed path rather than against the two functions. Expect the accept, the mint and the join to redden together and the allocator control to stay green.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

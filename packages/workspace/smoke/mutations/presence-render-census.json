@@ -72,7 +72,8 @@
       "find": "    const acknowledgedStatus = status === \"working\" ? \"working · progress unknown\" : status;",
       "replace": "    const acknowledgedStatus = status;",
       "command": "pnpm build && pnpm smoke:cli-seat-locality",
-      "expectRed": "join /working acknowledgement names unknown progress"
+      "expectRed": "join /working acknowledgement names unknown progress",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "M8 expected AST candidate total drifts by one",

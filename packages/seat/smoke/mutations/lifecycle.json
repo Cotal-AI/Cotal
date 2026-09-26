@@ -97,7 +97,8 @@
       "find": "  return join(root, assertSeatId(id), \"record.json\");",
       "replace": "  return join(root, id, \"record.json\");",
       "expectRed": "a forged custody id that walks out of the root is refused, not resolved",
-      "cell": "a forged custody id that walks out of the root is refused, not resolved"
+      "cell": "a forged custody id that walks out of the root is refused, not resolved",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
     },
     {
       "name": "signal a record that belongs to another boot",
