@@ -115,7 +115,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // Signing in proves WHO you are; each mesh separately lets you in. Hand the human the exact
     // next step — their sub is the one thing the operator needs from them.
     console.log(
-      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (that's the full grant - all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)`,
+      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (that's the full grant - all channels, scope spawn,role:default; narrow with --allow-subscribe/--allow-publish/--scope)`,
     );
   });
 }
@@ -242,7 +242,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
     if (sub === "list") {
       const rows = loadActorLedger(dir);
       if (!rows.length) {
-        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject>   (that's the full grant - all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)");
+        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject>   (that's the full grant - all channels, scope spawn,role:default; narrow with --allow-subscribe/--allow-publish/--scope)");
         return;
       }
       for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))

@@ -146,7 +146,8 @@ a scoped credential on the spot. Every bearer also names a **root credential** r
 space's credential ledger, proved live at each connect, so revoking that one credential
 bites at the very next connect. The operator grants access with
 `cotal actor grant <actor> --sub <their id>`; a bare grant is the full envelope (all
-channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
+channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), and
+`--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
 
 **Space catalogs.** A successful authenticated `GET <idp>/token` may advertise one catalog with:
