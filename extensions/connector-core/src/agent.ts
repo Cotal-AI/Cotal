@@ -373,6 +373,14 @@ export class MeshAgent extends EventEmitter {
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
   private _stopping = false;
+  /** Presence writes go out IN CALL ORDER (#636, #2055). setStatus is two awaited puts and every
+   *  connector fires it without awaiting, so two overlapping calls interleave their puts and the
+   *  record that lands last is whichever call's second put finished last, not the call made last;
+   *  at a driven turn's end the measured order was working, idle, working, and the seat then read
+   *  working forever. Every write below runs its whole body through this chain, so the later
+   *  call's puts start only after the earlier call's have settled. A rejected write must not
+   *  poison the chain: the tail is swallowed and the next write still runs. */
+  private presenceChain: Promise<void> = Promise.resolve();
 
   constructor(config: AgentConfig) {
     super();
@@ -675,6 +683,12 @@ export class MeshAgent extends EventEmitter {
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
+    // #636: departure is ordered behind presence writes already in flight. Waiting on the chain
+    // bounded keeps a wedged write from hanging shutdown; a write admitted after this wait still
+    // runs and lands after offline (departure is ordered, not terminal — a stop() fence that
+    // rejected later writes would need a rule for what a straggler's write means, and none is
+    // settled yet).
+    await Promise.race([this.presenceChain, sleep(3_000)]);
     await this.ep.stop();
   }
 
@@ -1282,9 +1296,11 @@ export class MeshAgent extends EventEmitter {
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
     if (!channelInAllow(this.config.allowSubscribe, channel))
       throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
-    if (mode === "normal") this.channelModes.delete(channel);
-    else this.channelModes.set(channel, mode);
-    await this.ep.setChannelModes(this.channelModeEntries());
+    await this.inOrder(() => {
+      if (mode === "normal") this.channelModes.delete(channel);
+      else this.channelModes.set(channel, mode);
+      return this.ep.setChannelModes(this.channelModeEntries());
+    });
   }
 
   /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
@@ -1295,6 +1311,7 @@ export class MeshAgent extends EventEmitter {
     *  it landed just before or after the captured frontier. Only ambient arriving after the local
     *  switch is ack-dropped. */
   async setAttention(mode: AttentionMode): Promise<void> {
+    await this.inOrder(async () => {
     if (mode === "focus") {
       await this.requireConnected();
       this.focusExcludedIds.clear();
@@ -1321,6 +1338,7 @@ export class MeshAgent extends EventEmitter {
     // Mirror to presence (advisory observability — peers can see "they're in focus"). Best-effort:
     // a no-op until the KV is bound, and never read back into delivery.
     await this.ep.setAttention(mode);
+    });
   }
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
@@ -1887,7 +1905,17 @@ export class MeshAgent extends EventEmitter {
     return this._status;
   }
 
+  /** Run one presence write through the chain (#636): the write starts only after every earlier
+   *  admitted write has settled, and a rejection is swallowed at the TAIL only, so it propagates
+   *  to this write's own caller while the next admitted write still runs. */
+  private inOrder(write: () => Promise<void>): Promise<void> {
+    const next = this.presenceChain.then(write, write);
+    this.presenceChain = next.catch(() => {});
+    return next;
+  }
+
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    await this.inOrder(async () => {
     await this.requireConnected();
     const prev = this._status;
     try {
@@ -1904,6 +1932,7 @@ export class MeshAgent extends EventEmitter {
       // not finished, and its deadline is what bounds a stuck one.
       if (prev === "working" && status === "idle") this.onTurnBoundary();
     }
+    });
   }
 
   /**
@@ -1917,12 +1946,14 @@ export class MeshAgent extends EventEmitter {
    * than an ending.
    */
   async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    await this.inOrder(async () => {
     await this.requireConnected();
     try {
       await this.publishStatus(status, activity);
     } finally {
       this._status = status;
     }
+    });
   }
 
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
@@ -1932,7 +1963,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Relay a harness-reported condition into presence, or clear it. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
-    await this.ep.setCondition(condition);
+    await this.inOrder(() => this.ep.setCondition(condition));
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the
@@ -1955,7 +1986,7 @@ export class MeshAgent extends EventEmitter {
    *  `requireConnected` — safe pre-connect; it rides the first publish). */
   async setModel(model: string, variant?: string): Promise<void> {
     if (this.config.model) return; // operator pin is authoritative — never override it with the runtime value
-    await this.ep.setCardModel(model, this.config.variant ?? variant);
+    await this.inOrder(() => this.ep.setCardModel(model, this.config.variant ?? variant));
   }
 
   // ---- channel registry ----------------------------------------------------
