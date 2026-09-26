@@ -364,7 +364,7 @@ try {
   const connector: Connector = { kind: "connector", name: "ps-census-stub", requires: ["node"],
     buildLaunch: (o): LaunchSpec => ({ command: "node", args: [stub], env: envFor(o) }) };
   registry.register(connector);
-  await m2.stop();
+  await m2.stop({ withAgents: true });
   const root3 = mkRoot("ws3");
   recordMesh({ space, server: SERVERS, root: root3, mode: "auth", ts: new Date().toISOString() });
   for (const [root, name] of [[root1, "census-a"], [root3, "census-b"]] as const)

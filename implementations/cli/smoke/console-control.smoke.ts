@@ -53,7 +53,7 @@ async function until<T>(probe: () => T | undefined, ms: number): Promise<T | und
 
 interface ManagerLike {
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(options?: { withAgents?: boolean }): Promise<void>;
   startAgent(o: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
   preparePreservation(attemptId: string): Promise<unknown>;
   abortPreservation(attemptId: string): void;
@@ -238,7 +238,7 @@ try {
   // The spawn action and purge ride the class queue, like `cotal spawn --detach` and `cotal purge`
   // without `--on`: on a multi-manager space a class-queue call can reach a member the caller did
   // not bind to and is refused (SPEC 13.2). They are proven here on the one manager left.
-  await m2.stop();
+  await m2.stop({ withAgents: true });
   await wait(1500);
 
   console.log("4. :spawn submits the spawn action under the requested name");
@@ -283,8 +283,8 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
   try { await session?.close(); } catch { /* down */ }
-  try { await m1.stop(); } catch { /* down */ }
-  try { await m2.stop(); } catch { /* down */ }
+  try { await m1.stop({ withAgents: true }); } catch { /* down */ }
+  try { await m2.stop({ withAgents: true }); } catch { /* down */ }
   try { await poster?.stop(); } catch { /* down */ }
   try { await watcher?.stop(); } catch { /* down */ }
   srv.kill("SIGTERM");

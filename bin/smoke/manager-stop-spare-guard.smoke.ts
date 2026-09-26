@@ -17,8 +17,10 @@
  * gate is kept; silence is not. Every skipped live-PTY file that still carries a candidate
  * stop is named in the suite output AND must appear on the frozen #1343 inventory below.
  * A new skipped candidate-stop path reds. A stale inventory path reds so the list can only
- * shrink. Truncating the examined set below the measured floor reds. The receiver-name list
- * below is a separate, disclosed boundary (#1310).
+ * shrink. Truncating the examined set below the measured floor reds. The receiver set is
+ * derived per file from every identifier bound to a `new Manager(` / `new <Name>Manager(`
+ * expression, unioned with the conventional name list (#1310); a destructured or
+ * helper-returned handle stays outside it.
  *
  * Run: pnpm smoke:manager-stop-spare-guard
  */
@@ -55,7 +57,6 @@ const FROZEN_DROPPED = [
   "bin/smoke/spawn-detach-live.smoke.ts",
   "implementations/cli/smoke/scatter-pinned-probe.smoke.ts",
   "implementations/manager/smoke/boot-self-heal-gate.smoke.ts",
-  "implementations/manager/smoke/cli-on-instance-live.smoke.ts",
   "implementations/manager/smoke/manager-deregister.smoke.ts",
   "implementations/manager/smoke/manager-restart-live.smoke.ts",
 ] as const;
@@ -77,11 +78,37 @@ function smokeSources(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** A Manager.stop / mgr.stop / m1?.stop call whose argument list does not pass withAgents: true.
- *  Identifier class is the manager-shaped names smokes actually use. delivery/broker/ep stops
- *  are not this hazard. Conventional names only: `supervisor`, `boss`, `managerB`, `mBoot`, and
- *  a destructured or helper-returned handle are outside this regex. */
-const SPARE_STOP = /(?:await\s+)?(?:manager|mgr|mgr[0-9A-Z]|m[0-9]|adopting|openMgr|hung|first|next|live|corpse|booting|replacement)\??\.stop\(\s*(?:\{\s*(?!.*withAgents\s*:\s*true)[^}]*\}\s*)?\)/g;
+/** Identifiers the smokes' conventions already use for a Manager handle. Kept so the derived
+ *  set can only grow the receivers seen today; delivery/broker/ep stops are not this hazard. */
+const CONVENTIONAL_RECEIVERS = "manager|mgr|mgr[0-9A-Z]|m[0-9]|adopting|openMgr|hung|first|next|live|corpse|booting|replacement";
+
+/** Every identifier bound to a `new Manager(` or `new <Name>Manager(` expression in the text:
+ *  `const x =`, `let x =`, a bare `x =`, or a property/class-field assignment of that shape
+ *  (`this.x = new Manager(`). #1310: the receiver set is derived from these bindings, not
+ *  allowlisted. A destructured or helper-returned handle is the disclosed residual. */
+function managerBindings(text: string): Set<string> {
+  const bound = new Set<string>();
+  for (const m of text.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*new\s+(?:[A-Za-z_$][\w$]*)?Manager\s*\(/g)) {
+    bound.add(m[1]);
+  }
+  return bound;
+}
+
+/** A `<receiver>?.stop(` call whose argument list does not pass `withAgents: true`. Receivers:
+ *  every identifier this text binds to a Manager constructor, plus the conventional names.
+ *  Derived receivers match on identifier boundaries so `subervisor` never matches inside
+ *  `mysupervisor`. */
+function spareStops(text: string): string[] {
+  const derived = [...managerBindings(text)]
+    .map((name) => `${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
+    .map((name) => `(?<![\w$])${name}(?![\w$])`);
+  const receivers = derived.length ? `${derived.join("|")}|${CONVENTIONAL_RECEIVERS}` : CONVENTIONAL_RECEIVERS;
+  const spareStop = new RegExp(
+    `(?:await\\s+)?(?:${receivers})\\??\\.stop\\(\\s*(?:\\{\\s*(?!.*withAgents\\s*:\\s*true)[^}]*\\}\\s*)?\\)`,
+    "g",
+  );
+  return [...text.matchAll(spareStop)].map((m) => m[0].replace(/\s+/g, " ").trim());
+}
 
 const SPAWN_SHAPES = [
   /\.startAgent\s*\(/,
@@ -112,10 +139,6 @@ function livePtySkippedBySpawnShape(text: string): boolean {
   return hasNewManager(text) && hasLivePtyRuntime(text) && !isFakeKind(text) && !hasEnumeratedSpawn(text);
 }
 
-function spareStops(text: string): string[] {
-  return [...text.matchAll(SPARE_STOP)].map((m) => m[0].replace(/\s+/g, " ").trim());
-}
-
 const files = smokeSources(ROOT);
 check("the walk finds a non-trivial population of smoke sources", files.length >= 50, `found ${files.length}`);
 
@@ -123,6 +146,13 @@ const planted = join(ROOT, "bin", "smoke", "fixtures", "manager-stop-spare.plant
 const plantedText = readFileSync(planted, "utf8");
 check("the planted control looks like a live-PTY Manager smoke", livePty(plantedText), plantedText.slice(0, 120));
 check("the planted control carries a spare stop and the regex sees it", spareStops(plantedText).length > 0, spareStops(plantedText));
+
+const supervisorText = plantedText.replace(/\bmanager\b/g, "supervisor");
+check("a supervisor-named receiver spare-stop is seen", spareStops(supervisorText).length > 0, spareStops(supervisorText));
+const bossText = plantedText.replace(/\bmanager\b/g, "boss").replace("boss?.stop().catch", "boss?.stop({}).catch");
+check("a boss-named receiver with an empty-object stop is seen", spareStops(bossText).length > 0, spareStops(bossText));
+const brokerText = plantedText.replace("await manager?.stop()", "await broker?.stop()");
+check("a receiver never bound to a Manager yields no spare stop", spareStops(brokerText).length === 0, spareStops(brokerText));
 
 const hits: string[] = [];
 const examined: string[] = [];
@@ -214,8 +244,8 @@ check(
 );
 const custodialSrc = readFileSync(join(ROOT, "implementations/manager/src/runtime/custodial-pty.ts"), "utf8");
 check(
-  "CustodialPtyRuntime exposes release() that closes the seat socket",
-  /release:\s*\(\)\s*=>\s*seat\.close\(\)/.test(custodialSrc),
+  "CustodialPtyRuntime exposes release() that removes its custody record and then closes the seat socket",
+  /release:\s*\(\)\s*=>\s*\{\s*this\.records\.delete\(rec\.id\);\s*seat\.close\(\);\s*\}/.test(custodialSrc),
 );
 const legacySrc = readFileSync(join(ROOT, "implementations/manager/src/runtime/pty.ts"), "utf8");
 check(
