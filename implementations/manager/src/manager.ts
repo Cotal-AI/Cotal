@@ -2555,55 +2555,61 @@ export class Manager {
     // moved, a conflict this instance manufactured itself.
     if (this.leaseRenewInFlight) return;
     this.leaseRenewInFlight = true;
-    const task = (async (): Promise<void> => {
-      try {
-        if (!this.leaseInfo || this.leaseRevision === undefined) return;
-        try {
-          this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
-          this.noteLease("held", `renews its liveness lease again (revision ${this.leaseRevision})`);
-          return;
-        } catch (renewError) {
-          const why = (renewError as Error).message;
-          const verdict = await this.reconcileLease();
-          switch (verdict.kind) {
-            case "held":
-              // The re-read is the broker's truth about the revision: adopt it, whether our write landed
-              // with its acknowledgement lost (revision moved) or never landed (revision unchanged).
-              this.leaseRevision = verdict.revision;
-              this.noteLease("held-unrenewed", `could not renew its liveness lease (${why}) but the key is still its own at revision ${verdict.revision}; serving, retrying`);
-              return;
-            case "gone": {
-              // A stop that began while this renew was already in flight fences it here too: the
-              // await above can cross the point where `stop()` set the flag, and a re-acquire past
-              // that point would put a stopping process's key straight back.
-              if (this.leaseStopping) return;
-              // The key being gone is a fact before the re-acquire is attempted, so a successful
-              // re-acquire is a change of state (gone to held) and prints, every time it happens.
-              const before = this.leaseState;
-              this.leaseState = "gone";
-              try {
-                this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
-                this.noteLease("held", `found its liveness lease key gone (renew: ${why}) and re-acquired it at revision ${this.leaseRevision}`);
-              } catch (e) {
-                this.leaseState = before;
-                this.noteLease("gone", `found its liveness lease key gone (renew: ${why}) and could not re-acquire it yet (${(e as Error).message}); serving, retrying`);
-              }
-              return;
-            }
-            case "taken":
-              this.noteLease("taken", `finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); serving, retrying. Two processes claim manager instance ${this.managerInstanceId}: stop one of them`);
-              return;
-            case "unknown":
-              this.noteLease("unknown", `could not renew its liveness lease (${why}) or re-read it (${verdict.why}); serving, retrying until the broker answers`);
-              return;
-          }
-        }
-      } finally {
-        this.leaseRenewInFlight = false;
-      }
-    })();
+    const task = this.renewLeaseAttempt();
     this.leaseRenewTask = task;
     return task;
+  }
+
+  /** The renew attempt itself, split out from {@link renewLease} only so `stop()` can hold the
+   *  promise a renew already in flight is running ({@link leaseRenewTask}) and await it before
+   *  releasing the key: releasing against a cached revision a live renew has since moved is a CAS
+   *  the broker correctly refuses, silently, forever. */
+  private async renewLeaseAttempt(): Promise<void> {
+    try {
+      if (!this.leaseInfo || this.leaseRevision === undefined) return;
+      try {
+        this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
+        this.noteLease("held", `renews its liveness lease again (revision ${this.leaseRevision})`);
+        return;
+      } catch (renewError) {
+        const why = (renewError as Error).message;
+        const verdict = await this.reconcileLease();
+        switch (verdict.kind) {
+          case "held":
+            // The re-read is the broker's truth about the revision: adopt it, whether our write landed
+            // with its acknowledgement lost (revision moved) or never landed (revision unchanged).
+            this.leaseRevision = verdict.revision;
+            this.noteLease("held-unrenewed", `could not renew its liveness lease (${why}) but the key is still its own at revision ${verdict.revision}; serving, retrying`);
+            return;
+          case "gone": {
+            // A stop that began while this renew was already in flight fences it here too: the
+            // await above can cross the point where `stop()` set the flag, and a re-acquire past
+            // that point would put a stopping process's key straight back.
+            if (this.leaseStopping) return;
+            // The key being gone is a fact before the re-acquire is attempted, so a successful
+            // re-acquire is a change of state (gone to held) and prints, every time it happens.
+            const before = this.leaseState;
+            this.leaseState = "gone";
+            try {
+              this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
+              this.noteLease("held", `found its liveness lease key gone (renew: ${why}) and re-acquired it at revision ${this.leaseRevision}`);
+            } catch (e) {
+              this.leaseState = before;
+              this.noteLease("gone", `found its liveness lease key gone (renew: ${why}) and could not re-acquire it yet (${(e as Error).message}); serving, retrying`);
+            }
+            return;
+          }
+          case "taken":
+            this.noteLease("taken", `finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); serving, retrying. Two processes claim manager instance ${this.managerInstanceId}: stop one of them`);
+            return;
+          case "unknown":
+            this.noteLease("unknown", `could not renew its liveness lease (${why}) or re-read it (${verdict.why}); serving, retrying until the broker answers`);
+            return;
+        }
+      }
+    } finally {
+      this.leaseRenewInFlight = false;
+    }
   }
 
   /** Print `what` only when the lease state CHANGES. The renew ticks every few seconds, so a long
