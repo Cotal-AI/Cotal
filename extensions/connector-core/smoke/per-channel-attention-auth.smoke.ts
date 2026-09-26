@@ -69,7 +69,7 @@ try {
   // and the two peers' bind-only durables + scoped "agent" creds.
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: mgrCreds });
-  await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: {} } });
+  await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { "fx51-durable": { deliveryClass: "durable" } } } });
   const mgr = new CotalEndpoint({ space, servers, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
   await mgr.start();
@@ -80,9 +80,17 @@ try {
   const ottoPrincipal = `${DEV_OWNER}.${ottoId.id}`;
   const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
   const pubbyUid = mintLifecycleUid();
-  const chACL = { subscribe: channels, allowSubscribe: channels, allowPublish: channels };
+  const chACL = { subscribe: channels, allowSubscribe: [...channels, "fx51-durable"], allowPublish: channels };
   const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist", lifecycleUid: ottoUid });
   const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, lifecycleUid: pubbyUid });
+  // A reader provisioned WITHOUT any durable-read grant: it cannot join fx51-durable's backstop, so
+  // its listChannels() row must render the cannot-establish health, never "active" or a bare
+  // omission (the #445 undefined-state cell).
+  const blindId = newIdentity();
+  const blindUid = mintLifecycleUid();
+  const blindChans = ["normal-ch"];
+  const blindACL = { subscribe: blindChans, allowSubscribe: blindChans, allowPublish: blindChans };
+  const blindCreds = await provisionAgent(mgr, auth, blindId, { ...blindACL, lifecycleUid: blindUid, role: "generalist" });
 
   const cfg: AgentConfig = {
     space,
@@ -100,6 +108,73 @@ try {
     id: ottoId.id,
     lifecycleUid: ottoUid,
   };
+
+  // ---- #445: deliveryHealth must track the daemon, never its residue ----
+  // An in-process delivery endpoint serves ctl.delivery and holds the lease (the boot-retry suite's
+  // shape). Otto joins the durable channel, the row reads active while the daemon serves, then the
+  // daemon endpoint is stopped WITHOUT any lease release — stop() never releases the delivery lease
+  // (#368), so the KV row stays behind ready:true exactly as a SIGKILLed daemon's does, and the
+  // ctl.delivery responder is gone. The row must read degraded on the very next listChannels(),
+  // never active, while hasDurableMembership still says true (session-local residue).
+  const daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
+  daemon.on("error", () => {});
+  await daemon.start();
+  await daemon.startPlane3((owner, lifecycleUid) => daemon.aclForOwner(owner, lifecycleUid));
+  const dcfg: AgentConfig = {
+    space, name: "Otto", role: "generalist", servers, creds: ottoCreds,
+    subscribe: [...channels, "fx51-durable"], allowSubscribe: [...channels, "fx51-durable"], allowPublish: channels,
+    quiet: ["quiet-ch"], muted: ["muted-ch"], kind: "agent", tls: false, id: ottoId.id, lifecycleUid: ottoUid,
+  };
+  const dagent = new MeshAgent(dcfg);
+  dagent.on("error", () => {});
+  dagent.start();
+  for (let i = 0; i < 50; i++) { if (dagent.connected) break; await sleep(200); }
+  let durableUp = false;
+  for (let i = 0; i < 20; i++) { if (dagent.ep.hasDurableMembership("fx51-durable")) { durableUp = true; break; } await sleep(500); }
+  check("durable membership established (daemon serving)", durableUp);
+  // The daemon's readiness flip (lease ready:true) can lag the join responder; the active control
+  // must wait for it, else it grades a still-binding daemon. In-process daemons acquire + flip the
+  // lease themselves (the CLI daemon does this in runStartedDelivery).
+  await daemon.acquireDeliveryLease(0).then((rev) => daemon.markDeliveryLeaseReady(0, rev)).catch(() => {});
+  let leaseReady = false;
+  for (let i = 0; i < 30; i++) { if ((await dagent.ep.readDeliveryLease(0))?.ready === true) { leaseReady = true; break; } await sleep(500); }
+  check("daemon lease reads ready:true (serving)", leaseReady);
+  const liveRows = await dagent.listChannels();
+  check("deliveryHealth reads active while the daemon serves", liveRows.find((c) => c.channel === "fx51-durable")?.deliveryHealth === "active", liveRows.find((c) => c.channel === "fx51-durable"));
+  await daemon.stop(); // no graceful lease release — the ready:true residue stays
+  const leaseAfterStop = await dagent.ep.readDeliveryLease(0);
+  check("daemon stopped but its lease row still reads ready:true (residue)", leaseAfterStop?.ready === true, leaseAfterStop);
+  const deadRows = await dagent.listChannels();
+  const deadRow = deadRows.find((c) => c.channel === "fx51-durable");
+  check("daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)", deadRow?.deliveryHealth === "degraded", deadRow);
+  check("…while hasDurableMembership still true (session-local residue)", dagent.ep.hasDurableMembership("fx51-durable") === true);
+  await dagent.stop();
+
+  // A reader without the durable-plane grant cannot establish health at all: the lease read throws,
+  // so the row renders "unknown" — never active, degraded, or silently omitted.
+  const blind = new CotalEndpoint({ space, servers, creds: blindCreds, card: { name: "Blind", kind: "agent", id: blindId.id }, channels: [], lifecycleUid: blindUid, watchPresence: false, registerPresence: false });
+  blind.on("error", () => {});
+  await blind.start();
+  let leaseThrew = false;
+  try { await blind.readDeliveryLease(0); } catch { leaseThrew = true; }
+  await blind.stop();
+  const blindCfg: AgentConfig = {
+    space, name: "Blind", role: "generalist", servers, creds: blindCreds,
+    subscribe: ["fx51-durable"], allowSubscribe: ["fx51-durable"], allowPublish: [], kind: "agent", tls: false, id: blindId.id, lifecycleUid: blindUid,
+  };
+  const blindAgent = new MeshAgent(blindCfg);
+  blindAgent.on("error", () => {});
+  let blindRow: { deliveryHealth?: string } | undefined;
+  if (leaseThrew) {
+    blindAgent.start();
+    for (let i = 0; i < 50; i++) { if (blindAgent.connected) break; await sleep(200); }
+    await sleep(500);
+    const rows = await blindAgent.listChannels();
+    blindRow = rows.find((c) => c.channel === "fx51-durable");
+    await blindAgent.stop();
+  }
+  check("a reader without the delivery grant renders health unknown, never active/degraded/omitted (#445)",
+    leaseThrew && blindRow?.deliveryHealth === "unknown", { leaseThrew, blindRow });
 
   // ---- boot seed from config (before connecting) ----
   const agent = new MeshAgent(cfg);
