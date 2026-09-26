@@ -160,6 +160,9 @@ restore, so it records what it broke before it breaks it: the next run puts the 
 `node scripts/mutation-proof.mjs --recover` does only that. Red alone is not proof: an unrelated
 early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
 real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
+The fixture census (`pnpm smoke:mutation-fixtures`) refuses a mutation whose command builds the
+mutated package with no `afterRestore` that rebuilds it, because that run leaves a `dist/` compiled
+from the mutant.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.
