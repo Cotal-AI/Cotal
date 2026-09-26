@@ -58,6 +58,9 @@ const PROBES = [
   ["negative-has", "negative-has.ts", "none", 'export const probe = (p: any, set: Set<string>) => set.has(p.status);\n'],
   ["negative-includes", "negative-includes.ts", "none", 'export const probe = (p: any, words: string[]) => words.includes(p.status);\n'],
   ["negative-starts-with", "negative-starts-with.ts", "none", 'export const probe = (p: any, label: string) => label.startsWith(p.status);\n'],
+  ["negative-ends-with", "negative-ends-with.ts", "none", 'export const probe = (p: any, label: string) => label.endsWith(p.status);\n'],
+  ["negative-at", "negative-at.ts", "none", 'export const probe = (p: any, words: string[]) => words.at(p.status);\n'],
+  ["negative-index-of", "negative-index-of.ts", "none", 'export const probe = (p: any, words: string[]) => words.indexOf(p.status);\n'],
 ] as const;
 
 /** Honest boundary: this is broad finite-syntax enumeration, not arbitrary semantic dataflow. A
