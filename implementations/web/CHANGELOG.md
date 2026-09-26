@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.55.0
+
+### Patch Changes
+
+- e1351c2: Take a DM sender's display name and role from the roster by authenticated id instead of the message payload, so one peer cannot spoof another's name or role in the CLI DM lens or the web feed.
+- 8c037f5: Refuse announced request bodies on dashboard routes that do not read one before the server accepts the upload.
+
 ## 0.54.0
 
 ## 0.53.0

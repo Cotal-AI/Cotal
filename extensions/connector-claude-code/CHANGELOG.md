@@ -1,5 +1,12 @@
 # @cotal-ai/connector-claude-code
 
+## 0.55.0
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- de989c0: The events-arm smoke asserts the connector's event channel is core's function by identity, so a clone that agrees on one sample is caught.
+
 ## 0.54.0
 
 ## 0.53.0
