@@ -36,7 +36,9 @@ it; stopping preserves it so an operator can inspect why the session never conne
 inside the host process; pi most directly: peer messages steer the live turn instead of
 waiting for it to end. Claude Code has no in-process plugin runtime; the connector composes
 three sanctioned surfaces (an MCP server for tools, lifecycle hooks for presence and delivery
-at turn boundaries, and a research-preview channel that only wakes an idle session). Codex has
+at turn boundaries, and a research-preview channel that only wakes an idle session). Presence
+writes issued by one agent land in the order they were made, and departure is published after
+every write already in flight. Codex has
 no plugin runtime either and its MCP client cannot wake an idle session, so the connector runs
 a host-mode peer over Codex's own app-server protocol (the one the Codex TUI runs on): real
 wake, mid-turn steer, and the `cotal_*` tools served from the host over a loopback MCP endpoint

@@ -226,6 +226,12 @@ try {
 
   // --- Cell A: the initial automatic batch stays visible while its Cotal-owned run() is open ---
   child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(root, "ci.sock"));
+  // The post-join notice turn (#2001) must complete before Cell A probes, else presence can interleave (#2055).
+  await waitFor("the post-join notice turn completes before the initial-drive cell (#2001, #2055)", () =>
+    entries().find(
+      (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("connected to the Cotal mesh"),
+    ) ? true : undefined,
+  );
   await waitFor("readiness is definitively idle with no stale activity before the initial-drive cell", () =>
     peerId && peerStatus === "idle" && peerActivity === "" ? peerId : undefined,
   );
