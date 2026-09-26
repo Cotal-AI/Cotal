@@ -1569,7 +1569,7 @@ try {
   // that refuses every spawn DELETES them rather than failing them, and the run still prints a
   // verdict. The focus mode (COTAL_USER_ENDPOINT_CLI_ONLY=1) skips the block between the switch and
   // its closing brace, so it runs a different total than the full mode.
-  const EXPECTED = endpointCliFocus ? 40 : 119;
+  const EXPECTED = endpointCliFocus ? 40 : 120;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
