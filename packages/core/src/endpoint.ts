@@ -2995,7 +2995,7 @@ export class CotalEndpoint extends EventEmitter {
           watch.consumerName = undefined;
         } else {
           const closedEpoch = (err as Error).name === "ClosedConnectionError" || /^closed connection$/i.test((err as Error).message);
-          const timeout = (err as Error).name === "TimeoutError" || /timeout/i.test((err as Error).message);
+          const timeout = isTimeoutError(err);
           const dyingEpochTimeout = timeout && (this.reconnecting || !this.nc || this.nc.isClosed());
           // Cleanup of an ordered consumer: a delete timeout means the broker did not answer in time,
           // not that the endpoint is unusable. The broker reaps an idle/ephemeral consumer anyway.
@@ -6722,12 +6722,24 @@ export async function isReachable(
  *  JWT `exp` is past). The local check is decided without a round-trip, so a slow or failed connect
  *  never downgrades a dead cred to `unreachable`; the repair is `doctor auth` either way, never a
  *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
- *  the cred is not provably dead (refused / timeout / a stale registry entry). */
+ *  the cred is not provably dead (refused / timeout / a stale registry entry). `timeout` means the
+ *  dial ran out of its own budget before anything conclusive came back — never a trust or credential
+ *  verdict, just "try again with more time" (#851). */
 export type ProbeResult =
   | { ok: true }
   | { ok: false; reason: "auth-required" }
   | { ok: false; reason: "stale-auth" }
-  | { ok: false; reason: "unreachable" };
+  | { ok: false; reason: "unreachable" }
+  | { ok: false; reason: "timeout" };
+
+/** True when `err` is a dial/consumer-op timeout rather than a real refusal — the one shared test
+ *  for "the operation ran out of its own budget", used both by {@link classifyProbeFailure} (#851:
+ *  a probe timeout must never collapse into `unreachable`, which a TLS-required target then
+ *  misreads as a trust failure) and by {@link Endpoint#disarmMembershipWatch}'s consumer-delete
+ *  cleanup, which predates it. */
+function isTimeoutError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || /timeout/i.test(err.message));
+}
 
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
  *  `spawn` needs the difference: auth-required → name the trust dir + next step; unreachable → the
@@ -6784,5 +6796,9 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
   if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
   // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
   if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
+  // A dial that ran out of its own budget is neither a refusal nor a dead broker — it is latency.
+  // `e` is undefined when the tcpDialable gate refused before any connect() attempt; that path has
+  // no timeout to inspect and must stay `unreachable` (nothing answered at all).
+  if (e !== undefined && isTimeoutError(e)) return { ok: false, reason: "timeout" };
   return { ok: false, reason: "unreachable" };
 }
