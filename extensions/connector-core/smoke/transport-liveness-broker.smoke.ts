@@ -733,14 +733,18 @@ try {
   await sleep(150);
   const offlineStartedWhileHeldStraggler = heldStraggler.length > 0;
   attentionPut.resolve();
-  const offlinePut = await takeStraggler(); // departure's put: ordered AFTER the held write
-  offlinePut.resolve();
-  await stragglerStop;
-  await stragglerWrite; // settles (refused, or rejected in-chain on an unfenced tree) with no put
+  const offlinePut = await Promise.race([takeStraggler(), sleep(10_000).then(() => undefined)]); // departure's put: ordered AFTER the held write
+  offlinePut?.resolve();
+  // On an unfenced tree nothing may resolve from here on, so every wait below is bounded and the
+  // held puts are drained and the live kv restored BEFORE anything open-ended is awaited: the
+  // suite must terminate and red cell (d) by name rather than hang the proof (see #636 lane).
+  for (const held of heldStraggler.splice(0)) held.resolve();
+  stragglerEp.kv = liveStragglerKv;
+  await Promise.race([stragglerStop, sleep(5_000)]);
+  await Promise.race([stragglerWrite, sleep(5_000)]); // settles (refused, or rejected in-chain on an unfenced tree) with no put
   await sleep(300); // nothing may land after offline: the straggler was refused, the heartbeat is stopped
   const putAfterOffline = heldStraggler.length > 0;
   for (const held of heldStraggler.splice(0)) held.resolve();
-  stragglerEp.kv = liveStragglerKv;
   check(
     "a presence write admitted after stop() began is refused and no put lands after offline",
     stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
