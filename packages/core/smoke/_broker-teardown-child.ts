@@ -44,7 +44,7 @@ if (mode === "release-only") {
   // except for this branch, so the difference between the two cells is exactly what release does.
   // An explicit exit models the real trap: a broken release leaves the broker running, which would
   // otherwise hold this process's event loop open forever (the same reason `clean` above needs its
-  // own kill to ever return) — masking the leak as a hang instead of exposing it as a live orphan.
+  // own kill to ever return), masking the leak as a hang instead of exposing it as a live orphan.
   // A real suite hits the same shape by way of its test framework's own forced exit after the run.
   release();
   process.exit(0);
