@@ -525,6 +525,7 @@
     "smoke:plane-claim:auth": "tsx implementations/auth/smoke/plane-claim.smoke.ts",
     "smoke:drain-repair:auth": "tsx implementations/auth/smoke/drain-repair.smoke.ts",
     "smoke:auth-admin:auth": "tsx implementations/auth/smoke/auth-admin.smoke.ts",
+    "smoke:managed-agent-enrollment:auth": "tsx implementations/auth/smoke/managed-agent-enrollment.smoke.ts",
     "smoke:managed-retire-door:auth": "tsx implementations/auth/smoke/managed-retire-door.smoke.ts",
     "smoke:auth-pidfile": "tsx implementations/cli/smoke/auth-pidfile.smoke.ts",
     "smoke:retirement-cleaner:auth": "tsx implementations/auth/smoke/retirement-cleaner-confinement.smoke.ts",

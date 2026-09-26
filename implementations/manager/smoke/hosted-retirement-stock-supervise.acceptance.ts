@@ -315,6 +315,7 @@ let renewRequests = 0;
 let validationRequests = 0;
 let adminAuthorizationRequests = 0;
 let retirementRequests = 0;
+let prepareRetirementRequests = 0;
 let maintenanceRequests = 0;
 
 try {
@@ -429,6 +430,7 @@ try {
         try {
           const parsed = JSON.parse(body.toString("utf8")) as { request?: { kind?: string; operation?: string } };
           if (parsed.request?.kind === "manager-retained-agent-validation") validationRequests++;
+          else if (parsed.request?.kind === "manager-managed-agent-prepare-retirement") prepareRetirementRequests++;
           else if (parsed.request?.kind === "manager-admin-authorization") adminAuthorizationRequests++;
           else if (parsed.request?.kind === "manager-service-maintenance") maintenanceRequests++;
           else if (parsed.request?.operation === "prepare") prepareRequests++;
@@ -660,13 +662,20 @@ registry.register({
     target: { mode: "any", owner, actor, lifecycleUid }, deadlineMs: 10_000,
   });
   check("stock targeted despawn accepts the retained lifecycle", stopped.reply.ok === true, stopped.reply.error?.message);
-  for (let tries = 0; tries < 200 && !supervisorOutput.includes("remote participant supervision cannot terminally retire"); tries++) await wait(100);
+  // #1972: stock supervision now HAS a prepare-retirement client, so the deprovision prerequisite
+  // reaches host dispatch instead of throwing locally. Stock dispatch answers `unimplemented` (the
+  // managed-agent lifecycle needs a hosted storage composition), and the manager must surface that
+  // refusal and stop there: no retirement requester, alias still held, supervisor still serving.
+  const hostRefusal = "signed in, but managed agent retirement preparation was refused: " +
+    "managed agent enrollment and retirement preparation must be handled by host platform interception";
+  for (let tries = 0; tries < 200 && !supervisorOutput.includes(hostRefusal); tries++) await wait(100);
   const aliasHold = findManagedActor(hostDir, owner, actor);
-  check("stock hosted deprovision fails closed at the explicit host-release refusal",
-    supervisorOutput.includes("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition") &&
+  check("stock hosted deprovision fails closed at the host's unimplemented release refusal",
+    supervisorOutput.includes(hostRefusal) && prepareRetirementRequests >= 1 &&
       retirementRequests === beforeRetirementRequests && aliasHold?.lifecycleUid === lifecycleUid,
     {
-      refusalObserved: supervisorOutput.includes("remote participant supervision cannot terminally retire"),
+      refusalObserved: supervisorOutput.includes(hostRefusal),
+      prepareRetirementRequests,
       retirementRequestsBefore: beforeRetirementRequests,
       retirementRequestsAfter: retirementRequests,
       aliasHeld: aliasHold !== undefined,

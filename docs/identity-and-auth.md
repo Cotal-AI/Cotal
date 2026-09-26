@@ -221,10 +221,21 @@ That listener still binds `127.0.0.1`; put a reverse proxy in front of it and te
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
 
-The loopback face also serves two host-only retirement doors, both capability-gated and never on the
-public face: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`) and
-`/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its remote
-manager is gone. [embedding.md](embedding.md) documents the managed door's contract.
+The loopback face also serves three host-only doors, all capability-gated and never on the public
+face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
+and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
+remote manager is gone. The third decides one:
+`POST /manager-service-authority/verify-enrollment` answers whether a remote manager may have a
+managed agent enrolled or released under its authenticated owner. The body is
+`{ owner, request }` and nothing else. The caller's capability scope is read from this machine's
+ledger, never taken from the body, so a host that forwarded a participant-supplied scope could not
+grant itself `supervise`. The door reads the manager gate and checks the registration proof inside
+the service process, so no signing material reaches the caller, and it returns
+`{ authorized: true, owner, actor, instanceId, serveEpoch }` or maps its refusal to 400, 401, 403,
+409, or 412. It decides only. A platform that intercepts these requests owns every write, and stock
+`dispatchManagerAuthorityRequest` refuses both request kinds with `unimplemented` rather than
+answering a manager-lifecycle phase for an agent-lifecycle request.
+[embedding.md](embedding.md) documents the managed doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
 `GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback

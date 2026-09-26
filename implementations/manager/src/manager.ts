@@ -10,6 +10,7 @@ import {
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
+  assertLifecycleToken,
   divergentSecretStoreNotice,
   parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
@@ -405,6 +406,33 @@ export interface ManagerOptions {
       target: { owner: string; actor: string; lifecycleUid: string };
       opId: string;
     }) => Promise<void>;
+    /** Host-owned enrollment of a FRESH managed agent (#1972). The participant generates the standing
+     * actorToken, writes it at 0600, and passes only its digest. The HOST picks the lifecycle UID —
+     * it alone can see the retirement tombstones that make a UID unusable — so there is deliberately
+     * no `lifecycleUid` input here, and the returned uid is what the spawn records. Absent on a
+     * composition with no hosted storage: a signerless manager then refuses a user-mode spawn rather
+     * than authoring a local grant the host knows nothing about. */
+    enrollManagedAgent?: (args: {
+      target: {
+        actor: string;
+        tokenHash: string;
+        role?: string;
+        label?: string;
+        capabilities?: string[];
+        subscribe?: string[];
+        allowSubscribe?: string[];
+        allowPublish?: string[];
+      };
+    }) => Promise<{
+      owner: string;
+      actor: string;
+      lifecycleUid: string;
+      sentinelCreds: string;
+      subscribe: string[];
+      allowSubscribe: string[];
+      allowPublish: string[];
+      agentBearerExchangeUrl: string;
+    }>;
     /** Host-owned continuity check for a retained managed actor. A signerless participant cannot
      * validate the actor token or sentinel from public material alone, and must never receive the
      * provider's issuer/callout private records. Hosted compositions keep those records host-side
@@ -3340,10 +3368,13 @@ export class Manager {
       label: string;
       /** The incarnation's lifecycle UID: recorded on the ledger row (the callout mints the agent's
        *  lifecycle-keyed grants from it) AND used for the provisioned durables/ACL row, so the
-       *  credential names and the broker footprint can never diverge. */
+       *  credential names and the broker footprint can never diverge. On the HOSTED enrollment arm
+       *  this is the participant's provisional uid only: the host picks the authoritative one (it
+       *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
       lifecycleUid: string;
     },
-  ): Promise<{ owner: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+    if (this.remoteAuthority?.enrollManagedAgent) return this.enrollUserAgent(name, opts, this.remoteAuthority.enrollManagedAgent);
     const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
     const owner = opts.specOwner ?? (spawnerPr && spawnerPr.owner.startsWith("u_") ? spawnerPr.owner : undefined);
     if (!owner)
@@ -3423,7 +3454,7 @@ export class Manager {
         "--health-file", healthPath,
       ];
       await execBearerPreflight(bearerCmd);
-      return { owner, files, launch: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd } };
+      return { owner, lifecycleUid: opts.lifecycleUid, files, launch: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd } };
     } catch (e) {
       // Roll back everything this attempt materialized — a refused spawn must leave no standing
       // secret, no ledger row, no durable footprint — and AWAIT the broker teardown: the caller
@@ -3437,6 +3468,124 @@ export class Manager {
       rmSync(healthPath, { force: true });
       await this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner, secretPaths: files }).catch((err) =>
         console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
+    }
+  }
+
+  /**
+   * HOSTED user-mode spawn provisioning (#1972): the participant arm of host-owned enrollment.
+   *
+   * A registered participant holds no ledger writer, no JetStream provisioner, and no signing seed,
+   * so every step the local arm above performs itself is the HOST's here. What stays local is the
+   * one thing that must: the standing `actorToken`. This method generates it, writes it at 0600
+   * BEFORE the request, and sends only its SHA-256 digest — so the plaintext never crosses the
+   * network and a host compromise cannot replay an agent's exchange secret.
+   *
+   * The HOST picks the lifecycle UID. It alone can see the retirement tombstones that make a UID
+   * permanently unusable (a retired uid is refused forever by the retirement frontier), so a
+   * participant-chosen uid could aim a fresh grant at a dead incarnation. The uid the host returns
+   * is the one the spawn records and the one the child's durables are keyed by.
+   *
+   * The bearer argv selects `--exchange-url`: the local `--dir` arm reads a state directory this
+   * machine does not have, and a signerless participant must never appear to hold one.
+   */
+  private async enrollUserAgent(
+    name: string,
+    opts: {
+      spawner?: string;
+      specOwner?: string;
+      subscribe?: string[];
+      allowSubscribe: string[];
+      allowPublish?: string[];
+      role?: string;
+      capabilities?: string[];
+      label: string;
+      lifecycleUid: string;
+    },
+    enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+    let provider;
+    try {
+      provider = resolveAuthProvider();
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+    const secrets = this.secrets;
+    // The token the agent will present to `POST /exchange` for the rest of its life. Generated
+    // here, hashed here, and never sent: the request carries `tokenHash` alone.
+    const actorToken = randomBytes(32).toString("base64url");
+    const tokenHash = createHash("sha256").update(actorToken, "utf8").digest("hex");
+    // Provisional paths under the participant's OWN uid: the token has to be on disk before the
+    // request (a host that granted against a digest whose plaintext was lost would leave an agent
+    // that can never exchange), and the host's uid is not known until the request answers. The
+    // family is re-keyed to the host's uid below.
+    const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
+    let files = staged;
+    let material: Awaited<ReturnType<typeof enroll>> | undefined;
+    try {
+      await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
+      material = await enroll({
+        target: {
+          actor: name,
+          tokenHash,
+          ...(opts.role !== undefined ? { role: opts.role } : {}),
+          label: opts.label,
+          ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
+          ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+          allowSubscribe: opts.allowSubscribe,
+          ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+        },
+      });
+      if (material.actor !== name)
+        throw new Error(`the host enrolled actor "${material.actor}", not the requested "${name}"`);
+      const specOwner = opts.specOwner ?? (opts.spawner ? parsePrincipalKey(opts.spawner)?.owner : undefined);
+      if (specOwner !== undefined && specOwner.startsWith("u_") && material.owner !== specOwner)
+        throw new Error(`the host enrolled the agent under owner ${material.owner}, not the spawning owner ${specOwner}`);
+      assertLifecycleToken(material.lifecycleUid, "host-enrolled managed agent lifecycleUid");
+      // Re-key the family onto the HOST's uid (SPEC 13.1 name-disjointness on the FS): the child's
+      // credential paths must embed the uid its broker footprint carries, never the provisional one.
+      files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, material.lifecycleUid);
+      if (files.actorToken !== staged.actorToken) {
+        await secrets.put(agentSecretKeyForFile(files.actorToken, this.space), actorToken);
+        await materializeSecretToFile(secrets, agentSecretKeyForFile(files.actorToken, this.space), files.actorToken);
+        await secrets.delete(agentSecretKeyForFile(staged.actorToken, this.space)).catch(() => {});
+        rmSync(staged.actorToken, { force: true });
+      }
+      await secrets.put(agentSecretKeyForFile(files.sentinelCreds, this.space), material.sentinelCreds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(files.sentinelCreds, this.space), files.sentinelCreds);
+      rmSync(files.health, { force: true }); // a fresh start opens a fresh health window
+      const bearerCmd = [
+        process.execPath,
+        ...process.execArgv,
+        process.argv[1],
+        provider.agentBearerCommand,
+        // The signerless arm: the pinned public exchange, never a local state dir.
+        "--exchange-url", material.agentBearerExchangeUrl,
+        "--space", this.space,
+        "--owner", material.owner,
+        "--actor", name,
+        "--token-file", files.actorToken,
+        "--health-file", files.health,
+      ];
+      await execBearerPreflight(bearerCmd);
+      return {
+        owner: material.owner,
+        lifecycleUid: material.lifecycleUid,
+        files,
+        launch: { owner: material.owner, actor: name, sentinelCredsPath: files.sentinelCreds, bearerCmd },
+      };
+    } catch (e) {
+      // Shred every local secret this attempt materialized. The HOST's rows are the host's to
+      // reconcile: a participant holds no writer, so it must not pretend to roll back a grant or a
+      // durable it never authored. A retry with the same requestId re-enters the same enrollment.
+      for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files]) {
+        await secrets.delete(agentSecretKeyForFile(family.actorToken, this.space)).catch(() => {});
+        await secrets.delete(agentSecretKeyForFile(family.sentinelCreds, this.space)).catch(() => {});
+        rmSync(family.actorToken, { force: true });
+        rmSync(family.sentinelCreds, { force: true });
+        rmSync(family.health, { force: true });
+      }
       return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
     }
   }
@@ -4756,7 +4905,12 @@ export class Manager {
       // The incarnation's lifecycle UID (SPEC 13.1), minted ONCE per spawn: every lifecycle-keyed
       // broker resource (dm_/dlv_/chathist_ durables, ACL row, memberships) and the teardown
       // credential carry it, so a same-name successor's footprint is name-disjoint by construction.
-      const lifecycleUid = mintLifecycleUid();
+      //
+      // On the HOSTED enrollment arm (#1972) this value is PROVISIONAL. The host selects the
+      // authoritative uid, because it alone reads the retirement tombstones that make a uid
+      // permanently unusable, and the enrollment below rebinds this binding to what the host
+      // returned before anything durable is keyed by it.
+      let lifecycleUid = mintLifecycleUid();
       // Reserve the seat's custody reference NOW, before any durable row and long before the
       // launch. Minting it inside `runtime.spawn` (as it used to be) put the processes on disk
       // before anything recorded how to address them, so a crash in that window left a live seat
@@ -4844,6 +4998,12 @@ export class Manager {
           this.reserved.delete(name);
           return { ok: false, error: prep.error };
         }
+        // THE HOST'S UID WINS (#1972). On the local arm this is the value passed in, unchanged. On
+        // the hosted enrollment arm the host selected it, and from here every lifecycle-keyed thing
+        // this spawn records — the slot, the launch, the managed row, the teardown credential — must
+        // carry that value and not the provisional one, or the manager would address a footprint the
+        // host never created.
+        lifecycleUid = prep.lifecycleUid;
         userLaunch = prep.launch;
         userOwner = prep.owner;
         provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };

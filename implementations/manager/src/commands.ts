@@ -38,7 +38,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -318,11 +318,47 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             throw new Error("manager-service retirement material does not echo the requested target, operation, and serve epoch");
           return materialCredential(retirementMaterial, "retirementRequester", identity);
         },
-        prepareAgentRetirement: async () => {
-          // The stock remote participant path has no hosted storage lifecycle. A composition that
-          // manages hosted agents must inject its revoke + resumable-release operation here rather
-          // than letting consumer deprovision masquerade as terminal retirement.
-          throw new Error("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition");
+        // #1972: the host-owned halves of the managed agent lifecycle. Both ride the one verified
+        // manager-authority transport, and both are present only when the registered provider
+        // implements them — a provider without the hosted storage composition leaves the hook absent,
+        // and the manager then refuses a detached user-mode spawn rather than authoring a local grant
+        // the host knows nothing about.
+        ...(provider.enrollRemoteManagedAgent
+          ? {
+              enrollManagedAgent: async ({ target }) => {
+                const request = remoteManagedAgentEnrollmentRequest(
+                  state,
+                  "cli",
+                  retainedRegistrationProof,
+                  registered.processEpoch,
+                  target,
+                );
+                const result = await provider.enrollRemoteManagedAgent!({
+                  store: workspaceSecretStore(findCotalRoot()),
+                  dir: join(findCotalRoot(), ".cotal", "auth", space),
+                  request,
+                });
+                return remoteManagedAgentEnrollmentMaterial(result, request);
+              },
+            }
+          : {}),
+        prepareAgentRetirement: async ({ target: retirementTarget, opId }) => {
+          if (!provider.prepareRemoteManagedAgentRetirement)
+            throw new Error(`the registered auth provider "${provider.name}" does not implement host-owned managed agent retirement preparation, so remote participant supervision cannot terminally retire a hosted managed agent`);
+          const request = remoteManagedAgentPrepareRetirementRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            retirementTarget,
+            opId,
+          );
+          const result = await provider.prepareRemoteManagedAgentRetirement({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          remoteManagedAgentRetirementPrepared(result, request);
         },
         validateRetainedAgent: async ({ owner: targetOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
           const request = remoteRetainedAgentValidationRequest(

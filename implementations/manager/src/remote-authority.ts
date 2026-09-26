@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsFromJwt,
+  managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
   remoteManagerActors,
@@ -15,6 +16,10 @@ import {
   type RemoteManagerGoalIndexScanResult,
   type RemoteManagerMaintenanceRequest,
   type RemoteManagerMaintenanceResult,
+  type RemoteManagedAgentEnrollmentRequest,
+  type RemoteManagedAgentEnrollmentResult,
+  type RemoteManagedAgentPrepareRetirementRequest,
+  type RemoteManagedAgentPrepareRetirementResult,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RetainedAgentAuthority,
@@ -361,4 +366,129 @@ export function materialCredential(
 
 export function expectedRemoteManagerActors(state: RemoteManagerIdentityState) {
   return remoteManagerActors(state.instanceId);
+}
+
+/** Build one host-owned managed-agent enrollment request (#1972). The request carries the DIGEST of
+ *  the standing actor token, never the token: the participant has already written the plaintext at
+ *  0600, and the host's copy is a hash it can only compare against. */
+export function remoteManagedAgentEnrollmentRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  target: RemoteManagedAgentEnrollmentRequest["target"],
+): RemoteManagedAgentEnrollmentRequest {
+  return {
+    v: 1,
+    kind: "manager-managed-agent-enrollment",
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `enroll${mintLifecycleUid()}`,
+    registrationProof,
+    serveEpoch,
+    target,
+    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagedAgentEnrollmentRequest["identities"],
+  };
+}
+
+/** Bind a host enrollment result back to every request coordinate and validate the returned
+ *  material before the manager launches a child against it. An HTTP body is untrusted input even
+ *  though the host authenticated the request that produced it. */
+export function remoteManagedAgentEnrollmentMaterial(
+  result: RemoteManagedAgentEnrollmentResult,
+  request: RemoteManagedAgentEnrollmentRequest,
+): RemoteManagedAgentEnrollmentResult["material"] {
+  const envelopeKeys = [
+    "v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
+    "requestId", "registrationProof", "serveEpoch", "material",
+  ];
+  if (result === null || typeof result !== "object" || Array.isArray(result) ||
+      Object.keys(result).sort().join(",") !== envelopeKeys.sort().join(","))
+    throw new Error("managed agent enrollment returned a non-closed result");
+  if (result.v !== 1 || result.kind !== "manager-managed-agent-enrollment" || result.space !== request.space ||
+      result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.registrationProof !== request.registrationProof || result.serveEpoch !== request.serveEpoch ||
+      typeof result.owner !== "string" || result.owner.length === 0)
+    throw new Error("managed agent enrollment returned different lifecycle, request, or owner coordinates");
+  const m = result.material;
+  const materialKeys = ["owner", "actor", "lifecycleUid", "sentinelCreds", "subscribe", "allowSubscribe", "allowPublish", "agentBearerExchangeUrl"];
+  if (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).sort().join(",") !== materialKeys.sort().join(","))
+    throw new Error("managed agent enrollment returned non-closed material");
+  // The envelope owner and the material owner are the SAME authority. A result that disagreed with
+  // itself would let one field name the audited owner and the other the owner actually granted.
+  if (m.owner !== result.owner)
+    throw new Error("managed agent enrollment material names a different owner than its envelope");
+  if (m.actor !== request.target.actor)
+    throw new Error(`managed agent enrollment returned actor "${m.actor}", not the requested "${request.target.actor}"`);
+  if (typeof m.lifecycleUid !== "string" || !/^[a-z0-9]{26,32}$/.test(m.lifecycleUid))
+    throw new Error("managed agent enrollment returned no valid host-selected lifecycle uid");
+  if (typeof m.sentinelCreds !== "string" || m.sentinelCreds.length === 0)
+    throw new Error("managed agent enrollment returned no sentinel credentials");
+  for (const key of ["subscribe", "allowSubscribe", "allowPublish"] as const)
+    if (!Array.isArray(m[key]) || !m[key].every((value) => typeof value === "string" && value.length > 0))
+      throw new Error(`managed agent enrollment returned an invalid ${key} list`);
+  // The bearer endpoint the CHILD will present its standing token to. A plaintext or non-URL pin
+  // would put that token on the wire in the clear, so it is refused here rather than at first
+  // exchange, and a loopback literal is the only HTTP exception (the same rule agent-bearer keeps).
+  let url: URL;
+  try { url = new URL(m.agentBearerExchangeUrl); }
+  catch { throw new Error(`managed agent enrollment returned no usable agent bearer exchange URL (got ${JSON.stringify(m.agentBearerExchangeUrl)})`); }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]")))
+    throw new Error(`managed agent enrollment returned a non-HTTPS agent bearer exchange URL (${url.protocol}//) - the actor token must never cross plaintext off this machine`);
+  return m;
+}
+
+/** Build one host-owned prepare-retirement request (#1972 phase P0/P1). The opId is DERIVED from the
+ *  target lifecycle, so a retry converges on the host's existing operation instead of opening a
+ *  second barrier over one head. */
+export function remoteManagedAgentPrepareRetirementRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  target: { owner: string; actor: string; lifecycleUid: string },
+  opId: string,
+): RemoteManagedAgentPrepareRetirementRequest {
+  if (opId !== managedRetirementOpId(target.lifecycleUid))
+    throw new Error(`managed agent prepare-retirement opId "${opId}" is not the derived terminal operation for lifecycle ${target.lifecycleUid}`);
+  return {
+    v: 1,
+    kind: "manager-managed-agent-prepare-retirement",
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `prepare${mintLifecycleUid()}`,
+    registrationProof,
+    serveEpoch,
+    target,
+    opId,
+    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagedAgentPrepareRetirementRequest["identities"],
+  };
+}
+
+/** Bind a host prepare-retirement result to its request. Only an exact, closed `prepared: true`
+ *  answer permits the terminal auth barrier to start; anything else keeps the alias held. */
+export function remoteManagedAgentRetirementPrepared(
+  result: RemoteManagedAgentPrepareRetirementResult,
+  request: RemoteManagedAgentPrepareRetirementRequest,
+): void {
+  const keys = [
+    "v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
+    "requestId", "target", "opId", "prepared",
+  ];
+  if (result === null || typeof result !== "object" || Array.isArray(result) ||
+      Object.keys(result).sort().join(",") !== keys.sort().join(","))
+    throw new Error("managed agent prepare-retirement returned a non-closed result");
+  if (result.v !== 1 || result.kind !== "manager-managed-agent-prepare-retirement" || result.space !== request.space ||
+      result.actor !== request.actor || result.instanceId !== request.instanceId ||
+      result.managerLifecycleUid !== request.managerLifecycleUid || result.requestId !== request.requestId ||
+      result.owner !== request.target.owner || result.opId !== request.opId ||
+      JSON.stringify(result.target) !== JSON.stringify(request.target))
+    throw new Error("managed agent prepare-retirement returned different lifecycle, target, or operation coordinates");
+  if (result.prepared !== true)
+    throw new Error("managed agent prepare-retirement did not confirm the release; the terminal barrier must not start");
 }
