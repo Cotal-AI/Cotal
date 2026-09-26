@@ -3058,6 +3058,104 @@
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${ope",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "bump(activeChannel, cur)",
+      "class": "non-render/control",
+      "rationale": "Console state update: bumps the active channel's unread counter in the store, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "runCommand(line, ctx, !!canWrite, !!canControl)",
+      "class": "non-render/control",
+      "rationale": "Console control flow: dispatches the input line with permission flags; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "Math.abs(dx)",
+      "class": "non-render/control",
+      "rationale": "Console geometry: absolute delta for node positioning math; no status text involved."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "Math.abs(dy)",
+      "class": "non-render/control",
+      "rationale": "Console geometry: absolute delta for node positioning math; no status text involved."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "stamp(grid[p.y], x, label, { color: \"cyan\", inverse: true, bold: true })",
+      "class": "presence-only-glyph/count",
+      "rationale": "Places the local-node label tile; the styling marks the self node without any progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/Map.tsx",
+      "kind": "derived-output",
+      "anchor": "stamp(grid[p.y], x, label.slice(0, 1), { color: STATUS[n.status ?? \"offline\"].color })",
+      "class": "presence-only-glyph/count",
+      "rationale": "Places a one-character peer tile whose color is the only status signal; no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "byKey.set(key, n)",
+      "class": "non-render/control",
+      "rationale": "Console state update: indexes a node record in the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "byKey.set(key, {\n        key,\n        kind: \"agent\",\n        name: p.card.name,\n        id: p.card.id,\n  ",
+      "class": "non-render/control",
+      "rationale": "Console state update: stores the peer record in the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "edge.lastTs = Math.max(edge.lastTs, e.ts)",
+      "class": "non-render/control",
+      "rationale": "Console state update: keeps the newest edge timestamp in the topology model; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "edges.get(key)",
+      "class": "non-render/control",
+      "rationale": "Console state lookup: reads an edge record from the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/console/ui/topo/model.ts",
+      "kind": "derived-output",
+      "anchor": "edges.set(key, edge)",
+      "class": "non-render/control",
+      "rationale": "Console state update: stores an edge record in the topology model map; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/lib/seat-restore.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(seat.checkpoint.repository.status)",
+      "class": "non-render/control",
+      "rationale": "Persistence payload: serializes the git status string into a checkpoint file; no terminal or DOM rendering."
+    },
+    {
+      "path": "implementations/cli/src/lib/seat-restore.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(status)",
+      "class": "non-render/control",
+      "rationale": "Persistence payload: serializes the status into a checkpoint file; no terminal or DOM rendering."
+    },
+    {
+      "path": "implementations/cli/src/view/mesh-view.ts",
+      "kind": "derived-output",
+      "anchor": "pe.lastTs = Math.max(pe.lastTs, c.last)",
+      "class": "non-render/control",
+      "rationale": "Console state update: keeps the newest presence timestamp in the mesh view model; not a rendered status."
     }
   ]
 }
