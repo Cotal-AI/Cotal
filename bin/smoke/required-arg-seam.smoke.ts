@@ -1328,8 +1328,9 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
 /** Can the OBJECT this name holds have changed since the declaration wrote it out?
  *
  *  Reading a member off the declaration's text is a statement about the value AT THE CALL, and four
- *  three ordinary things break that link: a property written afterwards, the object handed to a call
- *  that can keep it, and a second name for the same object. Through any of them, `const opts
+ *  ordinary things break that link: a property written afterwards, the object handed to a call
+ *  that can keep it, a second name for the same object, and the object kept in a literal (an array
+ *  element, the value of a property, a shorthand property). Through any of them, `const opts
  *  = { tls: undefined }; opts.tls = false;` would be reported as stating the key undefined while the
  *  program works, which is the untrue-assertion direction, and this reader flinches from that harder
  *  than from a miss: a miss fails to catch a broken program, an untrue assertion spends the
@@ -1340,9 +1341,15 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
  *  so no delete can turn one of its reds into a false one. A branch for it would have been dead
  *  weight with a cell that could not tell whether it ran.
  *
- *  Stated residual, since it is not a route this closes: the alias rule follows the name, not the
- *  object, so a second name taken in a shape not listed here (a property of something else, an
- *  element of an array) keeps its own mutations out of view. */
+ *  The same guard has a second cost, next to the one above: once a name is mutable, the reader
+ *  stops claiming from the declaration in BOTH directions, so a write that introduces `undefined`
+ *  into a good value is a miss rather than a red. Declining is the cheaper half of that trade, but
+ *  it is still a cost, and it is paid on every mutable name alike.
+ *
+ *  Stated residual, since these are not routes this closes: a holder returned from a function and a
+ *  holder stored into a class field are both out of view at the head, so their mutations are not
+ *  watched and their declarations are still declined from. A spread is NOT a keep: it hands over
+ *  a copy, so a write through it says nothing about the object here. */
 function mutableHere(id: ts.Identifier): boolean {
   const memberOf = (e: ts.Expression): boolean => {
     const x = unwrap(e);
@@ -1363,6 +1370,18 @@ function mutableHere(id: ts.Identifier): boolean {
     }
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && isName(n.initializer)) {
       found = true; return; // a second name for the same object, whose writes are not watched here
+    }
+    // KEPT somewhere is a second name too, and this rule followed the name rather than the object:
+    // `const arr = [opts]; arr[0].tls = false` reached the same object by a route with no name in
+    // it at all, and the declaration was then read as stating the key undefined about a program
+    // that does not throw. A SPREAD is not this: it hands over a copy, so a write through it says
+    // nothing about the object here, and shorthand `{ opts }` captures the value under a key, so it
+    // is a keep just like a named property.
+    if ((ts.isArrayLiteralExpression(n) && n.elements.some((e) => isName(e)))
+      || (ts.isObjectLiteralExpression(n) && n.properties.some((q) =>
+        (ts.isPropertyAssignment(q) && isName(q.initializer))
+        || ts.isShorthandPropertyAssignment(q) && q.name.text === id.text))) {
+      found = true; return;
     }
     ts.forEachChild(n, visit);
   };
@@ -2286,6 +2305,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   check("...and an ELEMENT access is the same read, spelled with brackets",
     one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts["tls"] });`) === "missing-key");
+  check("...and an OPTIONAL chain spells the same read, and is answered the same",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "missing-key");
+  check("...while the same chain holding a real boolean is untouched",
+    one(`const opts = { tls: false };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "has-key");
+  check("...and a NON-NULL assertion is a spelling of the same read, not a different one",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts!.tls });`) === "missing-key");
+  check("...including the optional chain spelled with brackets",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.["tls"] });`) === "missing-key");
   check("...including through a folded const, the arithmetic every other key folds by",
     one(`const K = "tls";\nconst opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts[K] });`) === "missing-key");
   check("...while a member this file cannot NAME is refused, since any of them could be the key",
@@ -2319,6 +2346,16 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { tls: undefined as any };\nconst alias = opts;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
   check("...while an untouched holder still reds, so mutability did not become a blanket",
     one(`const opts = { tls: undefined as any };\nconst n = 1;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...nor one KEPT in an array, whose element has no name for the alias rule to see",
+    one(`const opts = { tls: undefined as any };\nconst arr = [opts];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a property of another object, for the same reason",
+    one(`const opts = { tls: undefined as any };\nconst bag = { o: opts };\nbag.o.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a shorthand property, which captures the value under its own name",
+    one(`const opts = { tls: undefined as any };\nconst bag = { opts };\nbag.opts.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...while a SPREAD copy is not the object, so the holder is still answered from its declaration",
+    one(`const opts = { tls: undefined as any };\nconst copy = { ...opts };\ncopy.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...and an array spread of a holder that is never kept is the same copy",
+    one(`const opts = { tls: undefined as any };\nconst inner = [{ ...opts }];\nconst arr = [...inner];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   // The same text, reached through a NAME, is the same two facts spelled on two lines.
   check("a source NAMED and then taken apart is the text its declaration wrote",
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
