@@ -214,7 +214,7 @@ const spawn = (events?: boolean) => Promise.resolve(handlers.get("spawn")!(spawn
 // (a) non-admin, events: true — refused in the adminGated voice, nothing provisioned.
 adminDecision = false;
 let reply = await spawn(true) as { ok: boolean; error?: string };
-assert.equal(reply.ok, false);
+assert.equal(reply.ok, false, "the non-admin events:true spawn is refused before startAgent");
 assert.match(reply.error!, /spawn is operator reach; the caller's current ledger grant does not carry "admin" \(SPEC 13\.2\)/);
 assert.match(reply.error!, /events: arming the event plane needs the admin tier/);
 assert.equal(startOpts.length, 0);

@@ -40,7 +40,7 @@
       "find": "    if (!admin) {\n      if (requestedEvents === true)",
       "replace": "    if (false) {\n      if (requestedEvents === true)",
       "command": "pnpm smoke:remote-authority-operations",
-      "expectRed": "cell (a) is the first red: the non-admin events:true spawn is refused before startAgent",
+      "expectRed": "the non-admin events:true spawn is refused before startAgent",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ],
