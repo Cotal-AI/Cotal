@@ -576,11 +576,17 @@ try {
   const liveOrderingKv = orderingEp.kv;
   orderingEp.kv = { put: () => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject })) };
   const takeOrdering = async () => { await until(() => heldOrdering.length > 0, 10_000); return heldOrdering.shift()!; };
+  // Settle every put that arrives until none has arrived for 300ms, polling the array directly.
+  // A racing takeOrdering() call left running past its own 300ms loss would keep polling in the
+  // background and could steal a put a later, explicit takeOrdering() is waiting for, discarding
+  // its resolver and stalling the agent's presence chain forever — so this never calls takeOrdering.
   const quietOrdering = async (): Promise<void> => {
-    for (;;) {
-      const put = await Promise.race([takeOrdering(), sleep(300).then(() => undefined)]);
-      if (put === undefined) return;
-      put.resolve();
+    let quietMs = 0;
+    while (quietMs < 300) {
+      const put = heldOrdering.shift();
+      if (put) { put.resolve(); quietMs = 0; continue; }
+      await sleep(20);
+      quietMs += 20;
     }
   };
 
@@ -613,11 +619,13 @@ try {
   // the held put settles the offline put arrives, is settled, and only then does stop() return.
   await quietOrdering();
   const orderC = orderingAgent!.setStatus("waiting", "ordered departure").catch(() => {});
-  const waitActivityPut = await takeOrdering();
+  const waitActivityPut = await takeOrdering(); // setActivity("ordered departure")
   const stopPromise = orderingAgent!.stop().catch(() => {});
   await sleep(150);
   const offlineStartedWhileHeld = heldOrdering.length > 1;
   waitActivityPut.resolve();
+  const waitStatusPut = await takeOrdering(); // setStatus("waiting") — the call's second put
+  waitStatusPut.resolve();
   await orderC;
   const offlinePut = await takeOrdering();
   offlinePut.resolve();
