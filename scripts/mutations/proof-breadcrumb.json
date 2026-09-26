@@ -97,6 +97,22 @@
       "replace": "before running again.\");",
       "cell": "a live mutation with no backup is refused by naming the interrupted proof, not the dirty tree",
       "expectRed": "a live mutation with no backup is refused by naming the interrupted proof, not the dirty tree"
+    },
+    {
+      "name": "the restore reverts to copying the on-disk backup file, so a run that loses it cannot recover (#1337)",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "      writeFileSync(path, beforeBytes);",
+      "replace": "      copyFileSync(backup, path);",
+      "cell": "...and the run's own verdict is printed, KILLED (the in-memory restore does not change grading)",
+      "expectRed": "...and the run's own verdict is printed, KILLED (the in-memory restore does not change grading)"
+    },
+    {
+      "name": "the guard inside restore() that turns a failure into false is removed, so the catch's own restore() throws again (#1337)",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "    } catch (err) {\n      restoreError = err;\n      return false;\n    }",
+      "replace": "    } catch (err) {\n      restoreError = err;\n      throw err;\n    }",
+      "cell": "a restore that cannot succeed reports exactly one ERROR verdict, not a crash",
+      "expectRed": "a restore that cannot succeed reports exactly one ERROR verdict, not a crash"
     }
   ]
 }
