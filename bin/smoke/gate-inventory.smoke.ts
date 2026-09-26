@@ -162,7 +162,12 @@ const pkg = JSON.parse(packageText) as { scripts: Record<string, string> };
 // THE AUDITED SET INCLUDES THE BARE `smoke` SCRIPT. An earlier version filtered on `smoke:` and so
 // could not see `"smoke": "tsx packages/core/smoke.ts"` — a real suite that nothing runs, invisible
 // to the audit BY CONSTRUCTION. Found by a second, independent derivation, not by this file.
-const all = new Set(Object.keys(pkg.scripts).filter((k) => (k === "smoke" || k.startsWith("smoke:")) && k !== "smoke:ci"));
+// `smoke:ci` is the gate, not a suite, and `smoke:ci:offline` is the same gate run without its
+// live-shaped suites (`bin/smoke/shard.mjs --offline`). Neither is a suite the gate could run, so
+// neither is audited; the offline script is named here rather than exempted in UNGATED because an
+// exemption is a suite the gate leaves out, and this is the gate leaving suites out.
+const GATE_SCRIPTS = new Set(["smoke:ci", "smoke:ci:offline"]);
+const all = new Set(Object.keys(pkg.scripts).filter((k) => (k === "smoke" || k.startsWith("smoke:")) && !GATE_SCRIPTS.has(k)));
 
 /** Suites INVOKED by a script body. Anchored on `pnpm [run] <name>`, because a script is reached by
  *  being invoked, not by being mentioned.
