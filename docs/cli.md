@@ -212,7 +212,10 @@ restart that leaves an answering listener in place is a refresh, not a rebind.
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
 stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
-persistence error instead of trusting the value returned by stream info.
+persistence error instead of trusting the value returned by stream info. A refresh that restores a
+missing manager says so with its pid (`✓ restored in the background: manager (pid N)`); a refresh
+that finds everything already running prints only the `✓ mesh "<space>" already running` line.
+
 
 `--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
 auth callout plus its capability-gated local exchange, and optionally the closed public exchange
