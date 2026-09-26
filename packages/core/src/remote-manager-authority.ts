@@ -76,6 +76,10 @@ export interface RemoteManagerAuthorityMaterial {
   registrationProof?: string;
   retirement?: RemoteManagerAuthorityRequest["retirement"];
   issuedAt: number;
+  /** Earliest `exp` among the envelope's credentials, in milliseconds, as the issuer computes it.
+   * The manager never compares it with a clock: each credential is a signed JWT whose `exp` the
+   * broker verifies at connect, which is where expiry is enforced. Locally it is a coherence
+   * bound: `materialCredential` refuses a credential whose own `exp` disagrees with it. */
   expiresAt: number;
   actors: RemoteManagerActors;
   identities: RemoteManagerAuthorityRequest["identities"];
