@@ -193,15 +193,17 @@ export function startManagerDetached(
   o: ManagerStartOpts = {},
 ): number {
   const space = o.space ?? folderSpace();
-  // Clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded root
-  // does not end up holding both names and failing every later read as ambiguous. It refuses (throws)
-  // on a live or unattributable one rather than orphaning the daemon behind it.
+  // BEFORE ANY RECORD OR LOG IS TOUCHED. `selfArgv` refuses when this process was not started from
+  // the `cotal` entry (#1629), and a refusal must leave the root exactly as it found it. Computed after
+  // the reclaim below, a refused start deleted dead pre-upgrade records; computed after `openSync`, it
+  // created a manager log and leaked its descriptor.
+  //
+  // Then clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded
+  // root does not end up holding both names and failing every later read as ambiguous. It refuses
+  // (throws) on a live or unattributable one rather than orphaning the daemon behind it.
+  const [node, ...self] = selfArgv();
   reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));
   reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
-  // BEFORE THE LOG IS OPENED. `selfArgv` refuses when this process was not started from the `cotal`
-  // entry (#1629), and a refusal must leave the root exactly as it found it: computing the argv after
-  // `openSync` would create a manager log and leak its descriptor on every refused start.
-  const [node, ...self] = selfArgv();
   const logPath = managerLogPath(space);
   // 0600: the manager prints its console URL here, and that URL carries the console token — a
   // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
