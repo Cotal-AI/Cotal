@@ -33,9 +33,19 @@
       "replace": "          `(cotal_persona) cannot declare capabilities by design.`,",
       "expectRed": "the refusal tells a peer author to ask an operator (it cannot self-serve the grant)",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "G5 the #373 events admission gate is dropped from opStart: a non-admin typed spawn carrying events:true reaches startAgent again and the child is provisioned with the event-plane grant, the silent-success failure mode the issue reports",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (!admin) {\n      if (requestedEvents === true)",
+      "replace": "    if (false) {\n      if (requestedEvents === true)",
+      "command": "pnpm smoke:remote-authority-operations",
+      "expectRed": "the non-admin events:true spawn is refused before startAgent",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ],
   "suite": [
-    "implementations/manager/smoke/persona-role-capability.smoke.ts"
+    "implementations/manager/smoke/persona-role-capability.smoke.ts",
+    "implementations/manager/smoke/remote-authority-operations.smoke.ts"
   ]
 }

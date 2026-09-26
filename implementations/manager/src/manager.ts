@@ -626,6 +626,9 @@ export interface StartAgentOpts {
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
+  /** #373: set by `opStart` when a non-admin caller omitted `events` and the plane was served
+   *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
+  eventsNotice?: string;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
@@ -3017,7 +3020,12 @@ export class Manager {
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
-      spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opStart(args(ctx), callerOf(ctx), h, ctx.subject.route))),
+      // #373: arming the event plane (events: true, or the omission that arms it by default)
+      // is operator reach on a user mesh — the spawn handler resolves the caller's admin tier
+      // ONCE here (opLaunch takes the same signal as a parameter) and opStart's admission gate
+      // decides on it BEFORE connector resolution or any grant mutation. Static meshes resolve
+      // true and nothing changes.
+      spawn: (ctx) => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -4098,7 +4106,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
     // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
     // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
@@ -4143,6 +4151,31 @@ export class Manager {
     } catch (e) {
       return Promise.resolve({ ok: false, error: (e as Error).message });
     }
+    // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
+    // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
+    // omitting it. The gate is on the DECISION, and it runs before connector resolution and
+    // before `startAgent` (which mints credentials), so a refusal provisions nothing.
+    const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
+    let eventsNotice: string | undefined;
+    let events: boolean | undefined = requestedEvents;
+    if (!admin) {
+      if (requestedEvents === true)
+        return Promise.resolve({
+          ok: false,
+          error: `spawn is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2): events: arming the event plane needs the admin tier`,
+        });
+      if (this.eventsRequired)
+        return Promise.resolve({
+          ok: false,
+          error: `spawn is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2): space "${this.space}" requires the event plane by registration policy, which cannot be met without the admin tier`,
+        });
+      // Omission arms by default in startAgent; serve it DISARMED and say so (never a silent
+      // downgrade). An explicit `false` is already the opt-out — served as-is, no notice.
+      if (requestedEvents === undefined) {
+        events = false;
+        eventsNotice = `event plane not armed: arming it on spawn needs the admin tier; the spawn was served with events: false`;
+      }
+    }
     return this.startAgent(
       {
         name: String(args.name ?? "").trim(),
@@ -4155,7 +4188,8 @@ export class Manager {
         variant: args.variant ? String(args.variant) : undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
-        events: typeof args.events === "boolean" ? args.events : undefined,
+        events,
+        eventsNotice,
         cwd: args.cwd ? String(args.cwd) : undefined,
         prompt: args.prompt ? String(args.prompt) : undefined,
         subscribe,
@@ -5048,7 +5082,7 @@ export class Manager {
       // canonicalJson (undefined never coerces to null, SPEC 13.6), so a role-less spawn would
       // otherwise fail its succeeded terminal. The CLI/connector already render an absent role as
       // "no role", so dropping the key preserves the reply (P2 item 2, surfaced by readiness:live).
-      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}) };
+      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
     } catch (e) {

@@ -445,14 +445,17 @@ async function spawnDetached(
     subscribe: splitFlag(values.subscribe),
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
-    // Explicit choice: true (--events/default), false (--no-events).
-    events: eventsRequired || events,
+    // #373: send the bit only when the operator chose it. On an events-required space the
+    // policy still forces the plane on (the manager refuses a non-admin caller on such a space
+    // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
+    events: eventsRequired ? true : events,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
   }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
   failIfNotOk(reply);
-  const d = reply.data as { name: string; role?: string; agent: string; mode: string };
+  const d = reply.data as { name: string; role?: string; agent: string; mode: string; eventsNotice?: string };
+  if (d.eventsNotice) console.log(c.yellow(`! ${d.eventsNotice}`));
   console.log(
     c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
       c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
@@ -548,7 +551,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red("✗ --events and --no-events are mutually exclusive"));
     process.exit(1);
   }
-  const events = values["no-events"] ? false : true;
+  // #373: the detached path sends the bit ONLY when the operator chose it. `--events` gives
+  // true, `--no-events` gives false, neither gives undefined — the manager's spawn gate treats
+  // an explicit true from a non-admin caller as operator reach and serves an omission unarmed
+  // with a notice, so an unconditional default-true would be refused for an ordinary actor.
+  const events = values.events ? true : values["no-events"] ? false : undefined;
 
   // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
@@ -603,7 +610,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
   }
-  const launchEvents = eventsRequired || events;
+  // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
+  // NOT gated: it keeps the default-on plane. `events` is now a tri-state (undefined when the
+  // operator passed neither flag), so default it on here the way the old boolean did.
+  const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
   const composition = { injected: false as const, root: target.root };
 
