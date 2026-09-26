@@ -12,7 +12,7 @@
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
-    "gen:tooldocs": "tsx scripts/generate-tool-docs.mjs",
+    "gen:tooldocs": "pnpm --filter @cotal-ai/connector-core... build && tsx scripts/generate-tool-docs.mjs",
     "gen:docsbundle": "node scripts/generate-docs-bundle.mjs",
     "gen:conformance": "tsx scripts/generate-conformance-corpus.ts",
     "check:docs-voice": "node scripts/check-docs-voice.mjs",
