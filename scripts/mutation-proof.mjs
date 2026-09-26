@@ -388,17 +388,29 @@ function run(command, cwd, timeoutMs) {
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
+// A line-initial pass mark: optional leading whitespace, optional ANSI colour escapes, then the
+// glyph. Not a bare glyph match — a suite can carry a `✓` inside an assertion LABEL (printed on
+// pass and often on fail alike), and counting that glyph inflates both the baseline and the
+// mutated run by however many such labels the transcript prints, padding a `minTicks` floor with
+// marks that were never a pass line. The ANSI allowance is load-bearing:
+// `packages/core/smoke/spawn-name-actor-token.smoke.ts` prints `  \x1b[32m✓\x1b[0m ${what}`, and its
+// fixture has no `progressPattern`, so a default without the escape allowance would count that
+// suite at zero marks and silently drop its reached-the-check floor.
+const DEFAULT_PROGRESS_PATTERN = "^[ \t]*(?:\x1b\\[[0-9;]*m)*✓";
+
 /**
  * How far into the suite did the run get? Counting a suite's own progress markers separates
  * "failed at my assertion" from "died before reaching it" and from "ran an older copy of the file".
- * Convention-bound by nature, so it is advisory unless the caller supplies `progressPattern`.
+ * Convention-bound by nature, so it is advisory unless the caller supplies `progressPattern`. The
+ * default counts line-initial pass marks, not every occurrence of the glyph, because a suite's own
+ * assertion label can carry one too.
  */
 const progressCount = (output, pattern) => {
   // `m`, not just `g`: a caller-supplied pattern that anchors with `^` (the natural way to say "a
   // progress line", since a suite's marks are line-initial) matches ONCE without it — against the
   // start of the whole transcript. The floor then compares 1 to 1 forever and silently never fires,
   // while the baseline banner prints "1 progress marks" as though it had measured something.
-  const re = new RegExp(pattern ?? "✓", "gm");
+  const re = new RegExp(pattern ?? DEFAULT_PROGRESS_PATTERN, "gm");
   return (output.match(re) ?? []).length;
 };
 

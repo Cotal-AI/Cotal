@@ -690,6 +690,45 @@ r = runTool([
 check("an anchored progress pattern counts per LINE, not once per transcript",
   r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
 
+// 7i/7j. A `✓` inside an assertion LABEL is not a progress mark: the default pattern must anchor to
+// line start (#1348). This suite prints three pass lines, the second of which names the glyph in
+// its own label text rather than being one.
+writeFileSync(
+  join(root, "labelled.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "console.log('  ✓ admits a small value');",
+    "console.log('  ✓ the label carries a glyph (not ✓ started)');",
+    "if (admit(50) !== false) { process.exit(0); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm labelled", { cwd: root });
+
+r = runTool([
+  "--command", `${process.execPath} labelled.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("a ✓ inside an assertion label is not a progress mark",
+  r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
+
+r = runTool([
+  "--command", `${process.execPath} labelled.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+  "--min-ticks", "3",
+]);
+check("a minTicks floor near the true count fails a run that is one real check short",
+  verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("reached only 2 progress marks (expected \u2265 3)"),
+  r.stdout.slice(0, 400));
+execSync("git checkout -- .", { cwd: root });
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });
