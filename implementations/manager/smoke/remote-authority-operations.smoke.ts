@@ -225,11 +225,11 @@ assert.equal(reply.ok, true);
 assert.deepEqual((startOpts[0] as { events?: boolean }).events, true);
 // (c) non-admin, events omitted — served DISARMED, with the notice naming why.
 adminDecision = false;
-reply = await spawn() as { ok: boolean; data?: { eventsNotice?: string } };
+reply = await spawn() as { ok: boolean; error?: string; data?: { eventsNotice?: string } };
 assert.equal(reply.ok, true);
 assert.deepEqual((startOpts[1] as { events?: boolean }).events, false);
 assert.match((startOpts[1] as { eventsNotice?: string }).eventsNotice!, /event plane not armed/);
-assert.equal(reply.data, startAgentReply.data);
+assert.equal((reply as { data?: unknown }).data, startAgentReply.data);
 // (d) non-admin, events: false — the explicit opt-out is served silently (no notice armed).
 reply = await spawn(false) as { ok: boolean };
 assert.equal(reply.ok, true);
