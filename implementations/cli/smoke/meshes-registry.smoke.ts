@@ -828,6 +828,7 @@ try {
   check("`up` refuses to reclaim a registered space rather than deleting it", claimError !== undefined, claimError?.message);
   check("…and the registration survives the refusal", findMesh("claimed") !== undefined, loadMeshes());
   check("…naming `cotal meshes rm` as the way through", claimError?.message.includes("cotal meshes rm claimed") === true, claimError?.message);
+  check("…and a loopback registered server does not suggest `supervise`", claimError?.message.includes("supervise") === false, claimError?.message);
   // A LIVE registered holder must reach the SAME refusal. Deciding liveness first sent the operator
   // to `cotal down`, which cannot stop a mesh this machine does not run.
   recordMesh({ space: "claimed-live", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
@@ -843,12 +844,26 @@ try {
   check("`up` refuses a discovered name collision and leaves the catalog record untouched",
     catalogClaimError?.message.includes("owned by a signed-in space catalog") === true && findMesh("claimed-catalog")?.origin === "catalog",
     catalogClaimError?.message);
+  // A registered server that is NOT loopback names `cotal supervise`/`cotal deliver` against that
+  // server, not `meshes rm` — dropping the record would break the route a live remote mesh is
+  // addressed by, and a different `--space` would fork the identity.
+  const remoteBrokerRoot = projectRoot("remote-broker");
+  const REMOTE_BROKER = "nats://broker.example:4222";
+  recordMesh({ space: "claimed-remote", server: REMOTE_BROKER, root: remoteBrokerRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  let remoteClaimError: Error | undefined;
+  await claimSpace("claimed-remote", LIVE, localRoot).catch((e: Error) => void (remoteClaimError = e));
+  check("a non-loopback registered holder refuses, naming `cotal supervise`", remoteClaimError?.message.includes(`cotal supervise --space claimed-remote --server ${REMOTE_BROKER}`) === true, remoteClaimError?.message);
+  check("…and names `cotal deliver`", remoteClaimError?.message.includes("cotal deliver") === true, remoteClaimError?.message);
+  check("…and does not suggest `meshes rm`", remoteClaimError?.message.includes("meshes rm") === false, remoteClaimError?.message);
+  check("…and does not suggest a different `--space`", remoteClaimError?.message.includes("different `--space`") === false, remoteClaimError?.message);
+  check("…and the registration survives the refusal", findMesh("claimed-remote") !== undefined, loadMeshes());
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
   removeMesh("claimed-catalog");
+  removeMesh("claimed-remote");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability

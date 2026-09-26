@@ -471,12 +471,14 @@ does not delete any record: an unreachable broker, local or registered by hand, 
 `offline` in `cotal meshes`. A bare command does not count that offline record as running;
 name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the
 project they are tearing down, and they leave a hand-registered one alone even when `--root`
-pointed at that project. A `cotal up` for that space refuses outright (naming `cotal meshes rm`) unless it is
-that same endpoint: finding a broker already answering there is a refresh that starts nothing and
-leaves the record's provenance alone, while actually starting the broker for that space, server and
-root makes this machine the one running it, so the record becomes an ordinary local one that
-`cotal down` clears. `cotal meshes rm` drops it and re-registering with `--force` replaces it. `rm`
-only forgets a mesh. To stop one running here, use `cotal down`.
+pointed at that project. A `cotal up` for that space refuses outright unless it is that same
+endpoint: finding a broker already answering there is a refresh that starts nothing and leaves the
+record's provenance alone, while actually starting the broker for that space, server and root
+makes this machine the one running it, so the record becomes an ordinary local one that
+`cotal down` clears. The refusal names `cotal supervise --space <s> --server <url>` (plus `cotal
+deliver`) when the registered broker is on another host, and `cotal meshes rm` when it is local.
+`cotal meshes rm` drops it and re-registering with `--force` replaces it. `rm` only forgets a
+mesh. To stop one running here, use `cotal down`.
 
 ## Watching
 

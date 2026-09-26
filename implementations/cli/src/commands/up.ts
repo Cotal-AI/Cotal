@@ -110,6 +110,7 @@ import {
   MANAGER_PIDFILE,
   assertManagerCanSpare,
   verifyIdentityPin,
+  isLoopbackHost,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -2482,6 +2483,34 @@ function realpathSafe(p: string): string {
   }
 }
 
+/** The remedy for a hand-registered (`origin === "manual"`) space `claimSpace` refuses to touch.
+ *  Branches on whether the REGISTERED server is loopback, the one authority for that being
+ *  `isLoopbackHost` (`@cotal-ai/workspace`) — never a second opinion here.
+ *
+ *  Non-loopback: the mesh runs on another machine and this one does not take over its control
+ *  plane by deleting the registry route (that route is what attach, spawn-from-anywhere, and
+ *  every read verb hang off) or by forking the identity under a different `--space`. The actual
+ *  next step is running that control plane FROM here, against the broker the record already
+ *  names: `cotal supervise` (plus `cotal deliver` for the daemon). Dropping the record
+ *  (`meshes rm`) is a separate decision for a genuinely stale record, out of scope here.
+ *
+ *  Loopback: unchanged — a loopback registration this machine cannot reach the "real" mesh behind
+ *  (or is stale) keeps the original two-way remedy, byte for byte.
+ *
+ *  A server string `new URL` rejects is a record shape this function never validated before
+ *  (nothing here parsed it), so it keeps the loopback wording rather than growing a parser. */
+function manualClaimRemedy(space: string, server: string): string {
+  let loopback = true;
+  try {
+    loopback = isLoopbackHost(new URL(server).hostname);
+  } catch {
+    loopback = true;
+  }
+  if (!loopback)
+    return `\`cotal supervise --space ${space} --server ${server}\` to run its control plane from here (and \`cotal deliver --space ${space} --server ${server}\` for the daemon)`;
+  return `\`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``;
+}
+
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
  *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
  *  holder is reclaimed. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
@@ -2497,7 +2526,7 @@ export async function claimSpace(space: string, server: string, root: string): P
   // machine), the reclaim runs BEFORE this launch starts anything, and `cotal down` — what the
   // liveness branch below would advise — cannot stop a mesh this machine does not run.
   if (existing.origin === "manual" || existing.origin === "catalog")
-    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name: ${existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : `\`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``}`);
+    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name: ${existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server)}`);
   if (await isReachable(existing.server)) {
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
