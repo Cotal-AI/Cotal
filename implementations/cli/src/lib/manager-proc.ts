@@ -301,13 +301,13 @@ export function ensureManager(
   o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
-): { running: boolean } {
+): { running: boolean; started: boolean; pid?: number } {
   const space = o.space ?? folderSpace();
   const state = managerLiveness(probe, readCommand, space);
-  if (state === "alive") return { running: true };
+  if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
-  startManagerDetached(o);
-  return { running: true };
+  const pid = startManagerDetached(o);
+  return { running: true, started: true, pid };
 }
 
 /** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by

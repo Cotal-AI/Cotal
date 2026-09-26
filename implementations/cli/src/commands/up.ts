@@ -2194,6 +2194,10 @@ async function startDeliveryWithBroker(
 ): Promise<boolean> {
   try {
     const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
+    // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
+    // identically to a refresh that found everything already up, and the operator cannot tell which
+    // world they are in without a second command.
+    if (plane.started) console.log(c.green(`✓ restored in the background: manager (pid ${plane.pid})`));
     // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
     // dependency of spawn, retirement and join, and this function used to return `true` for a boot
     // that started a daemon whose responder never bound — so `cotal up` printed its success banner
