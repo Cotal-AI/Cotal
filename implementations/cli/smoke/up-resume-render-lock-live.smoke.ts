@@ -75,6 +75,19 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Await `p`, or give up once `ms` has passed. The timer is CLEARED when `p` settles. A `sleep()` raced
+ * against a child's exit and losing is still an armed timer, and this suite raced three of them: the
+ * ordinary boot's exit against 300s, each rails probe against 30s, the cut against 240s. Every child
+ * exits within seconds, so the verdict printed with those timers still live, no handle and no child
+ * behind them (measured: three Timeouts and nothing else at the verdict), and the process lived on
+ * until the longest fired, five minutes later. A runner that tears the job down never saw it.
+ */
+const within = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    p.then((v) => { clearTimeout(timer); resolve(v); }, () => { clearTimeout(timer); resolve(undefined); });
+  });
 
 /**
  * The ambient environment with every `COTAL_` key stripped, then this smoke's own sandbox put back.
@@ -171,7 +184,7 @@ try {
   ok("…and the recorded owner is a live process - the state an independent acquire is refused as held-by-a-live-owner",
     ordinaryOwnerAlive, ordinaryOwner);
 
-  await Promise.race([firstExit, sleep(300_000)]);
+  await within(firstExit, 300_000);
   ok("the ordinary boot exited 0", first.exitCode === 0, logOf(first).slice(-1500));
   ok("…and rendered server.conf", existsSync(confPath()));
 
@@ -183,13 +196,13 @@ try {
   let railsUp = false;
   for (let i = 0; i < 30 && !railsUp; i++) {
     const probe = run(["channels", "set", "railprobe", "--desc", "rails", "--space", space]);
-    await Promise.race([once(probe, "exit"), sleep(30_000)]);
+    await within(once(probe, "exit"), 30_000);
     if (probe.exitCode === 0) railsUp = true;
     else await sleep(5_000);
   }
   ok("the manager answers on the ep rails before the cut", railsUp);
   const cut = run(["down", "--preserve-state"]);
-  await Promise.race([once(cut, "exit"), sleep(240_000)]);
+  await within(once(cut, "exit"), 240_000);
   ok("the cut exited 0", cut.exitCode === 0, logOf(cut).slice(-1500));
   ok("the journal is `ready` (the state a bare `cotal up` recovers)", journalState() === "ready", journalState());
 
