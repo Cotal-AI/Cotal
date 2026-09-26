@@ -196,6 +196,32 @@ export interface CredentialLifetimePolicy {
 
 const FIVE_MINUTES = 5 * 60;
 
+/** The broker's pre-auth control-line cap, in bytes (`max_control_line` in the generated config —
+ *  `openServerConfig` and `serverConfig` below both render this literal, so the cap and the
+ *  mint-time bound derived from it below can never drift). 64 KiB clears a many-channel agent
+ *  JWT (~4-8 KB) with wide margin while keeping the pre-auth allocation ~16x tighter than 1 MB
+ *  under connection flooding (the CONNECT line is parsed BEFORE auth). */
+export const MAX_CONTROL_LINE_BYTES = 65536;
+
+/** The fixed bytes a NATS client wraps around the `jwt` field on the CONNECT protocol line, over
+ *  and above the JWT itself: the JSON object's other keys (`nkey`, `sig`, `name`, `lang`,
+ *  `version`, `protocol`, `verbose`, `pedantic`, `no_responders`, `headers`), their values, and
+ *  the surrounding braces/quotes/commas. Measured live (nats-server `-DV`, the trace of the raw
+ *  protocol) on a real connect with the nats.js v3 client: a control-name credential produced a
+ *  5,104-byte JWT inside a 5,291-byte CONNECT line — 187 bytes of envelope, reproduced twice.
+ *  Rounded up generously (>2.5x) to absorb client/library variation this repo does not control. */
+export const CONNECT_ENVELOPE_OVERHEAD_BYTES = 512;
+
+/** The mint-time budget for a user JWT's byte size: every composition that inflates the JWT (a
+ *  long single channel, many channels, the per-agent event channel, any grant a later change
+ *  adds) is priced against the SAME number, because the credential is what the client sends on
+ *  the CONNECT line and the CONNECT line is what the broker caps — not any one contributor to it.
+ *  `assertValidName`/`assertValidChannel` bound one input each; this bounds the OUTPUT, closing
+ *  the gap between "every individual grant is legal" and "the composed credential still fits"
+ *  (issue #375's review finding: six distinct 4096-char channels, each individually accepted,
+ *  minted a JWT the broker would silently drop). */
+export const MAX_MINTED_JWT_BYTES = MAX_CONTROL_LINE_BYTES - CONNECT_ENVELOPE_OVERHEAD_BYTES;
+
 /** Bounded lifetime for `standing-renewable` credentials whose renewal owner is ONLINE (D5 slice 5):
  *  the holder (or its launcher) re-mints at 75% of the lifetime via the endpoint's creds-source seam,
  *  so a copied cred is broker-dead within a day while renewal never involves an operator. 24h keeps
@@ -882,6 +908,21 @@ export async function mintCreds(
   // orphan authority record). fmtCreds only wraps the already-signed JWT with the seed, so it is
   // done here and the fence is the mint's LAST step.
   const creds = new TextDecoder().decode(fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed))));
+  // The composed-credential bound (SPEC 13.9, issue #375's review finding): every individual grant
+  // input can pass its own validator (assertValidName, assertValidChannel) and the COMPOSED JWT
+  // still exceed the CONNECT line the broker caps, because nothing bounded the COUNT of channels
+  // an agent's allowSubscribe/allowPublish may carry. Refuse here, BEFORE releaseIssuance (the
+  // file's own no-fallible-work-after-a-winning-CAS rule, stated above) — a refusal here has
+  // released no ledger row, unlike a refusal after.
+  const userJwtBytes = Buffer.byteLength(userJwt, "utf8");
+  if (userJwtBytes > MAX_MINTED_JWT_BYTES) {
+    const channelCount = (opts.allowSubscribe?.length ?? 0) + (opts.allowPublish?.length ?? 0);
+    throw new Error(
+      `mintCreds: minted JWT is ${userJwtBytes} bytes, exceeding the ${MAX_MINTED_JWT_BYTES}-byte ` +
+        `mint bound (${channelCount} allowSubscribe+allowPublish channel(s)) - the composed credential ` +
+        `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
+    );
+  }
   await releaseIssuance(auth.space, profile, pr, opts, perms, validDates.exp, rawDigest(creds).replace("sha256:", "sha256-"));
   // §13.1 mint fence for the serve credential: the credential is BUILT, but released only when its
   // NORMATIVE ledger row (holderPrincipal/lifecycleUid/sourceChain/state/exp + the currency
@@ -982,6 +1023,20 @@ export async function mintPublicUserJwt(
   const jwt = await encodeUser(profile, fromPublic(publicId), fromPublic(auth.account.pub),
     { ...perms, tags: principalTags(pr.owner, pr.actor) },
     { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), ...validDates });
+  // Same composed-credential bound as mintCreds (see MAX_MINTED_JWT_BYTES): this JWT is presented
+  // on a real CONNECT line by the remote manager, so it is priced against the same budget before
+  // any fallible finalize step below. None of this function's profiles read allowSubscribe/
+  // allowPublish today (each returns through its own dedicated permission builder), so the count
+  // is always 0 here - the check stays live in case a future profile addition changes that.
+  const jwtBytes = Buffer.byteLength(jwt, "utf8");
+  if (jwtBytes > MAX_MINTED_JWT_BYTES) {
+    const channelCount = (opts.allowSubscribe?.length ?? 0) + (opts.allowPublish?.length ?? 0);
+    throw new Error(
+      `mintPublicUserJwt: minted JWT is ${jwtBytes} bytes, exceeding the ${MAX_MINTED_JWT_BYTES}-byte ` +
+        `mint bound (${channelCount} allowSubscribe+allowPublish channel(s)) - the composed credential ` +
+        `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
+    );
+  }
   if (profile === "endpoint-serve") {
     if (!opts.serveIssuance) throw new Error("mintPublicUserJwt: endpoint-serve requires serveIssuance");
     await finalizeServeIssuance(opts.serveIssuance, opts.endpointServe!, {
@@ -2746,7 +2801,7 @@ export function openServerConfig(opts: {
   return `# Generated by \`cotal up\` - do not edit by hand.
 host: ${host}
 port: ${port}
-max_control_line: 65536
+max_control_line: ${MAX_CONTROL_LINE_BYTES}
 ${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
 `;
 }
@@ -2829,13 +2884,14 @@ export function serverConfig(
   // exceeds the 4 KB default max_control_line at ~2 channels, and the server then silently drops
   // the connection (the client retries forever — a connect that "hangs"). Raise it to fit a rich
   // agent JWT — but right-sized, not generous: the CONNECT line is parsed BEFORE auth, so the cap
-  // is a per-connection pre-auth allocation under connection flooding. 64 KB clears a many-channel
-  // agent JWT (~4–8 KB) with wide margin while keeping the pre-auth surface ~16× tighter than 1 MB.
+  // is a per-connection pre-auth allocation under connection flooding. See MAX_CONTROL_LINE_BYTES
+  // for the derivation; mintCreds/mintPublicUserJwt refuse a JWT that would not fit it BEFORE this
+  // config is ever reached, so a legal credential never depends on this margin alone.
   const tlsBlock = renderTlsBlock(opts.transport);
   return `# Generated by \`cotal up\` - do not edit by hand.
 host: ${host}
 port: ${port}
-max_control_line: 65536
+max_control_line: ${MAX_CONTROL_LINE_BYTES}
 ${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}

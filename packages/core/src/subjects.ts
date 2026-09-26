@@ -143,16 +143,18 @@ export function assertValidChannel(channel: string): string {
 
 /** Maximum length of a policy channel, in UTF-16 code units (whole string, dots included).
  *
- *  Derived from the transport budget, not picked. A channel becomes at least one grant line in
- *  every list it appears on (subscribe row, per-list JetStream consumer rows, publish row), and
- *  those lines ride the user JWT inside the client's CONNECT line, which the broker caps at
- *  `max_control_line` (65536 in the generated config, provision.ts). Measured on this repo: one
- *  70,000-char channel inflated an agent credential to 193,754 bytes — ~2.8 JWT bytes per channel
- *  character across its grant copies — and the connect then hung (issue #375), because the broker
- *  drops an oversized CONNECT line silently and the client retries forever. At 4096 characters a
- *  channel contributes ≈11.5 KB per grant-bearing copy; with the subscribe, publish and consumer
- *  rows a channel can mint (~4 copies) that is ≈45 KB, which sits inside 65536 alongside the
- *  ~4–8 KB many-channel baseline the provision.ts comment prices, with the margin it asks for.
+ *  Derived from the transport budget, not picked. A channel becomes at least one grant row in
+ *  every list it appears on (a `chatSubject`-shaped row per allowSubscribe/allowPublish
+ *  entry, plus the per-channel JetStream history-consumer create row on the subscribe side),
+ *  and those rows ride the user JWT inside the client's CONNECT line, which the broker caps at
+ *  `max_control_line` (`MAX_CONTROL_LINE_BYTES`, provision.ts). Measured on this repo (decoded
+ *  JWT, not the encoded credential): a channel on `allowSubscribe` alone contributes 2 grant
+ *  rows and ~11.1 KB per 4096 characters; the same channel on BOTH `allowSubscribe` and
+ *  `allowPublish` contributes a 3rd row and ~16.6 KB. This bound refuses the absurd single input
+ *  early with a message that names it - it is NOT what keeps a real credential under the cap.
+ *  The COMPOSITION is bounded at the mint (`MAX_MINTED_JWT_BYTES`, provision.ts): a caller may
+ *  legally list many channels each under this bound, and only the mint-time byte check on the
+ *  assembled JWT catches that (issue #375's review finding).
  *  The bound is on the whole string; a single segment cannot exceed the whole, so the per-segment
  *  charset rule needs no separate length arm.
  */
