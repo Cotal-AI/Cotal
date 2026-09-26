@@ -79,6 +79,7 @@ let inflightAgent: MeshAgent | undefined;
 let overlapAgent: MeshAgent | undefined;
 let blockerAgent: MeshAgent | undefined;
 let blocker2Agent: MeshAgent | undefined;
+let orderingAgent: MeshAgent | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -553,7 +554,110 @@ try {
     b2Refusal !== undefined && b2Refusal.error === "bucket refuses writes" && b2AfterOlderSuccess === undefined,
     { b2Refusal, b2AfterOlderSuccess },
   );
+
+  // #636 / #2055: PRESENCE WRITES FROM ONE AGENT LAND IN CALL ORDER. The cells above drive
+  // endpoint.publishPresence directly, which says nothing about MeshAgent: setStatus is two or
+  // three awaited puts (an entering-working condition clear, then setActivity, then setStatus)
+  // and every connector fires it without awaiting, so two overlapping calls interleave their puts
+  // and the record that lands last is whichever call's last put finished last — measured at a
+  // driven turn's end as working, idle, working (#2055). The stimulus is the same held-put kv
+  // stub the cells above use, because the defect is entirely about WHEN a later call's puts may
+  // START: with the serialization gone, the second call's first put is already in the queue while
+  // the first call's is still held. The heartbeat also lands puts in this stub (it publishes
+  // straight from the endpoint, 2s cadence), and an entering-working clear adds one more, so each
+  // leg QUIETS the stub first — settle every put until none arrives for 300ms — and then settles
+  // puts ONE AT A TIME as the leg's own calls issue them; a heartbeat put landing mid-leg plays
+  // the same role the next settle was about to play and changes no observation below.
+  orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering-${port}` });
+  await orderingAgent.start(100);
+  await until(() => orderingAgent!.connected, 30_000);
+  const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const liveOrderingKv = orderingEp.kv;
+  orderingEp.kv = { put: () => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject })) };
+  const takeOrdering = async () => { await until(() => heldOrdering.length > 0, 10_000); return heldOrdering.shift()!; };
+  const quietOrdering = async (): Promise<void> => {
+    for (;;) {
+      const put = await Promise.race([takeOrdering(), sleep(300).then(() => undefined)]);
+      if (put === undefined) return;
+      put.resolve();
+    }
+  };
+
+  // Cell (a): setStatus("working", "") and setStatus("idle"), neither awaited by the caller. The
+  // working call's LAST put is held open; while it is held the idle call must not have started
+  // ANY put. Then everything settles and the endpoint's recorded status ends idle.
+  await quietOrdering();
+  const orderA = orderingAgent!.setStatus("working", "").catch(() => {});
+  const clearPut = await takeOrdering(); // entering working clears the condition first
+  clearPut.resolve();
+  const activityPut = await takeOrdering(); // setActivity("")
+  activityPut.resolve();
+  const statusPut = await takeOrdering(); // setStatus("working") — HELD
+  const idleStartedWhileHeld = heldOrdering.length > 0;
+  const orderB = orderingAgent!.setStatus("idle").catch(() => {});
+  statusPut.resolve();
+  await orderA;
+  const idlePut = await takeOrdering(); // the idle call's one put, started only now
+  idlePut.resolve();
+  await orderB;
+  check(
+    "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
+    !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.status === "idle",
+    { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.status },
+  );
+
+  // Cell (b): a status write's put is held open when stop() is called. Departure is ordered
+  // behind writes already in flight (#636): the offline put must not start until the held put
+  // settles. The kv stub stays installed so ep.stop()'s offline publish parks in it too; after
+  // the held put settles the offline put arrives, is settled, and only then does stop() return.
+  await quietOrdering();
+  const orderC = orderingAgent!.setStatus("waiting", "ordered departure").catch(() => {});
+  const waitActivityPut = await takeOrdering();
+  const stopPromise = orderingAgent!.stop().catch(() => {});
+  await sleep(150);
+  const offlineStartedWhileHeld = heldOrdering.length > 1;
+  waitActivityPut.resolve();
+  await orderC;
+  const offlinePut = await takeOrdering();
+  offlinePut.resolve();
+  await stopPromise;
+  check(
+    "departure is ordered behind a status write already in flight",
+    !offlineStartedWhileHeld && orderingEp.status === "offline",
+    { offlineStartedWhileHeld, epStatus: orderingEp.status },
+  );
+  orderingEp.kv = liveOrderingKv;
+
+  // Cell (c): a rejected presence write must not stall the next one. The first call's put
+  // rejects; the chain swallows the rejection at its tail only, so the second call's put still
+  // arrives and settles, and the endpoint records the second call's status.
+  orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering2-${port}` });
+  await orderingAgent.start(100);
+  await until(() => orderingAgent!.connected, 30_000);
+  const rejectEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const heldReject: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  const liveRejectKv = rejectEp.kv;
+  rejectEp.kv = { put: () => new Promise<void>((resolve, reject) => heldReject.push({ resolve, reject })) };
+  const takeReject = async () => { await until(() => heldReject.length > 0, 10_000); return heldReject.shift()!; };
+  const rejA = orderingAgent!.setStatus("waiting").catch(() => {});
+  const rejAPut = await takeReject();
+  rejAPut.reject(new Error("bucket refuses writes"));
+  await rejA;
+  const rejB = orderingAgent!.setStatus("idle").catch(() => {});
+  const rejBPut = await Promise.race([takeReject(), sleep(2_000).then(() => undefined)]);
+  const secondPutArrived = rejBPut !== undefined;
+  rejBPut?.resolve();
+  await rejB.catch(() => {});
+  for (const held of heldReject.splice(0)) held.resolve();
+  rejectEp.kv = liveRejectKv;
+  check(
+    "a rejected presence write does not stall the next one",
+    secondPutArrived && rejectEp.status === "idle",
+    { secondPutArrived, epStatus: rejectEp.status },
+  );
 } finally {
+  await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
   await blockerAgent?.stop().catch(() => {});
   await overlapAgent?.stop().catch(() => {});
@@ -567,7 +671,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 26;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
