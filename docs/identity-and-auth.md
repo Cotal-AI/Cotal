@@ -220,6 +220,11 @@ That listener still binds `127.0.0.1`; put a reverse proxy in front of it and te
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
 
+The loopback face also serves two host-only retirement doors, both capability-gated and never on the
+public face: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`) and
+`/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its remote
+manager is gone. [embedding.md](embedding.md) documents the managed door's contract.
+
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
 `GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;

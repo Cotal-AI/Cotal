@@ -263,6 +263,24 @@ recomputes the managed id from its broker-pinned target before any gate, head, i
 access, so mint-time validation is not the terminal boundary. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
 
+If the participant disappears after prepare, the host finishes the retirement itself on the auth
+service's loopback face: `POST /managed-lifecycle/retire` (exported as `MANAGED_RETIRE_PATH` from
+`@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only
+`{ owner, actor, lifecycleUid }`. It has the interactive door's guards (POST only, no `Origin`, JSON,
+capability, closed body) and is never served on the public face. The managed grant must already be
+revoked at that uid, or it answers 409. It runs the same `managedRetirementOpId(uid)` operation as
+the rail, and the rail and the door share one in-process flight, so a late participant request and
+the host call converge on one barrier.
+
+| lifecycle head | answer |
+| --- | --- |
+| absent, or `retired` at another uid | `200 { retired: false, lifecycleUid, notStarted: true }` |
+| `active`/`retiring` at another uid | `409` |
+| `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
+| `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
+
+Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential.
+
 A host that resumes retained managed actors also implements
 `remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
 already holds, plus the `nextRegistrationProof` returned by the activation response. That proof is
