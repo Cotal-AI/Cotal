@@ -51,7 +51,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { eventWalLocation, type WalDoc } from "@cotal-ai/connector-core";
+import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -256,6 +256,9 @@ let hostE: ReturnType<typeof spawn> | undefined;
 /** The late seat's own log. Printed on failure: when this suite goes red the seat's stderr is the
  *  only place the reason is written, and a suite that hides it makes its own failures unreadable. */
 let errB = "";
+/** The first seat's own log. Read for the same reason as the others: what the bind wrote to the
+ *  WAL is only visible from inside the seat, and the #705 cell below needs its thread id. */
+let errA = "";
 /** Seat C's log (the restarted seat whose successor file was late) and seat D's (the seat whose
  *  event plane crosses two broker outages). Both cases are read from the seat's own stderr, because
  *  the state each one is about is only visible from inside the seat until it recovers. */
@@ -290,6 +293,10 @@ function startHost(
    *  omitted here means the variable is never set and the seat runs the unwidened path. */
   startDelayMs?: number,
   fake?: { threadId?: string; resumeRollout?: boolean; turnSeqStart?: number },
+  /** Widens the emitter's setup on the OTHER side: holds the window between the persist and the
+   *  first pump open, in ms, so a caller can read the log there. Test-only, omitted here means
+   *  the variable is never set and the seat runs with no hold. */
+  postStartHoldMs?: number,
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -318,6 +325,7 @@ function startHost(
       ...(boot?.outageGate === undefined ? {} : { FAKE_CODEX_OUTAGE_GATE: boot.outageGate }),
       ...(boot?.openWalGate === undefined ? {} : { FAKE_CODEX_OPEN_WAL_GATE: boot.openWalGate }),
       ...(startDelayMs === undefined ? {} : { COTAL_EVENTS_TEST_START_DELAY_MS: String(startDelayMs) }),
+      ...(postStartHoldMs === undefined ? {} : { COTAL_EVENTS_TEST_POST_START_HOLD_MS: String(postStartHoldMs) }),
       ...(fake?.threadId === undefined ? {} : { FAKE_CODEX_THREAD_ID: fake.threadId }),
       ...(fake?.resumeRollout === true ? { FAKE_CODEX_RESUME_ROLLOUT: "1" } : {}),
       ...(fake?.turnSeqStart === undefined ? {} : { FAKE_CODEX_TURN_SEQ_START: String(fake.turnSeqStart) }),
@@ -411,7 +419,7 @@ try {
   // ---- (1) first bind ------------------------------------------------------------------------
   const A = "eventspeer";
   const homeA = join(dir, "a");
-  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"));
+  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk));
   check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
 
@@ -1512,6 +1520,9 @@ try {
   // than trusted: if the turn does not complete within the window, the SETUP cell reds and says so
   // instead of the graded cell passing for the wrong reason.
   const WINDOW_MS = 10_000;
+  // Holds the window between the persist and the first pump open on the OTHER side of the seam
+  // (#705), so this arm's WAL read below cannot be beaten by the pump's own first read.
+  const HOLD_MS = 10_000;
   // THE SLOP IS NOT PADDING, it is the part of the window this suite cannot see. The delay starts
   // when the holder adopts, which is before the announcement, and the fixture cannot act until it
   // has OBSERVED that announcement, one 100ms poll and one pipe hop later. So elapsed measured from
@@ -1532,6 +1543,8 @@ try {
     servers,
     { prompt: "TOOLREC the turn that runs inside the emitter's own setup window", goMark: goE },
     WINDOW_MS,
+    undefined,
+    HOLD_MS,
   );
   check("window:setup:seat E came online", await settle("online:E", () => online.has(E), 60_000), margin("online:E"));
   await joinEventsOf(E);
@@ -1555,6 +1568,22 @@ try {
   const rolloutE = rolloutPathOf(errE) ?? "";
   const threadE = publishedThreads(errE)[0] ?? "";
   const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
+  // #705: the same snapshot-before-anything-runs the removed seat-A cell took, moved here where
+  // the hold (HOLD_MS) keeps the window between the persist and the first pump open long enough
+  // for this arm's own settle to observe it. `rolloutE` already holds the rollout path by now.
+  const expectedBindCursorE = rolloutE === "" ? undefined : (await new JsonlFileSource(rolloutE).read(undefined)).cursor;
+  const threadIdE = rolloutE.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? "";
+  const principalE = operator.getRoster().find((p) => p.card.name === E)?.card.id ?? "";
+  const walPath = threadIdE === "" || principalE === ""
+    ? ""
+    : eventWalLocation({ workspaceRoot: homeE, space, principal: principalE, threadId: threadIdE }).walPath;
+  const readWalE = (): WalDoc | undefined => {
+    try {
+      return walPath === "" || !existsSync(walPath) ? undefined : (JSON.parse(readFileSync(walPath, "utf8")) as WalDoc);
+    } catch {
+      return undefined;
+    }
+  };
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
   // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
   // instead of becoming a suite that hangs somewhere else.
@@ -1602,6 +1631,17 @@ try {
     windowMs: WINDOW_MS,
     spentMs: spentInWindow,
   });
+  // The go file was released about two seconds ago, so the turn is on disk in front of the first
+  // pump. The persist (fixed code) lands when the start widening ends at WINDOW_MS, which is
+  // inside HOLD_MS, so what this settle captures is the persist's write. On a mutant that never
+  // persists it captures the first pump's write of the file's end instead, which the bind cell
+  // below then rejects.
+  let walE: WalDoc | undefined;
+  const walEReady = await settle(
+    "E:the start boundary lands on disk after the launch bind",
+    () => (walE = readWalE())?.frontier.sourceCursor !== undefined,
+    60_000,
+  );
   const framesE = (): AguiFramePart[] => framesOfThread(threadE);
   const arrivedE = await settle(
     "E:the window turn reaches the wire",
@@ -1635,6 +1675,7 @@ try {
       tail: errE.slice(-400),
     },
   );
+  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && walE?.frontier.sourceCursor !== undefined && walE?.frontier.sourceCursor === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
   }
 
   completed = true;
