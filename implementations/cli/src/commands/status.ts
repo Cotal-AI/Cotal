@@ -684,7 +684,7 @@ function formatProc(p: Proc): string {
  *    (`unansweredRequest`, or the service-registry-missing text): red `not serving (pid N)` with
  *    ` · service endpoint not answering`.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running (pid N)`
- *    as today with a dim ` · service unchecked`, so a failed PROBE never reads as a dead rail.
+ *    as today with a dim ` · service unchecked`, so a failed probe never reads as a dead rail.
  *
  *  Bare status keeps exit 0 in every case; this only changes what the row says. A dead/stopped pid
  *  never reaches the probe at all (the early return below), so a stopped manager still reads as the
