@@ -32,7 +32,8 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, seedChannelRegistry, isReachable, type PresenceCondition } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
+import { connect as rawConnect } from "@nats-io/transport-node";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -142,6 +143,36 @@ async function dm(text: string): Promise<void> {
   const id = operator.getRoster().find((p) => p.card.name === PEER)?.card.id;
   if (!id) throw new Error(`peer ${PEER} not in the operator's roster yet`);
   await operator.unicast(id, text);
+}
+
+/**
+ * Publish a raw DM whose wire id is the EMPTY STRING, from a foreign client with no Cotal layer —
+ * the only shape an empty id can arrive in (first-party publish APIs mint one). The sender
+ * principal rides the subject (`local.rawpub`) and `from.id` matches it, so the receiver's
+ * authenticity guard passes and the message reaches ingest like any conformant one (#674: the
+ * adapter seam, not MeshAgent, is what is under test here). `drain()` closes the socket.
+ */
+const enc = new TextEncoder();
+let rawNc: Awaited<ReturnType<typeof rawConnect>> | undefined;
+async function rawEmptyIdDm(text: string): Promise<void> {
+  const recip = operator.getRoster().find((p) => p.card.name === PEER)?.card.id;
+  const parsed = recip ? parsePrincipalKey(recip) : undefined;
+  if (!recip || !parsed) throw new Error(`peer ${PEER} not in the operator's roster yet`);
+  rawNc ??= await rawConnect({ servers, maxReconnectAttempts: 0 });
+  rawNc.publish(
+    unicastSubject(space, parsed.owner, parsed.actor, "local", "rawpub"),
+    enc.encode(
+      JSON.stringify({
+        id: "",
+        ts: Date.now(),
+        space,
+        from: { id: "local.rawpub", name: "RawPub", kind: "agent" },
+        to: recip,
+        parts: [{ kind: "text", text }],
+      }),
+    ),
+  );
+  await rawNc.flush();
 }
 
 let host: ReturnType<typeof spawn> | undefined;
@@ -273,6 +304,64 @@ try {
   await dm("post-steer");
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
+
+  // (4b) #674: two raw DMs with EMPTY wire ids, published back-to-back into one quiet window.
+  // The first-party APIs mint an id per message, so an empty id can only come off the wire from a
+  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer. The
+  // ADAPTER seam is what this cell grades: the surfaced ids the turn owns are receive keys (a
+  // minted one for each id-less item), and the boundary acks by exactly those keys — otherwise the
+  // second message would still ride the frame while the ack addressed nothing, and the NEXT turn
+  // would re-carry both (the ledger-keyed-by-id mutation this cell must catch).
+  await sleep(500);
+  await rawEmptyIdDm("empty-a");
+  await rawEmptyIdDm("empty-b");
+  const tE = await waitFor("empty-id turn", () => turnStarts().find((t) => t.includes("empty-a")));
+  check(
+    "two empty-id DMs in one frame both commit (#674)",
+    tE.includes("empty-a") && tE.includes("empty-b") && tE.includes("2 new messages"),
+    tE,
+  );
+  await sleep(500);
+  await dm("after-empty");
+  const tE2 = await waitFor("post-empty turn", () => turnStarts().find((t) => t.includes("after-empty")));
+  check(
+    "the empty-id batch was committed at its boundary (neither text returns)",
+    !tE2.includes("empty-a") && !tE2.includes("empty-b"),
+    tE2,
+  );
+
+  // (4c) #674: an empty-id DM steered mid-turn carries exactly once. `surfaced` holds RECEIVE
+  // keys; the steer filter must test `i.recvKey` against that set. Under the raw-id mutation an
+  // empty-id item's id ("") is never in the set, so it is steered a SECOND time into the same
+  // turn — the steer injection would name it twice.
+  await sleep(300);
+  await dm("SLOW empty-window");
+  await waitFor("SLOW empty-window turn", () => turnStarts().find((t) => t.includes("SLOW empty-window")));
+  await rawEmptyIdDm("empty-steer");
+  const emptySteered = await waitFor("empty-id steer", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
+    ),
+  );
+  const emptySteerCount = ((emptySteered.params?.input as { text?: string }[] | undefined) ?? []).filter((i) =>
+    (i.text ?? "").includes("empty-steer"),
+  ).length;
+  check(
+    "an empty-id DM steered mid-turn is not steered twice (#674)",
+    emptySteerCount === 1,
+    { emptySteerCount },
+  );
+  await sleep(1500); // let the SLOW empty-window turn complete (acks its batch)
+  await dm("after-empty-steer");
+  const tE3 = await waitFor("post-empty-steer turn", () => turnStarts().find((t) => t.includes("after-empty-steer")));
+  check(
+    "the steered empty-id DM was acked with its turn",
+    !tE3.includes("empty-steer") && !tE3.includes("SLOW empty-window"),
+    tE3,
+  );
 
   // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
   // the turn open until it is interrupted (the fake's self-interrupt fallback after ~1s stands in
