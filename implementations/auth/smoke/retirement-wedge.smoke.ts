@@ -294,7 +294,7 @@ try {
     // successor's exchange calls to mint its root credential) now mints the same-name successor —
     // the exact interface a real respawn hits. On the gate-only predicate this refusal is where
     // an operator meets the wedge.
-    const successorCred = await rejects(() => plane.mintConnectCredential({ owner: OWNER, actor: A, lifecycleUid: mintLifecycleUid() }));
+    const successorCred = await rejects(() => plane!.mintConnectCredential({ owner: OWNER, actor: A, lifecycleUid: mintLifecycleUid() }));
     check("…and the freed alias MINTS a same-name successor through the plane's public issuance seam",
       successorCred === "", successorCred.slice(0, 200));
 

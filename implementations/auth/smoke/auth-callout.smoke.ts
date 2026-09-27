@@ -28,7 +28,7 @@ import {
   tokenAuthenticator,
   type NatsConnection,
 } from "@nats-io/transport-node";
-import { SignJWT, decodeJwt, generateKeyPair } from "jose";
+import { SignJWT, decodeJwt, generateKeyPair, type CryptoKey } from "jose";
 import { decode, encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { createSpaceAuth, isReachable, newIdentity, serverConfig } from "@cotal-ai/core";

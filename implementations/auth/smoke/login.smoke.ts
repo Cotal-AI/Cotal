@@ -343,7 +343,9 @@ console.log("C2) advertised space catalog cache");
   catalogBase = `http://127.0.0.1:${(catalog.address() as AddressInfo).port}`;
   const catalogIdp = `${catalogBase}/api/auth`;
   saveIdpSession(catalogDir, catalogIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
-  const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
+  const syncMod = await import("../../cli/src/commands/sync.js");
+  const { prepareCatalogTargets } = syncMod;
+  const validateCatalogSnapshot: typeof syncMod.validateCatalogSnapshot = syncMod.validateCatalogSnapshot;
   let validateCalls = 0;
   const validate = (snapshot: unknown, account: Parameters<typeof validateCatalogSnapshot>[1]) => {
     validateCalls++;
