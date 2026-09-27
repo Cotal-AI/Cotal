@@ -217,8 +217,8 @@ try {
       ],
     });
     const roundTrippedPart = JSON.parse(JSON.stringify(live)) as unknown;
-    const liveTypes = parseAguiFrame(live).events.map((e) => e.type);
-    const rtTypes = parseAguiFrame(roundTrippedPart).events.map((e) => e.type);
+    const liveTypes: string[] = parseAguiFrame(live).events.map((e) => e.type);
+    const rtTypes: string[] = parseAguiFrame(roundTrippedPart).events.map((e) => e.type);
     c(
       "chokepoint:parseAguiFrame reads TOOL_CALL_RESULT off a live frame AND off a JSON-round-tripped body",
       liveTypes.includes("TOOL_CALL_RESULT") &&
@@ -243,13 +243,13 @@ try {
   {
     let i = 0;
     const mapper = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-ca-${++i}` });
-    const { ep, pumped, wire, types } = await drive("claude-args", mapper.map, [
+    const { ep, pumped, wire, types } = await drive("claude-args", mapper.map as RecordMapper<unknown>, [
       {
         uuid: "ca-prompt",
         type: "user",
         timestamp: "2026-08-15T00:00:00.000Z",
         origin: { kind: "human" },
-        message: { role: "user", content: "look" },
+        message: { role: "user", content: "look" } as ClaudeEntry["message"],
       } satisfies Partial<ClaudeEntry>,
       {
         uuid: "ca-tool",
@@ -258,7 +258,7 @@ try {
         message: {
           role: "assistant",
           content: [{ type: "tool_use", id: "t-ca", name: "Read", input: { path: CLAUDE_ARGS } }],
-        },
+        } as ClaudeEntry["message"],
       } satisfies Partial<ClaudeEntry>,
     ]);
     c("carrier:claude-args mark is absent from the recorded publish", !wire.includes(CLAUDE_ARGS), {
@@ -281,13 +281,13 @@ try {
   {
     let i = 0;
     const mapper = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-cr-${++i}` });
-    const { pumped, wire, types } = await drive("claude-result", mapper.map, [
+    const { pumped, wire, types } = await drive("claude-result", mapper.map as RecordMapper<unknown>, [
       {
         uuid: "cr-prompt",
         type: "user",
         timestamp: "2026-08-15T00:00:00.000Z",
         origin: { kind: "human" },
-        message: { role: "user", content: "look" },
+        message: { role: "user", content: "look" } as ClaudeEntry["message"],
       } satisfies Partial<ClaudeEntry>,
       {
         uuid: "cr-tool",
@@ -296,13 +296,13 @@ try {
         message: {
           role: "assistant",
           content: [{ type: "tool_use", id: "t-cr", name: "Read", input: { path: "x" } }],
-        },
+        } as ClaudeEntry["message"],
       } satisfies Partial<ClaudeEntry>,
       {
         uuid: "cr-result",
         type: "user",
         timestamp: "2026-08-15T00:00:02.000Z",
-        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t-cr", content: CLAUDE_RESULT }] },
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t-cr", content: CLAUDE_RESULT }] } as ClaudeEntry["message"],
       } satisfies Partial<ClaudeEntry>,
     ]);
     c("carrier:claude-result mark is absent from the recorded publish", !wire.includes(CLAUDE_RESULT), {
@@ -320,7 +320,7 @@ try {
   {
     const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => "run-xa" });
     const ts = "2026-08-15T00:00:00.000Z";
-    const { pumped, wire, types } = await drive("codex-args", mapper.map, [
+    const { pumped, wire, types } = await drive("codex-args", mapper.map as RecordMapper<unknown>, [
       { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } } satisfies CodexRecord,
       {
         timestamp: ts,
@@ -343,7 +343,7 @@ try {
   {
     const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => "run-xr" });
     const ts = "2026-08-15T00:00:00.000Z";
-    const { pumped, wire, types } = await drive("codex-result", mapper.map, [
+    const { pumped, wire, types } = await drive("codex-result", mapper.map as RecordMapper<unknown>, [
       { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } } satisfies CodexRecord,
       {
         timestamp: ts,
@@ -382,7 +382,7 @@ try {
         state: { status: "completed", input: { cmd: OC_ARGS }, output: OC_RESULT, time: { start: 1, end: 2 } },
       },
     };
-    const { pumped, wire, types } = await drive("opencode", mapper.map, [rec]);
+    const { pumped, wire, types } = await drive("opencode", mapper.map as RecordMapper<unknown>, [rec]);
     c("carrier:opencode-args mark is absent from the recorded publish", !wire.includes(OC_ARGS), {
       types,
       err: pumped.err?.message,

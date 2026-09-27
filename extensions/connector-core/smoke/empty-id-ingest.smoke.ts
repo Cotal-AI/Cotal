@@ -48,7 +48,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { chatSubject, isReachable, mintLifecycleUid, seedChannelRegistry } from "@cotal-ai/core";
+import { chatSubject, isReachable, mintLifecycleUid, seedChannelRegistry, type CotalMessage, type MessageMeta } from "@cotal-ai/core";
 import { MeshAgent, afterRecallMark } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
@@ -130,7 +130,7 @@ const msg = (id: string, text: string): CotalMessage => ({
   id,
   ts: Date.now(),
   space,
-  from: { id: `${PUB_OWNER}.${PUB_ACTOR}`, name: "RawPub", kind: "agent" },
+  from: { id: `${PUB_OWNER}.${PUB_ACTOR}`, name: "RawPub" },
   channel: "ch",
   parts: [{ kind: "text", text }],
 });
@@ -157,8 +157,8 @@ try {
 
   nc = await connect({ servers, maxReconnectAttempts: 0 });
   const publish = async (id: string, text: string) => {
-    nc.publish(subject, enc.encode(rawMsg(id, text)));
-    await nc.flush();
+    nc!.publish(subject, enc.encode(rawMsg(id, text)));
+    await nc!.flush();
   };
   const drainedTexts = (): string[] => agent.drainInbox().map((i) => i.text);
 
