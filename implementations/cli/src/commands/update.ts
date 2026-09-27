@@ -18,7 +18,15 @@ import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
-import { ConnectRefusal, isWorkspaceTargetError, renderWorkspaceError, type ControlTarget } from "@cotal-ai/workspace";
+import {
+  ConnectRefusal,
+  isWorkspaceTargetError,
+  pruneStaleMeshes,
+  renderWorkspaceError,
+  resolveMeshTarget,
+  type ControlTarget,
+  type MeshTarget,
+} from "@cotal-ai/workspace";
 import { legacyManagerReport } from "../lib/legacy-manager-report.js";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
@@ -288,7 +296,27 @@ export async function reportRunningManagers(
   }
 }
 
-async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+export async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+  // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
+  // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
+  // no answer from that mesh's exchange can change what this install does. Peek the mode the same
+  // way the control resolver's own peek does (offline-swept when no space is named, `--space`
+  // unfiltered) and skip the mint entirely for a remote entry, before it ever reaches the exchange.
+  if (typeof flags.creds !== "string") {
+    const space = typeof flags.space === "string" ? flags.space : undefined;
+    const server = typeof flags.server === "string" ? flags.server : undefined;
+    let peek: MeshTarget | undefined;
+    try {
+      const offline = space ? [] : (await pruneStaleMeshes()).offline;
+      peek = resolveMeshTarget(process.cwd(), { server, space, offline });
+    } catch (e) {
+      if (!isWorkspaceTargetError(e) || (e.code !== "unknown-space" && e.code !== "no-meshes")) throw e;
+    }
+    if (peek?.mode === "user" && peek.userAuth?.remote === true) {
+      console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
+      return "none";
+    }
+  }
   let target: ControlTarget;
   try {
     target = await resolveControlTarget({

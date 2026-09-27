@@ -826,9 +826,15 @@ async function remoteUserCredentials(
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     // A refused exchange is an authenticated denial with the reason; surface it verbatim - the
     // service's copy is already operator-exact (god-view, history-purge, deployer, and
-    // manager-service stay loopback-only, and that refusal names the face).
+    // manager-service stay loopback-only, and that refusal names the face). But the PUBLIC face
+    // (#2158) is not this repository's and may withhold the service's reason; when it supplies
+    // none, say so rather than presenting the bare HTTP status as if it were the reason - this
+    // client cannot tell a real service sentence from a status code dressed up as one.
+    const actorLabel = `actor "${actor}"${view ? ` (view "${view}")` : ""}`;
     throw new Error(
-      `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
+      body.error
+        ? `signed in, but the exchange for ${actorLabel} was refused: ${body.error}`
+        : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
     );
   }
   const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
