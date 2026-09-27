@@ -35,6 +35,8 @@ const {
   removeMesh,
   loadMeshes,
   renderWorkspaceError,
+  reachableOrThrow,
+  ConnectRefusal,
 } = await import("@cotal-ai/workspace");
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
@@ -361,6 +363,95 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     preflightMessage("slow-link", heldT, false),
   );
   held.close();
+}
+
+// ── S12 raw off-registry preflight (#709): reachableOrThrow re-probes at the confirm budget ────────
+// before condemning a slow-but-live broker, and the timeout sentence names a budget actually spent.
+{
+  const { createServer } = await import("node:net");
+  const slowRawSrv = createServer((sock) => {
+    sock.on("error", () => { /* client tears down on its own error; not a test failure */ });
+    setTimeout(() => {
+      try {
+        sock.write('INFO {"server_id":"s12","version":"2.12.0","proto":1,"headers":true,"max_payload":1048576}\r\n');
+      } catch { /* client gone */ }
+    }, 1_500);
+    sock.on("data", (chunk: Buffer) => {
+      if (chunk.includes("PING")) {
+        try { sock.write("PONG\r\n"); } catch { /* client gone */ }
+      }
+    });
+  });
+  const slowRawPort = await new Promise<number>((resolve) => {
+    slowRawSrv.listen(0, "127.0.0.1", () => resolve((slowRawSrv.address() as { port: number }).port));
+  });
+  const slowRaw = `nats://127.0.0.1:${slowRawPort}`;
+
+  const t12a0 = Date.now();
+  let s12aOk = false;
+  try {
+    await reachableOrThrow(slowRaw, {});
+    s12aOk = true;
+  } catch { /* checked below */ }
+  const s12aElapsed = Date.now() - t12a0;
+  check(
+    "S12 delayed-INFO plain peer: reachableOrThrow resolves through the confirm probe (#709)",
+    s12aOk,
+  );
+  check(
+    "S12 delayed-INFO plain peer: took >1s (the confirm probe engaged, #709)",
+    s12aElapsed >= 1_400,
+    { s12aElapsed },
+  );
+  slowRawSrv.close();
+
+  const heldRawSrv = createServer((sock) => {
+    sock.on("error", () => { /* client resets when its own probe budget expires; not a test failure */ });
+    // Accept TCP; never write, never close.
+  });
+  const heldRawPort = await new Promise<number>((resolve) => {
+    heldRawSrv.listen(0, "127.0.0.1", () => resolve((heldRawSrv.address() as { port: number }).port));
+  });
+  const heldRaw = `nats://127.0.0.1:${heldRawPort}`;
+
+  const t12b0 = Date.now();
+  let s12bMsg: string | undefined;
+  try {
+    await reachableOrThrow(heldRaw, {});
+  } catch (e) {
+    s12bMsg = e instanceof ConnectRefusal ? e.message : undefined;
+  }
+  const s12bElapsed = Date.now() - t12b0;
+  check(
+    "S12 held-open plain peer: the raw refusal is the timeout sentence and it names the budget the probe spent (#709)",
+    s12bMsg !== undefined && s12bMsg.includes("did not complete within 8s") && !s12bMsg.includes("is it running"),
+    s12bMsg,
+  );
+  check(
+    "S12 held-open plain peer: elapsed at least 8s (#709)",
+    s12bElapsed >= 8_000,
+    { s12bElapsed },
+  );
+  heldRawSrv.close();
+
+  const t12c0 = Date.now();
+  let s12cMsg: string | undefined;
+  try {
+    await reachableOrThrow(DEAD, {});
+  } catch (e) {
+    s12cMsg = e instanceof ConnectRefusal ? e.message : undefined;
+  }
+  const s12cElapsed = Date.now() - t12c0;
+  check(
+    "S12 dead port: the raw refusal still says is-it-running and spends no confirm budget (#709)",
+    s12cMsg !== undefined && s12cMsg.includes("is it running"),
+    s12cMsg,
+  );
+  check(
+    "S12 dead port: elapsed under 2s (#709)",
+    s12cElapsed < 2_000,
+    { s12cElapsed },
+  );
 }
 
 rmSync(home, { recursive: true, force: true });

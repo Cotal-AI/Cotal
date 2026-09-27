@@ -26,7 +26,7 @@ import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
-import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
+import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
 
 /**
@@ -537,7 +537,14 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
 export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
-  const probe = await probeConnect(server, auth);
+  let probe = await probeConnect(server, auth);
+  // CONFIRM BEFORE CONDEMNING, same reason as the registry path's re-probe (preflight.ts:100-110):
+  // the default budget is 1s, a real link can need more, and the raw door never got the second try —
+  // #709. `timeout`/`unreachable` are both inconclusive misses; `auth-required`/`stale-auth` are
+  // answers (the broker responded, or a credential read locally) and get no second try. The
+  // renderer's `timeout` sentence names this confirm budget, so it must actually be spent first.
+  if (!probe.ok && (probe.reason === "timeout" || probe.reason === "unreachable"))
+    probe = await probeConnect(server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return;
   // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
