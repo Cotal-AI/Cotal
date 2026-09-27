@@ -206,6 +206,12 @@ try {
     bogus.status !== 0 && /not a valid lifecycle token/i.test(strip(bogus.out)),
     { status: bogus.status, tail: strip(bogus.out).slice(-300) });
 
+  const bogusDescribe = await cotal(["describe", "manager", "--on", "4ik6rb0e", "--space", space], root1);
+  mustHaveRun(bogusDescribe, "`describe manager --on <malformed>`");
+  check("a malformed instance id on describe is REFUSED, not silently widened (#554)",
+    bogusDescribe.status !== 0 && /not a valid lifecycle token/i.test(strip(bogusDescribe.out)),
+    { status: bogusDescribe.status, tail: strip(bogusDescribe.out).slice(-300) });
+
   // A roster PRINCIPAL id (`local.U…`) is the mismatch #423 reports: an operator pins by the id
   // they can see on `endpoints`/multi-manager `ps`, gets the mint's bare grammar error, and neither
   // it nor the flag's help names the identifier `--on` wants or where `cotal ps` prints it.
@@ -213,6 +219,7 @@ try {
   const onInstanceRefusalSites: ReadonlyArray<{ what: string; argv: string[] }> = [
     { what: "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)", argv: ["ps", "--on", principalId, "--space", space] },
     { what: "spawn --detach --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", principalId, "--space", space] },
+    { what: "describe manager --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#554)", argv: ["describe", "manager", "--on", principalId, "--space", space] },
   ];
   for (const site of onInstanceRefusalSites) {
     const r = await cotal(site.argv, root1);
@@ -250,6 +257,18 @@ try {
       timedOutOnDescribe
         ? { defect: "describe timed out on the pinned rail; the mint did not receive the instance (this is the 0.17.0 regression)", tail: out.slice(-300) }
         : { status: r.status, tail: out.slice(-300) });
+  }
+
+  // describe --on <iid> SUCCEEDS and its attribution line names <iid>: the pinned instance
+  // answered, not the queue winner (#554). Exit 0 alone is satisfied by the class queue; the
+  // attribution-line equality is the claim.
+  for (const [label, iid] of [["IID1", IID1], ["IID2", IID2]] as const) {
+    const r = await cotal(["describe", "manager", "--on", iid, "--space", space], root1);
+    mustHaveRun(r, `\`describe manager --on ${label}\``);
+    const out = strip(r.out);
+    check(`describe --on ${label} SUCCEEDS and its attribution line names ${label}: the pinned instance answered, not the queue winner (#554)`,
+      r.status === 0 && out.includes(`instance ${iid} ·`),
+      { status: r.status, tail: out.slice(-300) });
   }
 
   // ---- 4. THE PIN ROUTES: IT DOES NOT FALL THROUGH TO THE CLASS QUEUE -------------------------
@@ -326,6 +345,7 @@ try {
     { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space] },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+    { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space] },
   ];
   for (const site of sites) {
     const r = await cotal(site.argv, root1);
@@ -352,6 +372,7 @@ try {
     { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", "", "--space", space] },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", "", "--space", space] },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", "", "--space", space] },
+    { what: "describe", argv: ["describe", "manager", "--on", "", "--space", space] },
   ];
   for (const site of emptySites) {
     const r = await cotal(site.argv, root1);

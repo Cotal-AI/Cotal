@@ -25,6 +25,7 @@ import {
   type EpCaller,
   type EpInstanceLiveness,
   type EpVerbTarget,
+  type FlagSpec,
   type Profile,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
@@ -208,6 +209,12 @@ export type ManagerReply = ControlReply & { unanswered?: boolean; code?: string 
 export interface ManagerPin {
   instanceId?: string;
 }
+
+/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
+ *  ps/stop/attach/input/describe so they cannot drift. For stop and attach it is the seat-locality
+ *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
+ *  the one that wins the class queue. */
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const satisfies FlagSpec;
 
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
