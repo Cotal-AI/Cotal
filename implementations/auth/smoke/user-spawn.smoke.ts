@@ -699,7 +699,12 @@ try {
     JSON.stringify({ observed: [...observed], uncovered }),
   );
   const quietPid = (psList(manager).find((a) => a.name === "iota"))?.pid;
-  if (quietPid) process.kill(quietPid, "SIGKILL");
+  // #798: the pid above came from a listing, and a child can be gone by the time it is signalled. On an
+  // ensure-gone kill ESRCH is the desired end state, never an abort. Prove the cleanup tolerates exactly
+  // that state: end the child, then run the same cleanup once more against the pid it just ended.
+  await killPid(quietPid);
+  const goneAgain = await killPid(quietPid).then(() => "ok", (e: Error) => e.message);
+  check("ensure-gone on the quiet seat tolerates a child that already exited (#798)", goneAgain === "ok", { quietPid, goneAgain });
   const quietReply: ControlReply = await quietPending;
   check("a seat that never joins the mesh is not reported as a successful launch", quietReply.ok === false, quietReply);
 
@@ -1569,7 +1574,7 @@ try {
   // that refuses every spawn DELETES them rather than failing them, and the run still prints a
   // verdict. The focus mode (COTAL_USER_ENDPOINT_CLI_ONLY=1) skips the block between the switch and
   // its closing brace, so it runs a different total than the full mode.
-  const EXPECTED = endpointCliFocus ? 40 : 120;
+  const EXPECTED = endpointCliFocus ? 40 : 121;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
