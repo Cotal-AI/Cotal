@@ -412,7 +412,7 @@ try {
   try {
     const ottoId = pub.getRoster().find((p) => p.card.name === "Otto")?.card.id;
     if (!ottoId) throw new Error("turn-wedge: Otto not in roster for the empty-id step");
-    const parsed = parsePrincipalKey(ottoId);
+    const parsed = parsePrincipalKey(ottoId) as { owner: string; actor: string };
     const emptyIdDm = (text: string): void =>
       rawNc.publish(
         unicastSubject(space, parsed.owner, parsed.actor, "local", "rawpub"),
@@ -483,7 +483,7 @@ try {
   // single-site mutant reds this cell; it is asserted here rather than proved by mutation.
   await errorOnce();
   const beforeStop = prompts.length;
-  await hooks.dispose();
+  await hooks.dispose!();
   hooks = undefined;
   await sleep(4_000);
   check("retry:a stop submits nothing — a pending retry does not submit after dispose()", prompts.length === beforeStop, prompts);

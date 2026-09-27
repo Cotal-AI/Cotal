@@ -62,7 +62,7 @@ try {
   /* best-effort cleanup */
 }
 
-if (process.platform !== "win32") {
+if ((process.platform as NodeJS.Platform) !== "win32") {
   const stubDir = mkdtempSync(join(tmpdir(), "cotal-cmux-wait-"));
   // The extension is load-bearing. This stub is written under TMPDIR and its body is CommonJS,
   // and node picks the module system for an extensionless file from the nearest package.json
