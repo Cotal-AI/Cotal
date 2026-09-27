@@ -134,7 +134,8 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   still publishes one `RUN_ERROR` that does fit: it keeps the code and says the original detail
   was omitted or shortened because of the bound, so a reader is never shown a truncated message as
   complete. A turn **you** stopped is not a failure and is not published as one: a user cancellation
-  arrives on the same event, and it closes the run as an ordinary end.
+  arrives on the same event, and it closes the run as an ordinary end. A failed turn also re-arms
+  the wake it carried, so a focus @mention whose turn failed is driven again after the retry delay.
 
 Reasoning is off by default.
 

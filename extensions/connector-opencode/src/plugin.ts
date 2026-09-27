@@ -460,6 +460,12 @@ export const cotal: Plugin = async () => {
   // @mentions from the same sender produce a BYTE-IDENTICAL nudge, so comparing the strings would
   // report "still mine" about a different caller's input in exactly the case that matters.
   let overrideSeq = 0;
+  // WHAT THE CURRENT TURN SUBMITTED, so a `session.error` after a landed submission (#715) can tell
+  // whether a wake rode this turn. `pendingOverride` cannot answer that: it is cleared once the
+  // submission lands (line ~1032), which is correct for a turn that finishes but leaves nothing for
+  // the error arm to re-arm from. Set beside that clear, read only by the `session.error` arm, and
+  // cleared by whichever of them runs first (the turn cannot both finish and fail).
+  let submittedWake: string | undefined;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
    * attempts departure, which is a different thing from refusing new work: the fence closes the
@@ -1007,6 +1013,9 @@ export const cotal: Plugin = async () => {
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
       // The submission landed with the run turns in its prompt — they are surfaced.
       if (turnIds.length) agent.commitSurfacedTurns(turnIds);
+      // WHAT THIS TURN CARRIED, so the `session.error` arm can re-arm it if this turn fails instead
+      // of finishing (#715). `undefined` when no wake rode this submission.
+      submittedWake = carried;
       // CLEARED ONLY HERE, once the submission actually landed, so no early return can lose the wake
       // it was carrying. Each return parks it explicitly and the catch does too, so every exit from
       // this function either submits the wake or leaves it pending for the next drive.
@@ -1139,6 +1148,7 @@ export const cotal: Plugin = async () => {
       awaitingTurnEnd = false;
       ackSurfaced(); // our driven turn: ack the surfaced batch (the sole ack site)
     }
+    submittedWake = undefined; // the turn delivered — nothing left to re-arm (#715)
     clearInterruptIntent();
     clearErrorRetry(true);
     if (workPending()) void drive();
@@ -1408,8 +1418,21 @@ export const cotal: Plugin = async () => {
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;
-            if (interrupted) ackSurfaced(); // explicit user Stop/Cancel: treat the surfaced batch as dismissed, not failed
-            else abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
+            if (interrupted) {
+              ackSurfaced(); // explicit user Stop/Cancel: treat the surfaced batch as dismissed, not failed
+              submittedWake = undefined; // dismissed the same way as the batch it rode with, not re-armed
+            } else {
+              abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
+              // RE-ARM THE WAKE (#715): a wake handed to `drive` as the PARAMETER is never in
+              // `pendingOverride`, so a landed submission that then fails left `workPending()` false
+              // and the retry below a no-op — unlike a submit that never lands, already parked by
+              // the throw path at line ~1047.
+              if (submittedWake !== undefined && pendingOverride === undefined) {
+                pendingOverride = submittedWake;
+                overrideSeq += 1;
+              }
+              submittedWake = undefined;
+            }
           }
           await safeStatus("idle");
           if (!interrupted) scheduleErrorRetry();
