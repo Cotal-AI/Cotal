@@ -268,7 +268,7 @@ try {
     live(observer).length === PEERS && after.every((p) => p.status !== "offline"),
     statusOf(observer));
   ok("1.6 the view itself is stale: whole-bucket silence past TTL, not 3 peer deaths",
-    view.fresh === false && typeof view.staleSince === "number", view);
+    view.state === "stale" && typeof view.staleSince === "number", view);
   ok("1.7 and that stale transition was emitted (the page has something to surface)",
     views.some((v) => v.fresh === false), views);
 

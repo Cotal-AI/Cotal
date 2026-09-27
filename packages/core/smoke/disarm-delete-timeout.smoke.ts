@@ -59,7 +59,15 @@ const watch = {
   } as unknown as PushConsumer,
 };
 
-const disarm = (ep as unknown as { disarmMembershipWatch(watch: typeof watch): Promise<void> }).disarmMembershipWatch.bind(ep);
+type WatchArg = {
+  onChange: () => void;
+  stopped: boolean;
+  arm: Promise<void>;
+  consumerStream?: string;
+  consumerName?: string;
+  consumer?: PushConsumer;
+};
+const disarm = (ep as unknown as { disarmMembershipWatch(w: WatchArg): Promise<void> }).disarmMembershipWatch.bind(ep);
 
 let threw = false;
 let thrown: unknown;

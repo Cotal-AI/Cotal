@@ -52,7 +52,7 @@ const denied: Connector = {
 
 check(
   "the announcer is a connector the CLI has never heard of",
-  announcer.name === "smoke-announce-unknown" && announcer.name !== "claude",
+  announcer.name === "smoke-announce-unknown" && (announcer.name as string) !== "claude",
 );
 check("declared-true is allowed", (() => {
   try {
