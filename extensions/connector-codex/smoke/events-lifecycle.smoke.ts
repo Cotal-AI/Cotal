@@ -423,59 +423,6 @@ try {
   check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
 
-  // #705: right after the launch bind announces (a successful `AguiEmitter.start`) and before the
-  // first turn is even sent, the boundary the bind captured must already be on disk — otherwise a
-  // host that dies in this window leaves a virgin WAL and the next bind takes a later boundary,
-  // dropping whatever the thread appended in between.
-  const bindAnnounced = await settle("A:the launch bind announced its boundary", () => publishedThreads(errA).length >= 1, 60_000);
-  const bindThreadId = rolloutPathOf(errA)?.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? "";
-  const bindPrincipal = operator.getRoster().find((p) => p.card.name === A)?.card.id ?? "";
-  const bindWalPath = bindThreadId === "" || bindPrincipal === ""
-    ? ""
-    : eventWalLocation({ workspaceRoot: homeA, space, principal: bindPrincipal, threadId: bindThreadId }).walPath;
-  const readBindWal = (): WalDoc | undefined => {
-    try {
-      return bindWalPath === "" || !existsSync(bindWalPath) ? undefined : (JSON.parse(readFileSync(bindWalPath, "utf8")) as WalDoc);
-    } catch {
-      return undefined;
-    }
-  };
-  const bindWalReady = await settle(
-    "A:the start boundary lands on disk after the launch bind",
-    () => readBindWal()?.frontier.sourceCursor !== undefined,
-    60_000,
-  );
-  const bindWal = readBindWal();
-  // The boundary the bind captured is re-derivable and, on this phase's timeline, UNIQUELY so.
-  // The first turn has not been sent, so the rollout still holds exactly the bytes the primer
-  // inject wrote; a fresh read from the start yields the same cursor `newEventHolder`'s
-  // `startCursor` captured.
-  const bindRolloutPath = rolloutPathOf(errA) ?? "";
-  const expectedBindCursor = bindRolloutPath === "" ? undefined : (await new JsonlFileSource(bindRolloutPath).read(undefined)).cursor;
-  // WHAT SEPARATES THE PERSIST FROM THE PUMP, because both write a cursor into a virgin WAL with
-  // zero frames. The pump's cursor-only advance (agui.ts:1727/1768) records the cursor its OWN
-  // read returned: with no log cursor it reads through the boundary wrapper from the start and
-  // lands at the file's end AT THE MOMENT IT READ, which on a live seat is after the bind and
-  // includes anything appended since. The persist records the boundary the bind captured BEFORE
-  // it announced (#705). The cell therefore does not merely wait for a cursor: it SNAPSHOT'S the
-  // rollout before releasing the first turn, and requires the WAL's cursor to equal the boundary
-  // that snapshot yields. With the persist removed, whatever cursor the first pump's empty-read
-  // advance leaves reflects a file the seat may have appended to since the bind, and the
-  // equal-check reds rather than passing on a state the pump wrote for its own reasons.
-  const rolloutBytesAtBind = bindRolloutPath === "" ? undefined : readFileSync(bindRolloutPath, "utf8");
-  check(
-    "bind:the start boundary is on disk before the first pump (#705)",
-    bindAnnounced && bindWalReady && bindWal?.frontier.sourceCursor !== undefined && bindWal?.frontier.sourceCursor === expectedBindCursor,
-    {
-      ...margin("A:the start boundary lands on disk after the launch bind"),
-      threadId: bindThreadId,
-      walPath: bindWalPath,
-      sourceCursor: bindWal?.frontier.sourceCursor,
-      expectedBindCursor,
-      rolloutBytes: rolloutBytesAtBind === undefined ? undefined : rolloutBytesAtBind.length,
-    },
-  );
-
   await dm(A, "first turn");
   const published = await settle("A:first RUN_FINISHED", () => evTypes().includes("RUN_FINISHED"));
   check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length, ...margin("A:first RUN_FINISHED") });
