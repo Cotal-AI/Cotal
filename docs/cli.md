@@ -1546,10 +1546,11 @@ One-shot messaging: connect, send a single direct message (`dm`), channel post (
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
 
-`cotal send` works from an operator shell or from a seat. It uses `cotal-send` as the advisory
-display name. The wire principal comes from the resolved operator credential or user bearer, not
-from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or `COTAL_ACTOR`. On an open mesh the transient
-endpoint self-mints its principal.
+`cotal send` works from an operator shell or from a seat. Its display name is `<login>@<host>` of
+the shell that ran it, so the recipient can tell one operator's send from another's; it is taken
+from the operating system, never from `COTAL_NAME`. The wire principal comes from the resolved
+operator credential or user bearer, not from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or
+`COTAL_ACTOR`. On an open mesh the transient endpoint self-mints its principal.
 
 ## channels
 
