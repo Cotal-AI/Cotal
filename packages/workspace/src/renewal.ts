@@ -171,6 +171,11 @@ export interface RenewalRecord {
   results: RemintResult[];
   /** The daemon's explicit reloadCreds adoption outcome; absent when nothing was re-signed. */
   adoption?: { ok: boolean; detail?: unknown; error?: string };
+  /** Which renewal authority this pass ran under (#1063): `"lease"` when the caller held the mesh's
+   *  one daemon-credential renewal lease before re-signing (broker-coordinated); `"offline"` when the
+   *  broker did not answer and the re-sign relied on signer continuity alone, uncoordinated. Absent
+   *  for a manager's pass (it always holds the lease; only `doctor auth --fix` needs to say which). */
+  authority?: "lease" | "offline";
 }
 
 /** `.cotal/renewal.<spaceKey>.json` — the renewal record's filename, PER-SPACE. The `{space}` is
