@@ -14,6 +14,9 @@
  *   4. CLEAN SWAP: a final explicit reload before the old JWT's exp — the run never logs
  *      "User Authentication Expired" and ends with a READY delivery lease.
  *
+ * Phase 5 grades verified-gone-by-complete-scan as the rail's success signal (never the raw kick
+ * count, which a victim's own pre-scan disconnect can legitimately zero) — see #1115.
+ *
  * NOTE: runs the BUILT dist — `pnpm build` first (the smoke:ci wiring builds).
  * Run: pnpm smoke:delivery-renewal   (needs `nats-server` on PATH; auth/JetStream, local-only; ~30s)
  */
@@ -204,10 +207,13 @@ try {
   });
   const victimPrincipal = principalKey(DEV_OWNER, victim.id).key;
   const evictionStartedAt = diagnosticMs();
+  await victimNc.flush();
+  check("victim is live at scan start (precondition: the evict below has a connection to find)", !victimNc.isClosed() && !victimClosed, { victimClosed });
   const evicted = await adminReq2(sup, "evictPrincipal", { principal: victimPrincipal });
   console.log(`  · DIAGNOSTIC eviction completedMs=${diagnosticMs()} elapsedMs=${diagnosticMs() - evictionStartedAt} victimClosed=${victimClosed} victimClosedAt=${String(victimClosedAt)} closeReason=${JSON.stringify(victimCloseReason)} reply=${JSON.stringify(evicted)}`);
-  const ev = (evicted.ok ? evicted.data : {}) as { kicked?: number; verifiedGone?: boolean; scanComplete?: boolean };
-  check("evictPrincipal force-drops the victim (kicked + verifiedGone + complete scan)", evicted.ok === true && (ev.kicked ?? 0) >= 1 && ev.verifiedGone === true && ev.scanComplete === true, JSON.stringify(evicted));
+  const ev = (evicted.ok ? evicted.data : {}) as { kicked?: number; verifiedGone?: boolean; scanComplete?: boolean; remaining?: number };
+  check("evictPrincipal verifies the victim gone by a complete scan (the rail's success signal, never the kick count) (#1115)", evicted.ok === true && ev.verifiedGone === true && ev.scanComplete === true && ev.remaining === 0, { evicted, victimClosed, victimClosedAt, evictionStartedAt });
+  check("the kick count is explained: at least one kick, or the victim's own disconnect was observed before the reply", (ev.kicked ?? 0) >= 1 || victimClosed, { kicked: ev.kicked, victimClosed, victimClosedAt });
   check("victim's connection actually closed", await until(() => victimClosed, 5000));
   const ghost = await adminReq2(sup, "evictPrincipal", { principal: principalKey(DEV_OWNER, newIdentity().id).key });
   const gv = (ghost.ok ? ghost.data : {}) as { kicked?: number; verifiedGone?: boolean };
