@@ -29,7 +29,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
+import { connect as rawConnect } from "@nats-io/transport-node";
 import { bootPlugin } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -398,6 +399,83 @@ try {
     prompts.length === 19 && prompts[18]!.at - t0 >= 900 && prompts[18]!.at - t0 < 8_000,
     { delta: prompts[18]?.at !== undefined ? prompts[18]!.at - t0 : undefined },
   );
+
+  // (9) #674: two raw DMs with EMPTY wire ids, pending at one human prompt boundary, ride ONE
+  // frame and commit with it. The first-party APIs mint an id per message, so an empty id can
+  // only come off the wire from a raw client — the foreign shape `empty-id-ingest` drives at the
+  // MeshAgent layer; here it meets the ADAPTER seam. `injectIntoPrompt` peeks the whole automatic
+  // inbox and prefixes one text part, so both texts must land in that one prefix, and the
+  // boundary ack addresses each id-less delivery by its RECEIVE key — under the ledger-keyed-by-id
+  // mutation the ack drains "" instead, nothing commits, and the very next drive re-carries both.
+  const enc = new TextEncoder();
+  const rawNc = await rawConnect({ servers, maxReconnectAttempts: 0 });
+  try {
+    const ottoId = pub.getRoster().find((p) => p.card.name === "Otto")?.card.id;
+    if (!ottoId) throw new Error("turn-wedge: Otto not in roster for the empty-id step");
+    const parsed = parsePrincipalKey(ottoId);
+    const emptyIdDm = (text: string): void =>
+      rawNc.publish(
+        unicastSubject(space, parsed.owner, parsed.actor, "local", "rawpub"),
+        enc.encode(
+          JSON.stringify({
+            id: "",
+            ts: Date.now(),
+            space,
+            from: { id: "local.rawpub", name: "RawPub", kind: "agent" },
+            to: ottoId,
+            parts: [{ kind: "text", text }],
+          }),
+        ),
+      );
+    // Settle the retry chain's leftover open turn first (its idle acks the recovery DM's batch
+    // with nothing pending, so no drive fires), then hold `busy` across the publish window: the
+    // incoming handler buffers while busy, so the pair cannot drive its own prompt_async. The
+    // human prompt that follows is the one frame that carries both — `injectIntoPrompt` is gated
+    // on driving/awaitingTurnEnd, not on busy.
+    await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+    await sleep(300);
+    await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
+    emptyIdDm("oc-empty-a");
+    emptyIdDm("oc-empty-b");
+    await rawNc.flush();
+    await sleep(700); // ingest + the busy window (busy buffers; nothing drives while it holds)
+    const emptyPrompt = { parts: [{ type: "text", text: "human empty-id frame" }] };
+    await chatMessage(hooks)({ sessionID: SID }, emptyPrompt);
+    check(
+      "two empty-id DMs in one frame both commit (#674)",
+      emptyPrompt.parts[0]?.text.includes("oc-empty-a") === true &&
+        emptyPrompt.parts[0]?.text.includes("oc-empty-b") === true,
+      emptyPrompt,
+    );
+    // The completed human turn is the ack boundary: fire it and prove nothing re-carries. A
+    // mutant's ack addressed "" (twice), so the next drive re-injects both texts.
+    await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+    await sleep(700); // let a mutant's un-acked re-drive land; a healthy host stays idle
+    const afterEmpty = prompts.slice(-3).map((p) => promptText(p));
+    check(
+      "the empty-id frame was committed at its boundary (neither text returns)",
+      afterEmpty.every((t) => !t.includes("oc-empty-a") && !t.includes("oc-empty-b")),
+      afterEmpty,
+    );
+    // And the drive() ledger at the same seam: one raw empty-id DM against the now-idle plugin
+    // drives its own prompt_async (ids = items.map((i) => i.recvKey) in drive), and its turn
+    // boundary acks by receive key — under the drive-ledger mutation the ack drains "" and the
+    // completion pump re-drives the message in a hot loop of identical prompts.
+    const driveBefore = prompts.length;
+    emptyIdDm("oc-empty-drive");
+    await rawNc.flush();
+    for (let i = 0; i < 50 && prompts.length === driveBefore; i++) await sleep(100);
+    check("an empty-id DM drives prompt_async", prompts.length === driveBefore + 1 && promptText(prompts.at(-1)).includes("oc-empty-drive"), prompts.length);
+    await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+    await sleep(700); // let a mutant's un-acked re-drive loop land; a healthy plugin stays idle
+    check(
+      "the driven empty-id DM committed at its boundary (exactly one prompt carries it)",
+      prompts.filter((p) => promptText(p).includes("oc-empty-drive")).length === 1,
+      prompts.filter((p) => promptText(p).includes("oc-empty-drive")).length,
+    );
+  } finally {
+    await rawNc.close();
+  }
 
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
   // while it is pending must cancel the timer and submit nothing — two guards hold this: the timer

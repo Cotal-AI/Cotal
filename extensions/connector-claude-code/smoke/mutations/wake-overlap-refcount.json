@@ -12,6 +12,16 @@
   ],
   "mutations": [
     {
+      "name": "W0 keys the surfaced-frame ledger by raw id, so an empty-id DM never commits on its verdict",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    const ids = items.map((i) => i.recvKey);",
+      "replace": "    const ids = items.map((i) => i.id);",
+      "expectRed": "the empty-id pair was committed by the frame's verdict (neither text resurfaces)",
+      "cell": "two empty-id DMs in one frame both commit (#674)",
+      "note": "The frame's ids are what holdInFlight protects and what the delivery verdict drains; an id-less item's raw id is \"\", so the verdict commits nothing and both texts stay pending. Verified by hand before this entry: hooks.ts:266 mutated, build, run — red exactly there.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
       "name": "W1 a second overlapping frame does not increment the existing hold",
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);",

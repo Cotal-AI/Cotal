@@ -643,9 +643,10 @@ export async function runCodexHost(): Promise<void> {
     try {
       for (;;) {
         const surfacedSet = new Set(surfaced);
+        // `surfaced` holds receive keys, so an empty-id item already in the turn is not steered twice.
         const items = agent
           .peekInbox("automatic")
-          .filter((i) => !surfacedSet.has(i.id) && (i.kind !== "channel" || i.mentionsMe));
+          .filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe));
         if (items.length === 0 || !driver.busy) return;
         const inj = formatInjection(items);
         if (!inj) return;

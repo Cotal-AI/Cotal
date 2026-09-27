@@ -240,6 +240,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
@@ -261,6 +264,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -362,6 +368,9 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@opencode-ai/plugin':
         specifier: ^1.16.2
         version: 1.16.2
