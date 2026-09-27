@@ -1,5 +1,14 @@
 # @cotal-ai/connector-opencode
 
+## 0.55.0
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- 647dcf2: The session-reset mutation fixture registers the removal of the settle barrier between the old holder's chain and the new session's frames, so the ordering cell is proved to notice it.
+- b58918f: The turn-wedge smoke grades the error-retry backoff under sustained failure: the doubling, one timer per window, the thirty-second ceiling, the reset after a completed turn, and a stop landing while a retry is pending.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
 ## 0.54.0
 
 ## 0.53.0
