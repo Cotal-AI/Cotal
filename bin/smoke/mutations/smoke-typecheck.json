@@ -1,0 +1,184 @@
+{
+  "suite": [
+    "packages/smoke-kit/smoke/broker-migration.smoke.ts",
+    "extensions/connector-codex/smoke/agui-map.smoke.ts",
+    "extensions/pi/smoke/tool-input-closed.smoke.ts",
+    "packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
+    "extensions/connector-opencode/smoke/agui-map.smoke.ts",
+    "implementations/delivery/smoke/adoption-doctor-e2e.smoke.ts",
+    "extensions/connector-jcode/smoke/empty-sessions.smoke.ts",
+    "implementations/web/smoke/activity-read-cost.smoke.ts",
+    "extensions/connector-claude-code/smoke/activation-wake.smoke.ts",
+    "packages/core/smoke/agui-kind.smoke.ts",
+    "implementations/auth/smoke/admission-mediator.smoke.ts",
+    "extensions/connector-core/smoke/agui-close-run.smoke.ts",
+    "extensions/connector-hermes/smoke/launch-env.smoke.ts",
+    "extensions/herdr/smoke.ts",
+    "extensions/orca/smoke.ts",
+    "extensions/tmux/smoke.ts",
+    "extensions/cmux/smoke.ts"
+  ],
+  "guard": "every package's typecheck also reads its smoke tree, so a planted type error in any smoke file reddens pnpm typecheck",
+  "command": "pnpm --filter @cotal-ai/core typecheck",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/smoke-typecheck.json",
+  "why": [
+    "Before this lane, each root's typecheck only compiled src, so a type error planted in a smoke file passed the gate silently and only surfaced, if at all, at run time under tsx, which strips types without checking them.",
+    "The fix hangs a second, smoke-scoped tsc config off the same typecheck script per root; this fixture plants one line in one smoke file per covered root and asserts that root's typecheck alone turns red on it.",
+    "tsc has no shared line across a red and a green run to key a completionMarker on, so this fixture carries no completionMarker and instead matches expectRed as a substring of the red run's own output."
+  ],
+  "mutations": [
+    {
+      "name": "@cotal-ai/smoke-kit: a planted type error in its smoke tree reddens its typecheck",
+      "file": "packages/smoke-kit/smoke/broker-migration.smoke.ts",
+      "find": "import assert from \"node:assert/strict\";",
+      "replace": "import assert from \"node:assert/strict\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/smoke-kit typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/connector-codex: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/connector-codex/smoke/agui-map.smoke.ts",
+      "find": "import { readFileSync } from \"node:fs\";",
+      "replace": "import { readFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/connector-codex typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/pi: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/pi/smoke/tool-input-closed.smoke.ts",
+      "find": "import { configFromEnv } from \"@cotal-ai/connector-core\";",
+      "replace": "import { configFromEnv } from \"@cotal-ai/connector-core\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/pi typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/workspace: a planted type error in its smoke tree reddens its typecheck",
+      "file": "packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
+      "find": "import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from \"node:fs\";",
+      "replace": "import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/workspace typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/connector-opencode: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/connector-opencode/smoke/agui-map.smoke.ts",
+      "find": "import { readFileSync } from \"node:fs\";",
+      "replace": "import { readFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/connector-opencode typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/delivery: a planted type error in its smoke tree reddens its typecheck",
+      "file": "implementations/delivery/smoke/adoption-doctor-e2e.smoke.ts",
+      "find": "import { randomUUID } from \"node:crypto\";",
+      "replace": "import { randomUUID } from \"node:crypto\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/delivery typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/connector-jcode: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/connector-jcode/smoke/empty-sessions.smoke.ts",
+      "find": "import assert from \"node:assert/strict\";",
+      "replace": "import assert from \"node:assert/strict\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/connector-jcode typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/web: a planted type error in its smoke tree reddens its typecheck",
+      "file": "implementations/web/smoke/activity-read-cost.smoke.ts",
+      "find": "import { spawn } from \"node:child_process\";",
+      "replace": "import { spawn } from \"node:child_process\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/web typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/connector-claude-code: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/connector-claude-code/smoke/activation-wake.smoke.ts",
+      "find": "import { strict as assert } from \"node:assert\";",
+      "replace": "import { strict as assert } from \"node:assert\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/core: a planted type error in its smoke tree reddens its typecheck",
+      "file": "packages/core/smoke/agui-kind.smoke.ts",
+      "find": "import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND, isAguiFramePart } from \"../src/agui-kind.js\";",
+      "replace": "import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND, isAguiFramePart } from \"../src/agui-kind.js\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/core typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/auth: a planted type error in its smoke tree reddens its typecheck",
+      "file": "implementations/auth/smoke/admission-mediator.smoke.ts",
+      "find": "import { spawn } from \"node:child_process\";",
+      "replace": "import { spawn } from \"node:child_process\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/auth typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/connector-core: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/connector-core/smoke/agui-close-run.smoke.ts",
+      "find": "import { mkdtempSync, rmSync, writeFileSync, appendFileSync, mkdirSync } from \"node:fs\";",
+      "replace": "import { mkdtempSync, rmSync, writeFileSync, appendFileSync, mkdirSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/connector-core typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/connector-hermes: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/connector-hermes/smoke/launch-env.smoke.ts",
+      "find": "import { strict as nodeAssert } from \"node:assert\";",
+      "replace": "import { strict as nodeAssert } from \"node:assert\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/connector-hermes typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/herdr: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/herdr/smoke.ts",
+      "find": "import * as herdr from \"./src/driver.js\";",
+      "replace": "import * as herdr from \"./src/driver.js\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/herdr typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/orca: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/orca/smoke.ts",
+      "find": "import { spawnSync } from \"node:child_process\";",
+      "replace": "import { spawnSync } from \"node:child_process\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/orca typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/tmux: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/tmux/smoke.ts",
+      "find": "import * as tmux from \"./src/driver.js\";",
+      "replace": "import * as tmux from \"./src/driver.js\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/tmux typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/cmux: a planted type error in its smoke tree reddens its typecheck",
+      "file": "extensions/cmux/smoke.ts",
+      "find": "import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from \"node:fs\";",
+      "replace": "import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/cmux typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    }
+  ]
+}
