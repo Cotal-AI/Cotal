@@ -11,6 +11,8 @@
  *   3. quiet channel traffic remains pull-only across native prompts and is consumed by cotal_inbox;
  *   4. repeated cotal_inbox pulls do not repeat the quiet item;
  *   5. a directed DM that auto-drives and errors is retried after a bounded delay;
+ *   5a. a focus @mention wake is re-armed after its turn fails, and NOT re-driven after a user
+ *       interrupt of that wake's turn (#715);
  *   6. a HUMAN turn still clears busy, then a second normal channel message MUST drive a turn
  *      (prompt_async #2) — the original wedge fix still holds;
  *   7. a user interrupt consumes the surfaced peer batch instead of redriving it;
@@ -211,6 +213,42 @@ try {
   check("directed DM retries after session.error", prompts.length === 4 && promptText(prompts[3]).includes("retry dm"), prompts);
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
+  // A focus @mention wake is re-armed when the turn fails after the submission landed (#715).
+  // The wake body is acked-and-dropped at ingest, so nothing but the driven nudge itself carries
+  // it; a landed submission that then fails must re-park that nudge or the seat is never retried.
+  const statusExecute = (hooks.tool as Record<string, { execute: (...args: any[]) => Promise<string> }>).cotal_status!.execute;
+  await statusExecute({ attention: "focus" }, {});
+  await pub.multicast("@Otto look at this", { channel: "team", mentions: ["Otto"] });
+  await waitForPrompts(5);
+  check(
+    "a focus @mention wake is re-armed when the turn fails after the submission landed (#715)",
+    prompts.length === 5 && promptText(prompts[4]).includes("You were mentioned by"),
+    prompts[4],
+  );
+  await fire(hooks, { type: "session.error", properties: { sessionID: SID } });
+  await sleep(2_500);
+  check(
+    "…and the retry after the backoff carries the nudge again",
+    prompts.length === 6 && promptText(prompts[5]).includes("You were mentioned by"),
+    prompts.slice(4),
+  );
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+
+  // A user interrupt after a wake does NOT re-drive it: an explicit Stop is a turn someone ENDED,
+  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (ackSurfaced),
+  // never re-armed the way a genuine failure re-arms it above.
+  await pub.multicast("@Otto second look", { channel: "team", mentions: ["Otto"] });
+  await waitForPrompts(7);
+  check("a second focus mention drives its own turn", prompts.length === 7 && promptText(prompts[6]).includes("You were mentioned by"), prompts[6]);
+  await fire(hooks, {
+    type: "session.error",
+    properties: { sessionID: SID, error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } } },
+  });
+  await sleep(2_500);
+  check("a user interrupt after a wake does not re-drive it", prompts.length === 7, prompts);
+  await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+  await statusExecute({ attention: "open" }, {});
+
   // A HUMAN turn with no Cotal batch still must clear busy (the original wedge trigger).
   await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
@@ -218,8 +256,8 @@ try {
   // (6) a second channel message MUST still drive a turn. Pre-fix: `busy` is stuck true, so the
   //     incoming message is buffered and this never fires.
   await pub.multicast("still there?", { channel: "team" });
-  await waitForPrompts(5);
-  check("a channel message STILL drives after a human turn (no busy wedge)", prompts.length === 5, prompts);
+  await waitForPrompts(8);
+  check("a channel message STILL drives after a human turn (no busy wedge)", prompts.length === 8, prompts);
 
   // (7) Explicit user Stop/Cancel is not a model/provider failure. Real OpenCode aborts can arrive as
   //     MessageAbortedError without a preceding TUI command event, so that error itself must dismiss/ack
@@ -232,12 +270,12 @@ try {
     },
   });
   await sleep(1_200);
-  check("explicit user interrupt does not retry-drive cancelled peer traffic", prompts.length === 5, prompts);
+  check("explicit user interrupt does not retry-drive cancelled peer traffic", prompts.length === 8, prompts);
   await pub.multicast("after cancel", { channel: "team" });
-  await waitForPrompts(6);
+  await waitForPrompts(9);
   check(
     "new peer traffic still drives after interrupt without replaying the cancelled batch",
-    prompts.length === 6 && promptText(prompts[5]).includes("after cancel") && !promptText(prompts[5]).includes("still there?"),
+    prompts.length === 9 && promptText(prompts[8]).includes("after cancel") && !promptText(prompts[8]).includes("still there?"),
     prompts,
   );
 
@@ -248,8 +286,8 @@ try {
   // Drive: a directed DM auto-drives prompt_async #7.
   const dmAt = Date.now();
   await pub.unicast(ottoId, "backoff dm");
-  await waitForPrompts(7);
-  check("the backoff DM auto-drives prompt_async", prompts.length === 7 && promptText(prompts[6]).includes("backoff dm"), prompts);
+  await waitForPrompts(10);
+  check("the backoff DM auto-drives prompt_async", prompts.length === 10 && promptText(prompts[9]).includes("backoff dm"), prompts);
 
   // Failure 1: a failed turn (session.error, no `error` field) retries after the initial 1s delay.
   const errorOnce = async () => {
@@ -258,29 +296,29 @@ try {
   };
   let t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(8, 1_000 + 15_000);
+  await waitForPrompts(11, 1_000 + 15_000);
   check(
     "retry:the delay doubles — failure 1 retries after >= 900ms (initial 1s)",
-    prompts.length === 8 && prompts[7]!.at - t0 >= 900 && prompts[7]!.at - t0 <= 1_000 + 10_000,
-    { delta: prompts[7]?.at !== undefined ? prompts[7]!.at - t0 : undefined },
+    prompts.length === 11 && prompts[10]!.at - t0 >= 900 && prompts[10]!.at - t0 <= 1_000 + 10_000,
+    { delta: prompts[10]?.at !== undefined ? prompts[10]!.at - t0 : undefined },
   );
 
   // Failures 2 and 3: the delay doubles to >= 1800ms, then >= 3600ms.
   t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(9, 2_000 + 15_000);
+  await waitForPrompts(12, 2_000 + 15_000);
   check(
     "retry:the delay doubles — failure 2 retries after >= 1800ms",
-    prompts.length === 9 && prompts[8]!.at - t0 >= 1_800 && prompts[8]!.at - t0 <= 2_000 + 10_000,
-    { delta: prompts[8]?.at !== undefined ? prompts[8]!.at - t0 : undefined },
+    prompts.length === 12 && prompts[11]!.at - t0 >= 1_800 && prompts[11]!.at - t0 <= 2_000 + 10_000,
+    { delta: prompts[11]?.at !== undefined ? prompts[11]!.at - t0 : undefined },
   );
   t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(10, 4_000 + 15_000);
+  await waitForPrompts(13, 4_000 + 15_000);
   check(
     "retry:the delay doubles — failure 3 retries after >= 3600ms",
-    prompts.length === 10 && prompts[9]!.at - t0 >= 3_600 && prompts[9]!.at - t0 <= 4_000 + 10_000,
-    { delta: prompts[9]?.at !== undefined ? prompts[9]!.at - t0 : undefined },
+    prompts.length === 13 && prompts[12]!.at - t0 >= 3_600 && prompts[12]!.at - t0 <= 4_000 + 10_000,
+    { delta: prompts[12]?.at !== undefined ? prompts[12]!.at - t0 : undefined },
   );
 
   // One timer: firing the busy/error pair twice within one window arms exactly one timer, so
@@ -289,23 +327,23 @@ try {
   await errorOnce();
   await sleep(200);
   await errorOnce();
-  await waitForPrompts(11, 8_000 + 15_000);
+  await waitForPrompts(14, 8_000 + 15_000);
   check(
     "retry:one timer per window — exactly one retry lands after the doubled-again delay (>= 7200ms)",
-    prompts.length === 11 && prompts[10]!.at - t0 >= 7_200 && prompts[10]!.at - t0 <= 8_000 + 10_000,
-    { delta: prompts[10]?.at !== undefined ? prompts[10]!.at - t0 : undefined },
+    prompts.length === 14 && prompts[13]!.at - t0 >= 7_200 && prompts[13]!.at - t0 <= 8_000 + 10_000,
+    { delta: prompts[13]?.at !== undefined ? prompts[13]!.at - t0 : undefined },
   );
   await sleep(2_500);
-  check("retry:one timer per window — no extra retry lands 2.5s after the single retry", prompts.length === 11, prompts);
+  check("retry:one timer per window — no extra retry lands 2.5s after the single retry", prompts.length === 14, prompts);
 
   // Failure 5: the delay keeps doubling (>= 14400ms, 16s).
   t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(12, 16_000 + 15_000);
+  await waitForPrompts(15, 16_000 + 15_000);
   check(
     "retry:the delay keeps doubling — failure 5 retries after >= 14400ms (16s)",
-    prompts.length === 12 && prompts[11]!.at - t0 >= 14_400 && prompts[11]!.at - t0 <= 16_000 + 10_000,
-    { delta: prompts[11]?.at !== undefined ? prompts[11]!.at - t0 : undefined },
+    prompts.length === 15 && prompts[14]!.at - t0 >= 14_400 && prompts[14]!.at - t0 <= 16_000 + 10_000,
+    { delta: prompts[14]?.at !== undefined ? prompts[14]!.at - t0 : undefined },
   );
 
   // Ceiling: failures 6 and 7 both retry after 30s (>= 27000 and <= 45000ms), so the delay stops
@@ -328,20 +366,20 @@ try {
   await holdUntil(70_000);
   t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(13, 30_000 + 15_000);
+  await waitForPrompts(16, 30_000 + 15_000);
   check(
     "retry:the ceiling holds — failure 6 retries after >= 27000ms and <= 45000ms (30s)",
-    prompts.length === 13 && prompts[12]!.at - t0 >= 27_000 && prompts[12]!.at - t0 <= 45_000,
-    { delta: prompts[12]?.at !== undefined ? prompts[12]!.at - t0 : undefined, sinceDm: prompts[12]?.at !== undefined ? prompts[12]!.at - dmAt : undefined },
+    prompts.length === 16 && prompts[15]!.at - t0 >= 27_000 && prompts[15]!.at - t0 <= 45_000,
+    { delta: prompts[15]?.at !== undefined ? prompts[15]!.at - t0 : undefined, sinceDm: prompts[15]?.at !== undefined ? prompts[15]!.at - dmAt : undefined },
   );
   await holdUntil(130_000);
   t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(14, 30_000 + 15_000);
+  await waitForPrompts(17, 30_000 + 15_000);
   check(
     "retry:the ceiling holds — failure 7 retries after >= 27000ms and <= 45000ms (still 30s; unbounded doubling would land at 64s)",
-    prompts.length === 14 && prompts[13]!.at - t0 >= 27_000 && prompts[13]!.at - t0 <= 45_000,
-    { delta: prompts[13]?.at !== undefined ? prompts[13]!.at - t0 : undefined, sinceDm: prompts[13]?.at !== undefined ? prompts[13]!.at - dmAt : undefined },
+    prompts.length === 17 && prompts[16]!.at - t0 >= 27_000 && prompts[16]!.at - t0 <= 45_000,
+    { delta: prompts[16]?.at !== undefined ? prompts[16]!.at - t0 : undefined, sinceDm: prompts[16]?.at !== undefined ? prompts[16]!.at - dmAt : undefined },
   );
 
   // Reset: the retried turn completes (session.idle -> completeTurn resets the delay). A fresh
@@ -350,15 +388,15 @@ try {
   // further redelivery of it can land.
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
   await pub.unicast(ottoId, "reset dm");
-  await waitForPrompts(15);
-  check("retry:recovery resets the delay — the reset DM auto-drives prompt_async #15", prompts.length === 15 && promptText(prompts[14]).includes("reset dm"), prompts);
+  await waitForPrompts(18);
+  check("retry:recovery resets the delay — the reset DM auto-drives prompt_async #15", prompts.length === 18 && promptText(prompts[17]).includes("reset dm"), prompts);
   t0 = Date.now();
   await errorOnce();
-  await waitForPrompts(16, 1_000 + 15_000);
+  await waitForPrompts(19, 1_000 + 15_000);
   check(
     "retry:recovery resets the delay — post-recovery retry lands after >= 900ms and < 8000ms",
-    prompts.length === 16 && prompts[15]!.at - t0 >= 900 && prompts[15]!.at - t0 < 8_000,
-    { delta: prompts[15]?.at !== undefined ? prompts[15]!.at - t0 : undefined },
+    prompts.length === 19 && prompts[18]!.at - t0 >= 900 && prompts[18]!.at - t0 < 8_000,
+    { delta: prompts[18]?.at !== undefined ? prompts[18]!.at - t0 : undefined },
   );
 
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
