@@ -1,9 +1,10 @@
 {
   "suite": [
     "packages/core/smoke/failed-bind-cleanup.smoke.ts",
-    "packages/workspace/smoke/preflight.smoke.ts"
+    "packages/workspace/smoke/preflight.smoke.ts",
+    "packages/core/smoke/probe-teardown.smoke.ts"
   ],
-  "guard": "a post-connect bind failure announces transport and connection down before the partial connection closes; and a probe that ran out of its own budget is reported as a timeout, never collapsed into unreachable (#851); and the raw off-registry preflight re-probes at the confirm budget before condemning a slow broker (#709)",
+  "guard": "a post-connect bind failure announces transport and connection down before the partial connection closes; and a probe that ran out of its own budget is reported as a timeout, never collapsed into unreachable (#851); and the raw off-registry preflight re-probes at the confirm budget before condemning a slow broker (#709); and probeConnect gates a plaintext dial on the broker's INFO greeting, not just the TCP handshake, so a slow greeting cannot orphan the socket (#2156)",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:failed-bind-cleanup",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/failed-bind-cleanup.json",
   "mutations": [
@@ -35,6 +36,16 @@
       "expectRed": "S12 delayed-INFO plain peer: reachableOrThrow resolves through the confirm probe (#709)",
       "cell": "S12 delayed-INFO plain peer: reachableOrThrow resolves through the confirm probe (#709)",
       "note": "#709: without the re-probe, reachableOrThrow condemns a slow-but-live broker on the first 1s miss."
+    },
+    {
+      "name": "probeConnect's plaintext gate reverts to handshake-only, so a slow greeting orphans the socket again (#2156)",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;",
+      "replace": "  const gate = tcpDialable;",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:probe-teardown",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "slow greeting: no live socket handles left in the loop after 5 probes",
+      "cell": "slow greeting: no live socket handles left in the loop after 5 probes"
     }
   ],
   "why": [
@@ -45,6 +56,10 @@
     "The third entry is #709: without the confirm re-probe, reachableOrThrow refuses a live broker on the",
     "first 1s miss, so the raw off-registry door (--creds, or --server with an unregistered --space)",
     "reports a real link as down. Its command rebuilds workspace because the preflight suite imports",
-    "workspace through its dist too."
+    "workspace through its dist too.",
+    "The fourth entry is #2156: reverting probeConnect's gate choice to the handshake-only tcpDialable",
+    "orphans a socket whose greeting arrives after the budget, so the probe-teardown suite's slow-greeting",
+    "class sees a live socket handle survive the probe loop. Its command rebuilds core because the",
+    "probe-teardown suite imports it through its dist too."
   ]
 }

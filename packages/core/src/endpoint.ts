@@ -6658,7 +6658,8 @@ function tcpInfoProbe(server: string, timeoutMs: number): Promise<boolean> {
  *  after the probe already returned its answer. That is issue #389, and it is upstream: nothing a
  *  caller passes (`reconnect: false`, `timeout`) reaches the orphan. Our socket, our `destroy()`,
  *  on every exit path — never an `unref`/force-exit, which would hide the symptom and a future
- *  real hang with it. */
+ *  real hang with it. A second orphan case (#2156) needs a greeting, not just a handshake, so it is
+ *  gated by {@link tcpInfoProbe} instead wherever the dial will be plaintext. */
 function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let socket: ReturnType<typeof createConnection> | undefined;
@@ -6712,13 +6713,17 @@ export async function isReachable(
     return tcpInfoProbe(servers, timeoutMs);
   }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
-  // the same orphaned-socket defect probeConnect did (#389) and takes the same gate: reach the
-  // address on a socket we own first, and give `connect()` the remainder of the budget its own
+  // the same orphaned-socket defects probeConnect did (#389, and the slow-greeting case #2156) and
+  // takes the same gate choice: reach the address on a socket we own first, requiring the NATS
+  // greeting for a plaintext dial (the upstream transport orphans a socket whose handshake
+  // completed but whose greeting came late) and only the handshake for a TLS-required or websocket
+  // dial (no plaintext greeting to read), then give `connect()` the remainder of the budget its own
   // timeout always covered. A gate failure is a genuine connection failure, which is exactly the
   // `false` the catch below already returns for one — an auth rejection cannot reach us from an
   // address that never completed a handshake.
   const started = Date.now();
-  if (!(await tcpDialable(servers, timeoutMs))) return false;
+  const gate = opts.tls || wsServers(servers) ? tcpDialable : tcpInfoProbe;
+  if (!(await gate(servers, timeoutMs))) return false;
   try {
     const nc = await dialerFor(servers)({
       servers,
@@ -6772,14 +6777,22 @@ export async function probeConnect(
   const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(server);
   const started = Date.now();
   // Reach the address on a socket we own BEFORE handing it to `connect()`, which orphans the
-  // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389).
-  // This cannot change any verdict: every address that gets past here had to complete a TCP
-  // handshake for `connect()` to have gotten anywhere either, and a gate failure is routed through
-  // the SAME classification the catch uses — so a locally-dead cred is still `stale-auth` and not
-  // silently downgraded to `unreachable` by the address being dark. The cost is one extra
-  // handshake on the reachable path; the deadline below is the REMAINDER of the budget, because
-  // `connect()`'s own `timeout` always covered its handshake too.
-  if (!(await tcpDialable(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
+  // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389,
+  // and {@link tcpInfoProbe} for the second orphan case below, #2156). For a plaintext dial the
+  // gate must see the server's NATS greeting, not just the handshake: `connect()`'s own timeout
+  // can fire while it is still waiting on that greeting, and the upstream transport only destroys
+  // a socket whose handshake never completed, not one whose greeting came late (`_closed`'s guard
+  // on `connected`, which is set only after the greeting is read) — so `tcpInfoProbe` (which owns
+  // its socket and requires the greeting) is the gate there, while a TLS-required or websocket
+  // dial has no plaintext greeting to read and keeps the handshake-only `tcpDialable` gate. This
+  // cannot change any verdict: every address that gets past here had to complete a TCP handshake
+  // for `connect()` to have gotten anywhere either, and a gate failure is routed through the SAME
+  // classification the catch uses — so a locally-dead cred is still `stale-auth` and not silently
+  // downgraded to `unreachable` by the address being dark. The cost is one extra handshake (and,
+  // off TLS/ws, one extra greeting read) on the reachable path; the deadline below is the
+  // REMAINDER of the budget, because `connect()`'s own `timeout` always covered its handshake too.
+  const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;
+  if (!(await gate(server, timeoutMs))) return classifyProbeFailure(undefined, opts);
   try {
     const nc = await dialerFor(server)({
       servers: server,
