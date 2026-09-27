@@ -267,7 +267,7 @@ const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
  *  broker/eviction blip; the wider later spacing avoids hammering a persistently unavailable
  *  authority. The finite ~36s window is intentionally not a liveness inference: exhausting it
  *  leaves the durable alias held and requires a later manager start. */
-const STATIC_RECONCILE_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
+export const STATIC_RECONCILE_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 const STATIC_RECONCILE_MAX_ATTEMPTS = STATIC_RECONCILE_RETRY_DELAYS_MS.length + 1;
 
 type StaticReconcileItem = ManagerStaticReconciliationFailure & {
