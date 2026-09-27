@@ -104,7 +104,11 @@ reopens past the stamp (the successor's boot heal, or
 [Gate recovery](#gate-recovery).
 
 Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
-the manager and the daemon to address one credential store. Separate host filesystems still
+the manager and the daemon to address one credential store. The manager renews its own service
+credential inside that credential's own window and re-dials its service connection with the
+renewed credential; if the connection closes and cannot be restored within about forty seconds
+it releases its lease and exits so a restart can serve, while a broker that is briefly gone is
+waited out. Separate host filesystems still
 leave manager root A writing and the daemon reloading root B; that composition is refused
 while the daemon stays up. Before every remint the manager challenges the delivery daemon's
 store identity, and the answer must come from the process holding the delivery lease: the

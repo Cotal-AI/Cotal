@@ -25,6 +25,7 @@ import {
   spawnNameError,
   idFromCreds,
   inspectCredHealth,
+  credsRenewalDelayMs,
   composeWirePersona,
   loadAgentFile,
   listPersonaCatalog,
@@ -266,7 +267,7 @@ const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
  *  broker/eviction blip; the wider later spacing avoids hammering a persistently unavailable
  *  authority. The finite ~36s window is intentionally not a liveness inference: exhausting it
  *  leaves the durable alias held and requires a later manager start. */
-const STATIC_RECONCILE_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
+export const STATIC_RECONCILE_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 const STATIC_RECONCILE_MAX_ATTEMPTS = STATIC_RECONCILE_RETRY_DELAYS_MS.length + 1;
 
 type StaticReconcileItem = ManagerStaticReconciliationFailure & {
@@ -1215,6 +1216,11 @@ export class Manager {
   private leaseStopping = false;
   /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
+  /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
+   *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
+   *  miss the window by ordering. Re-armed at registration and after every successful re-mint;
+   *  cleared in `stop()` beside `credRenewTimer`. */
+  private endpointServeRenewalTimer?: ReturnType<typeof setTimeout>;
   /** #1634: does THIS manager own the delivery daemon's credential renewal? True only while the
    *  daemon reloads from this manager's store AND this manager holds the per-space renewal lease.
    *  Starts false: a manager that has not proved both must not remint. */
@@ -1806,6 +1812,49 @@ export class Manager {
     await this.keepDaemonRenewalLease();
   }
 
+  /** #2073: arm the `endpoint-serve` credential's own renewal from its `[renewAt, exp)` window
+   *  instead of `credRenewTimer`'s boot-phased TTL/4 tick, which can miss that window depending on
+   *  when the timer happened to start relative to the credential's `iat`. Called after the initial
+   *  mint (`registerManagerService`) and after every successful re-mint in the serve branch below,
+   *  so the schedule always tracks the CURRENT credential. `credsRenewalDelayMs` is the same 75%
+   *  convention the endpoint's delivery renewal and the membership feed use (`@cotal-ai/core`); no
+   *  second copy of that arithmetic lives here. */
+  private scheduleServeRenewal(creds: string): void {
+    if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
+    const delay = Math.max(1_000, credsRenewalDelayMs(creds));
+    const renewAt = new Date(Date.now() + delay).toISOString();
+    this.endpointServeRenewalTimer = setTimeout(() => { void this.renewDaemonCreds(); }, delay);
+    this.endpointServeRenewalTimer.unref?.();
+    console.error(`manager endpoint-serve renewal scheduled at ${renewAt}`);
+  }
+
+  /** #2073: push a freshly re-minted credential onto its LIVE connection instead of waiting for a
+   *  reconnect the expiry itself would force two dials too late. `nc.reconnect()` re-evaluates the
+   *  authenticator, which reads the mutable `creds` holder on every attempt, so the new CONNECT
+   *  presents the fresh credential without re-registration. In-flight requests on the connection
+   *  fail once, on the reconnect. Best-effort, matching `CotalEndpoint.swapConnectionOntoFreshCreds`:
+   *  a connection that is already closed (e.g. mid re-dial after a fault) cannot reconnect, and that
+   *  failure is not this call's to report. */
+  private async pushRenewedCreds(nc: NatsConnection): Promise<void> {
+    await nc.reconnect().catch(() => {});
+  }
+
+  /** #2073: the shared bounded-retry shape for a closed standing connection: wait out each of
+   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. A stop landing while
+   *  this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
+  private async boundedReconnect(label: string, attempt: () => Promise<boolean>): Promise<boolean> {
+    for (const delayMs of STATIC_RECONCILE_RETRY_DELAYS_MS) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      if (this.leaseStopping) return true;
+      try {
+        if (await attempt()) return true;
+      } catch (e) {
+        console.error(`! manager ${label} re-dial attempt failed: ${(e as Error).message}`);
+      }
+    }
+    return false;
+  }
+
   /** One class-2 renewal pass (D5 slice 5): re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
    *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
    *  delivery-admin rail and persist the audit record (`.cotal/renewal.<spaceKey>.json`) that `cotal doctor auth`
@@ -1908,6 +1957,12 @@ export class Manager {
                 serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
                 endpointServe: s.grant,
               }));
+            // #2073: a superseded instance's re-mint fails the gate CAS above and lands in the
+            // catch below, not here — this re-mint already re-checks the issuance gate through
+            // the SAME executor a fresh registration would use, so there is no second epoch read
+            // to add before re-binding after a re-dial.
+            await this.pushRenewedCreds(s.nc);
+            this.scheduleServeRenewal(s.creds);
           }
         } catch (e) {
           console.error(`! endpoint-serve renewal: ${(e as Error).message} - the manager's service endpoint dies loud at this cred's expiry unless it is re-registered`);
@@ -1925,6 +1980,7 @@ export class Manager {
             const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
             this.goalWriterCreds = fresh;
             gw.creds = fresh;
+            await this.pushRenewedCreds(gw.nc);
           }
         } catch (e) {
           console.error(`! goal-writer renewal: ${(e as Error).message} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
@@ -1945,6 +2001,7 @@ export class Manager {
             const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
             this.sessionLedgerCreds = fresh;
             sw.creds = fresh;
+            await this.pushRenewedCreds(sw.nc);
           }
         } catch (e) {
           console.error(`! session-ledger renewal: ${(e as Error).message} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
@@ -2468,6 +2525,7 @@ export class Manager {
     await starting?.catch(() => {});
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
+    if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
@@ -6285,6 +6343,104 @@ export class Manager {
     );
   }
 
+  /** #2073: dial the manager's ONE control-plane connection and serve its typed command surface on
+   *  it, exactly the shape `registerManagerService` used inline before this lane. Shared by the
+   *  initial registration AND the closed-connection recovery path ({@link onServeConnectionClosed}),
+   *  so there is one place that dials and serves this endpoint. Attaches {@link
+   *  onServeConnectionClosed} as the close handler in both cases: a closed serve connection is
+   *  always a fault this manager acts on, never a bare log line. */
+  private async dialServeConnection(
+    state: { nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string },
+  ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> {
+    const enc = new TextEncoder();
+    const nc = await this.dial({
+      // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
+      ...(state.creds !== undefined ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds!))(nonce) } : {}),
+      inboxPrefix: `_INBOX_${state.identity.id}`,
+      maxReconnectAttempts: -1,
+    });
+    nc.closed().then((err) => { void this.onServeConnectionClosed(err ?? undefined); });
+    let handle: EpServeHandle;
+    try {
+      // The 1b typed surface + the derived `describe`. The descriptor stays PUBLIC in static
+      // mode: the broker grant (who holds each command's request-publish row) is the
+      // load-bearing authority tier, and a static single-operator mesh leaks nothing by listing
+      // command names; the trusted per-caller `view(caller)` scoping joins the user-mode
+      // registration follow-up (where actorScope is the trusted source). Every ordinary handler
+      // runs the SHARED admission chokepoint ({@link serveGated}).
+      handle = serveEndpoint(nc, this.space, state.grant, this.managerServiceDefs(), { public: true }, {
+        // The FRESH target resolver (§13.3) for the targeted commands (`despawn`/`attach`): the
+        // manager's live managed set IS the current-mapping authority for its own agents (the
+        // durable slot rows mirror it). Static mode carries no mapping-revision dimension, so
+        // the revision is the constant 0 — a caller that pins a revision pins 0.
+        resolveTarget: (t) => {
+          if (t.owner === DEV_OWNER) {
+            for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+            return undefined;
+          }
+          const key = principalKey(t.owner, t.actor).key;
+          for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+          return undefined;
+        },
+        ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
+      });
+    } catch (e) {
+      await nc.drain().catch(() => nc.close());
+      throw e;
+    }
+    return { nc, handle };
+  }
+
+  /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and
+   *  §13.1 mint fence `renewDaemonCreds`'s serve branch uses — never a second copy of that mint. Used
+   *  by both the periodic renewal pass and the closed-connection recovery path below, so a
+   *  superseded instance's re-mint fails the SAME gate CAS in both places and lands in the exit
+   *  path rather than needing a second epoch check. */
+  private async remintServeCreds(s: { identity: Identity; grant: EpServeGrant }): Promise<string> {
+    const authRef = this.auth!;
+    return this.withEndpointServeExecutor(({ authKv }) =>
+      mintCreds(authRef, s.identity, "endpoint-serve", {
+        serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
+        endpointServe: s.grant,
+      }));
+  }
+
+  /** #2073: a closed serve connection is a FAULT the manager acts on, not a log line: this is the
+   *  control plane a report showed staying dead for hours while the process kept its liveness
+   *  lease and answered nothing (#2073). `stop()` sets `leaseStopping` BEFORE it tears down this
+   *  connection, so a close landing from OUR OWN graceful teardown returns here at once. Any other
+   *  close re-dials with the current credential (a transport blip needs nothing new), re-mints
+   *  through the existing serve branch when the credential itself has expired, and re-serves on the
+   *  new connection — bounded by {@link STATIC_RECONCILE_RETRY_DELAYS_MS}. Exhausting every attempt
+   *  releases this process's lease and exits loud (without `withAgents`, so seats stay up, the path
+   *  `supervise`'s signal handler already uses) so a restart can serve: a manager that holds the
+   *  lease and answers nothing is the worst of the three states this issue named, and holding the
+   *  connection open under unbounded reconnects (the transport-drop case) never reaches this method
+   *  at all — `nc.closed()` does not resolve until the client itself gives up. */
+  private async onServeConnectionClosed(err: Error | undefined): Promise<void> {
+    if (this.leaseStopping) return;
+    const s = this.serviceServe;
+    console.error(`! manager service endpoint connection closed: ${err?.message ?? "unknown reason"}`);
+    const recovered = await this.boundedReconnect("service endpoint", async () => {
+      if (!s) return false;
+      if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
+        s.creds = await this.remintServeCreds(s);
+        this.scheduleServeRenewal(s.creds);
+      }
+      const { nc, handle } = await this.dialServeConnection(s);
+      s.nc = nc;
+      s.handle = handle;
+      console.error(`manager service endpoint re-dialed: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${s.grant.epoch})`);
+      return true;
+    });
+    if (this.leaseStopping || recovered) return;
+    console.error(
+      `! manager service endpoint could not be restored for ${this.space}/${MANAGER_ENDPOINT}/${this.managerInstanceId}: releasing the lease and exiting`,
+    );
+    await this.stop();
+    process.exit(1);
+  }
+
   /** P2 item 1: register the manager as an ordinary v0.4 `service` endpoint and serve its typed
    *  command surface on the ep rails - since 1d the manager's ONLY control door. On an AUTH mesh
    *  the whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
@@ -6528,44 +6684,15 @@ export class Manager {
     // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
     // registered surface for its whole incarnation.
     const state = { handle: undefined as unknown as EpServeHandle, nc: undefined as unknown as NatsConnection, identity: serveIdentity, grant, creds };
-    const enc = new TextEncoder();
-    const nc = await this.dial({
-      // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
-      ...(creds !== undefined ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds!))(nonce) } : {}),
-      inboxPrefix: `_INBOX_${serveIdentity.id}`,
-      maxReconnectAttempts: -1,
-    });
-    nc.closed().then((err) => { if (err) console.error(`! manager service endpoint connection closed: ${err.message}`); });
-    try {
-      // The 1b typed surface + the derived `describe`. The descriptor stays PUBLIC in static
-      // mode: the broker grant (who holds each command's request-publish row) is the
-      // load-bearing authority tier, and a static single-operator mesh leaks nothing by listing
-      // command names; the trusted per-caller `view(caller)` scoping joins the user-mode
-      // registration follow-up (where actorScope is the trusted source). Every ordinary handler
-      // runs the SHARED admission chokepoint ({@link serveGated}).
-      state.handle = serveEndpoint(nc, this.space, grant, this.managerServiceDefs(), { public: true }, {
-        // The FRESH target resolver (§13.3) for the targeted commands (`despawn`/`attach`): the
-        // manager's live managed set IS the current-mapping authority for its own agents (the
-        // durable slot rows mirror it). Static mode carries no mapping-revision dimension, so
-        // the revision is the constant 0 — a caller that pins a revision pins 0.
-        resolveTarget: (t) => {
-          if (t.owner === DEV_OWNER) {
-            for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-            return undefined;
-          }
-          const key = principalKey(t.owner, t.actor).key;
-          for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-          return undefined;
-        },
-        ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
-      });
-    } catch (e) {
-      await nc.drain().catch(() => nc.close());
-      throw e;
-    }
+    const { nc, handle } = await this.dialServeConnection(state);
     state.nc = nc;
+    state.handle = handle;
     this.serviceServe = state;
     console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
+    // #2073: arm the serve credential's own renewal now, from ITS window, instead of leaving it to
+    // `credRenewTimer`'s boot-phased TTL/4 tick. Open mesh mints no credential (`creds` is
+    // undefined) and has nothing to schedule.
+    if (state.creds !== undefined) this.scheduleServeRenewal(state.creds);
   }
 
   /** P2 item 2 must-5 (b): mint the standing `goal-writer` credential and STAGE it into this
@@ -6615,19 +6742,20 @@ export class Manager {
    *  renewal is adopted without reconnecting the whole endpoint); the ActionContext bonds its
    *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
    *  goal state across brokers. */
-  private async startGoalWriter(): Promise<void> {
-    const identity = (this.auth || this.remoteAuthority) ? this.goalWriterIdentity! : newIdentity();
+  /** #2073: dial the goal-writer's ONE standing connection and rebuild everything derived from it
+   *  (the fence-resolving action context, the issuance-gate reader) — shared by the initial start
+   *  and the closed-connection recovery ({@link onGoalWriterConnectionClosed}), so a redial never
+   *  leaves the context bound to a dead socket. */
+  private async dialGoalWriter(
+    gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate },
+  ): Promise<void> {
     const enc = new TextEncoder();
-    // The mutable holder captured by the authenticator (mirrors the serve connection): a half-TTL
-    // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
-    const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
-      { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: (this.auth || this.remoteAuthority) ? this.goalWriterCreds : undefined, identity };
     const nc = await this.dial({
       ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(gw.creds!))(nonce) } : {}),
-      inboxPrefix: `_INBOX_${identity.id}`,
+      inboxPrefix: `_INBOX_${gw.identity.id}`,
       maxReconnectAttempts: -1,
     });
-    nc.closed().then((err) => { if (err) console.error(`! manager goal-writer connection closed: ${err.message}`); });
+    nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
     gw.nc = nc;
     // The (i) fence resolver (SPEC 13.6 P2 item 3): resolve an executing instance's CURRENT gate
     // epoch. This manager reconciles only ITS OWN goals (security pin 4), so it resolves its own
@@ -6653,6 +6781,40 @@ export class Manager {
     // rather than closing it. An AUTH mesh gets durable closure from the §13.1 barrier (revoke +
     // cluster-verified eviction BEFORE the epoch advance); an open mesh gets none.
     gw.gate = serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId });
+  }
+
+  /** #2073: the goal-writer rail's closed-connection fault, the same bounded shape the serve rail
+   *  uses ({@link onServeConnectionClosed}) through the same {@link boundedReconnect} helper:
+   *  re-dial with the current credential (a transport blip needs nothing new), re-mint through the
+   *  existing goal-writer renewal branch when the credential itself has expired, then re-attach.
+   *  Unlike the serve rail this never exits the process on exhaustion (brief step 4: only the serve
+   *  rail is the control plane the report lost) — it logs and leaves the credential to the next
+   *  scheduled renewal pass. */
+  private async onGoalWriterConnectionClosed(err: Error | undefined): Promise<void> {
+    if (this.leaseStopping) return;
+    console.error(`! manager goal-writer connection closed: ${err?.message ?? "unknown reason"}`);
+    const gw = this.goalWriter;
+    const recovered = await this.boundedReconnect("goal-writer", async () => {
+      if (!gw) return false;
+      if (gw.creds !== undefined && inspectCredHealth(gw.creds).state !== "healthy") {
+        gw.creds = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
+        this.goalWriterCreds = gw.creds;
+      }
+      await this.dialGoalWriter(gw);
+      console.error("manager goal-writer re-dialed");
+      return true;
+    });
+    if (this.leaseStopping || recovered) return;
+    console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
+  }
+
+  private async startGoalWriter(): Promise<void> {
+    const identity = (this.auth || this.remoteAuthority) ? this.goalWriterIdentity! : newIdentity();
+    // The mutable holder captured by the authenticator (mirrors the serve connection): a half-TTL
+    // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
+    const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
+      { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: (this.auth || this.remoteAuthority) ? this.goalWriterCreds : undefined, identity };
+    await this.dialGoalWriter(gw);
     this.goalWriter = gw;
     console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${(this.auth || this.remoteAuthority) ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
   }
@@ -6714,20 +6876,57 @@ export class Manager {
    *  holder never verifies the signature (it presents the grant back over the rail; the broker's
    *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
    *  sessions bucket (createEndpointStreams provisioned it at registration). */
-  private async startSessionPlane(): Promise<void> {
-    const identity = (this.auth || this.remoteAuthority) ? this.sessionLedgerIdentity! : newIdentity();
+  /** #2073: dial the session-ledger's ONE standing connection — shared by the initial start and the
+   *  closed-connection recovery ({@link onSessionLedgerConnectionClosed}), the same shape {@link
+   *  dialGoalWriter} uses for its rail. The KV/JetStream clients the session plane opened from the
+   *  connection at start stay bound to it for this incarnation's life; a redial refreshes the
+   *  standing authenticator connection the credential renewal presents onto (mirroring `sw.creds`),
+   *  which is what a closed-connection fault on this rail needs restored. */
+  private async dialSessionLedgerConnection(
+    sw: { nc: NatsConnection; creds?: string }, identity: Identity,
+  ): Promise<void> {
     const enc = new TextEncoder();
-    // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
-    // updates `sw.creds` and the next (re)connect presents the refreshed credential.
-    const sw: { nc: NatsConnection; creds?: string } =
-      { nc: undefined as unknown as NatsConnection, creds: (this.auth || this.remoteAuthority) ? this.sessionLedgerCreds : undefined };
     const nc = await this.dial({
       ...((this.auth || this.remoteAuthority) ? { authenticator: (nonce?: string) => credsAuthenticator(enc.encode(sw.creds!))(nonce) } : {}),
       inboxPrefix: `_INBOX_${identity.id}`,
       maxReconnectAttempts: -1,
     });
-    nc.closed().then((err) => { if (err) console.error(`! manager session-ledger connection closed: ${err.message}`); });
+    nc.closed().then((err) => { void this.onSessionLedgerConnectionClosed(err ?? undefined); });
     sw.nc = nc;
+  }
+
+  /** #2073: the session-ledger rail's closed-connection fault, the same bounded shape {@link
+   *  onGoalWriterConnectionClosed} uses: re-dial with the current credential, re-mint through the
+   *  existing session-ledger renewal branch when the credential itself has expired, then re-attach.
+   *  Exhaustion logs and leaves the credential to the next renewal pass; it never exits the process
+   *  (brief step 4: only the serve rail is the control plane the report lost). */
+  private async onSessionLedgerConnectionClosed(err: Error | undefined): Promise<void> {
+    if (this.leaseStopping) return;
+    console.error(`! manager session-ledger connection closed: ${err?.message ?? "unknown reason"}`);
+    const sw = this.sessionLedgerConn;
+    const identity = this.sessionLedgerIdentity;
+    const recovered = await this.boundedReconnect("session-ledger", async () => {
+      if (!sw || !identity) return false;
+      if (sw.creds !== undefined && inspectCredHealth(sw.creds).state !== "healthy") {
+        sw.creds = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
+        this.sessionLedgerCreds = sw.creds;
+      }
+      await this.dialSessionLedgerConnection(sw, identity);
+      console.error("manager session-ledger re-dialed");
+      return true;
+    });
+    if (this.leaseStopping || recovered) return;
+    console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
+  }
+
+  private async startSessionPlane(): Promise<void> {
+    const identity = (this.auth || this.remoteAuthority) ? this.sessionLedgerIdentity! : newIdentity();
+    // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
+    // updates `sw.creds` and the next (re)connect presents the refreshed credential.
+    const sw: { nc: NatsConnection; creds?: string } =
+      { nc: undefined as unknown as NatsConnection, creds: (this.auth || this.remoteAuthority) ? this.sessionLedgerCreds : undefined };
+    await this.dialSessionLedgerConnection(sw, identity);
+    const nc = sw.nc;
     const serveEpoch = this.serviceServe?.grant.epoch;
     if (serveEpoch === undefined)
       throw new Error("the manager session plane needs the serve grant epoch; registerManagerService must run first");
