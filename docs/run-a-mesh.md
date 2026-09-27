@@ -466,6 +466,10 @@ This gate is on **registration**. `cotal join --creds --server <url>` deliberate
 explicit connection at face value and does not consult the registry, so it is not covered. Join
 that way only to an address you would have registered.
 
+The connection is still probed first, with the same second try at the longer budget the registry
+preflight uses, so a slow link reads as a connect that did not finish within that budget and a
+refused port reads as a broker that is not running.
+
 Records added this way are removed only by something that names them. A failed liveness probe
 does not delete any record: an unreachable broker, local or registered by hand, is shown as
 `offline` in `cotal meshes`. A bare command does not count that offline record as running;
