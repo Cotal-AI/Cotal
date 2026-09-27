@@ -35,6 +35,16 @@
       "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
       "cell": "a bare method read is L4020, catchable, and names the method",
       "note": "With the refusal gone `xs.map === xs.map` is false again and an extracted `push` writes to its receiver — both meanings JavaScript does not have."
+    },
+    {
+      "name": "an update's operand coerces through the host again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "  throw new RuntimeFault(\n    \"L4018\",\n    `\\`++\\` and \\`--\\` count, and ${kind} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first (\\`number(value)\\`), or hold the counter in a number.`,\n  );\n",
+      "replace": "  void kind;\n",
+      "expectRed": "`++` and `--` refuse a record, a numeric string or null with L4018 and keep a number native",
+      "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
+      "cell": "`++` and `--` refuse a record, a numeric string or null with L4018 and keep a number native",
+      "note": "With the refusal gone the walker's `Number(...)`-style coercion returns (#646): a record settles as NaN and a numeric string quietly becomes a number under `++`/`--`, exactly the divergence retired by this lane."
     }
   ]
 }
