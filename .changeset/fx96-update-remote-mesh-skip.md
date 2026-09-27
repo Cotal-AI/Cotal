@@ -1,6 +1,6 @@
 ---
-"@cotal-ai/cli": minor
-"@cotal-ai/auth": minor
+"@cotal-ai/cli": patch
+"@cotal-ai/auth": patch
 ---
 
 `cotal update` no longer reads a remote user mesh's manager for continuity, since that manager runs
