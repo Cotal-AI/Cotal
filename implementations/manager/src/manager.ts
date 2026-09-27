@@ -1349,17 +1349,47 @@ export class Manager {
    * write it to. The operator reading the refusal is on the manager's mesh, never on the record's. A
    * boolean parameter is how that happened, so the mode is read from `this` and a third door cannot
    * pass the wrong one.
+   *
+   * The selector below reads the three-valued mesh mode (`open | static | user`), not a boolean
+   * derived from it (#567). `this.userMode` is `false` for BOTH static and open, so a boolean
+   * selector collapses those two and an open mesh was handed the static route (`cotal mint
+   * --provision`), which `mint` refuses outright on an open mesh. A boolean also has no third
+   * state to invert, so a mutation grid over `return this.userMode ? … : …` proves the one arm it
+   * has is load-bearing but is structurally blind to a missing arm: there is no mutant that turns
+   * "two arms" into "three arms". Switching on `meshMode` gives a fourth mesh mode nowhere to fall
+   * silently, since `switch` has no default arm to catch it.
    */
+  private get meshMode(): "open" | "static" | "user" {
+    if (this.userMode) return "user";
+    if (this.auth !== undefined) return "static";
+    return "open";
+  }
+
   private readerRemedy(owner: string, channel: string): string {
-    return this.userMode
-      ? `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
+    switch (this.meshMode) {
+      case "user":
+        return (
+          `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
           `--allow-publish ''\`, with every field spelled out: \`actor grant\` is an upsert of the ` +
           `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn,role:default\` ` +
           `scope), not "leave it alone".`
-      : `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
+        );
+      case "static":
+        return (
+          `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
           `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +
           `one: \`mint\` reads --allow-subscribe only for that profile, so an observer mint is ` +
-          `refused outright and writes no creds file.`;
+          `refused outright and writes no creds file.`
+        );
+      case "open":
+        return (
+          `there is nothing to grant on an open mesh: it has no credentials and no ACLs, so any peer ` +
+          `may read \`${channel}\` by connecting bare and listing that channel (\`cotal join\` or an ` +
+          `endpoint whose channels include it); this refusal stands because the own-channel rule ` +
+          `applies to every mesh, and a spawn is not the place to hand out a read on another agent's ` +
+          `tool inputs and outputs.`
+        );
+    }
   }
 
   start(): Promise<void> {
