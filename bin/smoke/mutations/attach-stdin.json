@@ -207,7 +207,7 @@
     {
       "name": "the between-sessions reader SCANS for the detach byte instead of matching one alone",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };",
+      "find": "  const onData = (d: Buffer) => { if (isDetachPress(d, byte)) hit(); };",
       "replace": "  const onData = (d: Buffer) => { if (d.includes(byte)) hit(); };",
       "expectRed": "the attach is still up: the chunk is not a keypress",
       "cell": "F. a detach byte sharing a read with another byte is not a detach, and is not delivered",
@@ -217,11 +217,21 @@
     {
       "name": "the session's own reader SCANS for the detach byte instead of matching one alone",
       "file": "implementations/cli/src/lib/attach-client.ts",
-      "find": "      if (d.length === 1 && d[0] === detach.byte) {",
+      "find": "      if (isDetachPress(d, detach.byte)) {",
       "replace": "      if (d.includes(detach.byte)) {",
       "expectRed": "...and the attach is still up",
       "cell": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
       "note": "The same decision on the other side of the handoff, and the cost of it: in a LIVE session a chunk containing 0x1d is DATA and goes to the agent with the byte in it. Widening the test here turns that paste into a detach. Both readers are mutated separately on purpose: one test passing is not evidence about the other, and they are in different packages.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "isDetachPress loses its kitty and xterm CSI arms, back to the legacy one-byte match only",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  if (d.length === 0) return false;\n  if (d.length === 1 && d[0] === byte) return true;\n  const s = d.toString(\"latin1\");\n  const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];\n  const hasCtrl = (mods: number) => ((mods - 1) & 4) !== 0;\n  const kitty = /^\\x1b\\[(\\d+)(?::\\d+(?::\\d+)?)?;(\\d+)u$/.exec(s);\n  if (kitty) {\n    const cp = Number(kitty[1]);\n    const mods = Number(kitty[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  const xterm = /^\\x1b\\[27;(\\d+);(\\d+)~$/.exec(s);\n  if (xterm) {\n    const mods = Number(xterm[1]);\n    const cp = Number(xterm[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  return false;\n}",
+      "replace": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  return d.length === 1 && d[0] === byte;\n}",
+      "expectRed": "the attach detaches and exits clean",
+      "cell": "G2. the kitty encoding of the detach key ends a LIVE session",
+      "note": "Losing the kitty/xterm CSI arms is exactly the regression #598 reports: a terminal with either protocol enabled sends a multi-byte sequence for Ctrl-], the one-byte-only test never matches it, and the key does nothing. G2 catches it directly on the kitty form.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
