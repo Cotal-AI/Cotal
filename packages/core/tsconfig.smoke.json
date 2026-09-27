@@ -5,5 +5,5 @@
   // tsx, which erases types without checking them.
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "../.." },
-  "include": ["smoke/**/*.ts"]
+  "include": ["smoke/**/*.ts", "smoke.ts", "smoke-auth.ts"]
 }
