@@ -293,6 +293,10 @@ function startHost(
    *  omitted here means the variable is never set and the seat runs the unwidened path. */
   startDelayMs?: number,
   fake?: { threadId?: string; resumeRollout?: boolean; turnSeqStart?: number },
+  /** Widens the emitter's setup on the OTHER side: holds the window between the persist and the
+   *  first pump open, in ms, so a caller can read the log there. Test-only, omitted here means
+   *  the variable is never set and the seat runs with no hold. */
+  postStartHoldMs?: number,
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -321,6 +325,7 @@ function startHost(
       ...(boot?.outageGate === undefined ? {} : { FAKE_CODEX_OUTAGE_GATE: boot.outageGate }),
       ...(boot?.openWalGate === undefined ? {} : { FAKE_CODEX_OPEN_WAL_GATE: boot.openWalGate }),
       ...(startDelayMs === undefined ? {} : { COTAL_EVENTS_TEST_START_DELAY_MS: String(startDelayMs) }),
+      ...(postStartHoldMs === undefined ? {} : { COTAL_EVENTS_TEST_POST_START_HOLD_MS: String(postStartHoldMs) }),
       ...(fake?.threadId === undefined ? {} : { FAKE_CODEX_THREAD_ID: fake.threadId }),
       ...(fake?.resumeRollout === true ? { FAKE_CODEX_RESUME_ROLLOUT: "1" } : {}),
       ...(fake?.turnSeqStart === undefined ? {} : { FAKE_CODEX_TURN_SEQ_START: String(fake.turnSeqStart) }),
