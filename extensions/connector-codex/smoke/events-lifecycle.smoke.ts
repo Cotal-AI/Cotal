@@ -51,7 +51,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { eventWalLocation, type WalDoc } from "@cotal-ai/connector-core";
+import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -256,6 +256,9 @@ let hostE: ReturnType<typeof spawn> | undefined;
 /** The late seat's own log. Printed on failure: when this suite goes red the seat's stderr is the
  *  only place the reason is written, and a suite that hides it makes its own failures unreadable. */
 let errB = "";
+/** The first seat's own log. Read for the same reason as the others: what the bind wrote to the
+ *  WAL is only visible from inside the seat, and the #705 cell below needs its thread id. */
+let errA = "";
 /** Seat C's log (the restarted seat whose successor file was late) and seat D's (the seat whose
  *  event plane crosses two broker outages). Both cases are read from the seat's own stderr, because
  *  the state each one is about is only visible from inside the seat until it recovers. */
@@ -411,9 +414,49 @@ try {
   // ---- (1) first bind ------------------------------------------------------------------------
   const A = "eventspeer";
   const homeA = join(dir, "a");
-  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"));
+  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk));
   check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
+
+  // #705: right after the launch bind announces (a successful `AguiEmitter.start`) and before the
+  // first turn is even sent, the boundary the bind captured must already be on disk — otherwise a
+  // host that dies in this window leaves a virgin WAL and the next bind takes a later boundary,
+  // dropping whatever the thread appended in between.
+  const bindAnnounced = await settle("A:the launch bind announced its boundary", () => publishedThreads(errA).length >= 1, 60_000);
+  const bindThreadId = rolloutPathOf(errA)?.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? "";
+  const bindPrincipal = operator.getRoster().find((p) => p.card.name === A)?.card.id ?? "";
+  const bindWalPath = bindThreadId === "" || bindPrincipal === ""
+    ? ""
+    : eventWalLocation({ workspaceRoot: homeA, space, principal: bindPrincipal, threadId: bindThreadId }).walPath;
+  const readBindWal = (): WalDoc | undefined => {
+    try {
+      return bindWalPath === "" || !existsSync(bindWalPath) ? undefined : (JSON.parse(readFileSync(bindWalPath, "utf8")) as WalDoc);
+    } catch {
+      return undefined;
+    }
+  };
+  const bindWalReady = await settle(
+    "A:the start boundary lands on disk after the launch bind",
+    () => readBindWal()?.frontier.sourceCursor !== undefined,
+    60_000,
+  );
+  const bindWal = readBindWal();
+  // The boundary the bind captured is re-derivable: nothing has pumped yet (no turn was sent), so
+  // the rollout file is unchanged since the bind and reading it fresh from the start yields the
+  // same cursor `newEventHolder`'s `startCursor` captured.
+  const bindRolloutPath = rolloutPathOf(errA) ?? "";
+  const expectedBindCursor = bindRolloutPath === "" ? undefined : (await new JsonlFileSource(bindRolloutPath).read(undefined)).cursor;
+  check(
+    "bind:the start boundary is on disk before the first pump (#705)",
+    bindAnnounced && bindWalReady && bindWal?.frontier.sourceCursor === expectedBindCursor,
+    {
+      ...margin("A:the start boundary lands on disk after the launch bind"),
+      threadId: bindThreadId,
+      walPath: bindWalPath,
+      sourceCursor: bindWal?.frontier.sourceCursor,
+      expectedBindCursor,
+    },
+  );
 
   await dm(A, "first turn");
   const published = await settle("A:first RUN_FINISHED", () => evTypes().includes("RUN_FINISHED"));

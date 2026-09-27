@@ -218,7 +218,10 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   where the stream starts and the emitter's setup then runs before its first read; what the
   thread appended inside that window used to land behind the cursor and be dropped, and it is
   published now. A whole turn can sit in there, so the recovery path now covers a stretch of
-  the session it previously lost. Nothing is sent twice in either case.
+  the session it previously lost. Nothing is sent twice in either case. The boundary itself is
+  written to the log as soon as the bind succeeds, so a host that dies before its first read
+  still resumes from that boundary rather than from wherever the file ends by the time it comes
+  back.
 
   The grant still does not decide who may READ a plane. A spawn through the manager gives a seat
   publish rights on its own event channel and nothing else, and a spawn whose grant names a

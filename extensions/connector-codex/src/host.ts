@@ -436,7 +436,7 @@ export async function runCodexHost(): Promise<void> {
         // a pending terminal closes the WAL's run without passing through this new mapper.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-        return AguiEmitter.start<CodexRecord>({
+        const em = await AguiEmitter.start<CodexRecord>({
           endpoint: agent.ep,
           wal,
           subjectFrontier,
@@ -446,6 +446,15 @@ export async function runCodexHost(): Promise<void> {
           source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),
           map: mapper.map,
         });
+        // #705: persist the bind's boundary into the log right after a successful start, and only
+        // when the log still has no cursor. Before start would leave a resume behind if start then
+        // failed (the fixture at L9 fences exactly that); after start is safe because
+        // `AguiEmitter.start` awaits `recover()`, which settles any pending frame before returning,
+        // so `advanceCursorOnly` never races a pending write. Without this, a host killed between
+        // this line and the emitter's first pump leaves a virgin log, and the next bind takes its
+        // boundary at the file's later end, dropping whatever the thread appended in between.
+        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);
+        return em;
       },
       // Required, and not defaulted to a swallow. The holder is terminal on error and does not
       // retry, so this line is the whole record of why events stopped.
