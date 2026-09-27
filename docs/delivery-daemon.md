@@ -21,7 +21,9 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   eligible member's private durable store. For an `@mention` on a *`live`* channel it also writes
   a copy for each mentioned peer authorized to read that channel, which is how a mention reaches
   an authorized peer who isn't currently joined ([SPEC §4](../SPEC.md#4-delivery-modes)). Fan-out
-  handles routing; authorization remains with the broker policy.
+  handles routing; authorization remains with the broker policy. A post with an empty id is copied
+  without a duplicate-suppression key, so two distinct id-less posts are both delivered and a
+  redelivery of one may surface twice.
 - **Trusted reader.** It pulls each pending entry, re-checks that the member is still allowed to
   read it, and hands the authorized copy to the member over an at-least-once channel (its inbox),
   keeping the entry pending until the member confirms it was surfaced. A crash between handing off
