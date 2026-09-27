@@ -272,7 +272,10 @@ export class MeshView extends EventEmitter {
   private async startMembership(): Promise<void> {
     await this.loadMembership();
     try {
-      this.membershipWatch = await this.ep.watchMembership(() => this.scheduleMembership());
+      this.membershipWatch = await this.ep.watchMembership(
+        () => this.scheduleMembership(),
+        (e) => { this.membership = { ...this.membership, unreadable: `watch: ${e.message}` }; this.dirty = true; },
+      );
     } catch (e) {
       // A feed that does not exist cannot be watched, and that is the traffic-only fact the read
       // above already recorded; any other failure is this viewer's, named as such.

@@ -1,5 +1,7 @@
 {
-  "suite": ["implementations/cli/smoke/topo-membership.smoke.ts"],
+  "suite": [
+    "implementations/cli/smoke/topo-membership.smoke.ts"
+  ],
   "guard": "the topology lens overlays only a membership feed the viewer actually read, and names a failed read as its own",
   "command": "pnpm exec tsx implementations/cli/smoke/topo-membership.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/topo-membership.json",
@@ -39,6 +41,14 @@
       "replace": "const node = touch(\"a:\" + nameFor(m.id), \"agent\", nameFor(m.id), 0);",
       "expectRed": "two principals with one display name remain two topology nodes",
       "cell": "two principals with one display name remain two topology nodes"
+    },
+    {
+      "name": "M5 a watch that closes after setup lands nowhere",
+      "file": "implementations/cli/src/view/mesh-view.ts",
+      "find": "(e) => { this.membership = { ...this.membership, unreadable: `watch: ${e.message}` }; this.dirty = true; },",
+      "replace": "(e: Error) => {},",
+      "expectRed": "a watch that closes after setup is named as the watch's failure, never as a connection error",
+      "cell": "a watch that closes after setup is named as the watch's failure, never as a connection error"
     }
   ]
 }

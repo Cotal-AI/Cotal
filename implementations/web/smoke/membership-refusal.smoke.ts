@@ -321,11 +321,11 @@ check("the SSE broadcaster was lifted out of web.ts", Boolean(sseBroadcast), { l
  *  both refusal paths calling the right helper with the right token and writing nothing, and every
  *  cell stayed green. **Asserting what a function was CALLED WITH is not asserting what it DID.** */
 const REASON = "membership stream not found";
-const sseWire = async (stmt: string): Promise<string> => {
+const sseWire = async (stmt: string, ctxOverrides: Record<string, unknown> = {}): Promise<string> => {
   let bytes = "";
   const client = { writableEnded: false, write: (chunk: string) => { bytes += chunk; } };
   const source = ts.transpileModule(
-    `${sseSend};\n${sseBroadcast}\nglobalThis.__run = async () => { ${stmt}; };`,
+    `${sseSend};\n${sseBroadcast}\nlet membershipWatch;\nglobalThis.__run = async () => { ${stmt}; };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const ctx: Record<string, unknown> = {
@@ -335,6 +335,7 @@ const sseWire = async (stmt: string): Promise<string> => {
     MEMBERSHIP_READ_FAILED,
     globalThis: undefined,
     console,
+    ...ctxOverrides,
   };
   ctx.globalThis = ctx;
   runInContext(source, createContext(ctx), { filename: "web.ts (sse wire)" });
@@ -384,6 +385,26 @@ check("CONTROL: a SUCCESSFUL read writes exactly the ordinary membership frame t
   okBytes === `event: membership\ndata: {"members":[]}\n\n`, { okBytes });
 check("CONTROL: and that frame is NOT the refusal frame (the two are distinguishable on the wire)",
   okBytes !== REFUSAL_FRAME && !okBytes.includes(MEMBERSHIP_READ_FAILED));
+
+// ── A watch that closes AFTER setup must reach the browser too, not just a read that rejects ─────
+// The seam added for #485: `ep.watchMembership`'s second argument is invoked when the live iterator
+// closes under a live connection, and the caller broadcasts the existing refusal frame with it.
+const membershipWatchStmt = liftStmt(webTs, "membershipWatch = await ep.watchMembership(", ";");
+check("the membershipWatch statement was lifted out of web.ts", Boolean(membershipWatchStmt), { len: membershipWatchStmt?.length });
+
+const closedWireBytes = await sseWire(membershipWatchStmt!, {
+  pushMembership: () => {},
+  ep: { watchMembership: async (_onChange: () => void, onClosed: (e: Error) => void) => { onClosed(new Error(REASON)); return { stop: async () => {} }; } },
+});
+check("a closed watch reaches the browser as the membership-read-failed frame, byte for byte",
+  closedWireBytes === REFUSAL_FRAME, { closedWireBytes });
+
+const noCloseWireBytes = await sseWire(membershipWatchStmt!, {
+  pushMembership: () => {},
+  ep: { watchMembership: async (_onChange: () => void, _onClosed: (e: Error) => void) => ({ stop: async () => {} }) },
+});
+check("CONTROL: a watch that never closes writes nothing",
+  noCloseWireBytes === "", { noCloseWireBytes });
 
 // ── The client listens on the name the server emits, and nothing checked that before ────────────
 // `graph.js` restates the literal rather than importing it (a classic script cannot import), so the

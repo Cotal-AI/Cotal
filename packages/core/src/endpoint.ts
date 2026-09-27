@@ -383,6 +383,7 @@ export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMess
 
 type MembershipFeedWatch = {
   onChange: () => void;
+  onClosed?: (err: Error) => void;
   iter?: { stop(): void };
   consumer?: PushConsumer;
   consumerStream?: string;
@@ -2878,9 +2879,9 @@ export class CotalEndpoint extends EventEmitter {
    *  including the initial replay — the caller debounces + re-reads {@link readMembership}. The async
    *  stop handle resolves only after its ordered broker consumer is deleted. Best-effort: a feed the
    *  cred can't read (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
-  async watchMembership(onChange: () => void): Promise<{ stop(): Promise<void> }> {
+  async watchMembership(onChange: () => void, onClosed?: (err: Error) => void): Promise<{ stop(): Promise<void> }> {
     if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
-    const watch: MembershipFeedWatch = { onChange, stopped: false, arm: Promise.resolve() };
+    const watch: MembershipFeedWatch = { onChange, onClosed, stopped: false, arm: Promise.resolve() };
     this.membershipFeedWatches.add(watch);
     watch.arm = watch.arm.catch(() => {}).then(() => this.armMembershipWatch(watch));
     try { await watch.arm; }
@@ -2944,7 +2945,10 @@ export class CotalEndpoint extends EventEmitter {
       return;
     }
     iter.closed().then(() => {
-      if (!watch.stopped && watch.consumer === consumer) this.emit("error", new Error("membership watch closed"));
+      if (watch.stopped || watch.consumer !== consumer) return;
+      const err = new Error("membership watch closed");
+      watch.onClosed?.(err);
+      this.emit("error", err);
     }).catch(() => {});
   }
 

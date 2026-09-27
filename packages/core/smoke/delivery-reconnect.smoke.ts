@@ -247,6 +247,20 @@ try {
   let recoveredFromRejectedArm = false;
   try { await observer.reconnect(); recoveredFromRejectedArm = true; } catch { /* cell below names it */ }
   check("a later rebuild recovers a membership watch after a transient arm rejection", recoveredFromRejectedArm);
+
+  // A watch iterator closed under a live connection must reach the caller through onClosed,
+  // not just the generic endpoint error event.
+  const closedReasons: string[] = [];
+  const watchesBeforeClosedCell = new Set([...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]);
+  const closedWatch = await observer.watchMembership(() => {}, (err) => { closedReasons.push(err.message); });
+  await wait(200);
+  const closedWatchIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]
+    .find((w) => !watchesBeforeClosedCell.has(w));
+  closedWatchIntent?.iter?.stop();
+  for (let i = 0; i < 40 && closedReasons.length === 0; i++) await wait(50);
+  check("a watch iterator closed under a live connection reaches the caller's closed callback", JSON.stringify(closedReasons) === JSON.stringify(["membership watch closed"]), closedReasons);
+  await closedWatch.stop();
+
   await terminalWatch.stop();
 
   const durable = dlvDurable(DEV_OWNER, aId.id, uidA);

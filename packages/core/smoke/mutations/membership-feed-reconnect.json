@@ -91,6 +91,16 @@
       "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
       "note": "A missing lease is the stale-plane signal and must not collapse into a healthy quiet plane without a warning.",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "watch iterator close drops the caller's onClosed notification",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      watch.onClosed?.(err);\n",
+      "replace": "",
+      "expectRed": "a watch iterator closed under a live connection reaches the caller's closed callback",
+      "cell": "a watch iterator closed under a live connection reaches the caller's closed callback",
+      "note": "Without the onClosed call, only the generic endpoint error event fires and the caller never learns its own watch closed.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }
