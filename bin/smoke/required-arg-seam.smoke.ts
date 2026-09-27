@@ -383,7 +383,9 @@ const SEAMS: Seam[] = [
   // goal-follow-cancellation.smoke.ts three, goal-submit-order.smoke.ts two,
   // user-bearer-goal-lifetime.smoke.ts one (the bearer rebind after a rebuild), and
   // user-manager-transport.smoke.ts seven. All state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 193, untypecheckedSites: 149 },
+  // 193/149 -> 196/152: the artifact-store no-reserve landing (#2123) adds three smoke-side calls
+  // in packages/core/smoke/artifact-store-no-reserve.smoke.ts. All state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 196, untypecheckedSites: 152 },
 ];
 
 /**
