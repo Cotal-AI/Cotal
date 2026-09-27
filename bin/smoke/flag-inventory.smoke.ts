@@ -91,7 +91,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   endpoints: { flags: [...TARGET], positionals: false },
   // The generic v0.4 service surface (P2 item 1, 1c.2b): describe an endpoint's registered
   // command set off the wire; invoke one command by name with JSON args.
-  describe: { flags: [...TARGET], positionals: true },
+  describe: { flags: [...TARGET, "on:string"], positionals: true },
   invoke: {
     flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
     positionals: true,

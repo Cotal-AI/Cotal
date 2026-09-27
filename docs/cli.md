@@ -969,7 +969,7 @@ it is not limited to child processes owned by the manager.
 ## Endpoint control
 
 ```bash
-cotal describe <endpoint>                                        [--space <s>]
+cotal describe <endpoint> [--on <instance>]                        [--space <s>]
 cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
 cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 ```
@@ -977,8 +977,12 @@ cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 The generic v0.4 service surface. `describe` resolves a registered endpoint's command set off the
 wire - the reserved `describe` command answers the registered contract digests, the schemas are
 fetched from the space's content-addressed contract store, recompiled, and verified against those
-digests - and prints each command with its capability class and targeting shape. `invoke` calls one
-command by name: `--args` is a JSON object validated against the fetched input schema *before*
+digests - and prints each command with its capability class and targeting shape. `--on <instance>`
+pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
+`manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
+unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
+calls one command by name: `--args` is a JSON object validated against the fetched input schema
+*before*
 publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
