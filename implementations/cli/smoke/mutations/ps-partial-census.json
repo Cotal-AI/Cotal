@@ -17,12 +17,32 @@
       "expectRed": "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)",
       "cell": "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "describe drops the --on flag: unknown option, not a malformed-id refusal (#554)",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "export const describeFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];",
+      "replace": "export const describeFlags = [...targetFlags] as const satisfies readonly FlagSpec[];",
+      "expectRed": "a malformed instance id on describe is REFUSED, not silently widened (#554)",
+      "cell": "a malformed instance id on describe is REFUSED, not silently widened (#554)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "describe's pin reaches the mint but not the describe subject: the unpinned describe is refused by the broker (#554)",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "    const instanceId = on ?? auth.managerInstanceId;\n    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(instanceId !== undefined ? { instanceId } : {}),\n    });",
+      "replace": "    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),\n    });",
+      "expectRed": "describe --on IID1 SUCCEEDS and its attribution line names IID1: the pinned instance answered, not the queue winner (#554)",
+      "cell": "describe --on IID1 SUCCEEDS and its attribution line names IID1: the pinned instance answered, not the queue winner (#554)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ],
   "suite": ["implementations/manager/smoke/cli-on-instance-live.smoke.ts"],
   "why": [
     "The clean-exit-code mutation proves the partial-census cells actually watch the exit code, not just the message.",
-    "The --on-guidance mutation proves the new #423 cell actually watches the guidance text (the identifier and where ps prints it), not just the bare grammar phrase the mint already produced."
+    "The --on-guidance mutation proves the new #423 cell actually watches the guidance text (the identifier and where ps prints it), not just the bare grammar phrase the mint already produced.",
+    "The describeFlags mutation proves the #554 malformed-id cell actually depends on describe accepting --on at all, not just on the mint's validator.",
+    "The resolveService-instanceId mutation proves the #554 attribution-name cell actually depends on the CLI flag reaching the describe subject, not just the mint."
   ]
 }
 
