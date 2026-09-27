@@ -46,6 +46,7 @@ import {
   type ConsumerMessages,
   type ConsumerInfo,
   type JsMsg,
+  type JetStreamPublishOptions,
 } from "@nats-io/jetstream";
 import { type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
@@ -4160,6 +4161,14 @@ export class CotalEndpoint extends EventEmitter {
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
+  /** Plane-3 publish-dedupe key for a fan-out/transfer entry (#673, SPEC §4: two `id: ""` posts
+   *  MUST NOT collapse to one delivery). An empty `msg.id` contributes NO msgID — a plain publish,
+   *  never an empty or salted one — so an id-less message is at-least-once on the durable plane (a
+   *  redelivery may reach the member twice; the receiver already treats each as its own delivery). */
+  private plane3MsgId(entry: Plane3Entry, keyPrefix: string): Partial<JetStreamPublishOptions> {
+    return entry.msg.id === "" ? {} : { msgID: `${entry.msg.id}:${keyPrefix}` };
+  }
+
   /** Publish one fan-out entry into a member LIFECYCLE's mixed inbox (`dinbox.<o>.<a>.<uid>`, SPEC
    *  §13.1: fan-out addresses the member row's RECORDED lifecycle, never the alias's current
    *  occupant), idempotent via `Nats-Msg-Id` (`<msgId>:<principal>:<generation>`) so a catch-up copy
@@ -4172,7 +4181,7 @@ export class CotalEndpoint extends EventEmitter {
       // JetStream dedupe is STREAM-WIDE, so the id must carry the LIFECYCLE too: with an alias-keyed
       // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message
       // (both start at generation 1) — cross-lifecycle suppression, not dedup.
-      msgID: `${entry.msg.id}:${principal}:${lifecycleUid}:${entry.generation}`,
+      ...this.plane3MsgId(entry, `${principal}:${lifecycleUid}:${entry.generation}`),
     });
   }
 
@@ -4924,7 +4933,7 @@ export class CotalEndpoint extends EventEmitter {
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
       await this.js!.publish(dlvSubject(this.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(frame), {
-        msgID: `${entry.msg.id}:${owner}:${pr.lifecycleUid}:${entry.generation}`,
+        ...this.plane3MsgId(entry, `${owner}:${pr.lifecycleUid}:${entry.generation}`),
         headers: frameHeaders,
       });
     } catch {
