@@ -423,12 +423,12 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   }
   const s12bElapsed = Date.now() - t12b0;
   check(
-    "S12 held-open plain peer: the raw refusal is the timeout sentence and it names the budget the probe spent (#709)",
-    s12bMsg !== undefined && s12bMsg.includes("did not complete within 8s") && !s12bMsg.includes("is it running"),
+    "S12 held-open plain peer: a peer that never greets is the unreachable sentence, not the timeout one (#2156: the gate now requires the greeting on a socket it owns)",
+    s12bMsg !== undefined && s12bMsg.includes("is it running") && !s12bMsg.includes("did not complete within"),
     s12bMsg,
   );
   check(
-    "S12 held-open plain peer: elapsed at least 8s (#709)",
+    "S12 held-open plain peer: elapsed at least 8s (the confirm budget was spent inside the gate, #709)",
     s12bElapsed >= 8_000,
     { s12bElapsed },
   );
