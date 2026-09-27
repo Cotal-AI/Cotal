@@ -340,7 +340,18 @@ async function runCloseMode(mutant: boolean): Promise<void> {
       if (mutant) { dead = true; return; }
       for (const delayMs of STATIC_RECONCILE_RETRY_DELAYS_MS) {
         await new Promise((r) => setTimeout(r, delayMs));
-        if (inspectCredHealth(state.creds).state !== "healthy") state.creds = await mint();
+        // The shipped manager re-mints its recovery credential with the standing TTL, not the
+        // probe's short CLOSE_TTL_SEC: a recovery mint at CLOSE_TTL_SEC would expire again three
+        // seconds later and the run would never settle. Mirror the transport section's long-lived
+        // mint below (`expiresInSeconds: 300`).
+        if (inspectCredHealth(state.creds).state !== "healthy") {
+          state.creds = await mintCreds(auth, identity, "agent", {
+            allowSubscribe: ["prb457"],
+            allowPublish: ["prb457"],
+            lifecycleUid,
+            expiresInSeconds: 300,
+          });
+        }
         try {
           const fresh = await connect({
             servers: broker.servers,
@@ -422,7 +433,9 @@ async function runCloseMode(mutant: boolean): Promise<void> {
   try { nc.close(); } catch { /* already closed */ }
   try { await broker.stop(); } catch { /* already stopped by the transport control above */ }
 
-  const overallOk = mutant ? !closeSurvived : (closeSurvived && transportSurvived);
+  // Mirror the scheduled and phase modes: exit 3 whenever the verdict is the failing one,
+  // mutant or not. The mutant's failing verdict is closeSurvived === false (DEAD).
+  const overallOk = closeSurvived && (mutant || transportSurvived);
   process.exit(overallOk ? 0 : 3);
 }
 
