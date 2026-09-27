@@ -339,7 +339,7 @@ try {
     await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined).catch(() => undefined);
     check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
     await waitFor("recovery retry or seat exit after the transient attach loss", () =>
-      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
+      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child!.exitCode !== null
         ? true
         : undefined,
     );

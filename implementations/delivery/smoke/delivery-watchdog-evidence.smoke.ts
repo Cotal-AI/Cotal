@@ -419,7 +419,7 @@ check("H4 a backwards clock step contributes zero lag, never negative", backward
 const reset = new LoopLagMeter(PROBE_INTERVAL_MS);
 reset.tick(0);
 reset.tick(30_000);
-check("H5 lag accrued before positive evidence is discarded on reset", reset.starvedMs === 28_000 && (reset.reset(), reset.starvedMs === 0));
+check("H5 lag accrued before positive evidence is discarded on reset", reset.starvedMs === 28_000 && (reset.reset(), (reset.starvedMs as number) === 0));
 check("H6 and measurement continues after a reset rather than restarting blind", reset.tick(60_000) === 28_000);
 
 // H7-H12: `credit` AND THE CLAMP, neither of which appeared in any cell in this tree until now.

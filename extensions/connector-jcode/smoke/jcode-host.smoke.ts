@@ -151,7 +151,7 @@ async function callJcodeMcp(
   });
   try {
     await client.connect(transport);
-    const result = await client.callTool({ name, arguments: arguments_ });
+    const result = (await client.callTool({ name, arguments: arguments_ })) as { content: { type: string; text: string }[]; isError?: boolean };
     return {
       text: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"),
       isError: result.isError,
@@ -296,7 +296,7 @@ try {
   let busyPeerId: string | undefined;
   let busyActivity = "";
   const announced = new Set<string>();
-  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string } }) => {
+  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string; status?: string } }) => {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
     if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
@@ -434,7 +434,7 @@ try {
   await waitFor(
     "Jcode journal fold priming turn",
     () =>
-      readJsonLines(foldLog).find(
+      readJsonLines<{ ev: string; content?: string }>(foldLog).find(
         (entry) => entry.ev === "turn_run" && String(entry.content).includes("JCODE-JOURNAL-PRIME-1984"),
       )
         ? true
@@ -443,7 +443,7 @@ try {
   await waitFor(
     "Jcode journal fold priming completion",
     () =>
-      readJsonLines(foldLog).find(
+      readJsonLines<{ ev: string; content?: string }>(foldLog).find(
         (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("JCODE-JOURNAL-PRIME-1984"),
       )
         ? true
@@ -467,12 +467,12 @@ try {
         ? true
         : undefined,
   );
-  await waitFor("Jcode journal fold scheduling", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_fold_scheduled") ? true : undefined);
+  await waitFor("Jcode journal fold scheduling", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_fold_scheduled") ? true : undefined);
   await waitFor(
     "Jcode journal fold run",
     () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED")) ? true : undefined,
   );
-  await waitFor("Jcode journal fold", () => readJsonLines(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
+  await waitFor("Jcode journal fold", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity",
     () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR" && event.code === "jcode_journal_fold")) ? true : undefined,
@@ -1503,7 +1503,7 @@ try {
   await sleep(200);
   const midAlive = slow.exitCode === null && slow.signalCode === null;
   const midRoster = operator.getRoster().filter((p) => p.card.name === "slowpeer" && p.status !== "offline");
-  const midPeer = resolvePeer(operator.getRoster(), "slowpeer", { selfId: operator.id });
+  const midPeer = resolvePeer(operator.getRoster(), "slowpeer", { selfId: (operator as unknown as { id?: string }).id });
   const midDmError = midPeer ? undefined : `no peer "slowpeer" in space "jcodehost"`;
   const midPersona = gateEntries().find(
     (entry) =>
