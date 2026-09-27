@@ -8,7 +8,8 @@
  * a real JetStream ack. Then the interval rules: a post after `durableLeave` (`seq > leaveCursor`) is
  * NOT delivered (leave is a hard read boundary for the backstop), and the security boundary holds —
  * the agent cannot read the mixed INBOX store, cannot publish into its own dinbox/dlv, and a peer
- * cannot bind another agent's dlv durable.
+ * cannot bind another agent's dlv durable. Also proves two distinct id-less posts both reach the
+ * member (#673) while a real id's fan-out copies still collapse under retry.
  *
  * Run: pnpm smoke:plane3:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -287,6 +288,61 @@ try {
   // a second post arrives too (steady-state fan-out, seq > activationFence)
   await poster.multicast("second", { channel: "review" });
   check("steady-state fan-out delivers a later post", await until(() => got.some((g) => g.text === "second")));
+
+  // ---- #673: two distinct id-less posts both reach the member ----
+  const emptyOne: CotalMessage = {
+    id: "", ts: Date.now(), space, from: poster.card, channel: "review",
+    parts: [{ kind: "text", text: "empty-one" }],
+  };
+  const emptyTwo: CotalMessage = {
+    id: "", ts: Date.now(), space, from: poster.card, channel: "review",
+    parts: [{ kind: "text", text: "empty-two" }],
+  };
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify(emptyOne),
+    { msgID: randomUUID() },
+  );
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify(emptyTwo),
+    { msgID: randomUUID() },
+  );
+  check(
+    "two distinct id-less posts on a durable channel both reach the member (#673)",
+    await until(() => got.some((g) => g.text === "empty-one") && got.some((g) => g.text === "empty-two")),
+    got,
+  );
+  check(
+    "both id-less deliveries are durable (real JetStream backstop ack)",
+    got.filter((g) => g.text === "empty-one" || g.text === "empty-two").every((g) => g.durable === true),
+    got,
+  );
+
+  // ---- CONTROL: a real id still collapses its fan-out copies ----
+  const realId = randomUUID();
+  const realIdText = "real-id-control";
+  const realMsg: CotalMessage = {
+    id: realId, ts: Date.now(), space, from: poster.card, channel: "review",
+    parts: [{ kind: "text", text: realIdText }],
+  };
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify(realMsg),
+    { msgID: randomUUID() },
+  );
+  await posterJs.publish(
+    chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
+    JSON.stringify(realMsg),
+    { msgID: randomUUID() },
+  );
+  await until(() => got.some((g) => g.text === realIdText));
+  await wait(900); // settle: prove the SECOND fan-out copy did not also arrive
+  check(
+    "CONTROL: a real id still collapses its fan-out copies",
+    got.filter((g) => g.text === realIdText).length === 1,
+    got.filter((g) => g.text === realIdText),
+  );
 
   // ---- leave = hard read boundary (interval) ----
   await dlv.durableLeaveFor(aPrincipal, "review", uidA);
