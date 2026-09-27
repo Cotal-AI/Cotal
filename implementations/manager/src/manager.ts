@@ -4383,7 +4383,7 @@ export class Manager {
     };
     if (!isAbsolute(asked)) refuse("expected an absolute path");
     const result = this.checkSpawnCwd(asked);
-    if ("refusal" in result) refuse(result.refusal);
+    if ("refusal" in result) return refuse(result.refusal);
     return result;
   }
 
