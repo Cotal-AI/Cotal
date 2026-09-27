@@ -164,6 +164,9 @@ real entry point *reaches* it; if the test builds its inputs by hand, prove that
 The fixture census (`pnpm smoke:mutation-fixtures`) refuses a mutation whose command builds the
 mutated package with no `afterRestore` that rebuilds it, because that run leaves a `dist/` compiled
 from the mutant.
+- **Every package's `typecheck` also runs a `tsconfig.smoke.json` over its smoke tree.** A new
+package with smoke files adds the same pair, because a smoke file that is typechecked by nothing
+runs green over real type errors.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.
