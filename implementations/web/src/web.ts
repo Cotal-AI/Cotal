@@ -905,7 +905,11 @@ export async function web(args: ParsedArgs): Promise<void> {
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
-    const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+    const query = new URLSearchParams((req.url ?? "/").split("?")[1] ?? "");
+    // The announced-body fact the gate needs to close a refused upload (#2024), and the no-body
+    // guard below reuses; see that guard for what it refuses and the catch for why close is remedy.
+    const declared = Number(req.headers["content-length"]);
+    const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
 
     // THE GATE RUNS BEFORE EVERY ROUTE, including `/feed` and the static files. Placing it inside a
     // route, or after the first `if`, is how a surface acquires an unauthenticated corner: the next
@@ -914,7 +918,13 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (verdict !== undefined && "refuse" in verdict) {
       // A NAMED refusal, never a redirect and never an empty 200. The condition is the body, so a
       // caller that reads only the body still learns which of the three failed.
-      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, { "content-type": "application/json" });
+      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, {
+        "content-type": "application/json",
+        // A refusal that leaves a caller uploading on a kept-alive connection is drained by Node
+        // before the socket comes back, so the pre-auth corner #2024 names is an unbounded read.
+        // The close header is the whole remedy; see the catch below for what it does and costs.
+        ...(announcedBody ? { connection: "close" } : {}),
+      });
       return void res.end(JSON.stringify({ error: verdict.refuse }));
     }
     if (verdict !== undefined && "exchange" in verdict) {
@@ -931,8 +941,6 @@ export async function web(args: ParsedArgs): Promise<void> {
     // before dispatch everywhere else, so the next no-body route inherits the same bound instead
     // of silently letting Node drain an upload the handler will never inspect.
     const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
-    const declared = Number(req.headers["content-length"]);
-    const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
     if (noBodyRoute && announcedBody) throw noBody(path, declared);
 
     if (path === "/feed") {
