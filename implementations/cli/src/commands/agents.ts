@@ -3,7 +3,7 @@ import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
-import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
+import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -863,17 +863,19 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => bool
   let pressedYet = false;
   const pressed = new Promise<void>((r) => { fire = r; });
   const hit = () => { pressedYet = true; fire(); };
-  // Exactly one byte, and exactly the detach byte. A chunk carrying it alongside anything else is
-  // NOT a keypress: measured on a pty, a real keypress arrives in a read of its own even at 3ms
-  // spacing, and the only two ways the byte arrives with company are a paste and a reader that was
-  // not reading. Treating a paste that happens to contain 0x1d as a detach would turn data into a
-  // control action on input nobody typed; the reader that was not reading is the defect this
-  // watcher's new lifetime fixes, not a matching problem.
+  // The whole chunk must be exactly one press of the detach key: the legacy control byte, or the
+  // kitty keyboard protocol / xterm modifyOtherKeys encoding of the same press (see
+  // `isDetachPress`, #598). A chunk carrying it alongside anything else is NOT a keypress:
+  // measured on a pty, a real keypress arrives in a read of its own even at 3ms spacing, and the
+  // only two ways the byte arrives with company are a paste and a reader that was not reading.
+  // Treating a paste that happens to contain the byte (or the encoded sequence) as a detach would
+  // turn data into a control action on input nobody typed; the reader that was not reading is the
+  // defect this watcher's new lifetime fixes, not a matching problem.
   // Under the console, Ink has called `stdin.setEncoding("utf8")`, and an encoding persists on the
   // stream after Ink releases raw mode, so data arrives as a STRING there (the standalone command
   // gets Buffers). Normalize first: a one-character string is not the number 0x1d, and the compare
   // below would otherwise never match, making the key dead for as long as a reconnect takes.
-  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };
+  const onData = (d: Buffer) => { if (isDetachPress(d, byte)) hit(); };
   const onChunk = (data: Buffer | string) => onData(Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8"));
   stdin.on("data", onChunk);
   stdin.resume();
