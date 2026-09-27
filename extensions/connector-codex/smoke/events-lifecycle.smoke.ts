@@ -1573,6 +1573,9 @@ try {
   // than trusted: if the turn does not complete within the window, the SETUP cell reds and says so
   // instead of the graded cell passing for the wrong reason.
   const WINDOW_MS = 10_000;
+  // Holds the window between the persist and the first pump open on the OTHER side of the seam
+  // (#705), so this arm's WAL read below cannot be beaten by the pump's own first read.
+  const HOLD_MS = 10_000;
   // THE SLOP IS NOT PADDING, it is the part of the window this suite cannot see. The delay starts
   // when the holder adopts, which is before the announcement, and the fixture cannot act until it
   // has OBSERVED that announcement, one 100ms poll and one pipe hop later. So elapsed measured from
@@ -1593,6 +1596,8 @@ try {
     servers,
     { prompt: "TOOLREC the turn that runs inside the emitter's own setup window", goMark: goE },
     WINDOW_MS,
+    undefined,
+    HOLD_MS,
   );
   check("window:setup:seat E came online", await settle("online:E", () => online.has(E), 60_000), margin("online:E"));
   await joinEventsOf(E);
@@ -1616,6 +1621,31 @@ try {
   const rolloutE = rolloutPathOf(errE) ?? "";
   const threadE = publishedThreads(errE)[0] ?? "";
   const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
+  // #705: the same snapshot-before-anything-runs the removed seat-A cell took, moved here where
+  // the hold (HOLD_MS) keeps the window between the persist and the first pump open long enough
+  // for this arm's own settle to observe it. `rolloutE` already holds the rollout path by now.
+  const expectedBindCursorE = rolloutE === "" ? undefined : (await new JsonlFileSource(rolloutE).read(undefined)).cursor;
+  const threadIdE = rolloutE.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? "";
+  const principalE = operator.getRoster().find((p) => p.card.name === E)?.card.id ?? "";
+  const walPath = threadIdE === "" || principalE === ""
+    ? ""
+    : eventWalLocation({ workspaceRoot: homeE, space, principal: principalE, threadId: threadIdE }).walPath;
+  const readWalE = (): WalDoc | undefined => {
+    try {
+      return walPath === "" || !existsSync(walPath) ? undefined : (JSON.parse(readFileSync(walPath, "utf8")) as WalDoc);
+    } catch {
+      return undefined;
+    }
+  };
+  // Reads the WAL INSIDE the hold: the persist (fixed code) has already run by the time the
+  // window opened, and with HOLD_MS still elapsing the pump cannot yet have written the file's
+  // end here, so what this settle captures is the persist's write or nothing at all.
+  let walE: WalDoc | undefined;
+  const walEReady = await settle(
+    "E:the start boundary lands on disk after the launch bind",
+    () => (walE = readWalE())?.frontier.sourceCursor !== undefined,
+    60_000,
+  );
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
   // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
   // instead of becoming a suite that hangs somewhere else.
@@ -1696,6 +1726,7 @@ try {
       tail: errE.slice(-400),
     },
   );
+  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && walE?.frontier.sourceCursor !== undefined && walE?.frontier.sourceCursor === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
   }
 
   completed = true;
