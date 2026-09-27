@@ -42,7 +42,7 @@
     "The clean-exit-code mutation proves the partial-census cells actually watch the exit code, not just the message.",
     "The --on-guidance mutation proves the new #423 cell actually watches the guidance text (the identifier and where ps prints it), not just the bare grammar phrase the mint already produced.",
     "The describeFlags mutation proves the #554 malformed-id cell actually depends on describe accepting --on at all, not just on the mint's validator.",
-    "The resolveService-instanceId mutation proves the #554 pin actually reaches the describe subject: with the flag dropped on the floor the call is unpinned, so the absent-instance describe is answered by a live manager instead of deadlining, which reddens section 5's `describe HONOURS --on` cell deterministically. Section 3's attribution-name cell is not the target because an unpinned describe is still answered by IID1 whenever IID1 wins the class queue, so that cell would red only by chance."
+    "The resolveService-instanceId mutation proves the #554 pin actually reaches the describe subject. With the flag dropped on the floor every describe is unpinned: section 3's IID1 and IID2 attribution cells red whenever the class queue hands the call to the other instance, which is most runs but not every run, and section 5's `describe HONOURS --on` deadline cell reds on every run, because a live manager answers the absent-instance describe that should have deadlined. The entry names the section 5 cell so the kill never depends on which instance won the queue."
   ]
 }
 
