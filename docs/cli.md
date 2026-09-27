@@ -120,7 +120,10 @@ with `cotal update --self` as the next command, not an automatic install.
 
 After disk reconciliation, `update` reads the selected running manager. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
-holds when every recorded mesh is down and none is selected. A recorded mesh that is down is still a
+holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
+`cotal meshes add --mode user`, is named and skipped: its manager runs under another install, so
+there is no custody on this machine to preserve, and a `legacy` verdict still comes only from a
+manager this machine read. A recorded mesh that is down is still a
 refusal when the command selects it, with `--space` or by running inside its project, and so is a
 named space that is not running. With several meshes running and no `--space`, `--server` or
 `--creds`, the install is machine-wide, so every running manager is reported in turn, each under its

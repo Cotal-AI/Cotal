@@ -2,14 +2,15 @@
   "suite": [
     "implementations/cli/smoke/command-kernel.smoke.ts"
   ],
-  "guard": "the continuity refusal carries the workspace renderer's remedy, and several running meshes are each reported before the install",
+  "guard": "the continuity refusal carries the workspace renderer's remedy, and several running meshes are each reported before the install, and a remote user mesh is skipped rather than read",
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/update-continuity-all.json",
   "why": [
     "#1879. With two meshes running and the shell outside both roots, update printed the resolver's bare `multiple meshes running: …` and exited 1 before writing anything. Two defects shared that line: the refusal dropped the remedy every other command renders, and a global install that every running manager shares was reported for one manager or none.",
     "M1 restores the bare `message(e)` text. The refusal cell names the remedy sentence, so it goes red on that assertion while a non-target error still prints unchanged.",
     "M2 removes the enumeration and rethrows. The several-managers cell observes both managers being read, so it goes red on the first read of the second manager.",
-    "M3 stops the loop at the first legacy verdict. The cell asserts both managers are still observed, which is #1620 for all of them rather than just the first."
+    "M3 stops the loop at the first legacy verdict. The cell asserts both managers are still observed, which is #1620 for all of them rather than just the first.",
+    "#2158. M4 restores reading a remote user mesh's manager for continuity instead of skipping it before the mint: the skip cell drives `readManagerContinuity` straight against the manual remote entry with no manager on the other end, so a read instead of a skip throws, and the cell goes red on the mutant."
   ],
   "mutations": [
     {
@@ -38,6 +39,15 @@
       "expectRed": "a legacy verdict does not stop the remaining managers being observed",
       "cell": "#1879: several running meshes report each manager's continuity in turn",
       "note": "Still returns legacy for the whole run, so the verdict assertions survive. It reintroduces the partial answer from the other direction: the managers after the first legacy one are never observed, which the alpha-legacy pass catches."
+    },
+    {
+      "name": "M4 read a remote user mesh's manager for continuity instead of skipping it",
+      "file": "implementations/cli/src/commands/update.ts",
+      "find": "    if (peek?.mode === \"user\" && peek.userAuth?.remote === true) {\n      console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));\n      return \"none\";\n    }",
+      "replace": "    if (peek?.mode === \"user\" && peek.userAuth?.remote === true) {\n      throw new Error(\"remote continuity probe\");\n    }",
+      "expectRed": "#2158: a remote user mesh is skipped before the manager-caller mint",
+      "cell": "#2158: a remote user mesh is skipped before the manager-caller mint",
+      "note": "Restores minting the manager-caller view for a remote user mesh instead of skipping it: the skip cell drives `readManagerContinuity` against the manual remote entry directly, so the branch is exercised and now throws instead of returning \"none\"."
     }
   ]
 }
