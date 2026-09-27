@@ -309,21 +309,41 @@ try {
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
 
-  // (4b) #674: two raw DMs with EMPTY wire ids, published back-to-back into one quiet window.
-  // The first-party APIs mint an id per message, so an empty id can only come off the wire from a
-  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer. The
-  // ADAPTER seam is what this cell grades: the surfaced ids the turn owns are receive keys (a
-  // minted one for each id-less item), and the boundary acks by exactly those keys — otherwise the
-  // second message would still ride the frame while the ack addressed nothing, and the NEXT turn
-  // would re-carry both (the ledger-keyed-by-id mutation this cell must catch).
-  await sleep(500);
+  // (4b) #674: two raw DMs with EMPTY wire ids, published back-to-back into ONE turn. The
+  // first-party APIs mint an id per message, so an empty id can only come off the wire from a
+  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer.
+  // `drive()` peeks the inbox synchronously in the first `incoming` dispatch, so two DMs into an
+  // IDLE host are deterministically two turns; the one open window is a live turn, and steers are
+  // how both join it. The ADAPTER seam is what this cell grades: the surfaced ids the turn owns
+  // are receive keys (a minted one for each id-less item, start and steers alike), and the
+  // boundary acks by exactly those keys — otherwise the ack addressed "" twice, nothing commits,
+  // and the boundary's pump re-carries both texts into the very next turn (the ledger-keyed-by-id
+  // mutation this cell must catch).
+  await sleep(300);
+  await dm("SLOW empty-frame");
+  await waitFor("SLOW empty-frame turn", () => turnStarts().find((t) => t.includes("SLOW empty-frame")));
   await rawEmptyIdDm("empty-a", { flush: false });
   await rawEmptyIdDm("empty-b");
-  const tE = await waitFor("empty-id turn", () => turnStarts().find((t) => t.includes("empty-a")));
+  const emptySteerTexts = () =>
+    logEntries()
+      .filter((e) => e.ev === "recv" && e.method === "turn/steer")
+      .map((e) => ((e.params?.input as { text?: string }[] | undefined) ?? []).map((i) => i.text ?? "").join("\n"));
+  await waitFor("both empty-id DMs steered into the open turn", () => {
+    const texts = emptySteerTexts();
+    return texts.some((t) => t.includes("empty-a")) && texts.some((t) => t.includes("empty-b")) ? texts : undefined;
+  });
+  await sleep(1500); // let the SLOW empty-frame turn complete (its boundary is the ack site)
+  const emptySteered = emptySteerTexts();
   check(
-    "two empty-id DMs in one frame both commit (#674)",
-    tE.includes("empty-a") && tE.includes("empty-b") && tE.includes("2 new messages"),
-    tE,
+    "two empty-id DMs in one turn both commit (#674)",
+    emptySteered.filter((t) => t.includes("empty-a")).length === 1 &&
+      emptySteered.filter((t) => t.includes("empty-b")).length === 1,
+    emptySteered,
+  );
+  check(
+    "no turn start ever carries either empty-id text (steers joined, never drove)",
+    turnStarts().every((t) => !t.includes("empty-a") && !t.includes("empty-b")),
+    turnStarts().filter((t) => t.includes("empty-a") || t.includes("empty-b")),
   );
   await sleep(500);
   await dm("after-empty");
@@ -342,7 +362,7 @@ try {
   await dm("SLOW empty-window");
   await waitFor("SLOW empty-window turn", () => turnStarts().find((t) => t.includes("SLOW empty-window")));
   await rawEmptyIdDm("empty-steer");
-  const emptySteered = await waitFor("empty-id steer", () =>
+  await waitFor("empty-id steer", () =>
     logEntries().find(
       (e) =>
         e.ev === "recv" &&
@@ -350,17 +370,30 @@ try {
         ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
     ),
   );
-  const emptySteerCount = ((emptySteered.params?.input as { text?: string }[] | undefined) ?? []).filter((i) =>
-    (i.text ?? "").includes("empty-steer"),
+  await sleep(1500); // let the SLOW empty-window turn COMPLETE before counting: a :648 raw-id
+  // mutant re-steers the id-less item for as long as the turn stays open (a storm of turn/steer
+  // entries), so the count must span the whole journal after the window closes — counting inside
+  // the first matching entry would let every re-steer past the same guard.
+  const emptySteerCount = logEntries().filter(
+    (e) =>
+      e.ev === "recv" &&
+      e.method === "turn/steer" &&
+      ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
   ).length;
   check(
     "an empty-id DM steered mid-turn is not steered twice (#674)",
     emptySteerCount === 1,
     { emptySteerCount },
   );
-  await sleep(1500); // let the SLOW empty-window turn complete (acks its batch)
-  await dm("after-empty-steer");
-  const tE3 = await waitFor("post-empty-steer turn", () => turnStarts().find((t) => t.includes("after-empty-steer")));
+  check(
+    "no turn start ever carries the steered empty-id text",
+    turnStarts().every((t) => !t.includes("empty-steer")),
+    turnStarts().filter((t) => t.includes("empty-steer")),
+  );
+  // (the probe DM's marker shares no substring with `empty-steer`, so the ack checks below can
+  // test the text's absence without matching the probe itself)
+  await dm("post-674-probe");
+  const tE3 = await waitFor("post-674-probe turn", () => turnStarts().find((t) => t.includes("post-674-probe")));
   check(
     "the steered empty-id DM was acked with its turn",
     !tE3.includes("empty-steer") && !tE3.includes("SLOW empty-window"),
