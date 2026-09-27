@@ -31,7 +31,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
@@ -102,7 +102,7 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["w1", "w2", "w3", "wp1", "wp2", "m6pin"])
+for (const n of ["w1", "w2", "w3", "wp1", "wp2", "wpmissing", "m6pin"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -340,6 +340,18 @@ try {
     const refused = await invokeCommand(P.nc, space, service, "resolve-cwd", { cwd: missing }, { deadlineMs: 10_000 });
     check("resolve-cwd refuses a missing directory by name with failed-precondition",
       refused.reply.ok === false && refused.reply.error?.code === "failed-precondition" && refused.reply.error.message.includes(missing), refused.reply);
+    const refusedSpawn = await A.call("spawn", { name: "wpmissing", agent: "cwd-stub", cwd: missing, events: false });
+    check("a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)",
+      refusedSpawn.reply.ok === false
+        && String(refusedSpawn.reply.error?.message ?? "").includes(missing)
+        && String(refusedSpawn.reply.error?.message ?? "").includes("does not resolve on this host")
+        && String(refusedSpawn.reply.error?.message ?? "").includes(hostname()),
+      refusedSpawn.reply);
+    const psAfterRefusal = await A.call("ps");
+    const rowsAfterRefusal = psAfterRefusal.reply.data as Array<{ name: string }>;
+    check("a refused cwd spawn provisions nothing: no ps row, no child",
+      !rowsAfterRefusal.some((r) => r.name === "wpmissing") && !existsSync(join(dir, "child-cwd.txt")),
+      { rows: rowsAfterRefusal, childExists: existsSync(join(dir, "child-cwd.txt")) });
     rmSync(join(dir, "child-cwd.txt"), { force: true });
     const placed = await invokeCommand(P.nc, space, service, "spawn", { name: "wp2", agent: "cwd-stub", cwd: canonical, events: false }, { deadlineMs: 30_000, id: `placed-${Date.now()}` });
     for (let i = 0; i < 80 && !existsSync(join(dir, "child-cwd.txt")); i++) await wait(250);

@@ -1132,7 +1132,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
+            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance.",
           ),
         prompt: z
           .string()
