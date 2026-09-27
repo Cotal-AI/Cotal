@@ -154,7 +154,7 @@ async function dm(text: string): Promise<void> {
  */
 const enc = new TextEncoder();
 let rawNc: Awaited<ReturnType<typeof rawConnect>> | undefined;
-async function rawEmptyIdDm(text: string): Promise<void> {
+async function rawEmptyIdDm(text: string, opts?: { flush?: boolean }): Promise<void> {
   const recip = operator.getRoster().find((p) => p.card.name === PEER)?.card.id;
   const parsed = recip ? parsePrincipalKey(recip) : undefined;
   if (!recip || !parsed) throw new Error(`peer ${PEER} not in the operator's roster yet`);
@@ -172,7 +172,11 @@ async function rawEmptyIdDm(text: string): Promise<void> {
       }),
     ),
   );
-  await rawNc.flush();
+  // `flush: false` lets a caller queue a second publish before either crosses the wire, so two
+  // raw sends land in one round trip — otherwise the host's idle drive() can start a turn on the
+  // first message before the second has even reached the broker (a test-timing race, not the
+  // adapter behavior the cell is grading).
+  if (opts?.flush !== false) await rawNc.flush();
 }
 
 let host: ReturnType<typeof spawn> | undefined;
@@ -313,7 +317,7 @@ try {
   // second message would still ride the frame while the ack addressed nothing, and the NEXT turn
   // would re-carry both (the ledger-keyed-by-id mutation this cell must catch).
   await sleep(500);
-  await rawEmptyIdDm("empty-a");
+  await rawEmptyIdDm("empty-a", { flush: false });
   await rawEmptyIdDm("empty-b");
   const tE = await waitFor("empty-id turn", () => turnStarts().find((t) => t.includes("empty-a")));
   check(
