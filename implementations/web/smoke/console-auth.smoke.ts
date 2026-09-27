@@ -386,7 +386,7 @@ const runGateBlock = (verdict: unknown, path = "/api/roster", method = "GET"): R
   ).outputText;
   const ctx: Record<string, unknown> = {
     gate: { check: () => verdict },
-    req: { method }, query: q(), path, res,
+    req: { method, headers: {} as Record<string, string | undefined> }, query: q(), path, res,
     CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session",
     __routeReached: () => { rec.routeReached = true; },
     globalThis: undefined, console,
