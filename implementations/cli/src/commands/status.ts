@@ -85,7 +85,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
-  printProject(root, cmd, selected, values, responder);
+  await printProject(root, cmd, selected, values, responder);
   await printRegistry();
   await printTarget(selected, cmd, responder);
   if (values.components) await printComponentHealth(cwd, values);
@@ -265,7 +265,7 @@ async function readResponderAxis(selected: Selected): Promise<DeliveryResponderS
   }
 }
 
-function printProject(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState = "unknown"): void {
+async function printProject(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState = "unknown"): Promise<void> {
   section("This Folder");
   row("root", root);
   // The inventory READ itself can throw (an EACCES/ELOOP on `.cotal/auth`, not just a bad record):
@@ -336,15 +336,19 @@ function printProject(root: string, cmd: string, selected: Selected, values: Fla
   for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
     const state = proc(localProcessPath(component.pidFile, context));
     if (component.name === "nats") nats = state;
-    const detail = component.name === "manager" && state.live
-      ? c.dim(managerHasDeliveryMarker(context.space) ? " · delivery-aware" : " · old/unknown build")
-      // THE #1576 ROW. A live delivery PID is not the fact an operator needs; the responder is.
-      // `formatProc` greens any live pid, which is how `delivery running (pid N)` came to be printed
-      // identically over a bound responder and one that never bound. The suffix names which it is,
-      // and when unbound it names the CONSEQUENCE rather than a reconcile that has not happened yet.
-      : component.name === "delivery"
-        ? deliveryRowNote(state.live, responder)
-        : "";
+    if (component.name === "manager") {
+      // #2073: a live manager pid used to print green `running` on the pidfile alone, which is how
+      // a manager whose service rail had died read as healthy for hours. One probe of the service
+      // endpoint now decides the row; see `managerRowState`.
+      const deliveryAwareDetail = c.dim(managerHasDeliveryMarker(context.space) ? " · delivery-aware" : " · old/unknown build");
+      row(component.name, await managerRowState(selected.ok ? selected.target : undefined, state, deliveryAwareDetail));
+      continue;
+    }
+    // THE #1576 ROW. A live delivery PID is not the fact an operator needs; the responder is.
+    // `formatProc` greens any live pid, which is how `delivery running (pid N)` came to be printed
+    // identically over a bound responder and one that never bound. The suffix names which it is,
+    // and when unbound it names the CONSEQUENCE rather than a reconcile that has not happened yet.
+    const detail = component.name === "delivery" ? deliveryRowNote(state.live, responder) : "";
     row(component.name, `${formatProc(state)}${detail}`);
   }
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
@@ -668,6 +672,45 @@ function formatProc(p: Proc): string {
   return c.dim(p.pid ? `${p.note} (${p.pid})` : (p.note ?? "down"));
 }
 
+/** Bare status's manager row, #2073: a live pid alone is not proof the manager serves — that was
+ *  exactly the incident (a lease holder whose service rail had died stayed `running` for hours).
+ *  So a live manager pid gets ONE probe of its own service endpoint before the row prints. This
+ *  adds one request to every bare `status` call for a live manager pid.
+ *
+ *  Three outcomes:
+ *  - answered: the row prints exactly as before (green `running (pid N)` plus the delivery-aware
+ *    suffix).
+ *  - a DEFINITIVE no-answer — the same predicate `managerHealth`'s not-serving branch uses
+ *    (`unansweredRequest`, or the service-registry-missing text): red `not serving (pid N)` with
+ *    ` · service endpoint not answering`.
+ *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running (pid N)`
+ *    as today with a dim ` · service unchecked`, so a failed probe never reads as a dead rail.
+ *
+ *  Bare status keeps exit 0 in every case; this only changes what the row says. A dead/stopped pid
+ *  never reaches the probe at all (the early return below), so a stopped manager still reads as the
+ *  dim stopped row, not `not serving` — a dead pid is not a live pid that will not answer. */
+async function managerRowState(target: MeshTarget | undefined, state: Proc, deliveryAwareDetail: string): Promise<string> {
+  if (!state.live) return formatProc(state);
+  const unprobed = `${formatProc(state)}${deliveryAwareDetail}`;
+  if (!target) return unprobed;
+  try {
+    let auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } };
+    if (target.mode === "user") {
+      const credential = await componentCredential(target);
+      if (credential.kind !== "user") return `${unprobed}${c.dim(" · service unchecked")}`;
+      auth = { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds, caller: credential.caller };
+    } else {
+      auth = await staticServiceAuth(target.auth);
+    }
+    await managerServiceHealth(target, auth);
+    return unprobed;
+  } catch (e) {
+    const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message));
+    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(" · service endpoint not answering")}`;
+    return `${unprobed}${c.dim(" · service unchecked")}`;
+  }
+}
+
 /** The delivery row's responder suffix, coloured for the bare-status renderer (#1576).
  *
  *  RED, NOT DIM, FOR AN UNBOUND RESPONDER. The state is not a footnote about a component: while it
@@ -796,17 +839,22 @@ async function componentEp(
 ): Promise<{ ep: CotalEndpoint; close(): Promise<void> }> {
   const id = newIdentity();
   const user = credential.kind === "user";
+  // Static/open: ONE lifecycleUid minted and used both in the credential and as the endpoint's own
+  // option, matching `staticServiceAuth`. Two different uids here (a fresh mint per site) is what
+  // `permissionsFor: ... mint with opts.lifecycleUid` refuses: the lease read is bound to the uid
+  // baked into the credential, not the one the endpoint separately declares (#2073).
+  const staticUid = !user && credential.auth ? mintLifecycleUid() : undefined;
   const ep = new CotalEndpoint({
     space: target.space,
     servers: target.server,
     tls: target.tlsRequired,
-    // Static/open: mint exactly as before. User: the signed-in login's bearer + sentinel; no
-    // lifecycleUid mint exists on this path (the bearer carries its own lifecycle claim).
+    // User: the signed-in login's bearer + sentinel; no lifecycleUid mint exists on this path (the
+    // bearer carries its own lifecycle claim).
     ...(user
       ? { bearer: credential.bearer, sentinelCreds: credential.sentinelCreds }
       : {
-          creds: credential.auth ? await mintCreds(credential.auth, id, "deployer") : undefined,
-          lifecycleUid: credential.auth ? mintLifecycleUid() : undefined,
+          creds: credential.auth && staticUid ? await mintCreds(credential.auth, id, "deployer", { lifecycleUid: staticUid }) : undefined,
+          lifecycleUid: staticUid,
         }),
     channels: [],
     consume: false,
