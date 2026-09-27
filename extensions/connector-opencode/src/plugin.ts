@@ -96,6 +96,12 @@ export const WAL_REAPED = "opencode-wal-reaped";
  *  This is the token the reaping cell grades, because the lifetime is the claim and the deletion is
  *  only the easy half of it. */
 export const WAL_KEPT = "opencode-wal-kept";
+/** The shared shape of a pre-join model refusal: `"<model>: <detail>. Refusing before join"`.
+ *  Exported so the 2.x adapter's own check (a different route, `/api/model`) produces the same
+ *  sentence shape as `verifyServerModel` below without duplicating it. */
+export function modelRefusalSentence(selectedModel: string, detail: string): string {
+  return `${selectedModel}: ${detail}. Refusing before join`;
+}
 export async function verifyServerModel(serverUrl: string, serverAuth: string, selectedModel: string): Promise<void> {
   const response = await fetch(`${serverUrl}/provider`, {
     headers: { authorization: serverAuth },
@@ -107,7 +113,7 @@ export async function verifyServerModel(serverUrl: string, serverAuth: string, s
   const provider = selectedModel.slice(0, slash);
   const model = selectedModel.slice(slash + 1);
   if (slash < 1 || !model || !listing.all?.some((entry) => entry.id === provider && Object.hasOwn(entry.models ?? {}, model)))
-    throw new Error(`${selectedModel}: CLI opencode models --pure --verbose may list it; server /provider does not. Refusing before join`);
+    throw new Error(modelRefusalSentence(selectedModel, "CLI opencode models --pure --verbose may list it; server /provider does not"));
 }
 /**
  * How long one swap step may hold the chain, or a teardown may hold the process, before it is
