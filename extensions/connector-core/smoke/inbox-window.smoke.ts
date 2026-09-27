@@ -763,6 +763,7 @@ try {
             items.push(
               ...late.map((size, n) => ({
                 id: `L-${n}`,
+                recvKey: `L-${n}`,
                 ts: 20_500 + n,
                 fromId: "peer",
                 fromName: "Peer",

@@ -156,10 +156,10 @@ check(
 );
 
 const text = async (name: string): Promise<string> => {
-  const result = await client.callTool({ name, arguments: {} });
+  const result = await client.callTool({ name, arguments: {} }) as { content: Array<{ type: string; text?: string }> };
   const first = result.content[0];
   if (!first || first.type !== "text") throw new Error(`${name} returned no text`);
-  return first.text;
+  return first.text!;
 };
 const status = async (): Promise<Record<string, unknown>> => JSON.parse(await text("cotal_connection_status"));
 
@@ -282,10 +282,10 @@ check(
   const wedgedClient = new Client({ name: "connection-status-wedged-client", version: "0.0.0" });
   await Promise.all([wedgedClient.connect(wedgedClientTransport), wedgedServer.connect(wedgedServerTransport)]);
   const wedgedStatus = async (): Promise<Record<string, unknown>> => {
-    const result = await wedgedClient.callTool({ name: "cotal_connection_status", arguments: {} });
+    const result = await wedgedClient.callTool({ name: "cotal_connection_status", arguments: {} }) as { content: Array<{ type: string; text?: string }> };
     const first = result.content[0];
     if (!first || first.type !== "text") throw new Error("cotal_connection_status returned no text");
-    return JSON.parse(first.text);
+    return JSON.parse(first.text!);
   };
 
   type Slot = { item: InboxItem; ack: () => void; pullOnly: boolean; receivedAt: number };
