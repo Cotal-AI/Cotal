@@ -454,26 +454,26 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 // ---- 10) an update's operand: a native counter, a refused record --------------------------------
 
 {
-  // THE ONE DECLARED DIVERGENCE, held by its oracle rather than by a sentence. The walker
-  // reads `x++`'s old value through a bare `Number(...)` with no refusal, so a record answers NaN
-  // there; the engine refuses it L4018 through `unary("update")`. That is a deliberate departure
-  // (issue 646: silent coercion is the class the language refuses everywhere else), and this cell
-  // measures the walker's side of it. When 646 lands, the walker starts refusing, this cell reds,
-  // and the divergence is retired in the same change instead of being remembered.
-  const logs: unknown[] = [];
-  const r = await walk("const o = { c: {} }; o.c++; log(o.c);", {
-    runId: "u",
-    handler: new SimHandler({}),
-    onLog: (l) => logs.push([...l.values]),
-  });
-  ok("declared divergence 646: the walker coerces an update's operand instead of refusing", JSON.stringify(logs) === "[[null]]", {
-    logs,
-    value: r.value,
-  });
+  // THE RETIRED DIVERGENCE (issue 646): the walker refuses an update's operand that is not
+  // already a number, the same L4018 sentence the engine's `unary("update")` throws, so `x++`,
+  // `x + 1` and `x += 1` agree on a record operand now instead of the walker settling it as NaN.
+  let code: string | undefined;
+  let message = "";
+  try {
+    await walk("const o = { c: {} }; o.c++; log(o.c);", { runId: "u", handler: new SimHandler({}) });
+  } catch (e) {
+    code = (e as { code?: string }).code;
+    message = String((e as { message?: string }).message ?? "");
+  }
+  ok(
+    "the walker refuses an update's operand that is not a number with L4018, the same sentence as the engine (#646)",
+    code === "L4018" && message.includes("`++` and `--` count"),
+    { code, message },
+  );
 
   // A NUMBER NEVER REACHES THE HOST. Counters are the hot path of every loop in the language, and
-  // one seam call per increment is what the fast path exists to avoid; it is also why the numeric
-  // corpus is identical on both arms while 646 stands.
+  // one seam call per increment is what the fast path exists to avoid; both engines refuse a
+  // non-number operand now, and the numeric corpus stays identical on both arms either way.
   const update = transform("let n = 0; n++; const o = { c: 0 }; o.c++; log(n, o.c);");
   ok("an update's fast path keeps a numeric counter native", update.module.includes('typeof __t2 === "number" ? __t2 :'), update.module.slice(0, 400));
 
