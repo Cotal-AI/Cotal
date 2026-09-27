@@ -1090,7 +1090,9 @@ concludes nothing.
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
 
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
-(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). It does so over a one-use, holder-bound
+(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). The key is recognised as the legacy
+control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of the same
+press, so a terminal with either protocol enabled detaches too. It does so over a one-use, holder-bound
 mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
 `127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
 drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
