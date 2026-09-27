@@ -13,6 +13,14 @@
       "replace": "  return join(root, \".cotal\", LEGACY_RENEWAL_RECORD_FILE);",
       "expectRed": "#1850: two spaces at one root keep two renewal records",
       "cell": "two spaces at one root keep two renewal records"
+    },
+    {
+      "name": "the renewal record read drops the authority field",
+      "file": "packages/workspace/src/renewal.ts",
+      "find": "    return JSON.parse(readFileSync(p, \"utf8\")) as RenewalRecord;",
+      "replace": "    const { authority, ...rest } = JSON.parse(readFileSync(p, \"utf8\")) as RenewalRecord; return rest;",
+      "expectRed": "#1063: the renewal record's authority round-trips per space",
+      "cell": "the renewal record's authority round-trips per space"
     }
   ]
 }
