@@ -75,7 +75,7 @@ try {
   await wait(200); // let every child install its SIGTERM handler before any cell runs
 
   // ── the pin format: one parser, one writer, round-trip ────────────────────────────────────
-  check("parseRecord reads a pinned record", parseRecord("4321 28870819").kind === "record" && parseRecord("4321 28870819").record?.token === "28870819");
+  check("parseRecord reads a pinned record", parseRecord("4321 28870819").kind === "record" && (parseRecord("4321 28870819") as { kind: "record"; record: { token: string } }).record?.token === "28870819");
   check("parseRecord reads a bare pid as LEGACY (pre-identity)", parseRecord("4321\n").kind === "legacy");
   check("parseRecord reads an empty file as a husk", parseRecord("  \n").kind === "husk");
   check("parseRecord refuses garbled content as unattributable", parseRecord("x y z").kind === "unattributable");

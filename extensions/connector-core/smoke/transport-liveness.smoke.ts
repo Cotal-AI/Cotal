@@ -124,7 +124,7 @@
  *
  * Run: pnpm smoke:transport-liveness
  */
-import type { Status } from "@nats-io/nats-core";
+import type { Status } from "@nats-io/transport-node";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 
@@ -183,7 +183,7 @@ class FakeNc {
   /** Product teardown after a reconnect fence uses close(), not drain(). */
   async close(): Promise<void> { this.closedFlag = true; this.queue.push({ type: "close" }); this.queue.close(); }
   async drain(): Promise<void> { await this.close(); }
-  async closed(): Promise<void> { return new Promise(() => {}); }
+  async closed(): Promise<Error | undefined> { return new Promise(() => {}); }
 }
 
 class ClosingNc extends FakeNc {

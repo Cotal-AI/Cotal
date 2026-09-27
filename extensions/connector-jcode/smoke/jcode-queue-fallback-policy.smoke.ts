@@ -54,6 +54,7 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
  *  This IS the incident state: everything is fine except that nothing is serving the queue. */
 const stalled: FallbackState = {
   stopping: false,
+  queuedTurnTierStopped: false,
   reconnecting: false,
   initialized: true,
   hasSession: true,

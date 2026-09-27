@@ -296,7 +296,7 @@ if (selectedProbe) {
 }
 
 const probeOnly = process.env.COTAL_PRESENCE_RENDER_SINGLE_PROBE;
-const probeKind = process.env.COTAL_PRESENCE_RENDER_EXPECT_KIND as CandidateKind | undefined;
+const probeKind = process.env.COTAL_PRESENCE_RENDER_EXPECT_KIND as CandidateKind | "none" | undefined;
 const activeRenderRoots = probeOnly ? [join(root, probeOnly)] : renderRoots;
 const candidates = activeRenderRoots.flatMap((path) => [...shippedSources(path)]).flatMap(collectCandidates);
 if (probeOnly) {

@@ -597,7 +597,7 @@ try {
   };
 
   const instPrefix = `cotal.${SPACE}.ep.inst.manager.${ownerARemoteInstanceId}`;
-  responderNc.subscribe(`${instPrefix}.describe.>`, {
+  responderNc!.subscribe(`${instPrefix}.describe.>`, {
     callback: (err, msg) => {
       if (err || !msg) return;
       sendReply(msg, {
@@ -621,7 +621,7 @@ try {
     },
   });
 
-  responderNc.subscribe(`${instPrefix}.list-personas.>`, {
+  responderNc!.subscribe(`${instPrefix}.list-personas.>`, {
     callback: (err, msg) => {
       if (err || !msg) return;
       recordedCalls.push({ command: "list-personas" });
@@ -629,7 +629,7 @@ try {
     },
   });
 
-  responderNc.subscribe(`${instPrefix}.show-persona.>`, {
+  responderNc!.subscribe(`${instPrefix}.show-persona.>`, {
     callback: (err, msg) => {
       if (err || !msg) return;
       const body = JSON.parse(new TextDecoder().decode(msg.data)) as { id: string; args?: { name?: string } };
@@ -643,7 +643,7 @@ try {
     },
   });
 
-  responderNc.subscribe(`${instPrefix}.define-persona.>`, {
+  responderNc!.subscribe(`${instPrefix}.define-persona.>`, {
     callback: (err, msg) => {
       if (err || !msg) return;
       const body = JSON.parse(new TextDecoder().decode(msg.data)) as { id: string; args?: { name?: string } };
@@ -652,7 +652,7 @@ try {
     },
   });
 
-  responderNc.subscribe(`${instPrefix}.inspect.>`, {
+  responderNc!.subscribe(`${instPrefix}.inspect.>`, {
     callback: (err, msg) => {
       if (err || !msg) return;
       const body = JSON.parse(new TextDecoder().decode(msg.data)) as { id: string; args?: { name?: string } };
@@ -673,7 +673,7 @@ try {
     },
   });
 
-  await responderNc.flush();
+  await responderNc!.flush();
 
   // ==========================================
   // Test 1: Real MeshAgent user mode unpinned (legacy session with NO env pin)
@@ -726,7 +726,7 @@ try {
   // Spawn/model/goal checks below use the real Manager, never a synthetic success reply.
   await agent.stop();
   agent = undefined;
-  await responderNc.drain();
+  await responderNc!.drain();
   responderNc = undefined;
   check("MeshAgent stopped cleanly", true);
 
@@ -754,8 +754,8 @@ try {
       await nc.request(subject, new TextEncoder().encode("{}"), { timeout: 2000 });
       throw new Error("unexpected responder during permission probe");
     } catch (error) {
-      const cause = error instanceof NoRespondersError || error instanceof PermissionViolationError
-        ? error : (error as Error).cause;
+      const cause = (error instanceof NoRespondersError || error instanceof PermissionViolationError
+        ? error : (error as Error).cause) as InstanceType<typeof NoRespondersError> | InstanceType<typeof PermissionViolationError> | undefined;
       if (cause instanceof NoRespondersError && cause.subject === subject) return "allowed";
       if (cause instanceof PermissionViolationError && cause.operation === "publish" && cause.subject === subject) return "denied";
       throw error;
@@ -922,7 +922,7 @@ try {
       sentinelCreds: callout.sentinelCreds,
       bearerCmd: bearerArgv(),
     },
-    managerInstanceId: realManager.managerInstanceId,
+    managerInstanceId: (realManager as unknown as { managerInstanceId: string }).managerInstanceId,
     subscribe: [],
     allowSubscribe: [],
     allowPublish: [],

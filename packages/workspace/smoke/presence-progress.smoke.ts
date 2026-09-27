@@ -7,7 +7,7 @@
  *
  * Pure: no broker. Run: pnpm smoke:presence-progress
  */
-import { progressSignal, PROGRESS_STALL_MS } from "../src/progress.ts";
+import { progressSignal, PROGRESS_STALL_MS } from "../src/progress.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 

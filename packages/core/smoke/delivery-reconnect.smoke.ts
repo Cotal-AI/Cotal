@@ -55,7 +55,7 @@ try {
 
   // The dashboard/observer is the membership-feed reader in production. Use its real admin grant:
   // the delivery cred writes the feed but deliberately cannot create the ordered consumer a KV watch needs.
-  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer", role: "observer", kind: "observer" } });
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
 
   const aId = newIdentity();
@@ -190,7 +190,7 @@ try {
 
   // Permanent endpoint shutdown has no future cleanup epoch. If the broker connection is already
   // terminal, an outstanding public stop must not hang the process waiting for an impossible rebuild.
-  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "observer" } });
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
   const brokerDownWatch = await observer.watchMembership(() => {});
   await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
@@ -211,7 +211,7 @@ try {
   check("the broker-down shutdown exception is isolated before later lifecycle cells", (await membershipConsumers()).length === 0, await membershipConsumers());
 
   // Restart a fresh observer for the terminal-close arm: endpoint stop is permanent by contract.
-  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "observer" } });
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
 
   // Terminal self-heal starts only AFTER the old connection is closed. Its cleanup request cannot ride

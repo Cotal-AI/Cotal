@@ -26,7 +26,7 @@ import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupA
  * line was edited. Counting the calls means the number cannot drift from the work again.
  */
 let cells = 0;
-const assert = new Proxy(nodeAssert, {
+const assert: typeof nodeAssert = new Proxy(nodeAssert, {
   get(target, prop, receiver) {
     const value = Reflect.get(target, prop, receiver);
     if (typeof value !== "function") return value;

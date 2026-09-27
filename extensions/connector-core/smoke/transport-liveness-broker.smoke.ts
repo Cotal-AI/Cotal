@@ -235,7 +235,7 @@ try {
   await rebuildAgent.start(100);
   check(
     "rebuild-race setup: first bind completed before the rebuild is forced",
-    await until(() => rebuildAgent.connected, 30_000) && rebuildEdges.some((event) => event.connected === true),
+    await until(() => rebuildAgent!.connected, 30_000) && rebuildEdges.some((event) => event.connected === true),
     { ready: rebuildAgent.connected, rebuildEdges },
   );
   const rebuildEp = rebuildAgent.ep as unknown as { armPlane3(): Promise<void>; reconnect(): Promise<void> };
@@ -281,7 +281,7 @@ try {
   // suite that only proves the sentence disappears cannot tell a repair from a deletion.
   staleAgent = new MeshAgent({ ...cfg, name: `transport-live-stale-${port}` });
   await staleAgent.start(100);
-  await until(() => staleAgent.connected, 30_000);
+  await until(() => staleAgent!.connected, 30_000);
   const staleEp = staleAgent.ep as unknown as {
     kv?: unknown;
     servers: string;

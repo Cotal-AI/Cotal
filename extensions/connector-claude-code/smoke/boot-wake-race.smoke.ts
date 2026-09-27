@@ -156,7 +156,7 @@ try {
     await sleep(ACTIVATION_SETTLE_MS);
     check(
       "activating claude/channel re-fires the ack-dropped focus mention",
-      nudges.length === mentionNudgesBefore + 1 && nudges.at(-1)?.includes("pull it with cotal_inbox"),
+      nudges.length === mentionNudgesBefore + 1 && nudges.at(-1)?.includes("pull it with cotal_inbox") === true,
       nudges,
     );
     wake.setChannelActive(true);

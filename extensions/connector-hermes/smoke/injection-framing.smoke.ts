@@ -41,7 +41,7 @@ const failures: string[] = [];
  * probe that never ran leaves every later cell reading an absent value, which prints one cause as a
  * screenful of failures.
  */
-const assert = new Proxy(nodeAssert, {
+const assert: typeof nodeAssert = new Proxy(nodeAssert, {
   get(target, prop, receiver) {
     const value = Reflect.get(target, prop, receiver);
     if (typeof value !== "function") return value;

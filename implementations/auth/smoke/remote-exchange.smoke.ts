@@ -274,8 +274,9 @@ try {
   const wk = await get(`${PUBLIC}/.well-known/cotal-mesh`);
   const publicJwks = await get(`${PUBLIC}/jwks`);
   const verifyPublicBearer = createLocalJWKSet(publicJwks.body as { keys: import("jose").JWK[] });
-  const idpPin = wk.body.userAuth.idp as { url?: string; issuer?: string; audience?: string } | undefined;
-  const eps = wk.body.userAuth.endpoints as { url?: string; managerAuthorityUrl?: string } | undefined;
+  const userAuth = wk.body.userAuth as { idp?: { url?: string; issuer?: string; audience?: string }; endpoints?: { url?: string; managerAuthorityUrl?: string } };
+  const idpPin = userAuth.idp;
+  const eps = userAuth.endpoints;
   check("bundle serves 200 on the public face", wk.status === 200, wk.body);
   check("bundle carries the space + server it actually serves", wk.body.space === SPACE && wk.body.server === SERVER, wk.body);
   check("bundle states tlsRequired", wk.body.tlsRequired === true, wk.body);

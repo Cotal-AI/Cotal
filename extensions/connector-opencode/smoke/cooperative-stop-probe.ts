@@ -376,7 +376,7 @@ if (cross) {
       )["chat.message"]({ sessionID: "ses_coop", model: { providerID: "crossing", modelID: "model" } }, { parts: [] });
     while (rejectRelease && !existsSync(rejectRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
     for (const release of parkedReject) release();
-    while (!existsSync(crossRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    while (!existsSync(crossRelease as string)) await new Promise((r) => setTimeout(r, 25).unref?.());
     for (const release of parked) release();
   })();
 }

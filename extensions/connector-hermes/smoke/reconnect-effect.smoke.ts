@@ -34,7 +34,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 let cells = 0;
-const assert = new Proxy(nodeAssert, {
+const assert: typeof nodeAssert = new Proxy(nodeAssert, {
   get(target, prop, receiver) {
     const value = Reflect.get(target, prop, receiver);
     if (typeof value !== "function") return value;

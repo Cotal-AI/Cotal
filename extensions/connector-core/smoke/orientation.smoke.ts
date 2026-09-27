@@ -168,7 +168,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const visible = cotalToolSpecs(authCfg).map((s) => ({ name: s.name, title: s.title }));
   const o = buildOrientation(agentStub(), authCfg, visible, 1_700_000_000_000);
 
-  assert.deepEqual(o.identity, { name: "alice", role: "reviewer", space: "demo", id: "ALICEID0000000000000000000000000000000000000", cotalVersion: DOCS_VERSION });
+  assert.deepEqual(o.identity, { name: "alice", role: "reviewer", space: "demo", id: "ALICEID0000000000000000000000000000000000000", cotalVersion: DOCS_VERSION } as typeof o.identity);
   assert.equal(o.access.authMode, true);
   assert.deepEqual(o.access.read, ["general"]);
   assert.deepEqual(o.access.readAcl, ["general", "incident"]); // read ACL wider than active read

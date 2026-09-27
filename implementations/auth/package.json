@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts",
     "prepublishOnly": "pnpm run build"

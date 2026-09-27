@@ -56,10 +56,10 @@ const retirement = {
 const retireRequest = { ...request, operation: "retire" as const, registrationProof, retirement };
 
 await rejects("spawn-only cannot issue manager-service authority", () => issueRemoteManagerAuthority({
-  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["spawn"], issue: async () => credentials,
+  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["spawn"], issue: async () => ({ credentials }),
 }), /scope "supervise"/);
 await rejects("admin without supervise cannot issue manager-service authority", () => issueRemoteManagerAuthority({
-  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["admin"], issue: async () => credentials,
+  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["admin"], issue: async () => ({ credentials }),
 }), /scope "supervise"/);
 await cell("supervise alone passes the dedicated gate", async () => {
   const material = await issueRemoteManagerAuthority({
