@@ -239,7 +239,8 @@ alone cannot pick an owner (it carries no holder and no tiebreak, so every manag
 matches), so the manager that also holds the space's renewal lease is the one that remints and the
 rest skip it. Without that lease two owners would remint on independent timers with no ordering
 between them, and one write would land between the other's re-sign and its fingerprint-only
-`reloadCreds`. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
+`reloadCreds`. `cotal doctor auth --fix` takes the same lease before it re-signs, so a live manager
+and a local repair never race each other either. The signer IS now injectable: a hosted composition injects a KMS/Vault store and no
 signing seed lands on the hosted disk. What remains is signer **isolation**. The seed is decrypted
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.

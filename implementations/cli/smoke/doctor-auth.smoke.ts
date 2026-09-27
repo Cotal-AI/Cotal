@@ -24,7 +24,7 @@ import {
   mintMembershipObserverCreds,
   newIdentity,
 } from "@cotal-ai/core";
-import { saveSpaceAuth, spaceAccountPath, spaceMaterialDir } from "@cotal-ai/workspace";
+import { readRenewalRecord, saveSpaceAuth, spaceAccountPath, spaceMaterialDir } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 
 let pass = 0,
@@ -134,6 +134,12 @@ try {
   check("--fix re-signed delivery for the SAME nkey (identity pin)", idFromCreds(dlvAfter) === dlvId.id);
   check("--fix re-signed membership-rw for the SAME nkey", idFromCreds(rwAfter) === rwId.id);
   check("--fix bounded the previously-unbounded membership-rw", inspectCredHealth(rwAfter).state === "healthy", inspectCredHealth(rwAfter));
+
+  // #1063: this staged folder has no running mesh, so --fix always takes the offline branch — the
+  // record must say so honestly, never claim the broker-coordinated lease it never held.
+  const recordAfterFix = readRenewalRecord(root, auth.space);
+  check("--fix with no broker records an offline repair and says so", recordAfterFix?.authority === "offline" && fixed.out.includes("OFFLINE"), { authority: recordAfterFix?.authority, out: fixed.out });
+  check("--fix with no broker never claims the lease", recordAfterFix?.authority !== "lease", recordAfterFix?.authority);
 
   const wrongSub = await (async () => {
     const lines: string[] = [];

@@ -4016,6 +4016,16 @@ export class CotalEndpoint extends EventEmitter {
     return new TextEncoder().encode(JSON.stringify({ instanceId, since: Date.now() }));
   }
 
+  /** Read the per-space daemon-credential renewal-lease row (the one {@link holdDaemonRenewalLease}
+   *  CAS-writes), or `undefined` when nothing holds it. A `doctor auth --fix` that lost `hold` calls
+   *  this through the SAME bucket the hold attempt opened, to name the live holder in its refusal —
+   *  `managerLeaseKv` is private, so this is the exported read beside {@link readManagerLease}. */
+  async readDaemonRenewalLease(): Promise<{ instanceId: string; since: number } | undefined> {
+    const e = await (await this.managerLeaseRegistry()).get(MANAGER_RENEWAL_LEASE_KEY);
+    if (!e || e.operation !== "PUT") return undefined;
+    return JSON.parse(new TextDecoder().decode(e.value)) as { instanceId: string; since: number };
+  }
+
   private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
     return new TextEncoder().encode(JSON.stringify(info));
   }

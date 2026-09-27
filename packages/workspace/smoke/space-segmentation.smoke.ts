@@ -433,6 +433,16 @@ try {
     legacyRenewalRecord(renewRoot)?.path === join(cotalDir(renewRoot), "renewal.json"),
     legacyRenewalRecord(renewRoot));
 
+  // #1063: the renewal AUTHORITY (which coordination `doctor auth --fix` ran under) is per-space too,
+  // round-tripping through the same write/read pair the adoption verdict above already proves is
+  // space-scoped.
+  writeRenewalRecord(renewRoot, "alpha", { ts: "2026-01-01T00:00:00.000Z", owner: "doctor --fix", results: [{ file: "delivery.creds", ok: true }], authority: "lease" });
+  writeRenewalRecord(renewRoot, "beta", { ts: "2026-01-01T00:00:00.000Z", owner: "doctor --fix", results: [{ file: "delivery.creds", ok: true }], authority: "offline" });
+  check("#1063: the renewal record's authority round-trips per space",
+    readRenewalRecord(renewRoot, "alpha")?.authority === "lease" &&
+    readRenewalRecord(renewRoot, "beta")?.authority === "offline",
+    { alpha: readRenewalRecord(renewRoot, "alpha")?.authority, beta: readRenewalRecord(renewRoot, "beta")?.authority });
+
   // The banner is printed on BOTH outcomes and names the suite, which is what lets the mutation
   // config declare it as a completion marker: a mutant run that stops early is then INCONCLUSIVE
   // rather than counted as a kill. A success-only banner would discard exactly the real kills.
