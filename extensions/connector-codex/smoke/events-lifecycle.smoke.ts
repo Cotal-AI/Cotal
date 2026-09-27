@@ -446,15 +446,22 @@ try {
   // same cursor `newEventHolder`'s `startCursor` captured.
   const bindRolloutPath = rolloutPathOf(errA) ?? "";
   const expectedBindCursor = bindRolloutPath === "" ? undefined : (await new JsonlFileSource(bindRolloutPath).read(undefined)).cursor;
+  // A cursor that arrived by PUMP rather than by persist is indistinguishable from the real thing
+  // once any frame has landed, so the cell holds the WAL to the state only the persist can leave:
+  // a cursor AND zero frames. The pump's own cursor-only advance (agui.ts:1727/1768) fires on
+  // reads past the boundary, and on this phase's timeline nothing writes past the boundary until
+  // the first turn below; a pump that published anything would have raised `seq`. So a red here
+  // means the boundary was never persisted at the start boundary, which is #705's defect exactly.
   check(
     "bind:the start boundary is on disk before the first pump (#705)",
-    bindAnnounced && bindWalReady && bindWal?.frontier.sourceCursor === expectedBindCursor,
+    bindAnnounced && bindWalReady && bindWal?.frontier.sourceCursor === expectedBindCursor && bindWal?.frontier.seq === 0,
     {
       ...margin("A:the start boundary lands on disk after the launch bind"),
       threadId: bindThreadId,
       walPath: bindWalPath,
       sourceCursor: bindWal?.frontier.sourceCursor,
       expectedBindCursor,
+      seq: bindWal?.frontier.seq,
     },
   );
 
