@@ -92,6 +92,13 @@
       "find": "    const noBodyRoute = path !== \"/api/channel/delete\" || req.method !== \"POST\";\n",
       "replace": "    const noBodyRoute = true;\n",
       "expectRed": "2.1 an ordinary delete still purges, so the cap is a ceiling on the BODY and not a route that stopped working"
+    },
+    {
+      "name": "C14 the gate refusal no longer closes the connection an announced body rides on, so Node drains a stranger's upload on a kept-alive socket after the 401, the pre-auth corner #2024 names",
+      "file": "implementations/web/src/web.ts",
+      "find": "        ...(announcedBody ? { connection: \"close\" } : {}),\n",
+      "replace": "",
+      "expectRed": "9.0 an UNAUTHENTICATED announced 20 MB body to a no-body route is refused with 401 and that refusal closes the connection"
     }
   ],
   "suite": [
