@@ -54,11 +54,12 @@ const extract = (src: string, name: string): string | null => {
 const drive = (src: string, filename: string) => {
   const fn = extract(src, "applyPresenceView");
   ok(`1.${filename} ships applyPresenceView (a restated copy would not be the page)`, Boolean(fn));
-  if (!fn) return { marks: [] as unknown[] };
-  const marks: unknown[] = [];
+  type Mark = { name: string; entry: { name?: string; reason?: string } | null };
+  if (!fn) return { marks: [] as Mark[] };
+  const marks: Mark[] = [];
   const ctx = createContext({
     marks,
-    markStale: (name: string, entry: unknown) => { marks.push({ name, entry }); },
+    markStale: (name: string, entry: { name?: string; reason?: string } | null) => { marks.push({ name, entry }); },
     Date,
   });
   runInContext(

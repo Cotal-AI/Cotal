@@ -82,7 +82,7 @@ const req = (headers: Record<string, string | undefined> = {}, url = "/"): Req =
   check("replaying the SAME launch token is refused as `launch-token-already-used`, not accepted",
     replay !== undefined && "refuse" in replay && replay.refuse === LAUNCH_TOKEN_ALREADY_USED, replay);
   check("…and that condition is DISTINCT from `unauthenticated` (a replayed link is a different fact)",
-    LAUNCH_TOKEN_ALREADY_USED !== UNAUTHENTICATED);
+    (LAUNCH_TOKEN_ALREADY_USED as string) !== UNAUTHENTICATED);
 
   const forged = gate.check(req({ cookie: "cotal_web_session=not-a-real-session" }) as never, q());
   check("an unknown session cookie is refused, not trusted for looking like one",

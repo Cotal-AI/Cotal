@@ -222,7 +222,7 @@ async function fanOutBackfill(
       ...chans.map((ch) => ({
         name: `#${ch.channel}`,
         read: async () =>
-          (await ep.channelHistory(ch.channel, { limit, signal: abort.signal }))
+          (await (ep as unknown as CotalEndpoint).channelHistory(ch.channel, { limit, signal: abort.signal }))
             .map((msg) => ({ mode: "chat" as const, channel: ch.channel, msg })),
       })),
       {
