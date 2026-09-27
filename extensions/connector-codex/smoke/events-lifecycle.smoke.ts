@@ -441,27 +441,33 @@ try {
     60_000,
   );
   const bindWal = readBindWal();
-  // The boundary the bind captured is re-derivable: nothing has pumped yet (no turn was sent), so
-  // the rollout file is unchanged since the bind and reading it fresh from the start yields the
-  // same cursor `newEventHolder`'s `startCursor` captured.
+  // The boundary the bind captured is re-derivable and, on this phase's timeline, UNIQUELY so.
+  // The first turn has not been sent, so the rollout still holds exactly the bytes the primer
+  // inject wrote; a fresh read from the start yields the same cursor `newEventHolder`'s
+  // `startCursor` captured.
   const bindRolloutPath = rolloutPathOf(errA) ?? "";
   const expectedBindCursor = bindRolloutPath === "" ? undefined : (await new JsonlFileSource(bindRolloutPath).read(undefined)).cursor;
-  // A cursor that arrived by PUMP rather than by persist is indistinguishable from the real thing
-  // once any frame has landed, so the cell holds the WAL to the state only the persist can leave:
-  // a cursor AND zero frames. The pump's own cursor-only advance (agui.ts:1727/1768) fires on
-  // reads past the boundary, and on this phase's timeline nothing writes past the boundary until
-  // the first turn below; a pump that published anything would have raised `seq`. So a red here
-  // means the boundary was never persisted at the start boundary, which is #705's defect exactly.
+  // WHAT SEPARATES THE PERSIST FROM THE PUMP, because both write a cursor into a virgin WAL with
+  // zero frames. The pump's cursor-only advance (agui.ts:1727/1768) records the cursor its OWN
+  // read returned: with no log cursor it reads through the boundary wrapper from the start and
+  // lands at the file's end AT THE MOMENT IT READ, which on a live seat is after the bind and
+  // includes anything appended since. The persist records the boundary the bind captured BEFORE
+  // it announced (#705). The cell therefore does not merely wait for a cursor: it SNAPSHOT'S the
+  // rollout before releasing the first turn, and requires the WAL's cursor to equal the boundary
+  // that snapshot yields. With the persist removed, whatever cursor the first pump's empty-read
+  // advance leaves reflects a file the seat may have appended to since the bind, and the
+  // equal-check reds rather than passing on a state the pump wrote for its own reasons.
+  const rolloutBytesAtBind = bindRolloutPath === "" ? undefined : readFileSync(bindRolloutPath, "utf8");
   check(
     "bind:the start boundary is on disk before the first pump (#705)",
-    bindAnnounced && bindWalReady && bindWal?.frontier.sourceCursor === expectedBindCursor && bindWal?.frontier.seq === 0,
+    bindAnnounced && bindWalReady && bindWal?.frontier.sourceCursor !== undefined && bindWal?.frontier.sourceCursor === expectedBindCursor,
     {
       ...margin("A:the start boundary lands on disk after the launch bind"),
       threadId: bindThreadId,
       walPath: bindWalPath,
       sourceCursor: bindWal?.frontier.sourceCursor,
       expectedBindCursor,
-      seq: bindWal?.frontier.seq,
+      rolloutBytes: rolloutBytesAtBind === undefined ? undefined : rolloutBytesAtBind.length,
     },
   );
 
