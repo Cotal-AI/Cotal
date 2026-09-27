@@ -605,5 +605,6 @@ what is actually running. Those files live under the **project** `.cotal/`, not 
 unless the mesh root is the home directory. `cotal up --detach` redirects delivery and manager
 stdio onto those files, so an operator-created systemd unit around that launcher does not put
 the child logs in that unit's journal. `journalctl -u <unit>` can be empty while the crash
-reason is already in the project log. The access rules are collected in
+reason is already in the project log. Manager log lines start with the UTC time they were
+written. The access rules are collected in
 [Channels & permissions](channels-and-permissions.md).
