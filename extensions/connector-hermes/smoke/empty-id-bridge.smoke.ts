@@ -66,7 +66,7 @@ const emptyIdDelivery = (text: string): InboxItem => ({
   kind: "channel", channel: "general", mentionsMe: false, historical: false, text,
 });
 
-import type { AgentConfig } from "../src/config.js";
+import type { AgentConfig } from "@cotal-ai/connector-core";
 
 const config = {
   space: "hermes-empty-id", name: "Hermes", role: "reviewer",
