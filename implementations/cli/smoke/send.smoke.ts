@@ -12,7 +12,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -37,7 +37,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 15;
+const EXPECTED = 16;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -108,6 +108,7 @@ const run = (
 
 let provisioner: CotalEndpoint | undefined;
 let bob: CotalEndpoint | undefined;
+const expectedSender = `${userInfo().username}@${hostname()}`;
 const got: Array<{ route: string; text: string; fromId: string; fromName: string }> = [];
 
 try {
@@ -186,17 +187,17 @@ try {
   check("`cotal send ask` outside a seat exits 0", ask.code === 0, ask.stderr);
   check(
     "the outside-seat DM carries the credential-derived principal and CLI display name",
-    got.some((m) => m.route === "DM" && m.text === dmText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === "cotal-send"),
+    got.some((m) => m.route === "DM" && m.text === dmText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === expectedSender),
     got,
   );
   check(
     "the outside-seat channel message carries the credential-derived principal and CLI display name",
-    got.some((m) => m.route === "#general" && m.text === msgText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === "cotal-send"),
+    got.some((m) => m.route === "#general" && m.text === msgText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === expectedSender),
     got,
   );
   check(
     "the outside-seat anycast carries the credential-derived principal and CLI display name",
-    got.some((m) => m.route === "ANY:reviewer" && m.text === askText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === "cotal-send"),
+    got.some((m) => m.route === "ANY:reviewer" && m.text === askText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === expectedSender),
     got,
   );
 
@@ -211,7 +212,19 @@ try {
   check("seat-shaped environment does not block an operator-credential send", spoof.code === 0, spoof.stderr);
   check(
     "seat-shaped environment cannot replace the credential-derived principal",
-    got.some((m) => m.route === "DM" && m.text === spoofText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromId !== "forged-owner.forged-actor" && m.fromName === "cotal-send"),
+    got.some((m) => m.route === "DM" && m.text === spoofText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromId !== "forged-owner.forged-actor" && m.fromName === expectedSender),
+    got,
+  );
+  check(
+    "the one-shot sender name is derived from the login and host, never from the environment",
+    got.some(
+      (m) =>
+        m.route === "DM" &&
+        m.text === spoofText &&
+        m.fromName === expectedSender &&
+        m.fromName !== "forged-seat" &&
+        m.fromName !== "cotal-send",
+    ),
     got,
   );
 
@@ -228,7 +241,7 @@ try {
   check("explicit operator creds remain a supported outside-seat boundary", explicit.code === 0, explicit.stderr);
   check(
     "the explicit credential supplies the exact received principal",
-    got.some((m) => m.route === "DM" && m.text === explicitText && m.fromId === explicitPrincipal && m.fromName === "cotal-send"),
+    got.some((m) => m.route === "DM" && m.text === explicitText && m.fromId === explicitPrincipal && m.fromName === expectedSender),
     got,
   );
 
