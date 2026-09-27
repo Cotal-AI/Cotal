@@ -849,6 +849,33 @@ try {
   }
 
   // -----------------------------------------------------------------------------------------
+  console.log("\nG5. an encoded detach key whose modifier field is 0 is data, forwarded, and not a detach");
+  // Found by review: the Ctrl test is `(mods - 1) & 4`, and with no floor a field of 0 reads as Ctrl
+  // because `(0 - 1) & 4` is 4 in JavaScript's ToInt32 arithmetic. Neither protocol emits 0 (the
+  // field is 1 + bitmask, 1 meaning no modifier), so a chunk carrying it is not a press of the key.
+  // The chunk is written WHOLE and alone, so the whole-chunk rule is the only thing between it and a
+  // detach; the seat's pty is cooked and holds it until a newline, so a bare CR follows as its own
+  // chunk to flush what the line discipline held, which is how the forwarded bytes reach the sink.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    a.write("\x1b[93;0u");
+    check("the attach is still up after a kitty chunk with modifier 0 (not a press)", !(await a.waitExit(3_000)) && a.exit() === undefined, a.exit());
+    a.write("\r");
+    let carried = false;
+    for (let i = 0; i < 75 && !carried; i++) { carried = sink().subarray(mark).includes(0x1b); if (!carried) await wait(200); }
+    check("...and the kitty chunk reached the agent as data", carried, { got: sink().subarray(mark).toString("utf8") });
+    const mark2 = sink().length;
+    a.write("\x1b[27;0;93~");
+    check("the attach is still up after an xterm chunk with modifier 0 (not a press)", !(await a.waitExit(3_000)) && a.exit() === undefined, a.exit());
+    a.write("\r");
+    carried = false;
+    for (let i = 0; i < 75 && !carried; i++) { carried = sink().subarray(mark2).includes(0x1b); if (!carried) await wait(200); }
+    check("...and the xterm chunk reached the agent as data", carried, { got: sink().subarray(mark2).toString("utf8") });
+    await detachAndSettle(a, base, "G5");
+  }
+
+  // -----------------------------------------------------------------------------------------
   console.log("\nH. the detach key pressed while the new session is OPENING still detaches");
   // Found by review, not by this suite, and the reason it was missed is the reason this cell needs a
   // slow link. The loop announces the reconnect and then opens the session, and the reader that owns

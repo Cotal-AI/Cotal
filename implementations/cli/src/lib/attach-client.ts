@@ -30,8 +30,10 @@ export function detachKey(): { byte: number; label: string; overridden: boolean 
  * <mods> u`; or xterm `modifyOtherKeys`'s `CSI 27 ; <mods> ; <codepoint> ~`. `<codepoint>` is the
  * decimal codepoint kitty/xterm report for the unshifted key: `byte | 0x40` for the control
  * punctuation (`@ [ \ ] ^ _`) and `byte | 0x60` for a letter (kitty reports the lowercase key even
- * though Ctrl was held). `<mods>` must carry the Ctrl bit (`(mods - 1) & 4`), so plain Ctrl (5) and
- * Ctrl+Shift (6) match but a modifier field without Ctrl does not. The match is on the WHOLE chunk:
+ * though Ctrl was held). `<mods>` is 1 + the modifier bitmask and must carry the Ctrl bit
+ * (`(mods - 1) & 4`), so plain Ctrl (5) and Ctrl+Shift (6) match but a modifier field without Ctrl
+ * does not, and a field of 0, which neither protocol emits, is not a press either (the test needs
+ * that floor: `(0 - 1) & 4` is 4 in ToInt32 arithmetic, so 0 would otherwise read as Ctrl). The match is on the WHOLE chunk:
  * a sequence with company (a paste, a second keystroke, a trailing byte) is not a press, which is
  * the same paste-safety property the one-byte test already had. This assumes one press arrives in
  * one read, as measured on a pty (issue #598); a sequence split across two reads is not buffered
@@ -44,7 +46,7 @@ export function isDetachPress(d: Buffer, byte: number): boolean {
   if (d.length === 1 && d[0] === byte) return true;
   const s = d.toString("latin1");
   const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];
-  const hasCtrl = (mods: number) => ((mods - 1) & 4) !== 0;
+  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;
   const kitty = /^\x1b\[(\d+)(?::\d+(?::\d+)?)?;(\d+)u$/.exec(s);
   if (kitty) {
     const cp = Number(kitty[1]);

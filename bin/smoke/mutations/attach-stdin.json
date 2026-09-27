@@ -227,12 +227,22 @@
     {
       "name": "isDetachPress loses its kitty and xterm CSI arms, back to the legacy one-byte match only",
       "file": "implementations/cli/src/lib/attach-client.ts",
-      "find": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  if (d.length === 0) return false;\n  if (d.length === 1 && d[0] === byte) return true;\n  const s = d.toString(\"latin1\");\n  const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];\n  const hasCtrl = (mods: number) => ((mods - 1) & 4) !== 0;\n  const kitty = /^\\x1b\\[(\\d+)(?::\\d+(?::\\d+)?)?;(\\d+)u$/.exec(s);\n  if (kitty) {\n    const cp = Number(kitty[1]);\n    const mods = Number(kitty[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  const xterm = /^\\x1b\\[27;(\\d+);(\\d+)~$/.exec(s);\n  if (xterm) {\n    const mods = Number(xterm[1]);\n    const cp = Number(xterm[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  return false;\n}",
+      "find": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  if (d.length === 0) return false;\n  if (d.length === 1 && d[0] === byte) return true;\n  const s = d.toString(\"latin1\");\n  const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];\n  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;\n  const kitty = /^\\x1b\\[(\\d+)(?::\\d+(?::\\d+)?)?;(\\d+)u$/.exec(s);\n  if (kitty) {\n    const cp = Number(kitty[1]);\n    const mods = Number(kitty[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  const xterm = /^\\x1b\\[27;(\\d+);(\\d+)~$/.exec(s);\n  if (xterm) {\n    const mods = Number(xterm[1]);\n    const cp = Number(xterm[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  return false;\n}",
       "replace": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  return d.length === 1 && d[0] === byte;\n}",
       "expectRed": "the attach detaches and exits clean",
       "cell": "G2. the kitty encoding of the detach key ends a LIVE session",
       "note": "Losing the kitty/xterm CSI arms is exactly the regression #598 reports: a terminal with either protocol enabled sends a multi-byte sequence for Ctrl-], the one-byte-only test never matches it, and the key does nothing. G2 catches it directly on the kitty form.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+        "name": "the Ctrl test loses its modifier floor, so a modifier field of 0 reads as Ctrl again",
+        "file": "implementations/cli/src/lib/attach-client.ts",
+        "find": "  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;",
+        "replace": "  const hasCtrl = (mods: number) => ((mods - 1) & 4) !== 0;",
+        "expectRed": "the attach is still up after a kitty chunk with modifier 0 (not a press)",
+        "cell": "G5. an encoded detach key whose modifier field is 0 is data, forwarded, and not a detach",
+        "note": "Found by review of #598: `(0 - 1) & 4` is 4 in ToInt32 arithmetic, so without the `mods >= 1` floor a kitty or xterm chunk carrying modifier 0 (a value neither protocol emits) detaches instead of being forwarded as data. Cell G5 writes each encoding with modifier 0 as a whole chunk of its own and asserts the attach stays up (the first check to red under this mutant, because the chunk is taken as a press and the attach exits) and that the bytes reach the agent once a CR flushes the cooked pty.",
+        "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "the handoff swallows a press that landed while the session was opening",
