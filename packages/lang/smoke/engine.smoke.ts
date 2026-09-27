@@ -614,21 +614,13 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 }
 
 {
-  // A DECLARED DIVERGENCE, asserted rather than hidden.
-  //
-  // The walker reads the operand of `++` through `Number(...)`, so a string counts and a record
-  // settles as NaN, while `o + 1` on the very same values does something else entirely - the
-  // silent-coercion class, filed against the walker as Cotal-AI/Cotal#646. The engine refuses
-  // instead. Both halves are MEASURED here, so the day the walker's behaviour changes this cell
-  // reds and the divergence is re-decided rather than inherited.
-  const logs: unknown[][] = [];
-  const walker = await walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, {
-    runId: "upd-1",
-    handler: new SimHandler({}),
-    onLog: (l) => logs.push([...l.values]),
-  });
-  ok("the walker COUNTS a string operand, which is the divergence", JSON.stringify(logs) === '[["n",6]]', logs);
-  ok("and it completes rather than refusing", walker.journal.entries().length === 0);
+  // THE RETIRED DIVERGENCE (issue 646), asserted rather than left to drift back: the walker now
+  // refuses a non-number update operand the same way the engine's `unary("update")` always has,
+  // instead of reading it through a bare `Number(...)`.
+  const walker = await caught(() =>
+    walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, { runId: "upd-1", handler: new SimHandler({}) }),
+  );
+  ok("the walker refuses a string operand of `++` with L4018, the same as the engine", codeOf(walker) === "L4018");
   const h = harness();
   ok(
     "the engine refuses the same operand, by rule and not by accident",

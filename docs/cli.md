@@ -890,7 +890,7 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
-| `--cwd <dir>` | this cwd | Working directory to root the agent at |
+| `--cwd <dir>` | this cwd | Working directory to root the agent at. Refused before launch when the directory does not exist on the serving manager's host. |
 | `--prompt <text>` | none | Initial prompt auto-submitted at start |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)) |
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
@@ -969,7 +969,7 @@ it is not limited to child processes owned by the manager.
 ## Endpoint control
 
 ```bash
-cotal describe <endpoint>                                        [--space <s>]
+cotal describe <endpoint> [--on <instance>]                        [--space <s>]
 cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
 cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 ```
@@ -977,8 +977,12 @@ cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 The generic v0.4 service surface. `describe` resolves a registered endpoint's command set off the
 wire - the reserved `describe` command answers the registered contract digests, the schemas are
 fetched from the space's content-addressed contract store, recompiled, and verified against those
-digests - and prints each command with its capability class and targeting shape. `invoke` calls one
-command by name: `--args` is a JSON object validated against the fetched input schema *before*
+digests - and prints each command with its capability class and targeting shape. `--on <instance>`
+pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
+`manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
+unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
+calls one command by name: `--args` is a JSON object validated against the fetched input schema
+*before*
 publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
@@ -1548,10 +1552,11 @@ One-shot messaging: connect, send a single direct message (`dm`), channel post (
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
 
-`cotal send` works from an operator shell or from a seat. It uses `cotal-send` as the advisory
-display name. The wire principal comes from the resolved operator credential or user bearer, not
-from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or `COTAL_ACTOR`. On an open mesh the transient
-endpoint self-mints its principal.
+`cotal send` works from an operator shell or from a seat. Its display name is `<login>@<host>` of
+the shell that ran it, so the recipient can tell one operator's send from another's; it is taken
+from the operating system, never from `COTAL_NAME`. The wire principal comes from the resolved
+operator credential or user bearer, not from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or
+`COTAL_ACTOR`. On an open mesh the transient endpoint self-mints its principal.
 
 ## channels
 

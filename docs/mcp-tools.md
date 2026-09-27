@@ -247,7 +247,7 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested. |
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
-| `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
+| `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance. |
 | `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
 | `events` | boolean | no | Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default. |
 

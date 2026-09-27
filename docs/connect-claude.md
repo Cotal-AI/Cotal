@@ -346,6 +346,11 @@ non-zero and writes no creds file, because the observer profile carries a fixed 
 whole chat plane, which is the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
 reader needs, since an authed consuming endpoint refuses to start without one.
 
+On an **open** mesh there is nothing to grant: the mesh has no credentials and no ACLs, so any peer
+that lists the channel reads it, and the refusal says so instead of naming a command. The
+own-channel rule still applies there, because a spawn is not the place to hand out a read on
+another agent's tool inputs and outputs.
+
 Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
 channel in `channels`: an endpoint reads the channels it lists, so one constructed without
 the event channel joins nothing and the frames never arrive. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not

@@ -651,6 +651,9 @@ log("rounds", rounds, r.status);`,
   ["an array's length is a member, not a prototype reach", "const xs = [1, 2]; log(xs.length);", {}],
   ["refusals: a method is not a value", "const xs = [1]; const m = xs.map; log(m);", {}, "L4020"],
   ["refusals: no implicit conversion", "const o = {}; log(o + 1);", {}, "L4018"],
+  ["refusals: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, "L4018"],
+  ["refusals: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, "L4018"],
+  ["refusals: an update's operand is null", "let n = null; n--; log(n);", {}, "L4018"],
   ["refusals: not iterable", "const o = {}; log([...o]);", {}, "L4015"],
 ];
 
@@ -844,14 +847,6 @@ const reachedKinds = new Set<string>();
  * suite the day it lands, so it is removed in the same change instead of being remembered.
  */
 const DIVERGENT: readonly (readonly [string, string, object, string, string])[] = [
-  // The one declared divergence, in both of its shapes. The walker reads an update's
-  // operand through a bare `Number(...)`, so a record is NaN and the string "5" increments to 6;
-  // the engine refuses L4018, because silent coercion is the class this language refuses
-  // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646, and
-  // when it lands the walker starts refusing, these cells red, and the divergence is retired here
-  // rather than remembered.
-  ["issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
-  ["issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the

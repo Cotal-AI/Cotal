@@ -2,7 +2,7 @@ import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOp
 import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -16,11 +16,6 @@ import { completingFlagValue } from "../lib/completion.js";
 const nameFlag = (what: string) =>
   ({ name: "name", type: "string", value: "<n>", description: what }) as const;
 
-/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
- *  ps/stop/attach so the three cannot drift. For stop and attach it is the seat-locality escape
- *  hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily the
- *  one that wins the class queue. */
-const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const;
 // #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".

@@ -173,6 +173,21 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
   }
 }
 
+// The supervisor's output IS `.cotal/manager.<key>.log` when detached (manager-proc.ts opens that
+// file and redirects this process's stdio onto it), and a log whose only temporal information is
+// line order cannot say when a seat was reaped without opening every seat's private connector log
+// (#1423). Stamping here, once, covers every `console.log`/`console.error` call in this daemon
+// process, including the 100+ sites in manager.ts that already run through the global console. A
+// multi-line message (the `manager up` banner) stamps its first line only, since that is where the
+// event is. No environment switch, no TTY check, no flag: a foreground `cotal supervise` prints the
+// same stamps, and that is fine.
+function stampConsole(): void {
+  const originalLog = console.log.bind(console);
+  const originalError = console.error.bind(console);
+  console.log = (...args: unknown[]) => originalLog(new Date().toISOString(), ...args);
+  console.error = (...args: unknown[]) => originalError(new Date().toISOString(), ...args);
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -184,6 +199,7 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
 // pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
 // the cmux-tab manager.
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promise<void> {
+  stampConsole();
   const v = args.values as Values;
   let runtime = defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
