@@ -804,7 +804,8 @@ including inside another mesh's project. `status` is a read-only report: machine
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
 membership feed). Stale Claude skills and out-of-date `.agents` skills recommend `cotal setup --skills`,
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
-nothing.
+nothing. The manager row asks the service endpoint once: a live process that does not answer is
+`not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
