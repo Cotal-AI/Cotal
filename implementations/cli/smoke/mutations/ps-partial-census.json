@@ -32,8 +32,8 @@
       "file": "implementations/cli/src/commands/describe.ts",
       "find": "    const instanceId = on ?? auth.managerInstanceId;\n    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(instanceId !== undefined ? { instanceId } : {}),\n    });",
       "replace": "    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),\n    });",
-      "expectRed": "describe --on IID1 SUCCEEDS and its attribution line names IID1: the pinned instance answered, not the queue winner (#554)",
-      "cell": "describe --on IID1 SUCCEEDS and its attribution line names IID1: the pinned instance answered, not the queue winner (#554)",
+      "expectRed": "describe HONOURS --on: it deadlines on the pinned rail instead of asking the class queue",
+      "cell": "describe HONOURS --on: it deadlines on the pinned rail instead of asking the class queue",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ],
