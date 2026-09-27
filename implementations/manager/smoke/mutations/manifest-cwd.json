@@ -25,8 +25,8 @@
     {
       "name": "relative cwd resolves against the manager process cwd instead of its workspace",
       "file": "implementations/manager/src/manager.ts",
-      "find": "const cwd = opts.cwd ? resolve(this.workspaceRoot, opts.cwd) : this.workspaceRoot;",
-      "replace": "const cwd = opts.cwd ? resolve(opts.cwd) : this.workspaceRoot;",
+      "find": "const target = resolve(this.workspaceRoot, asked);",
+      "replace": "const target = resolve(asked);",
       "expectRed": "manifest cwdrelative runs in the declared manager-host directory",
       "cell": "manifest cwdrelative runs in the declared manager-host directory"
     }
