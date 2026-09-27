@@ -1584,15 +1584,6 @@ try {
       return undefined;
     }
   };
-  // Reads the WAL INSIDE the hold: the persist (fixed code) has already run by the time the
-  // window opened, and with HOLD_MS still elapsing the pump cannot yet have written the file's
-  // end here, so what this settle captures is the persist's write or nothing at all.
-  let walE: WalDoc | undefined;
-  const walEReady = await settle(
-    "E:the start boundary lands on disk after the launch bind",
-    () => (walE = readWalE())?.frontier.sourceCursor !== undefined,
-    60_000,
-  );
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
   // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
   // instead of becoming a suite that hangs somewhere else.
@@ -1640,6 +1631,17 @@ try {
     windowMs: WINDOW_MS,
     spentMs: spentInWindow,
   });
+  // The go file was released about two seconds ago, so the turn is on disk in front of the first
+  // pump. The persist (fixed code) lands when the start widening ends at WINDOW_MS, which is
+  // inside HOLD_MS, so what this settle captures is the persist's write. On a mutant that never
+  // persists it captures the first pump's write of the file's end instead, which the bind cell
+  // below then rejects.
+  let walE: WalDoc | undefined;
+  const walEReady = await settle(
+    "E:the start boundary lands on disk after the launch bind",
+    () => (walE = readWalE())?.frontier.sourceCursor !== undefined,
+    60_000,
+  );
   const framesE = (): AguiFramePart[] => framesOfThread(threadE);
   const arrivedE = await settle(
     "E:the window turn reaches the wire",
