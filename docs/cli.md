@@ -1765,7 +1765,8 @@ cotal doctor auth [--fix]
 Credential-health diagnosis and repair for this folder's mesh: renders every managed
 credential as healthy / near-expiry / expired and ends in `healthy` or the exact next
 command; `--fix` applies the repairs it can. The one surface every stale-credential error
-points at.
+points at. `--fix` takes the mesh's renewal lease when the broker answers and refuses while
+a manager or another doctor holds it; with no broker it repairs offline and says so.
 
 ## join
 
