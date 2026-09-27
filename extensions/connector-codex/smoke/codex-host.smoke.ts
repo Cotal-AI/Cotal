@@ -309,6 +309,22 @@ try {
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
 
+  // (4a) #674: a raw DM with an EMPTY wire id drives a turn of its own when the host is idle, and
+  // the turn's start ledger records its RECEIVE key (a minted one — the raw id is "") so the
+  // boundary ack addresses something real. Under the ledger-keyed-by-id mutation the ack drains
+  // "" instead, the message never commits, and the turn boundary immediately re-drives it — the
+  // marker text appears in a SECOND turn start (here: before the probe is even sent).
+  await sleep(300);
+  await rawEmptyIdDm("empty-drive");
+  const tD = await waitFor("empty-id drive turn", () => turnStarts().find((t) => t.includes("empty-drive")));
+  check("an empty-id DM drives a turn and never re-drives (#674)", true, tD);
+  await sleep(800); // let a mutant's un-acked re-drive run; a healthy boundary commits and stays idle
+  check(
+    "the driven empty-id DM committed at its boundary (no second turn carries it)",
+    turnStarts().filter((t) => t.includes("empty-drive")).length === 1,
+    turnStarts().filter((t) => t.includes("empty-drive")),
+  );
+
   // (4b) #674: two raw DMs with EMPTY wire ids, published back-to-back into ONE turn. The
   // first-party APIs mint an id per message, so an empty id can only come off the wire from a
   // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer.
