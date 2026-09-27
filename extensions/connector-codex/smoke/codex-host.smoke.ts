@@ -325,52 +325,7 @@ try {
     turnStarts().filter((t) => t.includes("empty-drive")),
   );
 
-  // (4b) #674: two raw DMs with EMPTY wire ids, published back-to-back into ONE turn. The
-  // first-party APIs mint an id per message, so an empty id can only come off the wire from a
-  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer.
-  // `drive()` peeks the inbox synchronously in the first `incoming` dispatch, so two DMs into an
-  // IDLE host are deterministically two turns; the one open window is a live turn, and steers are
-  // how both join it. The ADAPTER seam is what this cell grades: the surfaced ids the turn owns
-  // are receive keys (a minted one for each id-less item, start and steers alike), and the
-  // boundary acks by exactly those keys — otherwise the ack addressed "" twice, nothing commits,
-  // and the boundary's pump re-carries both texts into the very next turn (the ledger-keyed-by-id
-  // mutation this cell must catch).
-  await sleep(300);
-  await dm("SLOW empty-frame");
-  await waitFor("SLOW empty-frame turn", () => turnStarts().find((t) => t.includes("SLOW empty-frame")));
-  await rawEmptyIdDm("empty-a", { flush: false });
-  await rawEmptyIdDm("empty-b");
-  const emptySteerTexts = () =>
-    logEntries()
-      .filter((e) => e.ev === "recv" && e.method === "turn/steer")
-      .map((e) => ((e.params?.input as { text?: string }[] | undefined) ?? []).map((i) => i.text ?? "").join("\n"));
-  await waitFor("both empty-id DMs steered into the open turn", () => {
-    const texts = emptySteerTexts();
-    return texts.some((t) => t.includes("empty-a")) && texts.some((t) => t.includes("empty-b")) ? texts : undefined;
-  });
-  await sleep(1500); // let the SLOW empty-frame turn complete (its boundary is the ack site)
-  const emptySteered = emptySteerTexts();
-  check(
-    "two empty-id DMs in one turn both commit (#674)",
-    emptySteered.filter((t) => t.includes("empty-a")).length === 1 &&
-      emptySteered.filter((t) => t.includes("empty-b")).length === 1,
-    emptySteered,
-  );
-  check(
-    "no turn start ever carries either empty-id text (steers joined, never drove)",
-    turnStarts().every((t) => !t.includes("empty-a") && !t.includes("empty-b")),
-    turnStarts().filter((t) => t.includes("empty-a") || t.includes("empty-b")),
-  );
-  await sleep(500);
-  await dm("after-empty");
-  const tE2 = await waitFor("post-empty turn", () => turnStarts().find((t) => t.includes("after-empty")));
-  check(
-    "the empty-id batch was committed at its boundary (neither text returns)",
-    !tE2.includes("empty-a") && !tE2.includes("empty-b"),
-    tE2,
-  );
-
-  // (4c) #674: an empty-id DM steered mid-turn carries exactly once. `surfaced` holds RECEIVE
+  // (4b) #674: an empty-id DM steered mid-turn carries exactly once. `surfaced` holds RECEIVE
   // keys; the steer filter must test `i.recvKey` against that set. Under the raw-id mutation an
   // empty-id item's id ("") is never in the set, so it is steered a SECOND time into the same
   // turn — the steer injection would name it twice.
@@ -414,6 +369,51 @@ try {
     "the steered empty-id DM was acked with its turn",
     !tE3.includes("empty-steer") && !tE3.includes("SLOW empty-window"),
     tE3,
+  );
+
+  // (4c) #674: two raw DMs with EMPTY wire ids, published back-to-back into ONE turn. The
+  // first-party APIs mint an id per message, so an empty id can only come off the wire from a
+  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer.
+  // `drive()` peeks the inbox synchronously in the first `incoming` dispatch, so two DMs into an
+  // IDLE host are deterministically two turns; the one open window is a live turn, and steers are
+  // how both join it. The ADAPTER seam is what this cell grades: the surfaced ids the turn owns
+  // are receive keys (a minted one for each id-less item, start and steers alike), and the
+  // boundary acks by exactly those keys — otherwise the ack addressed "" twice, nothing commits,
+  // and the boundary's pump re-carries both texts into the very next turn (the ledger-keyed-by-id
+  // mutation this cell must catch).
+  await sleep(300);
+  await dm("SLOW empty-frame");
+  await waitFor("SLOW empty-frame turn", () => turnStarts().find((t) => t.includes("SLOW empty-frame")));
+  await rawEmptyIdDm("empty-a", { flush: false });
+  await rawEmptyIdDm("empty-b");
+  const emptySteerTexts = () =>
+    logEntries()
+      .filter((e) => e.ev === "recv" && e.method === "turn/steer")
+      .map((e) => ((e.params?.input as { text?: string }[] | undefined) ?? []).map((i) => i.text ?? "").join("\n"));
+  await waitFor("both empty-id DMs steered into the open turn", () => {
+    const texts = emptySteerTexts();
+    return texts.some((t) => t.includes("empty-a")) && texts.some((t) => t.includes("empty-b")) ? texts : undefined;
+  });
+  await sleep(1500); // let the SLOW empty-frame turn complete (its boundary is the ack site)
+  const emptySteered = emptySteerTexts();
+  check(
+    "two empty-id DMs in one turn both commit (#674)",
+    emptySteered.filter((t) => t.includes("empty-a")).length === 1 &&
+      emptySteered.filter((t) => t.includes("empty-b")).length === 1,
+    emptySteered,
+  );
+  check(
+    "no turn start ever carries either empty-id text (steers joined, never drove)",
+    turnStarts().every((t) => !t.includes("empty-a") && !t.includes("empty-b")),
+    turnStarts().filter((t) => t.includes("empty-a") || t.includes("empty-b")),
+  );
+  await sleep(500);
+  await dm("after-empty");
+  const tE2 = await waitFor("post-empty turn", () => turnStarts().find((t) => t.includes("after-empty")));
+  check(
+    "the empty-id batch was committed at its boundary (neither text returns)",
+    !tE2.includes("empty-a") && !tE2.includes("empty-b"),
+    tE2,
   );
 
   // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
