@@ -420,15 +420,19 @@ async function completionOut(positionals: string[]): Promise<string> {
     let out = "";
     const realLog = console.log;
     console.log = (s?: unknown) => void (out += `${s}\n`);
-    let verdict: "none" | "legacy";
+    let verdict: "none" | "legacy" | undefined;
+    let thrown: unknown;
     const started = Date.now();
     try {
       verdict = await readManagerContinuity({ space: "hosted" });
+    } catch (e) {
+      thrown = e;
     } finally {
       console.log = realLog;
     }
     const elapsedMs = Date.now() - started;
 
+    assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
     assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
     assert.ok(
       out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
