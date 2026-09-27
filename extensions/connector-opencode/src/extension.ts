@@ -4,11 +4,14 @@ import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
-/** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
- *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
- *  Resolved relative to this module — beside the built `dist/extension.js`, so the connector must be
- *  built+bundled (`pnpm build`). */
-const PLUGIN_ENTRY = fileURLToPath(new URL("./plugin.bundle.js", import.meta.url));
+/** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
+ *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`,
+ *  measured in `fx105/measurements.md`) but loads a directory whose `index.js` is the module, and
+ *  1.x loads the same directory too — one bundle target serves both lines. `opencode serve` loads
+ *  it by absolute path from the inline config, so it runs *inside* the server and shares its SDK
+ *  client. Resolved relative to this module — beside the built `dist/extension.js`, so the
+ *  connector must be built+bundled (`pnpm build`). */
+const PLUGIN_DIR = fileURLToPath(new URL("./plugin", import.meta.url));
 
 /** The launcher shim (`dist/serve.js`): starts `opencode serve` with the plugin, then attaches a
  *  foreground `opencode` TUI to the exact session the plugin drives (see serve.ts). */
@@ -219,7 +222,7 @@ export const opencodeConnector: Connector = {
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
       permission: "allow",
-      plugin: [PLUGIN_ENTRY],
+      plugin: [PLUGIN_DIR],
       // `/reconnect` — the manual recovery surface for a wedged mesh link. OpenCode has no
       // host reconnect (unlike Claude Code's /mcp reconnect), and a plugin can't register a
       // slash command via the Hooks API, so inject it through the config layer we already own.
