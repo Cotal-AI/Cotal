@@ -332,11 +332,17 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
 class BoundStartSource<T> implements DurableSource<T> {
   readonly kind: string;
 
+  /** The boundary this wrapper captured, exposed so its OWNER can persist the boundary the SOURCE
+   *  itself substitutes rather than a copy captured beside it (#705). Two sources of truth would
+   *  drift exactly when one of them is removed. */
+  readonly start: string;
+
   constructor(
     private readonly inner: DurableSource<T>,
-    private readonly start: string,
+    start: string,
   ) {
     this.kind = inner.kind;
+    this.start = start;
   }
 
   read(cursor: string | undefined): Promise<SourceRead<T>> {
@@ -436,25 +442,32 @@ export async function runCodexHost(): Promise<void> {
         // a pending terminal closes the WAL's run without passing through this new mapper.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-        const em = await AguiEmitter.start<CodexRecord>({
-          endpoint: agent.ep,
-          wal,
-          subjectFrontier,
-          // `startCursor` is the boundary this bind captured before it announced itself. Nothing
+        // `startCursor` is the boundary this bind captured before it announced itself. Nothing
           // above writes it into the log: see `BoundStartSource` for what that buys and what it
-          // costs.
-          source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),
-          map: mapper.map,
-        });
-        // #705: persist the bind's boundary into the log right after a successful start, and only
-        // when the log still has no cursor. Before start would leave a resume behind if start then
-        // failed (the fixture at L9 fences exactly that); after start is safe because
-        // `AguiEmitter.start` awaits `recover()`, which settles any pending frame before returning,
-        // so `advanceCursorOnly` never races a pending write. Without this, a host killed between
-        // this line and the emitter's first pump leaves a virgin log, and the next bind takes its
-        // boundary at the file's later end, dropping whatever the thread appended in between.
-        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);
-        return em;
+          // costs. The wrapper is held in a variable rather than inlined because the persist below
+          // keys on IT (#705), so removing the boundary substitution removes the persist with it
+          // instead of leaving an outer copy that keeps writing the same value.
+          const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
+          const em = await AguiEmitter.start<CodexRecord>({
+            endpoint: agent.ep,
+            wal,
+            subjectFrontier,
+            source,
+            map: mapper.map,
+          });
+          // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
+          // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
+          // the outer `startCursor`, because the invariant that matters is "what the emitter will
+          // read is what the log now says", and only the source object knows the first half.
+          // Before start would leave a resume behind if start then failed (the fixture at L9 fences
+          // exactly that); after start is safe because `AguiEmitter.start` awaits `recover()`, which
+          // settles any pending frame before returning, so `advanceCursorOnly` never races a pending
+          // write. Without this, a host killed between this line and the emitter's first pump leaves
+          // a virgin log, and the next bind takes its boundary at the file's later end, dropping
+          // whatever the thread appended in between.
+          if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
+            await wal.advanceCursorOnly(source.start);
+          return em;
       },
       // Required, and not defaulted to a swallow. The holder is terminal on error and does not
       // retry, so this line is the whole record of why events stopped.
