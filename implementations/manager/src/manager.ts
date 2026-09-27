@@ -4356,6 +4356,24 @@ export class Manager {
     );
   }
 
+  /** The realpath + directory checks a placed spawn directory must pass on this manager's host,
+   * shared by the served `resolve-cwd` command and the `spawn` admission check (#385 item 2): one
+   * function, so the two doors never drift. Creates nothing and never substitutes the workspace root. */
+  private checkSpawnCwd(resolved: string): { cwd: string; host: string } | { refusal: string } {
+    let cwd = resolved;
+    try {
+      cwd = realpathSync(resolved);
+    } catch (error) {
+      return { refusal: `path cannot be resolved: ${(error as Error).message}` };
+    }
+    try {
+      if (!statSync(cwd).isDirectory()) return { refusal: "path is not a directory" };
+    } catch (error) {
+      return { refusal: (error as Error).message };
+    }
+    return { cwd, host: hostname() };
+  }
+
   /** Resolve a placed spawn directory on this manager's host. The manager serves any existing
    * absolute directory it can resolve. It creates nothing and never substitutes the workspace root. */
   private resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
@@ -4364,19 +4382,9 @@ export class Manager {
       throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${reason})`);
     };
     if (!isAbsolute(asked)) refuse("expected an absolute path");
-    let cwd = asked;
-    try {
-      cwd = realpathSync(asked);
-    } catch (error) {
-      refuse(`path cannot be resolved: ${(error as Error).message}`);
-    }
-    try {
-      if (!statSync(cwd).isDirectory()) refuse("path is not a directory");
-    } catch (error) {
-      if (error instanceof EpEnvelopeError) throw error;
-      refuse((error as Error).message);
-    }
-    return { cwd, host: hostname() };
+    const result = this.checkSpawnCwd(asked);
+    if ("refusal" in result) refuse(result.refusal);
+    return result;
   }
 
   /** Resolve a connector by agent type. Library composition (installedExtensions off) → a registry
@@ -4717,6 +4725,21 @@ export class Manager {
         return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.runtime.kind}" cannot respawn a name in place` };
       if (this.userMode)
         return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
+    }
+
+    // A placed spawn's cwd is checked on this host BEFORE anything is minted or reserved: an absolute
+    // path this manager cannot realpath, or one that is not a directory, is refused here with the
+    // asked path, the reason and this host, so a misplaced spawn in a multi-manager space is
+    // diagnosable at the moment it happens (#385 item 2) instead of failing inside the pty launch.
+    // The resolved realpath is threaded to the launch cwd below (`resolvedCwd`) so it is computed once.
+    let resolvedCwd: string | undefined;
+    if (typeof opts.cwd === "string" && opts.cwd !== "") {
+      const asked = opts.cwd;
+      const target = resolve(this.workspaceRoot, asked);
+      const checked = this.checkSpawnCwd(target);
+      if ("refusal" in checked)
+        return { ok: false, error: `spawn: cwd does not resolve on this host (${hostname()}): ${JSON.stringify(asked)} (${checked.refusal}); the seat was not launched` };
+      resolvedCwd = checked.cwd;
     }
 
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
@@ -5076,7 +5099,9 @@ export class Manager {
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
       // agent shares the workspace root (the prior, unchanged behavior).
-      const cwd = opts.cwd ? resolve(this.workspaceRoot, opts.cwd) : this.workspaceRoot;
+      // The realpath the admission check above already resolved (#385 item 2) — never re-resolved here,
+      // so the admission refusal and the launch cwd can never disagree on the same request.
+      const cwd = resolvedCwd ?? this.workspaceRoot;
       const configSha256 = this.fileDigest(configPath);
       const manifestPath = opts.launchRef
         ? join(this.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
