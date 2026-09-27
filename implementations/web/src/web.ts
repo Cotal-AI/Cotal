@@ -872,7 +872,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
   }, 150);
   try {
-    membershipWatch = await ep.watchMembership(pushMembership);
+    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }

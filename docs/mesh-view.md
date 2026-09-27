@@ -114,6 +114,8 @@ visible (god-view / open mode); a chat-only observer leaves it empty.
 
 `membership` carries the feed as this viewer last saw it, as two facts kept apart: `snapshot`, the
 last successful read, and `unreadable`, the reason the most recent read or watch attempt failed.
+A watch that closes after it was already armed reports through this same `unreadable` fact, not
+through a connection fault, so the next successful read clears it exactly as a failed read would.
 The topology lens turns them into one of four pill states, checked in this order:
 
 | Pill | Means |
