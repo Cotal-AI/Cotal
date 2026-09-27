@@ -407,6 +407,12 @@ export async function runCodexHost(): Promise<void> {
     const ms = Number(process.env.COTAL_EVENTS_TEST_START_DELAY_MS ?? "");
     return Number.isFinite(ms) && ms > 0 ? ms : 0;
   })();
+  // Test-only: holds the window between the persist and the first pump open so a fixture can
+  // read the log there. Unset is no wait and no call.
+  let postStartHoldMs = ((): number => {
+    const ms = Number(process.env.COTAL_EVENTS_TEST_POST_START_HOLD_MS ?? "");
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  })();
   let events: AguiEmitterHolder<CodexRecord> | undefined;
   let mapper: CodexMapper | undefined;
   /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
@@ -419,6 +425,8 @@ export async function runCodexHost(): Promise<void> {
     // into another artificial setup-window proof.
     const holderStartDelayMs = startDelayMs;
     startDelayMs = 0;
+    const holderPostStartHoldMs = postStartHoldMs;
+    postStartHoldMs = 0;
     return new AguiEmitterHolder<CodexRecord>(
       async (rolloutPath: string) => {
         // The test-only widening of this setup, at the top of it so a fixture's write lands in the
@@ -467,6 +475,10 @@ export async function runCodexHost(): Promise<void> {
           // whatever the thread appended in between.
           if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
             await wal.advanceCursorOnly(source.start);
+          // Test-only: holds the window between the persist above and the first pump open so a
+          // fixture can read the log there. Unset is no wait and no call.
+          if (holderPostStartHoldMs > 0)
+            await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
           return em;
       },
       // Required, and not defaulted to a swallow. The holder is terminal on error and does not
