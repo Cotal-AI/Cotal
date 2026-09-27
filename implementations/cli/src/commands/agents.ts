@@ -20,7 +20,7 @@ const nameFlag = (what: string) =>
  *  ps/stop/attach so the three cannot drift. For stop and attach it is the seat-locality escape
  *  hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily the
  *  one that wins the class queue. */
-const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" } as const;
+const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const;
 // #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".

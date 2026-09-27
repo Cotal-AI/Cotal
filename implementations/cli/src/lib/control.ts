@@ -1,6 +1,7 @@
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
   epProbeInstanceInterest,
   freezeExpectedSet,
@@ -213,11 +214,21 @@ export interface ManagerPin {
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
  *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
  *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
- *  a dropped pin is a silent fallback, so neither branch gets to see it. */
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. A non-empty value is also
+ *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
+ *  error named neither the identifier `--on` wants nor where to read it, which cost operators
+ *  spawn attempts on a format mismatch (#423). */
 export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
   if (on === "") {
     console.error(c.red(`✗ --on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`));
+    process.exit(1);
+  }
+  try {
+    assertLifecycleToken(on, "instanceId");
+  } catch (e) {
+    const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
+    console.error(c.red(`✗ ${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance <id>\` fact under \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``));
     process.exit(1);
   }
   return on;
