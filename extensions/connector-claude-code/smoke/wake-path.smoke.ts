@@ -445,7 +445,7 @@ try {
   const enc = new TextEncoder();
   const rawNc = await rawConnect({ servers, maxReconnectAttempts: 0 });
   try {
-    const parsedClaude = parsePrincipalKey(ottoId);
+    const parsedClaude = parsePrincipalKey(ottoId) as { owner: string; actor: string };
     const emptyIdDm = (text: string): void =>
       rawNc.publish(
         unicastSubject(space, parsedClaude.owner, parsedClaude.actor, "local", "rawpub"),

@@ -44,8 +44,8 @@ try {
   const startupRead = await createClaudeTranscriptSource(startup, "startup").read(undefined);
   check(
     "startup:a-virgin-source-reads-the-complete-records-already-written-before-SessionStart",
-    startupRead.records.map((r) => r.value.id).join(",") === "1,2",
-    startupRead.records.map((r) => r.value.id),
+    startupRead.records.map((r) => (r.value as unknown as { id: number }).id).join(",") === "1,2",
+    startupRead.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   // The retained SessionStart relay can now beat Claude's creation of the JSONL itself. The source
@@ -65,8 +65,8 @@ try {
     "startup:a-SessionStart-before-transcript-creation-waits-for-the-real-file",
     "read" in delayedResult &&
       delayedResult.read.records.length === 1 &&
-      delayedResult.read.records[0]?.value.id === 13,
-    "error" in delayedResult ? delayedResult.error.message : delayedResult.read.records.map((r) => r.value.id),
+      (delayedResult.read.records[0]?.value as unknown as { id: number } | undefined)?.id === 13,
+    "error" in delayedResult ? delayedResult.error.message : delayedResult.read.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   // The explicit from-zero door must preserve JsonlFileSource's core partial-record guarantee.
@@ -75,15 +75,15 @@ try {
   const partialRead = await createClaudeTranscriptSource(partial, "startup").read(undefined);
   check(
     "startup:read-from-zero-consumes-only-complete-records-not-a-trailing-fragment",
-    partialRead.records.length === 1 && partialRead.records[0]?.value.id === 3,
-    partialRead.records.map((r) => r.value.id),
+    partialRead.records.length === 1 && (partialRead.records[0]?.value as unknown as { id: number } | undefined)?.id === 3,
+    partialRead.records.map((r) => (r.value as unknown as { id: number }).id),
   );
   appendFileSync(partial, "}\n");
   const completed = await createClaudeTranscriptSource(partial, "startup").read(partialRead.cursor);
   check(
     "startup:the-completed-trailing-record-is-resumable-from-the-returned-cursor",
-    completed.records.length === 1 && completed.records[0]?.value.id === 4,
-    completed.records.map((r) => r.value.id),
+    completed.records.length === 1 && (completed.records[0]?.value as unknown as { id: number } | undefined)?.id === 4,
+    completed.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   // A fresh session with no positional prompt remains ordinary: zero now, appended turn later.
@@ -95,8 +95,8 @@ try {
   const promptlessTurn = await createClaudeTranscriptSource(promptless, "startup").read(promptlessAdopt.cursor);
   check(
     "startup:a-later-turn-in-a-promptless-session-is-read-after-the-virgin-cursor",
-    promptlessTurn.records.map((r) => r.value.id).join(",") === "5,6",
-    promptlessTurn.records.map((r) => r.value.id),
+    promptlessTurn.records.map((r) => (r.value as unknown as { id: number }).id).join(",") === "5,6",
+    promptlessTurn.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   const neverCreated = file("never-created");
@@ -116,7 +116,7 @@ try {
   let hangingError: Error | undefined;
   const hangingStart = performance.now();
   try {
-    await readStartupTranscriptWhenReady(() => new Promise(() => {}), { waitMs: 60 });
+    await readStartupTranscriptWhenReady<unknown>(() => new Promise(() => {}), { waitMs: 60 });
   } catch (error) {
     hangingError = error as Error;
   }
@@ -137,8 +137,8 @@ try {
     const next = await createClaudeTranscriptSource(retained, sessionSource).read(adopted.cursor);
     check(
       `${sessionSource}:retained-history-is-not-replayed-and-the-next-record-is-still-readable`,
-      adopted.records.length === 0 && next.records.length === 1 && next.records[0]?.value.id === 9,
-      { adopted: adopted.records.map((r) => r.value.id), next: next.records.map((r) => r.value.id) },
+      adopted.records.length === 0 && next.records.length === 1 && (next.records[0]?.value as unknown as { id: number } | undefined)?.id === 9,
+      { adopted: adopted.records.map((r) => (r.value as unknown as { id: number }).id), next: next.records.map((r) => (r.value as unknown as { id: number }).id) },
     );
   }
 
@@ -159,7 +159,7 @@ try {
   let forkNext: number[] = [];
   if ("read" in forkResult) {
     appendFileSync(forkLate, line(16));
-    forkNext = (await createClaudeTranscriptSource(forkLate, "fork").read(forkResult.read.cursor)).records.map((r) => r.value.id);
+    forkNext = (await createClaudeTranscriptSource(forkLate, "fork").read(forkResult.read.cursor)).records.map((r) => (r.value as unknown as { id: number }).id);
   }
   check(
     "fork:a-SessionStart-before-the-copied-transcript-exists-waits-for-it-and-adopts-at-its-end",
@@ -191,8 +191,8 @@ try {
   const windowRead = await boundWindow.read(undefined);
   check(
     "bound:a-record-appended-in-the-adopt-to-first-read-window-is-published-for-retained-history",
-    windowRead.records.map((r) => r.value.id).join(",") === "52",
-    windowRead.records.map((r) => r.value.id),
+    windowRead.records.map((r) => (r.value as unknown as { id: number }).id).join(",") === "52",
+    windowRead.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   // `startup` already reads from byte zero, so the bound wrapper must be a no-op for it.
@@ -202,8 +202,8 @@ try {
   const boundStartupRead = await boundStartup.read(undefined);
   check(
     "bound:a-startup-source-still-reads-from-the-beginning-through-the-bound-wrapper",
-    boundStartupRead.records.map((r) => r.value.id).join(",") === "60,61",
-    boundStartupRead.records.map((r) => r.value.id),
+    boundStartupRead.records.map((r) => (r.value as unknown as { id: number }).id).join(",") === "60,61",
+    boundStartupRead.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   // A cursor already on the log (a recovered WAL, persisted by a prior run BEFORE this capture) is
@@ -217,8 +217,8 @@ try {
   const boundResumeRead = await boundResume.read(priorCursor);
   check(
     "bound:a-log-that-already-carries-a-cursor-resumes-from-it-and-ignores-the-boundary",
-    boundResumeRead.records.map((r) => r.value.id).join(",") === "42,43",
-    boundResumeRead.records.map((r) => r.value.id),
+    boundResumeRead.records.map((r) => (r.value as unknown as { id: number }).id).join(",") === "42,43",
+    boundResumeRead.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   // Crash recovery: a startup-labelled process can restart with an existing WAL. The defined cursor
@@ -230,8 +230,8 @@ try {
   const resumed = await createClaudeTranscriptSource(recovery, "startup").read(first.cursor);
   check(
     "recovery:a-defined-WAL-cursor-wins-over-startup-and-reads-only-the-successor",
-    resumed.records.length === 1 && resumed.records[0]?.value.id === 12,
-    resumed.records.map((r) => r.value.id),
+    resumed.records.length === 1 && (resumed.records[0]?.value as unknown as { id: number } | undefined)?.id === 12,
+    resumed.records.map((r) => (r.value as unknown as { id: number }).id),
   );
 
   for (const unsupported of [undefined, "future-mode"] as const) {
