@@ -16,7 +16,9 @@
     "extensions/herdr/smoke.ts",
     "extensions/orca/smoke.ts",
     "extensions/tmux/smoke.ts",
-    "extensions/cmux/smoke.ts"
+    "extensions/cmux/smoke.ts",
+    "extensions/pi/pi.smoke.ts",
+    "packages/core/smoke.ts"
   ],
   "guard": "every package's typecheck also reads its smoke tree, so a planted type error in any smoke file reddens pnpm typecheck",
   "command": "pnpm --filter @cotal-ai/core typecheck",
@@ -177,6 +179,24 @@
       "find": "import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from \"node:fs\";",
       "replace": "import { existsSync, mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from \"node:fs\";\nconst issue638Probe: string = 638;",
       "command": "pnpm --filter @cotal-ai/cmux typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/pi: a planted type error in its root-level entry point reddens its typecheck",
+      "file": "extensions/pi/pi.smoke.ts",
+      "find": "import { InboxTurn } from \"./src/inbox-turn.js\";",
+      "replace": "import { InboxTurn } from \"./src/inbox-turn.js\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/pi typecheck",
+      "expectRed": "error TS2322",
+      "cell": "error TS2322"
+    },
+    {
+      "name": "@cotal-ai/core: a planted type error in its root-level entry point reddens its typecheck",
+      "file": "packages/core/smoke.ts",
+      "find": "import { randomUUID } from \"node:crypto\";",
+      "replace": "import { randomUUID } from \"node:crypto\";\nconst issue638Probe: string = 638;",
+      "command": "pnpm --filter @cotal-ai/core typecheck",
       "expectRed": "error TS2322",
       "cell": "error TS2322"
     }
