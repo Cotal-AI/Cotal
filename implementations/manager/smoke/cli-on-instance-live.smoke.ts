@@ -206,6 +206,27 @@ try {
     bogus.status !== 0 && /not a valid lifecycle token/i.test(strip(bogus.out)),
     { status: bogus.status, tail: strip(bogus.out).slice(-300) });
 
+  // A roster PRINCIPAL id (`local.U…`) is the mismatch #423 reports: an operator pins by the id
+  // they can see on `endpoints`/multi-manager `ps`, gets the mint's bare grammar error, and neither
+  // it nor the flag's help names the identifier `--on` wants or where `cotal ps` prints it.
+  const principalId = "local.UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const onInstanceRefusalSites: ReadonlyArray<{ what: string; argv: string[] }> = [
+    { what: "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)", argv: ["ps", "--on", principalId, "--space", space] },
+    { what: "spawn --detach --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", principalId, "--space", space] },
+  ];
+  for (const site of onInstanceRefusalSites) {
+    const r = await cotal(site.argv, root1);
+    mustHaveRun(r, `\`${site.what}\``);
+    const out = strip(r.out);
+    check(site.what,
+      r.status !== 0
+        && /--on wants the manager INSTANCE id as `cotal ps` prints it/.test(out)
+        && /not the roster's principal id/.test(out)
+        && /is a principal id/.test(out)
+        && !/no describe reply|did not answer/i.test(out),
+      { status: r.status, tail: out.slice(-400) });
+  }
+
   // ---- 3. THE CLAIM: `--on` REACHES THE MINT --------------------------------------------------
   // THE cell. Nothing here constructs a capability or mints anything; the binary does it all. In
   // the shipped-broken build this is precisely what returned "no describe reply within 10000ms",
