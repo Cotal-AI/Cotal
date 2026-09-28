@@ -33,16 +33,12 @@
  *
  * MEASURED on this tree: 24 passed, 0 failed. All three barrier contracts above hold, so the P2
  * slice this suite was written to wait for has landed. It had been reading RED for a reason of its
- * own: phase D retried the respawn 20 times at 250ms, a ~5s budget, while the alias frees in two
- * stages that together take ~8s. Timed from the awaited teardown, the first ~1.0s is refused
- * RESERVED; from ~1.3s to ~7.0s the reservation has released but the predecessor's ADVISORY presence
- * row is still live, so uniqueName numbers the successor `worker-2` and the auth plane refuses that
- * name-form because `-` is the reserved principal name-form separator; the exact alias is taken at
- * ~8.0s. That second stage is bounded by the presence record's TTL plus one sweep tick (endpoint.ts:
- * ttlMs 6000, sweep every ttlMs/3), so the repair is a deadline budgeted past that ceiling, not a
- * product change. The numbered-name refusal inside the window is real and is tracked as #693 and
- * #667: for those few seconds the manager mints a name its own auth plane rejects, rather than the
- * reserved-pending-retirement face it gives in the first second. This suite no longer waits on it.
+ * own: phase D retried the respawn 20 times at 250ms, a ~5s budget, while the reservation stage
+ * alone can take up to ~1s to clear. The manager ignores the retired lifecycle's own presence row
+ * when allocating a name, so a completed retirement is followed straight by the exact alias: the
+ * reservation is the only stage a respawn retries through, bounded well past its own ceiling, and
+ * an auto-numbered stand-in is never a passing outcome. This suite no longer waits out a presence
+ * window, because there is none to wait out.
  * At this branch's merge-base the suite threw before its first cell, so its cells are newly VISIBLE
  * rather than newly caused. The suite is now GATED: it is in bin/smoke/ci-suites.txt, so a CI shard
  * runs it on every push. It was ungated for the month it could not start, which is how the retry
@@ -534,31 +530,31 @@ try {
   // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
   console.log("D) same-alias respawn after the predecessor retired");
   rmSync(join(root, "child-connected"), { force: true });
-  // Retry to a DEADLINE rather than for a fixed number of tries: the alias frees in two stages and
-  // the second stage is a timer. Timed from the awaited teardown on this tree, the first ~1.0s is
-  // refused RESERVED (the reservation still holds the name); from ~1.3s to ~7.0s the reservation has
-  // released but the predecessor's ADVISORY presence row is still live, so uniqueName numbers the
-  // successor and the auth plane refuses that name-form; the exact alias is taken at ~8.0s. That
-  // second stage is bounded by the presence record's TTL plus one sweep tick (endpoint.ts: ttlMs
-  // 6000, sweep every ttlMs/3), so the old 20-try/250ms budget of ~5s expired inside it and read as
-  // a failure. Budget past that ceiling with room for a loaded runner. An auto-numbered stand-in is
-  // never accepted, because the contract is about THE alias, so a stray sibling is stopped and the
-  // spawn retried.
-  const respawnDeadline = Date.now() + 30_000;
+  // The reservation stage is legitimate and stays: retry only while the reply is the
+  // reserved-pending-retirement refusal, bounded at 10s, with a 250ms wait between tries. The
+  // manager ignores the retired lifecycle's own presence row when allocating a name, so the
+  // presence window is no longer a stage: the first reply that is not that refusal is graded
+  // once, with no further spawn. An auto-numbered stand-in (a suffix, or a lingering refusal)
+  // fails the checks below, and the added names plus the reply land in the payload by name.
+  const respawnDeadline = Date.now() + 10_000;
+  let before = listNames();
   let r2: ControlReply | undefined;
-  do {
-    const before = listNames();
+  for (;;) {
+    before = listNames();
     r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
-    const delta = listNames().filter((n) => !before.includes(n));
-    if (r2.ok === true && delta.includes(AGENT)) break;
-    for (const n of delta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
-    await wait(250);
-  } while (Date.now() < respawnDeadline);
+    if (r2.ok === false && /reserved pending retirement/i.test(r2.error ?? "") && Date.now() < respawnDeadline) {
+      await wait(250);
+      continue;
+    }
+    break;
+  }
+  const respawnDelta = listNames().filter((n) => !before.includes(n));
   check("same-alias respawn ok after the predecessor retired", r2?.ok === true && listNames().includes(AGENT), r2);
   // ux follow-through 1: the clean respawn reads as a FRESH spawn of THE alias — never an
   // auto-numbered stand-in, never a lingering refusal string.
   check("the respawn took the EXACT alias (a fresh spawn, not a suffixed sibling or a leftover refusal)",
-    listNames().includes(AGENT) && r2?.ok === true && !/reserved pending retirement/i.test(JSON.stringify(r2 ?? {})), r2);
+    listNames().includes(AGENT) && r2?.ok === true && !/reserved pending retirement/i.test(JSON.stringify(r2 ?? {}))
+    && respawnDelta.length === 1 && respawnDelta[0] === AGENT, { reply: r2, added: respawnDelta });
   // Diagnostics on the REPLACEMENT child so a post-replay death is explainable: terminal output +
   // exit timing relative to the replay.
   const newHandle = mAny.agents.get(AGENT)?.handle;
@@ -657,7 +653,18 @@ try {
     psList(manager).some((a) => a.name === AGENT) && newHandle?.status() === "running",
     { listed: listNames(), child: childDiag() });
 
+  // Negative control: with AGENT now live, a second same-name spawn must number to a suffix and
+  // leave the live seat untouched.
+  const beforeCtrl = listNames();
+  const rCtrl = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
+  const addedCtrl = listNames().filter((n) => !beforeCtrl.includes(n));
+  check("BARRIER: a second same-name spawn while the alias is live numbers to a suffix and leaves the live seat alone",
+    listNames().includes(AGENT) && !addedCtrl.includes(AGENT) && addedCtrl.every((n) => n === `${AGENT}_2`),
+    { added: addedCtrl, reply: rCtrl });
+  for (const n of addedCtrl) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
+
   console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
+
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);

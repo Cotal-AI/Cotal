@@ -4297,7 +4297,12 @@ export class Manager {
    *  uncertain black hole. */
   private liveRosterNames(): Set<string> {
     const live = new Set<string>();
-    for (const p of this.ep.getRoster()) if (p.status !== "offline") live.add(p.card.name);
+    for (const p of this.ep.getRoster()) {
+      if (p.status === "offline") continue;
+      const predecessor = this.confirmedRetiredPredecessors.get(p.card.name);
+      if (predecessor !== undefined && predecessor.principal === p.card.id && predecessor.lifecycleUid === p.lifecycleUid) continue;
+      live.add(p.card.name);
+    }
     return live;
   }
 
@@ -4318,7 +4323,9 @@ export class Manager {
    *  choice at allocation, never an authority check (the broker still enforces): a stale
    *  still-live-looking row only costs a numbered suffix, and a missed freshly-joined occupant is
    *  still refused downstream exactly as before. Offline rows do NOT occupy — a properly retired
-   *  name stays reusable. */
+   *  name stays reusable. A row this manager itself confirmed retired (its alias, principal, and
+   *  lifecycleUid all matching a {@link confirmedRetiredPredecessors} entry) does not occupy
+   *  either, even while its advisory presence record ages out. */
   private uniqueName(base: string): string {
     const live = this.liveRosterNames();
     return firstFreeName(base, (n) => this.nameInUse(n, live));
@@ -8104,9 +8111,13 @@ export class Manager {
           { cleanup: reapThenCleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
-      this.retiredPrincipals.add(principalKey(DEV_OWNER, a.id).key);
+      const principal = principalKey(DEV_OWNER, a.id).key;
+      this.retiredPrincipals.add(principal);
       const cur = this.retiring.get(a.name);
-      if (cur && cur.lifecycleUid === a.lifecycleUid) this.retiring.delete(a.name); // ABA-guarded hold clear
+      if (cur && cur.lifecycleUid === a.lifecycleUid) {
+        this.retiring.delete(a.name); // ABA-guarded hold clear
+        this.confirmedRetiredPredecessors.set(a.name, { principal, lifecycleUid: a.lifecycleUid });
+      }
     } catch (e) {
       const h = this.retiring.get(a.name);
       if (h && h.lifecycleUid === a.lifecycleUid)
