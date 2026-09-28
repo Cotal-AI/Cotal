@@ -15,7 +15,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 NAME="$1"
 AGENT="${2:-$DIR/agents/$NAME.md}"
-PLUGIN="$ROOT/extensions/connector-opencode/dist/plugin.bundle.js"
+PLUGIN="$ROOT/extensions/connector-opencode/dist/plugin/index.js"
 FACE_PLUGIN="$DIR/face-plugin.mjs"   # example-local: registers the face_<mood> expression tools
 SHIM="$DIR/mesh-face.mjs"
 [ -f "$AGENT" ] || { echo "mesh-face: no agent file: $AGENT" >&2; exit 1; }

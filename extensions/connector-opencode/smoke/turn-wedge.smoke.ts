@@ -30,8 +30,9 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
+import { configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { bootPlugin } from "./_boot-plugin.js";
+import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 async function freePort(): Promise<number> {
@@ -487,8 +488,6 @@ try {
   hooks = undefined;
   await sleep(4_000);
   check("retry:a stop submits nothing — a pending retry does not submit after dispose()", prompts.length === beforeStop, prompts);
-
-  console.log(`\nOPENCODE TURN-WEDGE TEST PASSED ✅  (${pass} checks)`);
 } finally {
   await hooks?.dispose?.();
   await pub.stop();
@@ -498,4 +497,253 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
+
+// ── 2.x adapter: setupCotal driven with a fake OpenCode 2.x context, against a fake server on the
+//    `/api` routes plugin2.ts actually calls (`{data:...}`-wrapped, no `prompt_async`). No real
+//    `opencode` binary, no `@opencode/plugin` package — the fake context IS the whole 2.x host
+//    surface this adapter reads (opencode2-types.ts).
+{
+  const PORT2 = await freePort();
+  const servers2 = `nats://127.0.0.1:${PORT2}`;
+  const space2 = "ocwedge2";
+  const SID2 = "ses_test2";
+  const dir2 = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const srv2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", join(dir2, "js")], { stdio: "ignore" });
+  const releaseBroker2 = teardownOnSignal(srv2, dir2);
+  const auth2 = `Basic ${Buffer.from("opencode:test-secret-2").toString("base64")}`;
+  const prompts2: { body: { text?: string } }[] = [];
+  let modelListing: Array<{ providerID: string; modelID: string }> = [];
+  let modelReads = 0;
+
+  const oc2 = createHttpServer((req, res) => {
+    if (req.headers.authorization !== auth2) {
+      res.writeHead(401).end();
+      return;
+    }
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      if (req.method === "POST" && req.url === "/api/session") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } }));
+        return;
+      }
+      if (req.method === "GET" && req.url === "/api/model") {
+        modelReads++;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: modelListing }));
+        return;
+      }
+      if (req.method === "POST" && req.url === `/api/session/${SID2}/prompt`) {
+        prompts2.push({ body: raw ? JSON.parse(raw) : {} });
+        res.writeHead(204).end();
+        return;
+      }
+      res.writeHead(404).end();
+    });
+  });
+  oc2.listen(0, "127.0.0.1");
+  await once(oc2, "listening");
+  const ocPort2 = (oc2.address() as { port: number }).port;
+
+  for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
+  Object.assign(process.env, {
+    COTAL_NAME: "Otto2",
+    COTAL_ID: "otto2",
+    COTAL_SPACE: space2,
+    COTAL_SERVERS: servers2,
+    COTAL_SUBSCRIBE: "team,quiet",
+    COTAL_QUIET: "quiet",
+    COTAL_ROLE: "generalist",
+    COTAL_OPENCODE_SERVER_URL: `http://127.0.0.1:${ocPort2}`,
+    OPENCODE_SERVER_USERNAME: "opencode",
+    OPENCODE_SERVER_PASSWORD: "test-secret-2",
+  });
+  delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+
+  const pub2 = new CotalEndpoint({ space: space2, servers: servers2, card: { name: "Pubby2", kind: "agent", id: "pubby2" }, channels: ["team", "quiet"] });
+  pub2.on("error", () => {});
+  let originalStderrWrite2: typeof process.stderr.write | undefined;
+  let sessionLine = "";
+  let dispose2: (() => Promise<void>) | void = undefined;
+  try {
+    await awaitBrokerReady(() => isReachable(servers2), { servers: servers2, attempts: 50, delayMs: 200 });
+    await seedChannelRegistry({ servers: servers2, space: space2, file: { defaults: { replay: false }, channels: { team: { replay: false }, quiet: { replay: false } } } });
+    await pub2.start();
+
+    // 2.x model check: `GET /api/model` (not 1.x's `/provider`) must refuse before join when the
+    // configured model is not in the server's list — parity with 1.x's catalog/server mismatch
+    // cell. The listing below names the provider but not the model, so the check must throw
+    // before any session is created without waiting on the settle loop.
+    modelListing = [{ providerID: "prov", modelID: "other" }];
+    process.env.COTAL_MODEL = "prov/absent-model";
+    process.env.COTAL_NAME = "ModelReadiness2";
+    process.env.COTAL_ID = "modelreadiness2";
+    let modelRefusal2 = "";
+    let exitCode2: number | undefined;
+    const originalExit2 = process.exit;
+    const originalStderrWriteMR = process.stderr.write;
+    process.exit = ((code?: number) => {
+      exitCode2 = code;
+    }) as typeof process.exit;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("prov/absent-model")) modelRefusal2 = line;
+      return originalStderrWriteMR.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+    const ctxMR = fakeOpenCode2Context();
+    const disposeMR = await bootPlugin2(ctxMR);
+    for (let i = 0; i < 30 && exitCode2 === undefined; i++) await sleep(100);
+    process.exit = originalExit2;
+    process.stderr.write = originalStderrWriteMR;
+    check(
+      "2.x: an unlisted model refuses before join (GET /api/model, empty list)",
+      exitCode2 === 1 &&
+        !pub2.getRoster().some((p) => p.card.name === "ModelReadiness2") &&
+        modelRefusal2.includes("prov/absent-model") &&
+        modelRefusal2.includes("GET /api/model does not list it"),
+      { exitCode2, modelRefusal2 },
+    );
+    await disposeMR?.();
+    delete process.env.COTAL_MODEL;
+
+    // 2.x model check: the server's listing is empty for a while after boot (measured race,
+    // fx105/brief-g.md), so an empty listing is waited on rather than refused immediately.
+    modelReads = 0;
+    modelListing = [];
+    process.env.COTAL_MODEL = "prov/m";
+    process.env.COTAL_NAME = "ModelWait2";
+    process.env.COTAL_ID = "modelwait2";
+    let refusalLineWait = "";
+    let exitCodeWait: number | undefined;
+    const originalExitWait = process.exit;
+    const originalStderrWriteWait = process.stderr.write;
+    process.exit = ((code?: number) => {
+      exitCodeWait = code;
+    }) as typeof process.exit;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("Refusing before join")) refusalLineWait = line;
+      return originalStderrWriteWait.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+    const ctxWait = fakeOpenCode2Context();
+    const disposeWait = await bootPlugin2(ctxWait);
+    setTimeout(() => {
+      modelListing = [{ providerID: "prov", modelID: "m" }];
+    }, 500);
+    let waitOnline = false;
+    for (let i = 0; i < 100; i++) {
+      if (pub2.getRoster().some((p) => p.card.name === "ModelWait2")) {
+        waitOnline = true;
+        break;
+      }
+      await sleep(100);
+    }
+    process.exit = originalExitWait;
+    process.stderr.write = originalStderrWriteWait;
+    check(
+      "2.x: an empty listing is waited on, and the model check passes once the server lists it",
+      waitOnline && modelReads >= 2 && exitCodeWait === undefined && !refusalLineWait.includes("Refusing before join"),
+      { waitOnline, modelReads, exitCodeWait, refusalLineWait },
+    );
+    await disposeWait?.();
+    delete process.env.COTAL_MODEL;
+
+    // 2.x model check: a listing still empty at the settle deadline is a real refusal, not a hang.
+    modelListing = [];
+    process.env.COTAL_MODEL = "prov/m";
+    process.env.COTAL_MODEL_LIST_SETTLE_MS = "700";
+    process.env.COTAL_NAME = "ModelDeadline2";
+    process.env.COTAL_ID = "modeldeadline2";
+    let modelRefusalDeadline = "";
+    let exitCodeDeadline: number | undefined;
+    const originalExitDeadline = process.exit;
+    const originalStderrWriteDeadline = process.stderr.write;
+    process.exit = ((code?: number) => {
+      exitCodeDeadline = code;
+    }) as typeof process.exit;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("prov/")) modelRefusalDeadline = line;
+      return originalStderrWriteDeadline.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+    const ctxDeadline = fakeOpenCode2Context();
+    const disposeDeadline = await bootPlugin2(ctxDeadline);
+    for (let i = 0; i < 30 && exitCodeDeadline === undefined; i++) await sleep(100);
+    process.exit = originalExitDeadline;
+    process.stderr.write = originalStderrWriteDeadline;
+    check(
+      "2.x: a listing still empty at the deadline refuses, naming the wait",
+      exitCodeDeadline === 1 &&
+        modelRefusalDeadline.includes("prov/") &&
+        modelRefusalDeadline.includes("listed no provider within"),
+      { exitCodeDeadline, modelRefusalDeadline },
+    );
+    await disposeDeadline?.();
+    delete process.env.COTAL_MODEL;
+    delete process.env.COTAL_MODEL_LIST_SETTLE_MS;
+
+    modelListing = [{ providerID: "dead", modelID: "m" }];
+    process.env.COTAL_NAME = "Otto2";
+    process.env.COTAL_ID = "otto2";
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+
+    const ctx2 = fakeOpenCode2Context();
+    originalStderrWrite2 = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("[cotal-session]")) sessionLine = line;
+      return originalStderrWrite2!.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    dispose2 = await bootPlugin2(ctx2);
+
+    for (let i = 0; i < 50; i++) {
+      if (sessionLine) break;
+      await sleep(100);
+    }
+    check("2.x: the session id is printed as [cotal-session]", sessionLine.includes(SID2), sessionLine);
+
+    for (let i = 0; i < 50; i++) {
+      if (pub2.getRoster().some((p) => p.card.name === "Otto2")) break;
+      await sleep(100);
+    }
+    const otto2Id = pub2.getRoster().find((p) => p.card.name === "Otto2")?.card.id;
+    check("2.x: the adapter came online (Otto2 live in the publisher roster)", !!otto2Id, otto2Id);
+
+    await pub2.unicast(otto2Id!, "hello via 2.x");
+    for (let i = 0; i < 50 && prompts2.length < 1; i++) await sleep(100);
+    check("2.x: one DM drives exactly one prompt POST with text", prompts2.length === 1 && prompts2[0]?.body.text?.includes("hello via 2.x") === true, prompts2);
+
+    ctx2.feed({ type: "session.execution.succeeded", data: { sessionID: SID2 } });
+    await sleep(300);
+    await pub2.unicast(otto2Id!, "second turn via 2.x");
+    for (let i = 0; i < 50 && prompts2.length < 2; i++) await sleep(100);
+    check(
+      "2.x: session.execution.succeeded ends the turn (a later DM drives a second prompt)",
+      prompts2.length === 2 && prompts2[1]?.body.text?.includes("second turn via 2.x") === true,
+      prompts2,
+    );
+
+    const names1x = cotalToolSpecs(configFromEnv(), "opencode").map((s) => s.name).sort();
+    const names2x = ctx2.addedTools.map((t) => t.name).sort();
+    check("2.x: the registered tool set equals the 1.x tool names", JSON.stringify(names1x) === JSON.stringify(names2x), { names1x, names2x });
+
+    const statusTool = ctx2.addedTools.find((t) => t.name === "cotal_status");
+    const out2 = statusTool ? String((await statusTool.execute({ text: "x", owner: "u_attacker" })).content) : "threw: no cotal_status tool";
+    check("2.x: a {text, owner} call to a registered tool's execute is refused by name", out2.startsWith("⚠") && out2.includes("owner"), out2);
+  } finally {
+    if (originalStderrWrite2) process.stderr.write = originalStderrWrite2;
+    await dispose2?.();
+    await pub2.stop();
+    srv2.kill("SIGKILL");
+    oc2.close();
+    await sleep(150);
+    rmSync(dir2, { recursive: true, force: true });
+    releaseBroker2();
+  }
+}
+
+console.log(`\nOPENCODE TURN-WEDGE TEST PASSED ✅  (${pass} checks)`);
 process.exit(0);

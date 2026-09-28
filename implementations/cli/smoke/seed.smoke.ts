@@ -316,7 +316,7 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   // Delete a required non-main artifact (main survives, so a main-only check would miss it) and leave
   // a malformed `{}` recovery marker. A `{}` must be treated as CORRUPT (not an empty obligation), so
   // --repair reinstalls conservatively and restores the artifact rather than clearing over damage.
-  const bundle = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-opencode", "dist", "plugin.bundle.js");
+  const bundle = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-opencode", "dist", "plugin", "index.js");
   if (existsSync(bundle)) {
     rmSync(bundle, { force: true });
     writeJson(join(seedDir(cfg), "reconcile.recovery.json"), {}); // parses, but names no obligation

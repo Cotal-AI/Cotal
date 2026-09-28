@@ -17,6 +17,10 @@ OpenCode needs no setup step. The picker in `cotal setup` just records that you 
 is no plugin to install; the connector auto-wires at spawn. You only need the `opencode` binary
 on your PATH. (Claude Code, by contrast, installs a plugin because its wake channel needs one.)
 
+The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) and 2.x
+(`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
+unsupported version is refused with an error naming the version and the two supported lines.
+
 ## Spawn it
 
 Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
@@ -148,6 +152,10 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
+- **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
+  OpenCode 2.x yet; spawn with `--no-events`.
+- **On 2.x, `cotal models` is refused.** The 2.x catalog is served by a running opencode
+  server, not the CLI, so pass `--model provider/model` directly instead.
 
 ## See also
 

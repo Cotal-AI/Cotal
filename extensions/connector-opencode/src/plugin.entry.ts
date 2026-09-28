@@ -1,5 +1,10 @@
-/** The plugin *bundle* entry (esbuild → `dist/plugin.bundle.js`). OpenCode's loader treats every
- *  export of a plugin module as a plugin factory and calls it, so the bundle must export exactly
- *  one symbol: the plugin. The log-marker constants stay exported from `./plugin.ts` for the
- *  smokes, which import the source — they must never reach this surface. */
-export { cotal } from "./plugin.js";
+/**
+ * The plugin *bundle* entry (esbuild → `dist/plugin/index.js`, a DIRECTORY target). One directory
+ * loads on both OpenCode lines: 1.x calls `default.server(input)` and nothing else; 2.x calls
+ * `default.setup(context)` and nothing else (measured in `fx105/measurements.md`). Named exports
+ * are deliberately absent — the 1.x loader treats each one as a plugin factory, so a bundle that
+ * exported anything beside `default` would be loaded twice over.
+ */
+import { cotal } from "./plugin.js";
+import { setupCotal } from "./plugin2.js";
+export default { id: "cotal", server: cotal, setup: setupCotal };

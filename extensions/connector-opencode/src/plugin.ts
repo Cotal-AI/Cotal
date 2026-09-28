@@ -96,6 +96,12 @@ export const WAL_REAPED = "opencode-wal-reaped";
  *  This is the token the reaping cell grades, because the lifetime is the claim and the deletion is
  *  only the easy half of it. */
 export const WAL_KEPT = "opencode-wal-kept";
+/** The shared shape of a pre-join model refusal: `"<model>: <detail>. Refusing before join"`.
+ *  Exported so the 2.x adapter's own check (a different route, `/api/model`) produces the same
+ *  sentence shape as `verifyServerModel` below without duplicating it. */
+export function modelRefusalSentence(selectedModel: string, detail: string): string {
+  return `${selectedModel}: ${detail}. Refusing before join`;
+}
 export async function verifyServerModel(serverUrl: string, serverAuth: string, selectedModel: string): Promise<void> {
   const response = await fetch(`${serverUrl}/provider`, {
     headers: { authorization: serverAuth },
@@ -107,7 +113,7 @@ export async function verifyServerModel(serverUrl: string, serverAuth: string, s
   const provider = selectedModel.slice(0, slash);
   const model = selectedModel.slice(slash + 1);
   if (slash < 1 || !model || !listing.all?.some((entry) => entry.id === provider && Object.hasOwn(entry.models ?? {}, model)))
-    throw new Error(`${selectedModel}: CLI opencode models --pure --verbose may list it; server /provider does not. Refusing before join`);
+    throw new Error(modelRefusalSentence(selectedModel, "CLI opencode models --pure --verbose may list it; server /provider does not"));
 }
 /**
  * How long one swap step may hold the chain, or a teardown may hold the process, before it is
@@ -137,6 +143,55 @@ const SWAP_SETTLE_MS = 10_000;
  * an event drain: those are excluded and joined afterwards.
  */
 const INTAKE_SETTLE_MS = 1_000;
+
+/**
+ * Races `work` against a `ms` timeout so a stuck settle is abandoned out loud rather than waited on
+ * forever (see the note at its call sites in `quiesce`). Exported: the 2.x adapter's own teardown
+ * uses the same bounded-settle shape rather than a second copy of it.
+ */
+async function settleWithin(work: Promise<unknown> | undefined, ms: number, what: string): Promise<boolean> {
+  if (work === undefined) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+  });
+  try {
+    const settled = await Promise.race([work.then(() => true, () => true), expired]);
+    if (!settled)
+      log(
+        `${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms, so it is abandoned: the WAIT ` +
+          `stopped, the work did not, and nothing here can cancel it. It may still publish, ` +
+          `possibly after frames from whatever replaced it, and a run it had open may stay open. ` +
+          `Ordering is guaranteed for a step that settles inside the bound, not for this one. The ` +
+          `plane continues rather than wedging every later step behind it.`,
+      );
+    return settled;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+export { settleWithin };
+
+/**
+ * The buffered-inbox + pending-run-turn composition that goes out ahead of a native prompt. Shared
+ * by the 1.x text-part mutator (`injectIntoPrompt` below) and the 2.x `session.hook("prompt")`
+ * mutator, so the two callers cannot drift on what "inject" means. Returns `undefined` when there is
+ * nothing to prepend.
+ */
+export function computeInjection(agent: MeshAgent): {
+  prefix: string;
+  surfacedIds: string[];
+  turnIds: string[];
+} | undefined {
+  const items = agent.peekInbox("automatic");
+  const turnPeek = agent.peekPendingTurns();
+  if (items.length === 0 && !turnPeek) return undefined;
+  const inj = items.length > 0 ? formatInjection(items) : undefined;
+  if (!inj && !turnPeek) return undefined;
+  const prefix = [inj, turnPeek?.text].filter(Boolean).join("\n\n");
+  return { prefix, surfacedIds: inj ? items.map((i) => i.recvKey) : [], turnIds: turnPeek?.goalIds ?? [] };
+}
 
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
@@ -754,50 +809,6 @@ export const cotal: Plugin = async () => {
   }
 
   /**
-   * A BOUNDED WAIT, and the bound is the whole point of it.
-   *
-   * Every swap queues behind the one before it, so a single step that never settles does not stall
-   * one session, it stalls every session swap for the life of the process and the plane goes quiet
-   * with nothing saying why. What is waited on ends in a broker publish, which is exactly the kind
-   * of work that hangs rather than fails.
-   *
-   * Waiting forever and giving up quietly are both worse than this. Giving up is SAID: the caller
-   * learns it did not settle, the line names the consequence rather than the timer, and it carries a
-   * token a cell can key on, so a plane that degraded is distinguishable from one that worked.
-   *
-   * THROWING WAS THE OTHER CANDIDATE AND IT WAS MEASURED, not argued. The chain itself is protected,
-   * `swapChain = swap.catch(...)` absorbs a rejection and the next swap still runs. But the same
-   * promise is awaited again by the invocation that created it, and the bus dispatches this handler
-   * as `void hook.event(...)`, so that second consumer turns the rejection into an UNHANDLED one.
-   * On node 22 an unhandled rejection terminates the process, which here is the editor the plugin
-   * is running inside. Reproduced in isolation with the same four lines: the process died and the
-   * liveness line after it never printed. So a throw does not fail loudly, it takes the host with
-   * it, and the repo's throw-rather-than-degrade rule does not ask for that.
-   */
-  async function settleWithin(work: Promise<unknown> | undefined, ms: number, what: string): Promise<boolean> {
-    if (work === undefined) return true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), ms);
-      timer.unref?.();
-    });
-    try {
-      const settled = await Promise.race([work.then(() => true, () => true), expired]);
-      if (!settled)
-        log(
-          `${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms, so it is abandoned: the WAIT ` +
-            `stopped, the work did not, and nothing here can cancel it. It may still publish, ` +
-            `possibly after frames from whatever replaced it, and a run it had open may stay open. ` +
-            `Ordering is guaranteed for a step that settles inside the bound, not for this one. The ` +
-            `plane continues rather than wedging every later step behind it.`,
-        );
-      return settled;
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  }
-
-  /**
    * A swap must not prompt into the new session halfway through its own cutover. `drive` is a TURN
    * SUBMISSION rather than an event-plane consumer, so routing by the holder's binding does not
    * reach it: started mid-cutover it runs against the new id while the replacement holder is not
@@ -1113,22 +1124,18 @@ export const cotal: Plugin = async () => {
    *  text part so we don't need to manufacture OpenCode's internal part IDs. */
   function injectIntoPrompt(output: { parts?: unknown[] }): void {
     if (driving || awaitingTurnEnd) return; // drive() already injected, or one surfaced batch is open
-    const items = agent.peekInbox("automatic");
-    const turnPeek = agent.peekPendingTurns();
-    if (items.length === 0 && !turnPeek) return;
-    const inj = items.length > 0 ? formatInjection(items) : undefined;
-    if (!inj && !turnPeek) return;
+    const computed = computeInjection(agent);
+    if (!computed) return;
     const textPart = output.parts?.find(
       (p): p is { type: "text"; text: string } =>
         typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
     );
     if (!textPart) return;
-    const prefix = [inj, turnPeek?.text].filter(Boolean).join("\n\n");
-    textPart.text = `${prefix}\n\n${textPart.text}`;
+    textPart.text = `${computed.prefix}\n\n${textPart.text}`;
     // The mutation IS the delivery here — the human's prompt runs with the prefix in place.
-    if (turnPeek) agent.commitSurfacedTurns(turnPeek.goalIds);
-    if (inj) {
-      surfaced = items.map((i) => i.recvKey);
+    if (computed.turnIds.length) agent.commitSurfacedTurns(computed.turnIds);
+    if (computed.surfacedIds.length) {
+      surfaced = computed.surfacedIds;
       awaitingTurnEnd = true;
       busy = true;
     }

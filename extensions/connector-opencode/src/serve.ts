@@ -23,6 +23,7 @@ import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { opencodeLine } from "./opencode-line.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
  *  an npm `.cmd` shim that child_process can't spawn, and the real `opencode.exe` it wraps
@@ -131,11 +132,17 @@ async function main(): Promise<void> {
     rmSync(pidFile);
   }
 
+  // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
+  // plugin and the viewer below can each act on it without probing anything themselves.
+  const versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8" }).trim();
+  const line = opencodeLine(versionRaw, BIN);
+
   mkdirSync(agentHome, { recursive: true });
   const serve = spawn(BIN, ["serve", "--hostname", "127.0.0.1", "--port", port], {
     env: {
       ...process.env,
       COTAL_OPENCODE_SERVER_URL: url,
+      COTAL_OPENCODE_LINE: String(line),
       OPENCODE_SERVER_USERNAME: USERNAME,
       OPENCODE_SERVER_PASSWORD: SECRET,
       OPENCODE_DB: dbPath,
@@ -173,10 +180,11 @@ async function main(): Promise<void> {
   // lands in the early-boot window can hang with no response, and an un-timed fetch would pin
   // the loop on it forever (undici queues later requests behind it on the pooled connection).
   const auth = `Basic ${Buffer.from(`${USERNAME}:${SECRET}`).toString("base64")}`;
+  const pokePath = line === 2 ? "/api/config" : "/session";
   void (async () => {
     for (let i = 0; i < 300 && !sessionId; i++) {
       try {
-        await fetch(`${url}/session`, { headers: { authorization: auth }, signal: AbortSignal.timeout(1500) });
+        await fetch(`${url}${pokePath}`, { headers: { authorization: auth }, signal: AbortSignal.timeout(1500) });
       } catch {
         /* not up yet (or a hung early request, aborted) — retry on a fresh connection */
       }
@@ -219,10 +227,11 @@ async function main(): Promise<void> {
   delete tuiEnv.OPENCODE_CONFIG_CONTENT; // a viewer, not a peer — must NOT load the plugin again
   for (const k of Object.keys(tuiEnv)) if (k.startsWith("COTAL_")) delete tuiEnv[k];
   attached = true;
-  const tui = spawn(BIN, ["attach", url, "--session", id, "--password", SECRET], {
-    env: tuiEnv,
-    stdio: "inherit",
-  });
+  // 2.x has no `attach` subcommand and no `--password` flag; the username/password already ride in
+  // tuiEnv (OPENCODE_SERVER_USERNAME/OPENCODE_SERVER_PASSWORD) and the binary reads them itself.
+  const tui = line === 2
+    ? spawn(BIN, ["--server", url, "--session", id], { env: tuiEnv, stdio: "inherit" })
+    : spawn(BIN, ["attach", url, "--session", id, "--password", SECRET], { env: tuiEnv, stdio: "inherit" });
 
   for (const sig of ["SIGINT", "SIGTERM"] as const)
     process.on(sig, () => {
