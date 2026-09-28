@@ -39,6 +39,7 @@ import {
   resolveService, invokeCommand, idFromCreds,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
+import { loadAuthInstanceIdentity } from "@cotal-ai/workspace";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { authAdminListenerGrants } from "../src/auth-admin.js";
 import { ensureRootCredential } from "../src/root-credential.js";
@@ -443,6 +444,25 @@ try {
     check("the in-flight lifecycle A completes its OWN retirement end-to-end (retired:true, head retired)",
       rA !== "no-reply" && rA.ok === true && (rA.data as { retired?: boolean })?.retired === true
       && (await readLifecycleHeadForOperation(wreg, OWNER, "wcolla"))?.mapping.state === "retired", rA);
+  }
+
+  console.log("F. M4b: the generic client resolves the registered closure digest");
+  {
+    const uidResolve = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wresolve", lifecycleUid: uidResolve, managerInstance: "smoke" });
+    const target = { owner: OWNER, actor: "wresolve", lifecycleUid: uidResolve };
+    const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...MGR, target } });
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
+    try {
+      const service = await resolveService(nc, space, AUTH_ENDPOINT, MGR, { deadlineMs: 10_000 });
+      check("describe resolves the registered command \"retire-lifecycle\" into the visible surface",
+        service.commands.has(EP_CMD_RETIRE_LIFECYCLE));
+      const planeInstanceId = loadAuthInstanceIdentity(dir, space)?.instanceId;
+      check("the resolved responder instance id equals the plane's own registered instance",
+        planeInstanceId !== undefined && service.responder.instanceId === planeInstanceId, { planeInstanceId, resolved: service.responder.instanceId });
+    } finally {
+      await nc.close().catch(() => {});
+    }
   }
 
   console.log(`\nAUTH-ADMIN SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
