@@ -1170,7 +1170,9 @@ authenticated. A USER-AUTH mesh still refuses loud: two-step user-mode redemptio
 
 Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
-address down, which is what lets you attach to an agent whose manager runs on another machine. A
+address down, which is what lets you reach the browser console (`cotal console`) for an agent whose manager runs on another machine.
+`attach` does not use that face: it redeems a signed mesh session grant over the broker instead (see above), so it reaches a
+remote manager regardless of the bind address. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
 
@@ -1182,7 +1184,7 @@ does not quietly move a reachable attach face back to loopback. Passing `--host`
 so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
 and records nothing.
 
-Because that face carries terminal read and write for every managed agent, it is credentialed in two
+Because that face mints terminal read and write authority for every managed agent's browser session, it is credentialed in two
 tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,
 single-use and short-lived, so one authorized attach can never be re-pointed at someone else's
 agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
@@ -1283,7 +1285,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | none | Protocol-console port |
-| `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
+| `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
 | `--roster <file>` | none | Declarative roster to boot at startup |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |

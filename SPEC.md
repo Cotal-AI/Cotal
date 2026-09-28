@@ -4115,6 +4115,7 @@ placeholders:
 - `DLV = <Plane-3 per-member delivery stream>`; `INBOX = <mixed pre-auth fan-out stream>` (the durable-backstop handoff, §8): fan-out writes `INBOX` (`dinbox.<owner>.<actor>.<uid>`; lifecycle-bound from v0.4, so an inactive-gap or predecessor entry can never migrate to a same-name successor), the trusted reader re-authorizes and transfers to `DLV` (`dlv.<owner>.<actor>.<uid>`, same binding), and the agent binds its own `DLV` DELIVER consumer (filter pinned to its own triple). An agent gets **no** grant on `INBOX` (the mixed pre-auth store).
 - `KV = KV_cotal_presence_<space>`
 - `CHKV = KV_cotal_channels_<space>`; `DLVKV = <delivery lease/readiness KV>`
+- `MEMKV = KV_cotal_membership_<space>` (the derived channel-membership feed, §8)
 - `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
 - `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode); distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
@@ -4210,7 +4211,8 @@ Application publish is denied. `pub.allow` contains only read/control verbs need
 CHAT history, presence, and channel registry:
 
 - `$JS.API.INFO`
-- `$JS.API.STREAM.INFO.<CHAT|KV|CHKV>`
+- `$JS.API.STREAM.INFO.<CHAT>`
+- `$JS.API.STREAM.INFO.<KV>`
 - `$JS.API.CONSUMER.CREATE.<CHAT>`
 - `$JS.API.CONSUMER.CREATE.<CHAT>.>`
 - `$JS.API.CONSUMER.INFO.<CHAT>.>`
@@ -4219,11 +4221,23 @@ CHAT history, presence, and channel registry:
 - `$JS.ACK.<CHAT>.>`
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
+- `$JS.API.CONSUMER.DELETE.<KV>.>`
+- `$JS.API.STREAM.INFO.<CHKV>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.CONSUMER.DELETE.<CHKV>.>`
+- `$JS.API.STREAM.INFO.<MEMKV>`
+- `$JS.API.STREAM.MSG.GET.<MEMKV>`
+- `$JS.API.CONSUMER.CREATE.<MEMKV>.>`
+- `$JS.API.CONSUMER.INFO.<MEMKV>.>`
+- `$JS.API.CONSUMER.DELETE.<MEMKV>.>`
+- `$JS.API.STREAM.INFO.<DLVKV>`
+- `$JS.API.STREAM.MSG.GET.<DLVKV>`
 - `$JS.FC.>`
+
+The membership feed (`MEMKV`) is read-only for this profile and, per §8's membership-feed
+paragraph, display-only and not part of the contract a client must implement.
 
 ### Admin
 
