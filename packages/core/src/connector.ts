@@ -23,6 +23,10 @@ export interface LaunchOpts {
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before a preservation cut (manager-
+   *  recorded). The connector forwards it (`COTAL_BACKFILL_FLOOR`) so the session's boot backfill
+   *  reads only what came after it instead of the whole retained window. Absent on a fresh launch. */
+  backfillFloor?: number;
   /** The accepted-row token of the credential's issuance (SPEC 13.15), chosen by the launcher at
    *  mint. The connector forwards it (`COTAL_ACCEPTED_TOKEN`) so the session's endpoint reads the
    *  generation the issuer bound and pins it into its caller rails. Static issued launches only. */

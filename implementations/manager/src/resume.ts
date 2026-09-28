@@ -96,6 +96,10 @@ const agent = z.strictObject({
   spawner: z.string().min(1).max(256),
   authorityParent: z.string().min(1).max(256).optional(),
   startedAt: z.string().min(1).max(64),
+  // The CHAT stream frontier at the preservation cut (issue #545). Optional because an inventory
+  // written before this field existed must still resume rather than be refused, exactly as
+  // sessionStatePath's absence means no pointer rather than a stricter refusal.
+  backfillFloor: z.number().int().nonnegative().optional(),
 });
 
 const inventory = z.strictObject({

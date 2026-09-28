@@ -398,6 +398,7 @@ export class MeshAgent extends EventEmitter {
       pass: config.pass,
       creds: config.creds,
       lifecycleUid: config.lifecycleUid,
+      backfillFloor: config.backfillFloor,
       acceptedToken: config.acceptedToken,
       // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
       // protocol lives entirely behind that command, this runtime just runs it and reads a line.
@@ -634,6 +635,13 @@ export class MeshAgent extends EventEmitter {
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
         this.log(
           `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
+        );
+        // The one user-visible surface of the boot backfill (M2, issue #545): the count is exact
+        // right here, before anything else can drain the pull-only lane the backfill filled.
+        const historicalBuffered = this.peekInbox("pull-only").filter((i) => i.historical).length;
+        this.log(
+          `joined ${this.config.subscribe.length} boot channel(s): ${historicalBuffered} historical message(s) buffered pull-only` +
+            (this.config.backfillFloor !== undefined ? ` (backfill floor ${this.config.backfillFloor})` : ""),
         );
         this.ensureTurnPoll();
       } catch (e) {

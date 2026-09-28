@@ -61,6 +61,8 @@ by `replayWindow` (e.g. `"24h"`; [SPEC §7](../SPEC.md#7-channels)). `replay: fa
 control, not confidentiality**: any ACL holder can read the channel's retained content on demand
 regardless of the flag, so it hides history from a joiner's initial context, not from anyone who
 can read the channel. Confidential content uses a DM or anycast, never a no-replay channel.
+A managed seat resumed from a preservation cut (`cotal down --preserve-state`, then `cotal up`)
+backfills only what was posted after the cut, while a fresh joiner backfills the retained window.
 
 ## Common tasks
 
