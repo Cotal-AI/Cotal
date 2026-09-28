@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- 8137d83: The Hermes bridge's local Unix-socket listener now authenticates the first frame of every connection against the launch's control token, dropping an unauthenticated or wrongly-tokened connection before it ever reaches the adapter or a tool call, and the Python-side client now presents that same token on every connect and reconnect.
+
 ## 0.56.0
 
 ### Patch Changes

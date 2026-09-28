@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
 ## 0.56.0
 
 ## 0.55.0
