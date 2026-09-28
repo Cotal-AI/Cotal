@@ -80,12 +80,23 @@ try {
   handles.push(restarted);
   assert.equal((await inspectors[0].readDeliveryLease(0))?.ready, true, "A can restart after release");
   assert.equal((await second.readiness()).state, "ready", "B remains ready after A restarts");
+  const held = await inspectors[0].readDeliveryLeaseEntry(0);
+  assert.ok(held !== undefined, "A's restarted lease is readable");
+  await inspectors[0].markDeliveryLeaseNotReady(0, held.revision);
+  assert.equal(await until(async () => restarted.readiness().state === "unavailable"), true, "fenced A reports unavailable");
+  assert.match(String((restarted.readiness() as { cause?: string }).cause), /stopped \(code 1\)/, "fenced A names its stop cause");
+  assert.equal((await inspectors[0].readDeliveryLease(0))?.holder, inspectors[0].card.id, "fenced A leaves the new holder's row intact");
+  assert.equal(process.exit, exits, "no process exit after a fence");
+  assert.equal((await second.readiness()).state, "ready", "B remains ready after A is fenced");
+  assert.equal((await inspectors[1].readDeliveryLease(0))?.ready, true, "B keeps its lease after A is fenced");
+  const taken = await inspectors[0].readDeliveryLeaseEntry(0);
+  await inspectors[0].releaseDeliveryLease(0, taken?.revision);
   await restarted.close();
   await first.close();
   await second.close();
   await second.close();
   assert.equal((await inspectors[1].readDeliveryLease(0))?.ready, undefined, "B releases only its own lease");
-  console.log("hosted delivery lifetime: 17 two-account assertions passed");
+  console.log("hosted delivery lifetime: 24 two-account assertions passed");
 } finally {
   for (const h of handles) await h.close();
   for (const ep of inspectors) { try { await ep.stop(); } catch { /* broker may be gone */ } }
