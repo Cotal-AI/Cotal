@@ -33,7 +33,7 @@
  * loads a file cannot be said to test it. The discarded `{ exitCode, signal }` is the ROOT of the
  * missing information, so it gets cells that actually spawn, exit, and read the result back.
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentHandle, AttachSession } from "@cotal-ai/core";
@@ -257,7 +257,15 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
   await clean.waitForExit!();
   check("the pty runtime reports the child's REAL exit code", clean.exitInfo?.()?.code === 42, clean.exitInfo?.());
 
-  const killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp");
+  let killed!: AgentHandle;
+  if (process.platform === "linux") {
+    killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp");
+    check("the in-process pty runtime applies the seat preference to its child", readFileSync(`/proc/${killed.pid}/oom_score_adj`, "utf8").trim() === "500");
+  } else {
+    // Documented, not exercised: CI runs Linux, so this arm is graded by reading only.
+    const oomLines = capture(() => { killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp"); });
+    check("the in-process pty runtime logs Linux-only off Linux", oomLines.join(" ").includes("Linux-only"));
+  }
   killed.stop({ graceful: false });
   await killed.waitForExit!();
   const info = killed.exitInfo?.();

@@ -57,6 +57,13 @@ const state = (pid: number): string => {
     }
   }
 };
+const oomAdj = (pid: number): string => {
+  try {
+    return readFileSync(`/proc/${pid}/oom_score_adj`, "utf8").trim();
+  } catch {
+    return "unreadable";
+  }
+};
 
 const root = makeSeatRoot("cotal-seat-life-");
 const handles: Array<{
@@ -90,6 +97,8 @@ try {
     const h = adoptSeatSync(rec);
     handles.push(h);
     check("spawn: custodian and child are live", state(rec.custodianPid) !== "gone" && state(rec.childPid) !== "gone", rec);
+    check("oom: the custodial child carries the seat preference", oomAdj(rec.childPid) === "500");
+    check("oom: the custodian itself stays at the kernel default", oomAdj(rec.custodianPid) === "0");
     const snap = await h.attach().backlog();
     check("snapshot: backlog returns bytes", snap.length >= 0);
     const first = await collect(h, 400);
