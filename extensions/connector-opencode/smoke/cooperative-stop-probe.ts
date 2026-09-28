@@ -66,6 +66,15 @@ const rejectParked = process.env.COOP_REJECT_PARKED?.trim() || undefined;
 // believed were three. Written by `noteAdmitted` below, from the admitted order; it used to be
 // written from the endpoint seam by counting parked bodies, which serialization caps at one.
 const interiorShape = process.env.COOP_INTERIOR_SHAPE?.trim() || undefined;
+// THE DEPARTURE'S OWN ADMISSION, and it exists because the roster cannot answer the question the
+// guard cells ask. Presence writes are serialized (#2065), so `safeStatus("offline")` queues behind
+// a write that is parked and cannot reach the mesh while one is held. A teardown that skipped its
+// wait entirely therefore looks exactly like one that is still holding: the watcher reads non-offline
+// for both, and a cell sampling the roster inside the bound passes either way. Measured, not
+// supposed: C10, C14, C15, C16 and C17 all survived against that sample.
+// Admission sits ABOVE the chain, so it does separate them. A correct teardown does not admit its
+// departure publish until the intake bound expires; one that stops waiting early admits it at once.
+const departureAdmitted = process.env.COOP_DEPARTURE_ADMITTED?.trim() || undefined;
 const parked: Array<() => void> = [];
 // Released on its own trigger, and BEFORE the parked one, so the failure lands while the teardown is
 // still waiting rather than after it has given up.
@@ -107,6 +116,11 @@ if (cross) {
   MeshAgent.prototype.setStatus = function (status: Parameters<MeshAgent["setStatus"]>[0], activity?: string): Promise<void> {
     if (activity === "crossing-reject") noteAdmitted("reject");
     else if (activity === `crossing-${cross}`) noteAdmitted(cross);
+    // The departure publish is the offline write that carries no activity. Recorded once, because
+    // `agent.stop` publishes offline again at the very end of the teardown and that one is past the
+    // wait and says nothing about it.
+    else if (departureAdmitted && status === "offline" && activity === undefined && !existsSync(departureAdmitted))
+      writeFileSync(departureAdmitted, "the teardown admitted its departure publish\n");
     return originalStatus.call(this, status, activity);
   };
   // The model record publishes presence through a different endpoint method than a status write,
