@@ -55,6 +55,26 @@
       "command": "pnpm smoke:jcode-args",
       "completionMarker": "self-registers as connector jcode",
       "expectRed": "the host default bound is that same export, not a second literal"
+    },
+    {
+      "name": "M1 the resolved provider is never applied to the pinned model",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (provider) await agent.setModel(effectiveModel, undefined, provider);",
+      "replace": "      void provider;",
+      "command": "pnpm smoke:jcode-host",
+      "completionMarker": "",
+      "expectRed": "the presence card names the provider serving the pinned model and keeps the pin",
+      "cell": "the presence card names the provider serving the pinned model and keeps the pin"
+    },
+    {
+      "name": "M2 an absent provider is reported as unknown instead of left off",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      if (provider) await agent.setModel(effectiveModel, undefined, provider);",
+      "replace": "      await agent.setModel(effectiveModel, undefined, provider ?? \"unknown\");",
+      "command": "pnpm smoke:jcode-host",
+      "completionMarker": "",
+      "expectRed": "a route with no provider named by the Harness publishes no provider key",
+      "cell": "a route with no provider named by the Harness publishes no provider key"
     }
   ]
 }

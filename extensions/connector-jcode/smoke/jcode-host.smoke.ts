@@ -291,15 +291,21 @@ try {
     for (const part of message.parts) if (isAguiFramePart(part)) frames.push(part as typeof frames[number]);
   });
   let peerId: string | undefined;
+  let peerMeta: Record<string, unknown> | undefined;
+  let noProviderMeta: Record<string, unknown> | undefined;
   let foldPeerId: string | undefined;
   const foldStatuses: string[] = [];
   let busyPeerId: string | undefined;
   let busyActivity = "";
   const announced = new Set<string>();
-  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string; status?: string } }) => {
+  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string; meta?: Record<string, unknown> }; activity?: string; status?: string } }) => {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
-    if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.presence.card.name === "jcodepeer") {
+      peerId = event.presence.card.id;
+      peerMeta = event.presence.card.meta;
+    }
+    if (event.presence.card.name === "noproviderpeer") noProviderMeta = event.presence.card.meta;
     if (event.presence.card.name === "foldpeer") {
       foldPeerId = event.presence.card.id;
       foldStatuses.push(event.presence.status ?? "");
@@ -604,6 +610,11 @@ try {
       !peerLog.includes("model fake-model is served by provider default-provider"),
     peerLog,
   );
+  check(
+    "the presence card names the provider serving the pinned model and keeps the pin",
+    peerMeta?.provider === "selected-provider" && peerMeta?.model === "fake-model",
+    peerMeta,
+  );
 
   await stopHostTree(child, "SIGTERM");
   check("host exits cleanly on SIGTERM", child.exitCode === 0, { code: child.exitCode, stderr });
@@ -804,6 +815,51 @@ try {
   );
   await stopHostTree(modelOnly, "SIGTERM");
   check("the model-only lag launch exits cleanly", modelOnly.exitCode === 0, { code: modelOnly.exitCode, stderr: modelOnlyErr });
+
+  // A route the Harness API names with no provider publishes no provider key: absent, never
+  // fabricated (#785).
+  const noProviderLog = join(root, "no-provider.jsonl");
+  const noProvider = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: noProviderLog,
+      FAKE_JCODE_RUNTIME_PROVIDER: "",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "", api_method: "chat_completions", available: true, detail: "no provider" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "noproviderpeer",
+      COTAL_ID: "noproviderpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_CONTROL_SOCKET: controlSock("no-provider-control.sock"),
+      COTAL_CONTROL_TOKEN: "no-provider-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let noProviderErr = "";
+  noProvider.stderr?.on("data", (chunk: Buffer) => (noProviderErr += chunk.toString()));
+  await Promise.race([
+    once(noProvider, "exit"),
+    waitFor("no-provider mesh presence", () => announced.has("noproviderpeer") ? true : undefined),
+  ]);
+  const noProviderConnectorLog = connectorLog(managedHome("jcodehost", "noproviderpeer"));
+  check(
+    "a route with no provider named by the Harness publishes no provider key",
+    (noProviderMeta === undefined || !("provider" in noProviderMeta)) &&
+      noProviderConnectorLog.includes("served by an unreported provider"),
+    { noProviderMeta, noProviderConnectorLog },
+  );
+  await stopHostTree(noProvider, "SIGTERM");
+  check("the no-provider launch exits cleanly", noProvider.exitCode === 0, { code: noProvider.exitCode, stderr: noProviderErr });
 
   // A stale RuntimeInfo.model is not permission to guess. Variant startup still requires a route for
   // the requested pin that is uniquely tied to RuntimeInfo.provider before effort can be applied.

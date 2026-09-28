@@ -102,7 +102,7 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["w1", "w2", "w3", "wp1", "wp2", "wpmissing", "m6pin"])
+for (const n of ["w1", "w2", "w3", "wp1", "wp2", "wpmissing", "m6pin", "wroute"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -127,6 +127,14 @@ const cwdCon: Connector = {
   }),
 };
 registry.register(cwdCon);
+// A stub connector whose child reports a presence-card provider (#785): the row read from the
+// roster card, not the launch request, is the surface under test.
+const routeCon: Connector = {
+  ...stubCon,
+  name: "route-stub",
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({ command: "node", args: [STUB], env: { ...envFor(o), COTAL_E2E_META_PROVIDER: "gateway-b" } }),
+};
+registry.register(routeCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
@@ -375,6 +383,31 @@ try {
       enrich.cwd === repoRoot && typeof enrich.pid === "number" && enrich.pid > 0 && enrich.spawner === A.principal && enrich.instanceId === M.managerInstanceId && typeof enrich.host === "string" && enrich.host.length > 0, enrich);
     check("...and an unpinned model serializes ABSENT, not fabricated",
       !("model" in enrich), enrich);
+    // #785: the presence card's `meta.provider`, not the launch request, is the surface `ps` reads.
+    const { row: wroute } = await spawnLive(A.call, { name: "wroute", agent: "route-stub", cwd: repoRoot, events: false });
+    // The row appears in `ps` as soon as the seat is live; the roster card's `meta.provider` can
+    // land a beat later. Poll (bounded, like `spawnLive`) until the field shows up, then assert once.
+    let routeRow: { name: string; provider?: string } | undefined;
+    for (let i = 0; i < 80; i++) {
+      const psRoute = await A.call("ps");
+      const routeRows = psRoute.reply.data as Array<{ name: string; provider?: string }>;
+      routeRow = routeRows.find((x) => x.name === "wroute");
+      if (routeRow?.provider !== undefined) break;
+      await wait(250);
+    }
+    check("ps carries the provider the seat's presence card reports", routeRow?.provider === "gateway-b", routeRow);
+    const psRoute = await A.call("ps");
+    const routeRows = psRoute.reply.data as Array<{ name: string; provider?: string }>;
+    const w1RowAfterRoute = routeRows.find((x) => x.name === "w1");
+    check("...and a seat whose card reports no provider serializes provider ABSENT, never fabricated",
+      w1RowAfterRoute !== undefined && !("provider" in w1RowAfterRoute), w1RowAfterRoute);
+    const insRoute = await A.call("inspect", { name: "wroute" });
+    check("the row contract admits the reported provider and refuses a non-string one",
+      insRoute.reply.ok === true && MANAGER_CONTRACTS.inspect.output.validate(insRoute.reply.data) === true &&
+      MANAGER_CONTRACTS.inspect.output.validate({ ...(insRoute.reply.data as Record<string, unknown>), provider: 7 }) === false,
+      insRoute.reply.data);
+    const stoppedRoute = await A.call("despawn", { graceful: true }, { actor: wroute.id, lifecycleUid: wroute.lifecycleUid });
+    check("wroute is cleaned up", stoppedRoute.reply.ok === true, stoppedRoute.reply);
     const ins = await A.call("inspect", { name: "w1" });
     check("inspect returns the same row", ins.reply.ok === true && (ins.reply.data as { id: string }).id === w1.id);
     check("the durable miss projection does not widen inspect's closed live-agent success contract",

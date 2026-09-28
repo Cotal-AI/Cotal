@@ -49,6 +49,33 @@
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)",
       "cell": "a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)"
+    },
+    {
+      "name": "M3 the ps row reads provider from the launch request instead of the presence card",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const providerMeta = roster.get(a.name)?.card.meta?.provider;",
+      "replace": "      const providerMeta = a.launch.model;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "ps carries the provider the seat's presence card reports",
+      "cell": "ps carries the provider the seat's presence card reports"
+    },
+    {
+      "name": "M4 an absent provider is fabricated as an empty string",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        ...(provider ? { provider } : {}),",
+      "replace": "        provider: provider ?? \"\",",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "...and a seat whose card reports no provider serializes provider ABSENT, never fabricated",
+      "cell": "...and a seat whose card reports no provider serializes provider ABSENT, never fabricated"
+    },
+    {
+      "name": "M5 the row contract drops the provider field's type",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "    provider: { type: \"string\" },",
+      "replace": "    provider: {},",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "the row contract admits the reported provider and refuses a non-string one",
+      "cell": "the row contract admits the reported provider and refuses a non-string one"
     }
   ]
 }
