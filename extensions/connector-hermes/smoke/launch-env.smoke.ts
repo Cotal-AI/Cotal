@@ -46,7 +46,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 164;
+const EXPECTED_CELLS = 167;
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
@@ -85,7 +85,7 @@ const PER_SESSION = [
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
   "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT",
-  "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN",
+  "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN", "COTAL_BACKFILL_FLOOR",
 ] as const;
 
 /** Machine-wide operator knobs that DO cross: no connector assigns them per spawn. */
@@ -115,6 +115,10 @@ assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launc
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
+
+// A floor request DOES forward, distinct from the per-session ambient reset asserted above.
+const withFloor = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
+assert.equal(withFloor.COTAL_BACKFILL_FLOOR, "42", "a requested backfill floor is forwarded");
 
 // ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
 const confined = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
