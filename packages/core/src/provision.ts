@@ -1121,33 +1121,28 @@ export function permissionsFor(
       throw new Error("permissionsFor: retirement-requester requires opts.retirementRequester.target ({owner, actor, lifecycleUid} of the ONE incarnation this credential may retire) - since #350 the handle target rides the SUBJECT and is grant-pinned, so it can no longer be supplied in the request body");
     const { owner, actor, uid, target } = rr;
     const caller = { owner, actor, uid };
-    // DEVIATION FROM `handle`'s NORMATIVE PROVENANCE, stated where the row is minted (SPEC
-    // 1314-1319, 1838-1863). `handle` is normatively REDEMPTION-MINTED: its triple is pinned at
-    // redemption from an ISSUER-SIGNED capability artifact, and the mode carries attenuation
-    // (`effective = presenter-cred INTERSECT handle.grants INTERSECT issuer-authority`), conferral
-    // through the trusted auth service, and ledgered `sourceChain` lineage.
-    // THIS PATH HAS NONE OF THAT: there is NO issuer-signed artifact, NO redemption step and NO
-    // sourceChain. The row is built directly from the manager's own coordinates under root
-    // authority. It is used because `handle` is the ONLY mode with arity 3 - every other mode
-    // resolves against the CURRENT mapping, which is the wrong semantics for retiring a NAMED
-    // incarnation - and because the reader-facing invariant ("the validator re-checks only
-    // currency") IS honoured: the auth handler fresh-checks the triple against the lifecycle
-    // mapping and refuses a stale incarnation.
-    // What is genuinely absent is delegation lineage and artifact revocation. There is no
-    // independent issuer/holder boundary on this one-shot path whose revocation would change this
-    // requester's authority, which is why the deviation is accepted rather than papered over with
-    // a manufactured artifact. NAMED RESIDUAL: Cotal #399 tracks making this genuinely
-    // redemption-shaped if real artifact semantics are ever intended.
-    // The `handle` target is grant-pinned, so this credential can ask to retire the ONE
-    // incarnation it was minted for and nothing else - the same confinement the pre-#350 grant got
-    // from naming an exact `ctl` subject, now covering the TARGET as well as the caller. The nonce
-    // is the only wildcard token (§13.9): a bounded per-request suffix, not an addressing widening.
+    // The row is minted in `exact` mode: a privileged, non-redemption mode where this profile
+    // pins the arity-3 target triple directly from the manager's own coordinates under root
+    // authority, rather than through `handle`'s issuer-signed redemption provenance. The target is
+    // still confinement-pinned, so this credential can ask to retire the ONE incarnation it was
+    // minted for and nothing else - the same confinement the pre-#350 grant got from naming an
+    // exact `ctl` subject, now covering the TARGET as well as the caller. The nonce is the only
+    // wildcard token (§13.9): a bounded per-request suffix, not an addressing widening.
     const rows = epRequestGrantRows(space, {
       endpoint: AUTH_ENDPOINT,
       command: EP_CMD_RETIRE_LIFECYCLE,
-      target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
+      target: { mode: "exact", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
     }, caller);
-    return { pub: { allow: rows }, sub: { allow: [epCallerReplyFilter(space, caller), `_INBOX_${pr.connId}.>`] } };
+    return {
+      pub: {
+        allow: [
+          ...rows,
+          epDescribeAllGrantRow(space, caller),
+          `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+        ],
+      },
+      sub: { allow: [epCallerReplyFilter(space, caller), `_INBOX_${pr.connId}.>`] },
+    };
   }
   if (profile === "manager-service" as Profile)
     throw new Error('permissionsFor: "manager-service" is not a generic profile; use the typed remote manager authority protocol');
