@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import {
   composeSpaceAuth,
@@ -414,6 +415,71 @@ export function createManagerInstanceIdentity(root: string, space: string, candi
       );
     return winner;
   }
+}
+
+/** The outcome of {@link retireManagerInstanceIdentity}. `removed` means this call deleted the
+ *  record that matched `expected`. `absent` means no record exists for the space: a retry after an
+ *  earlier `removed`, or a record that was never created. It never reports that this call deleted
+ *  anything, so a caller that cannot prove it created the record must not count it as retired. */
+export type ManagerInstanceIdentityRetirement = { outcome: "removed" } | { outcome: "absent" };
+
+function sameManagerInstanceIdentity(a: ManagerInstanceIdentity, b: ManagerInstanceIdentity): boolean {
+  return a.instanceId === b.instanceId && a.serveIdentity.id === b.serveIdentity.id && a.serveIdentity.seed === b.serveIdentity.seed;
+}
+
+function readManagerInstanceRecord(f: string, space: string): ManagerInstanceIdentity | undefined {
+  const raw = readAuthRecord<ManagerInstanceIdentity>(f, `the manager instance identity for space "${space}"`);
+  if (raw === undefined) return undefined;
+  if (raw === null || typeof raw !== "object"
+    || typeof raw.instanceId !== "string" || raw.instanceId.length === 0
+    || raw.serveIdentity === null || typeof raw.serveIdentity !== "object"
+    || typeof raw.serveIdentity.id !== "string" || raw.serveIdentity.id.length === 0
+    || typeof raw.serveIdentity.seed !== "string" || raw.serveIdentity.seed.length === 0)
+    throw new Error(`${f} is malformed`);
+  return { instanceId: raw.instanceId, serveIdentity: { id: raw.serveIdentity.id, seed: raw.serveIdentity.seed } };
+}
+
+/**
+ * Delete this root's persisted manager instance identity for `space`, only when the stored record
+ * is the complete `expected` identity (instanceId, serve nkey id and serve seed).
+ *
+ * It refuses, throwing an error that starts with `manager-instance-identity-retire-refused` and
+ * leaving every entry in place, when the entry is not a regular file (symlink, directory), does
+ * not parse, is malformed, or holds any other identity, such as a successor written after
+ * `expected` was provisioned. A missing record returns `absent`, so an interrupted retirement can
+ * be retried. The record is first renamed to a private name in the auth directory and checked
+ * again there, so a successor written between the check and the delete is never removed. If that
+ * second check fails, the captured record is linked back when the path is still free.
+ *
+ * This establishes only which record was deleted. It is not proof that a manager stopped: the
+ * caller must hold its own stop and ownership evidence before retiring. A normal restart keeps the
+ * identity, and retirement is for failed-new-space compensation or terminal retirement.
+ */
+export function retireManagerInstanceIdentity(root: string, space: string, expected: ManagerInstanceIdentity): ManagerInstanceIdentityRetirement {
+  const path = managerInstanceFile(root, space);
+  const refuse = (why: string): never => {
+    throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: ${why}`);
+  };
+  let current: ManagerInstanceIdentity | undefined;
+  try { current = readManagerInstanceRecord(path, space); } catch (e) { return refuse((e as Error).message); }
+  if (current === undefined) return { outcome: "absent" };
+  if (!sameManagerInstanceIdentity(current, expected)) return refuse("the stored identity is not the expected generation");
+
+  const captured = `${path}.retiring.${randomUUID()}`;
+  try { renameSync(path, captured); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
+    throw e;
+  }
+  let held: ManagerInstanceIdentity | undefined;
+  try { held = readManagerInstanceRecord(captured, space); } catch { held = undefined; }
+  if (held === undefined || !sameManagerInstanceIdentity(held, expected)) {
+    try { linkSync(captured, path); unlinkSync(captured); } catch {
+      return refuse(`the record changed before deletion and could not be put back; it is kept at ${captured}`);
+    }
+    return refuse("the record changed before deletion and was put back");
+  }
+  unlinkSync(captured);
+  return { outcome: "removed" };
 }
 
 /** The account file's key IS {@link spaceKey} — one injective, case-safe encoder for every
