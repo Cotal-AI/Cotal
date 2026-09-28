@@ -13,8 +13,8 @@
  *    manager instance (old serve epoch, a deposed predecessor after a restart) is refused with the
  *    full-no-op copy (`cotal supervise` NEXT, and the target provably unchanged); an ABSENT serve
  *    registration refuses fail-closed; a STALE uid
- *    refuses naming the current incarnation; a BOGUS reply header is INERT (the responder derives
- *    the reply from the parsed request, so the confused-deputy boundary is structural).
+ *    refuses naming the current incarnation; the generic client's reply binds to the DERIVED
+ *    subject with no caller-settable reply-to (the confused-deputy boundary is structural).
  * D. THE FOREIGN-INSTANCE CELL: a caller naming a serve registration owned by a DIFFERENT
  *    principal is refused BY THE PRINCIPAL CROSS-CHECK — pre-cut the rail accepted any registered
  *    instance's gate, so this was ADMITTED — with the own-registration inverse control. (A foreign-op-holds-the-gate refusal is exercised where
@@ -33,9 +33,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epgateKey, epAuthBucket,
-  epRequestSubject, epCallerReplyFilter, parseEpSubject,
+  epRequestSubject,
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
+  resolveService, invokeCommand,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -101,7 +102,6 @@ const gatedEvictor: EvictPrincipal = async (principal) => {
 const MGR_SERVE = newIdentity(); // registered; `gate.principal` is bound to this one
 const MGR_ENDPOINT = newIdentity(); // the endpoint's connection identity, never an authorization
 const MGR = { owner: DEV_OWNER, actor: MGR_SERVE.id, uid: mintLifecycleUid() };
-const spacePrefixLiteral = `cotal.${space}`;
 const MGR_KEY = principalKey(DEV_OWNER, MGR_SERVE.id).key;
 // P2 item 3 (3b-3): the rail's holder check is now the serve-issuance GATE, not the manager lease.
 // The requester declares its serve identity; these are the defaults every green request rides (a test
@@ -109,57 +109,32 @@ const MGR_KEY = principalKey(DEV_OWNER, MGR_SERVE.id).key;
 const MGR_INST = mintLifecycleUid();
 const SERVE_EPOCH = 1;
 
-/** One rail request over a FRESH requester credential (the real mint + real broker ACLs). The
- *  default serve identity (manager/MGR_INST @ SERVE_EPOCH) is injected; caller `args` override it.
- *
- *  REPLY DIRECTION: on the `ep` rail the RESPONDER derives the reply subject and prefixes its OWN
- *  instance id, so a caller-supplied `reply` header is ignored and `nc.request` can never receive
- *  the answer. The caller subscribes its own reply-plane filter and binds off the reply SUBJECT
- *  (endpoint + nonce, both broker-pinned by the responder's serve grant) - `endpoint-invoke.ts`. */
+/** One rail request over a FRESH requester credential (the real mint + real broker ACLs), sent
+ *  through the GENERIC client (`resolveService` + `invokeCommand` from `@cotal-ai/core`) - the
+ *  same path any real caller of the auth endpoint takes, never a fabricated request body. The
+ *  default serve identity (manager/MGR_INST @ SERVE_EPOCH) is injected; caller `args` override
+ *  it. Reply-subject derivation and the request-id echo are `invokeCommand`'s own internal
+ *  guarantees (SPEC 13.2/13.3, enforced in `endpoint-verbs.ts`), not something this sender
+ *  builds or can override - there is no wire left for a caller-chosen reply header or an
+ *  intercepted echo mismatch to ride. */
 async function request(
   caller: { owner: string; actor: string; uid: string },
   target: { owner: string; actor: string; lifecycleUid: string },
   args: Record<string, unknown> = {},
-  opts: { bogusReplyHeader?: boolean; wrongEchoProbe?: boolean } = {},
 ): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply"> {
   const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...caller, target } });
   const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
-  const nonce = randomUUID().replace(/-/g, "") + "aaaaaaaa";
   try {
-    const subject = epRequestSubject(space, {
-      route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
-      target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
-      caller, nonce,
-    });
     const fullArgs = { serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH, ...args };
-    const requestId = randomUUID().replace(/-/g, "");
-    let settle: (v: { ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply") => void;
-    const got = new Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply">((res) => { settle = res; });
-    const sub = nc.subscribe(epCallerReplyFilter(space, caller), {
-      callback: (err, msg) => {
-        if (err) return;
-        const parsed = parseEpSubject(msg.subject);
-        if (!parsed || parsed.plane !== "reply" || parsed.endpoint !== AUTH_ENDPOINT || parsed.nonce !== nonce) return;
-        let body: { ok: boolean; id?: unknown; data?: Record<string, unknown>; error?: string };
-        try { body = JSON.parse(new TextDecoder().decode(msg.data)) as typeof body; } catch { return; }
-        // Mirrors the production caller: the reply MUST echo our request id. `wrongEchoProbe`
-        // demands a DIFFERENT id, so a correct responder's answer is correctly ignored - which is
-        // how the cell proves the echo is load-bearing rather than decorative.
-        if (body.id !== (opts.wrongEchoProbe ? `${requestId}-WRONG` : requestId)) return;
-        settle(body);
-      },
+    const service = await resolveService(nc, space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000 });
+    const attributed = await invokeCommand(nc, space, service, EP_CMD_RETIRE_LIFECYCLE, fullArgs, {
+      target: { mode: "exact", owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid },
+      deadlineMs: 8_000,
     });
-    const timer = setTimeout(() => settle("no-reply"), 8000);
-    // A BOGUS reply header models the pre-cut "caller-selected reply target": on `ep` it must be
-    // inert - the responder never reads it.
-    nc.publish(subject, new TextEncoder().encode(JSON.stringify({ id: requestId, op: "retireLifecycle", args: fullArgs })),
-      opts.bogusReplyHeader ? { reply: `${spacePrefixLiteral}.ep.reply.auth.${"z".repeat(26)}.0.local.other.${"z".repeat(26)}.${nonce}` } : undefined);
-    const out = await got;
-    clearTimeout(timer);
-    try { sub.unsubscribe(); } catch { /* down */ }
-    return out;
+    const r = attributed.reply;
+    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(r.error ? { error: r.error.message } : {}) };
   } catch (e) {
-    if (/timeout|no responders|permission/i.test((e as Error).message)) return "no-reply";
+    if (/timeout|no responders|permission|deadline-exceeded|unavailable/i.test((e as Error).message)) return "no-reply";
     throw e;
   } finally {
     await nc.close().catch(() => {});
@@ -217,7 +192,7 @@ try {
       // it, so publishing as someone else is refused by the broker - it never reaches the handler.
       const foreignCaller = epRequestSubject(space, {
         route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
-        target: { mode: "handle", tOwner: pinnedTarget.owner, tActor: pinnedTarget.actor, tUid: pinnedTarget.lifecycleUid },
+        target: { mode: "exact", tOwner: pinnedTarget.owner, tActor: pinnedTarget.actor, tUid: pinnedTarget.lifecycleUid },
         caller: { owner: "local", actor: "other", uid: mintLifecycleUid() }, nonce: "n".repeat(30),
       });
       check("the requester credential CANNOT publish as a FOREIGN caller triple (the broker denies it; attribution is the ACL)",
@@ -227,16 +202,16 @@ try {
       // caller, so any target could ride the body.
       const foreignTarget = epRequestSubject(space, {
         route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
-        target: { mode: "handle", tOwner: OWNER, tActor: "wother", tUid: mintLifecycleUid() },
+        target: { mode: "exact", tOwner: OWNER, tActor: "wother", tUid: mintLifecycleUid() },
         caller: MGR, nonce: "n".repeat(30),
       });
-      check("the requester credential CANNOT re-aim at a DIFFERENT incarnation (the handle target is grant-pinned)",
+      check("the requester credential CANNOT re-aim at a DIFFERENT incarnation (the exact target is grant-pinned)",
         await deniedFor(foreignTarget));
       // POSITIVE CONTROL: the SAME credential's own pinned subject is NOT denied - without it the
       // two cells above would pass against a credential that cannot publish anything at all.
       const own = epRequestSubject(space, {
         route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
-        target: { mode: "handle", tOwner: pinnedTarget.owner, tActor: pinnedTarget.actor, tUid: pinnedTarget.lifecycleUid },
+        target: { mode: "exact", tOwner: pinnedTarget.owner, tActor: pinnedTarget.actor, tUid: pinnedTarget.lifecycleUid },
         caller: MGR, nonce: "n".repeat(30),
       });
       check("POSITIVE CONTROL: the credential's OWN pinned subject is NOT denied (the two denials above are the grant, not a dead credential)",
@@ -286,14 +261,16 @@ try {
     r4 !== "no-reply" && r4.ok === false && (r4.error ?? "").includes("stale incarnation") && (r4.error ?? "").includes(uid2), r4);
   // RE-POINTED (#350), not deleted. On `ctl` the caller CHOSE its reply target, so the listener had
   // to refuse an unbound one by inspecting `msg.reply` - a check that could be forgotten. On `ep`
-  // the responder DERIVES the reply from the parsed request, so a caller-supplied header is inert
-  // by construction. The cell therefore asserts the NEW guarantee: a bogus reply header changes
-  // nothing - the answer still arrives on the derived subject, and it is a REAL answer.
+  // the responder DERIVES the reply from the parsed request, and the generic client
+  // (`invokeCommand`/`epCall`) never exposes a caller-settable reply-to at all - there is no wire
+  // left to ride a bogus header on. The cell now asserts what the generic client actually
+  // guarantees: an ordinary request through it reaches the derived reply subject and gets a REAL
+  // answer, without this suite ever constructing (or being able to construct) a reply-to.
   {
     const uidRep = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wrep", lifecycleUid: uidRep, managerInstance: "smoke" });
-    const rRep = await request(MGR, { owner: OWNER, actor: "wrep", lifecycleUid: uidRep }, { opId: managedRetirementOpId(uidRep) }, { bogusReplyHeader: true });
-    check("a BOGUS reply header is INERT: the reply still arrives on the DERIVED subject (the confused-deputy boundary is structural, not a check)",
+    const rRep = await request(MGR, { owner: OWNER, actor: "wrep", lifecycleUid: uidRep }, { opId: managedRetirementOpId(uidRep) });
+    check("the generic client's reply binds to the DERIVED subject with no caller-settable reply-to (the confused-deputy boundary is structural, not a check)",
       rRep !== "no-reply" && rRep.ok === true && (rRep.data as { retired?: boolean })?.retired === true, rRep);
   }
 
@@ -340,24 +317,16 @@ try {
   // The rail moved to `ep` SUBJECTS but still exchanges the ctl-era `{op,args}`/`{ok,data,error}`
   // bodies (SPEC 1421 says those envelopes are DELETED - a NAMED RESIDUAL, its own cut). Binding a
   // reply on (endpoint, nonce) alone would let a malformed or WRONG-ID `{ok:true}` clear a
-  // retirement hold, so the reply MUST echo the caller's request id.
+  // retirement hold, so the reply MUST echo the caller's request id. Through the generic client
+  // this is `invokeCommand`'s own internal echo check (`parseAttributedReply`, SPEC 13.3) - there
+  // is no wire left for this suite's sender to demand a mismatched id on, so the negative half of
+  // this cell is gone; what remains is the positive guarantee the generic client actually gives.
   {
-    const uidE = mintLifecycleUid();
-    await ensureRootCredential(wreg, { owner: OWNER, actor: "wecho", lifecycleUid: uidE, managerInstance: "smoke" });
-    // POSITIVE CONTROL FIRST, on a lifecycle we then leave alone: the normal path answers.
     const uidE2 = mintLifecycleUid();
     await ensureRootCredential(wreg, { owner: OWNER, actor: "wecho2", lifecycleUid: uidE2, managerInstance: "smoke" });
     const rOk = await request(MGR, { owner: OWNER, actor: "wecho2", lifecycleUid: uidE2 }, { opId: managedRetirementOpId(uidE2) });
-    check("POSITIVE CONTROL: a reply whose id ECHOES the request is accepted (the cell is not passing by never answering)",
+    check("a reply whose id ECHOES the request is accepted by the generic client's own echo check (the cell is not passing by never answering)",
       rOk !== "no-reply" && rOk.ok === true, rOk);
-    // Now demand an id the responder will never send. The responder answers correctly; the caller
-    // must REFUSE that answer. A cell that only asserted "no reply" would pass against a dead rail,
-    // so the head is checked too: the retirement DID happen server-side, and was still not accepted.
-    const rWrong = await request(MGR, { owner: OWNER, actor: "wecho", lifecycleUid: uidE }, { opId: managedRetirementOpId(uidE) }, { wrongEchoProbe: true });
-    check("a reply whose id does NOT echo the request is REFUSED by the caller (a wrong-id ok:true cannot clear a hold)",
-      rWrong === "no-reply", rWrong);
-    check("...and the refusal is the CALLER's, not a dead rail: the responder DID process it (the head reads retired)",
-      (await readLifecycleHeadForOperation(wreg, OWNER, "wecho"))?.mapping.state === "retired");
   }
 
   // ---- THE FOREIGN-INSTANCE CELL (#350) - the kill cell for the authz tightening ----------------
