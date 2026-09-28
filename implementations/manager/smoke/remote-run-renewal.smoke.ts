@@ -131,9 +131,12 @@ try {
       });
       return remoteRunRenewalCredentials(material, request, owner, a.driver, a.mediator);
   };
+  const unusedHostCall = async (): Promise<never> => { throw new Error("not exercised by the renewal suite"); };
   const hostAs = (id: string) => new RunHosting({
     space, servers: SERVERS, endpoint: "manager", instanceId,
     holder: { id, lifecycleUid: mintLifecycleUid() }, auth: undefined, log: () => undefined, renewRun,
+    // The signerless set is all-or-nothing; this suite exercises renewal only, so the rest refuse.
+    admitRun: unusedHostCall, issueAttempt: unusedHostCall, issueOperator: unusedHostCall,
   });
   const hosting = hostAs(holderId);
 
