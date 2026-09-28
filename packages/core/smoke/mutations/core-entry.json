@@ -71,13 +71,24 @@
     {
       "name": "drop the publish-time JSON-value guard on message parts",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!this.js) throw new Error(this.notLiveMsg());\n    assertPartsSerializable(msg.parts);",
-      "replace": "    if (!this.js) throw new Error(this.notLiveMsg());\n    void msg.parts;",
+      "find": "    if (!recip) throw new Error(`unicast: \"${instanceId}\" is not a valid recipient principal <owner>.<actor>`);\n    assertPartsSerializable(msg.parts);",
+      "replace": "    if (!recip) throw new Error(`unicast: \"${instanceId}\" is not a valid recipient principal <owner>.<actor>`);\n    void msg.parts;",
       "expectRed": "publish refuses a data part with top-level undefined (the key stringify drops)",
       "command": "pnpm smoke:dm-history-subject",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "dm-history-subject smoke: ",
       "cell": "publish refuses a data part with top-level undefined (the key stringify drops)"
+    },
+    {
+      "name": "drop the publishMsg copy of the parts guard",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!this.js) throw new Error(this.notLiveMsg());\n    assertPartsSerializable(msg.parts);",
+      "replace": "    if (!this.js) throw new Error(this.notLiveMsg());\n    void msg.parts;",
+      "expectRed": "multicast refuses a non-JSON data value through publishMsg (NaN stores as null if unchecked)",
+      "command": "pnpm smoke:cas-publish",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "cas-publish smoke: ",
+      "cell": "multicast refuses a non-JSON data value through publishMsg (NaN stores as null if unchecked)"
     },
     {
       "name": "drop the multicastExpecting copy of the parts guard",
