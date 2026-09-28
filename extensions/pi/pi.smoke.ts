@@ -861,6 +861,17 @@ for (const assistant of [
     ok(env.GROQ_API_KEY === "groq-test", "the declared provider key reaches Pi");
     ok(env.UNRELATED_SECRET === undefined, "an unrelated operator variable is withheld");
     ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "ambient per-session COTAL_* is withheld");
+    const withFloor = piConnector.buildLaunch({
+      space: "test",
+      name: "pi-test",
+      configPath: agentFile,
+      workspaceRoot: root,
+      lifecycleUid: "life",
+      backfillFloor: 42,
+      events: false,
+    });
+    ok(withFloor.env?.COTAL_BACKFILL_FLOOR === "42", "backfill floor forwarded");
+    ok(!("COTAL_BACKFILL_FLOOR" in env), "no floor requested means no floor in the child env");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     const freshSessionAt = launch.args.indexOf("--session-id");
     ok(

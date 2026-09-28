@@ -157,6 +157,7 @@ try {
     role: "worker",
     id: "ID",
     lifecycleUid: "life",
+    backfillFloor: 42,
     servers: "nats://bridge.test:4222",
     model: "gpt-5.6-sol",
     prompt: "  do the thing  ",
@@ -171,6 +172,7 @@ try {
       full.env?.COTAL_JCODE_PROMPT === "do the thing",
     full.env,
   );
+  check("backfill floor forwarded", full.env?.COTAL_BACKFILL_FLOOR === "42", full.env?.COTAL_BACKFILL_FLOOR);
   check("keeps broker URL out of env", full.env?.COTAL_SERVERS === undefined);
   check("broker URL resolves from material", configFromEnv(full.env).servers === "nats://bridge.test:4222");
   check("material preserves static creds when supplied", (() => {

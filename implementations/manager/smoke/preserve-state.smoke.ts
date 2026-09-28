@@ -167,6 +167,9 @@ function managerWith(
       status: "idle",
     })),
     waitForPresenceSnapshot: async () => {},
+    // The CHAT stream frontier this fake mesh has reached, for the preservation cut to record as
+    // each retained seat's backfillFloor (issue #545).
+    chatFrontier: async () => 4242,
     on: () => {},
     off: () => {},
     releaseManagerLease: async () => {},
@@ -346,6 +349,7 @@ registry.register(preserveAuth as unknown as AuthProvider);
   check("inventory records effective connector/runtime/cwd references", result.inventory.agents[0]?.launch.connector === "preserve-connector" && result.inventory.agents[0]?.launch.runtime === "fake" && result.inventory.agents[0]?.launch.cwd === root, result.inventory.agents[0]?.launch);
   check("inventory preserves .cotal/run dependencies", result.inventory.agents[0]?.dependencies.includes(join(runDir, "r1.json")) === true && result.inventory.agents[0]?.dependencies.includes(runPersonaPath) === true, result.inventory.agents[0]?.dependencies);
   check("inventory excludes seed and control token values", !json.includes("TOP-SECRET-SEED") && !json.includes("TOP-SECRET-CONTROL"), json);
+  check("inventory records the chat frontier as the seat's backfill floor", result.inventory.agents[0]?.backfillFloor === 4242, result.inventory.agents[0]?.backfillFloor);
   // A --config spawn now records the identity name as its persona ref (the path rides configPath),
   // the shape `parseResumeControlArgs` must accept at resume time.
   const configSeatInventory = inventoryOf({
@@ -515,6 +519,7 @@ let openInventory: ManagerResumeAgent;
     dependencies: [join(runDir, "r1.json"), runPersonaPath],
     spawner: "local.manager",
     startedAt: new Date().toISOString(),
+    backfillFloor: 4242,
   };
   const manager = managerWith((name) => fakeHandle(name));
   resetCapturedLaunch();
@@ -525,6 +530,31 @@ let openInventory: ManagerResumeAgent;
   // The recovered incarnation uid MUST reach the child launch (never a fresh mint): its lifecycle-keyed
   // durables are named by it, and the readiness fence matches presence on it.
   check("open resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("resume"), capturedLaunch?.lifecycleUid);
+  check("open resume threads the backfill floor into launch", capturedLaunch?.backfillFloor === 4242, capturedLaunch?.backfillFloor);
+}
+
+// The wire schema refuses a malformed backfillFloor and accepts an absent one (a pre-fx109
+// inventory, or a remote-authority manager that recorded no floor).
+{
+  const negativeArgs = { attemptId: "backfill-floor-negative", inventory: inventoryOf({ ...openInventory, backfillFloor: -1 }) };
+  let negativeRefused = false;
+  try { parseResumeControlArgs(negativeArgs); } catch (e) {
+    negativeRefused = /backfillFloor/.test((e as Error).message);
+  }
+  check("schema refuses a negative backfillFloor", negativeRefused);
+
+  const fractionalArgs = { attemptId: "backfill-floor-fractional", inventory: inventoryOf({ ...openInventory, backfillFloor: 1.5 }) };
+  let fractionalRefused = false;
+  try { parseResumeControlArgs(fractionalArgs); } catch (e) {
+    fractionalRefused = /backfillFloor/.test((e as Error).message);
+  }
+  check("schema refuses a fractional backfillFloor", fractionalRefused);
+
+  const { backfillFloor: _omit, ...noFloor } = openInventory;
+  const absentArgs = { attemptId: "backfill-floor-absent", inventory: inventoryOf(noFloor as ManagerResumeAgent) };
+  let absentAccepted = true;
+  try { parseResumeControlArgs(absentArgs); } catch { absentAccepted = false; }
+  check("schema accepts an inventory with no backfillFloor", absentAccepted);
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,

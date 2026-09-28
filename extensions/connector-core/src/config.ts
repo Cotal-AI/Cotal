@@ -24,6 +24,11 @@ export interface AgentConfig {
    *  endpoint binds its lifecycle-keyed dm/dlv/chathist durables by it — the same exact names its
    *  credential pins, so a mismatch fails at the broker, never silently. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before its preservation cut
+   *  (`COTAL_BACKFILL_FLOOR`): the boot backfill reads only what came after it instead of the
+   *  whole retained window. Absent on a fresh launch or when the manager holds no local space
+   *  authority to read the frontier at the cut. */
+  backfillFloor?: number;
   /** The accepted-row token of a static credential's issuance (SPEC 13.15, `COTAL_ACCEPTED_TOKEN`):
    *  the endpoint reads the issuer-bound generation under it and pins its caller rails. */
   acceptedToken?: string;
@@ -332,6 +337,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // only die later at the endpoint's fail-before-presence gate with a worse operator signal.
   // Open mode stays uid-less here (the endpoint self-mints its per-session identity).
   const lifecycleUid = env.COTAL_LIFECYCLE_UID?.trim() || undefined;
+  const backfillFloorRaw = env.COTAL_BACKFILL_FLOOR?.trim() || undefined;
+  let backfillFloor: number | undefined;
+  if (backfillFloorRaw !== undefined) {
+    const n = Number(backfillFloorRaw);
+    if (!Number.isInteger(n) || n < 0)
+      throw new Error(`COTAL config: COTAL_BACKFILL_FLOOR must be a non-negative integer stream sequence, got "${backfillFloorRaw}" (a broken launcher, not a mode)`);
+    backfillFloor = n;
+  }
   const acceptedToken = env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
   const managerInstanceId = env.COTAL_MANAGER_INSTANCE?.trim() || undefined;
   if (managerInstanceId !== undefined) assertLifecycleToken(managerInstanceId, "COTAL_MANAGER_INSTANCE");
@@ -378,6 +391,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: credsId ?? declaredId,
     lifecycleUid,
+    backfillFloor,
     acceptedToken,
     managerInstanceId,
     creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
