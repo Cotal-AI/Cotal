@@ -164,6 +164,11 @@ const wsRoot = join(dir, "ws");
 type Daemon = {
   proc: ReturnType<typeof spawn>;
   exited: boolean;
+  /** `close`, not `exit`. `exit` fires when the process is gone; the pipes can still deliver after
+   *  it, so a cell that reads `stderr` on `exited` can miss the daemon's LAST line, which on a
+   *  losing daemon is the one saying why it is going. Cells that grade the transcript after a
+   *  shutdown wait on this instead. */
+  closed: boolean;
   code: number | null;
   stderr: string;
   /** Called synchronously from the stderr data event, see the sink in `spawnDaemon`. */
@@ -196,7 +201,7 @@ function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extr
     [join(repoRoot, "bin", "cotal.ts"), "deliver", "--space", inSpace, "--server", via, "--creds", creds],
     { cwd: wsRoot, stdio: ["ignore", "pipe", "pipe"], detached: true, env },
   );
-  const d: Daemon = { proc, exited: false, code: null, stderr: "" };
+  const d: Daemon = { proc, exited: false, closed: false, code: null, stderr: "" };
   // FREEZE-ON-SIGHT, AND ITS LIMIT. `onLine` runs INSIDE the stderr data event, before this process
   // returns to its own event loop, which is earlier than any timer poll could manage. It is still
   // only best effort: being early in the PARENT says nothing about the CHILD, which has been running
@@ -211,6 +216,7 @@ function spawnDaemon(inSpace: string, creds: string, via: string = SERVERS, extr
   proc.stdout?.on("data", sink);
   proc.stderr?.on("data", sink);
   proc.on("exit", (code) => { d.exited = true; d.code = code; });
+  proc.on("close", () => { d.closed = true; });
   daemons.push(d);
   return d;
 }
@@ -248,13 +254,27 @@ async function untilUp(d: Daemon, timeoutMs = 30_000): Promise<boolean> {
   return false;
 }
 
+/** Every wording the daemon uses to conclude that the shard is no longer its own, and the reason
+ *  this is one constant rather than a literal at each site. There are four exits, and they do not
+ *  share a sentence: the renew arbitration says the lease `is held by` someone, its re-acquire
+ *  failure and the watch's own say another daemon `has taken shard N`, and the lease-watch
+ *  arbitration #1834 added says it `read the key as held by` someone. A cell matching only `is held
+ *  by` went on reading -1 against a daemon that had said it plainly in the watch's words, because
+ *  #1834 moved which of the four a losing daemon reaches first. Adding a fifth wording without
+ *  adding it here reproduces that, so the cost of the constant is the point of it. */
+const CONCLUDED_LOST = /taken shard|(?:is|as) held by/;
+
 async function untilExit(d: Daemon, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (d.exited) return true;
+    // WAIT FOR THE PIPES, NOT THE PROCESS. Returning on `exited` hands the caller a transcript that
+    // is still missing whatever the daemon wrote just before it went, and a losing daemon's last
+    // line is exactly the one naming who took its shard. `close` is the event that means the stderr
+    // this cell is about to read is all of it.
+    if (d.closed) return true;
     await wait(250);
   }
-  return false;
+  return d.exited;
 }
 
 type Proxy = ReturnType<typeof startFreshConnectBlackholeProxy>;
@@ -733,11 +753,22 @@ try {
   check("F2 its lease is live and ready before the handover", beforeHandover?.info.ready === true, beforeHandover);
 
   // Take the shard away from underneath it, exactly as an operator-driven replacement does: delete
-  // the row, then let a SECOND daemon win the atomic create. The first daemon's next renew fails,
-  // it re-reads, and it finds the shard held by someone else.
+  // the row, then let a SECOND daemon win the atomic create. The first daemon re-reads, finds the
+  // shard held by someone else, and goes.
+  // FREEZE THE HOLDER ACROSS THE HANDOVER, the same way cell G stages its own and for the same
+  // reason. The delete reaches a running holder as a lease-watch event, and since #1834 it acts on
+  // that event rather than at its next renew tick: it goes quiet, re-checks, wins the atomic create
+  // back at the next revision and resumes serving, all while the replacement is still starting a
+  // process. The replacement then LOSES the create and exits, so there is no loser at all, and F4,
+  // F7 and F8 go on reading the holder's own row and pass while the claim this section exists for is
+  // never exercised once. SIGSTOP removes the race without faking the scenario: the operator's
+  // delete lands, the replacement wins it, and the holder wakes into exactly the state under test, a
+  // live process that still believes it owns a shard somebody else now holds.
+  signalGroup(holder, "SIGSTOP");
   await deleteLease(spaceF, credsPathF);
   const winner = spawnDaemon(spaceF, credsPathF);
   const winnerUp = await untilUp(winner);
+  signalGroup(holder, "SIGCONT");
   check("F3 a replacement daemon acquires the shard", winnerUp, tail(winner));
   const winnerLease = await readLease(spaceF, credsPathF);
   check("F4 the replacement's lease is live and ready", winnerLease?.info.ready === true, winnerLease);
@@ -746,7 +777,7 @@ try {
   const loserExited = await untilExit(holder, 45_000);
   check("F5 the displaced daemon exits so the holder is single", loserExited, tail(holder));
   check("F6 and it says the shard is held by another daemon rather than claiming a broker loss",
-    /taken shard|is held by/.test(holder.stderr) && !holder.stderr.includes("exiting (coupled to the broker)"), tail(holder));
+    CONCLUDED_LOST.test(holder.stderr) && !holder.stderr.includes("exiting (coupled to the broker)"), tail(holder));
 
   // THE CELL. Read the lease from the BROKER after the loser has finished shutting down. Its
   // shutdown path runs asynchronously after the exit, so settle past it before reading.
@@ -991,8 +1022,19 @@ try {
   // announces losing the shard. An implementation that quiesced only inside shutdown would exit
   // just as cleanly and still have served through the whole arbitration.
   const quiesceAt = incumbent.stderr.indexOf("stopped serving shard");
-  const lostAt = incumbent.stderr.search(/taken shard|is held by/);
   check("G8 the loser announced that it stopped serving", quiesceAt >= 0, tail(incumbent));
+  // WAIT FOR THE SECOND LINE INSTEAD OF SAMPLING FOR IT. Since #1834 the quiesce fires on the
+  // lease-watch event rather than at the next renew tick, so the gap between going quiet and
+  // concluding the shard is gone is wide enough that an instant read lands inside it and reports
+  // lostAt: -1 against a daemon that goes on to say it perfectly well a moment later. The ORDER is
+  // this cell's claim; when the second line arrives is not. That the quiesce happened while the
+  // daemon was still running, rather than on its way out, is G7d's claim and is graded there.
+  const lostBy = Date.now() + 45_000;
+  let lostAt = incumbent.stderr.search(CONCLUDED_LOST);
+  while (lostAt < 0 && Date.now() < lostBy) {
+    await wait(200);
+    lostAt = incumbent.stderr.search(CONCLUDED_LOST);
+  }
   check("G9 and it stopped serving BEFORE it concluded it had lost the shard, not as part of exiting",
     quiesceAt >= 0 && lostAt >= 0 && quiesceAt < lostAt, { quiesceAt, lostAt });
   const loserGone = await untilExit(incumbent, 45_000);
