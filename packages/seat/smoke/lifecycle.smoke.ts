@@ -98,7 +98,7 @@ try {
     handles.push(h);
     check("spawn: custodian and child are live", state(rec.custodianPid) !== "gone" && state(rec.childPid) !== "gone", rec);
     check("oom: the custodial child carries the seat preference", oomAdj(rec.childPid) === "500");
-    check("oom: the custodian itself stays at the kernel default", oomAdj(rec.custodianPid) === "0");
+    check("oom: the custodian keeps the launcher's inherited oom_score_adj", oomAdj(rec.custodianPid) === oomAdj(process.pid));
     const snap = await h.attach().backlog();
     check("snapshot: backlog returns bytes", snap.length >= 0);
     const first = await collect(h, 400);

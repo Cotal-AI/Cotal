@@ -156,9 +156,9 @@
       "find": "  const oomPref = preferSeatForOomKill(proc.pid);",
       "replace": "  const oomPref = preferSeatForOomKill(process.pid);",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
-      "expectRed": "oom: the custodian itself stays at the kernel default",
-      "cell": "oom: the custodian itself stays at the kernel default",
-      "note": "The write lands on the custodian's own pid instead of the child's; the child then also reads 0, but the custodian cell is the one that distinguishes the wrong target from a skipped write."
+      "expectRed": "oom: the custodian keeps the launcher's inherited oom_score_adj",
+      "cell": "oom: the custodian keeps the launcher's inherited oom_score_adj",
+      "note": "The write lands on the custodian's own pid instead of the child's; the child then also reads 0, but the custodian cell is the one that distinguishes the wrong target from a skipped write. On a runner whose inherited value is already 500 this mutant is indistinguishable from the fix, so the proof must run where processes start below 500."
     }
   ]
 }
