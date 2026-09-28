@@ -198,8 +198,6 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<T>> {
-    // Invalid persisted state must refuse even when the file is temporarily absent.
-    const from = cursor === undefined ? undefined : JsonlFileSource.parseCursor(cursor);
     // O_NOFOLLOW: a symlinked source is REFUSED, not followed.
     //
     // No seam feeds this class a caller-controlled path today — each connector supplies its own
@@ -208,6 +206,8 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
     // adding this stops being a fix and becomes a compatibility argument with whoever is already
     // relying on the old behaviour. The same rule the maintenance reader already applies to its
     // resume document (`O_RDONLY | O_NOFOLLOW`), for the same reason.
+    // Invalid persisted state must refuse even when the file is temporarily absent.
+    const from = cursor === undefined ? undefined : JsonlFileSource.parseCursor(cursor);
     const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const st = await fh.stat();
