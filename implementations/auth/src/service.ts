@@ -57,8 +57,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
-import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeServeGrant, authorizeTrustedServeSnapshot, commitSiblingIssuance, contractArtifactCanonicalBytes, contractStoreContext, DEV_OWNER, endpointRegistrationBarrier, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintLifecycleUid, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, principalKey, provisionEndpointGateOpen, publishContractArtifact, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, registerServiceInstance, remoteManagerActors, retirementFrontierStreams, SERVICE_READY, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, writeServiceStatus, type EpServeGrant, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type ServiceNameAuthority, type SpaceAuth } from "@cotal-ai/core";
+import { createAuthInstanceIdentity, findCotalRoot, loadAuthInstanceIdentity, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { startAuthCallout } from "./callout.js";
@@ -261,6 +261,83 @@ export async function openAuthAuthorityPlane(opts: {
   try {
     await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
     registry = await openLifecycleRegistry(writer.nc, space);
+  } catch (e) {
+    await writer.close();
+    throw e;
+  }
+  // #399 M2: register the auth plane itself as an ordinary `auth` service endpoint — the SAME
+  // §13.7 registration ceremony the manager runs (`manager.ts:6562-6690`), before the listener
+  // below serves a single request. The persisted instance id + serve nkey (under the plane's
+  // `dir`, hardened the way the manager's own instance identity is) so a restart re-registers the
+  // SAME instance: `registerServiceInstance` advances the process epoch on a re-registration and
+  // fences the predecessor; a first registration stays at epoch 0.
+  let authServeInstanceId: string;
+  let authServeGrant: EpServeGrant;
+  try {
+    const persisted = loadAuthInstanceIdentity(opts.dir, space);
+    const authIdentity = persisted ?? createAuthInstanceIdentity(opts.dir, space, {
+      instanceId: mintLifecycleUid(),
+      serveIdentity: newIdentity(),
+    });
+    const iid = authIdentity.instanceId;
+    const artifacts = authClusterArtifacts();
+    const store = new Map<string, unknown>([
+      [artifacts.rootDigest, artifacts.document],
+      [artifacts.closureDigest, artifacts.manifest],
+    ]);
+    const readClusterArtifact = (digest: string): unknown => store.get(digest);
+    // §13.9 name authority, static mode: the auth plane holds the space signing seed, so it
+    // self-authorizes exactly its own name ("auth") for exactly DEV_OWNER — mirrors the manager's
+    // own self-authorization for "manager".
+    const authority: ServiceNameAuthority = {
+      authorize: (name, owner) => ({ authorized: name === AUTH_SERVICE_ENDPOINT && owner === DEV_OWNER, revision: 0 }),
+    };
+    const servePrincipal = principalKey(DEV_OWNER, authIdentity.serveIdentity.id).key;
+    const registrationOpId = mintLifecycleUid();
+    const regClient = await openAuthorityClient({
+      server, space, dataAccount, label: `cotal:auth-registration:${space}`,
+      grants: (id) => authRegistrationExecutorGrants(space, id, iid),
+      log,
+    });
+    try {
+      const authKv = await new Kvm(regClient.nc).open(epAuthBucket(space));
+      const recordsKv = await new Kvm(regClient.nc).open(recordsBucket(space));
+      // §13.7 contract-artifact publication BEFORE the registration that advertises the digests.
+      const storeCtx = await contractStoreContext(regClient.nc, space);
+      for (const value of [...authContractArtifactValues(), artifacts.document, artifacts.manifest])
+        await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
+      // §13.1 pre-registration: the issuance gate, born open@gen0, provisioned ONCE on the FIRST
+      // registration. On a restart the gate already exists; `registerServiceInstance` below
+      // freezes + re-registers it (advancing the epoch).
+      if ((await serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid }).observe()) === null)
+        await provisionEndpointGateOpen(authKv, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, principal: servePrincipal });
+      const barrier = endpointRegistrationBarrier(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, opId: registrationOpId });
+      const spec = { endpoint: AUTH_SERVICE_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
+      const { registrationRevision } = await registerServiceInstance(recordsKv, {
+        space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+      });
+      const fence = serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid });
+      const observed = await fence.observe();
+      if (observed === null) throw new Error(`the issuance gate for ${AUTH_SERVICE_ENDPOINT}/${iid} vanished after registration`);
+      const readProcessEpoch = async (): Promise<number> => {
+        const g = await fence.observe();
+        if (g === null) throw new Error(`no issuance gate for ${AUTH_SERVICE_ENDPOINT}/${iid}`);
+        return g.processEpoch;
+      };
+      const grant = await authorizeServeGrant(recordsKv, {
+        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
+        holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch,
+      });
+      await writeServiceStatus(recordsKv, {
+        endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
+        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+        readProcessEpoch,
+      });
+      authServeInstanceId = iid;
+      authServeGrant = grant;
+    } finally {
+      await regClient.close();
+    }
   } catch (e) {
     await writer.close();
     throw e;
