@@ -312,8 +312,11 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     const pidPath = join(fixture.root, ".cotal", "nats.pid");
     const pid = Number(readFileSync(pidPath, "utf8").trim());
     process.kill(pid, "SIGKILL");
-    const exitCode = await new Promise<number | null>((res) => child.once("exit", (code) => res(code)));
-    check("a killed broker makes the foreground `up` exit non-zero", exitCode !== 0, { exitCode, stdout, stderr });
+    const exitCode = await new Promise<number | null>((res) => {
+      const timer = setTimeout(() => res(null), 20_000); // a mutation that drops the exit call must not hang the suite
+      child.once("exit", (code) => { clearTimeout(timer); res(code); });
+    });
+    check("a killed broker makes the foreground `up` exit non-zero", exitCode !== 0 && exitCode !== null, { exitCode, stdout, stderr });
     check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
     check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
     check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);
