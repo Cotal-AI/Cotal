@@ -74,6 +74,7 @@ import {
 } from "@cotal-ai/core";
 import { credRenewIntervalMs, STATIC_RECONCILE_RETRY_DELAYS_MS } from "../src/manager.js";
 import { bootBroker } from "./_boot-broker.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const TTL_SEC = 20;
 const CLOSE_TTL_SEC = 3;
@@ -285,16 +286,20 @@ async function runPhaseMode(mutant: boolean, mutantNoPush: boolean): Promise<voi
 /** Start a nats-server for `auth` on a SPECIFIC (already-bound) port, mirroring `bootBroker`'s
  *  boot loop minus the free-port pick -- the `--close` transport control needs the SAME address
  *  back after a deliberate stop, not a fresh broker on a new port. */
-async function startServerOnPort(auth: SpaceAuth, port: number): Promise<{ proc: ChildProcess; dir: string }> {
-  const dir = mkdtempSync(pathJoin(tmpdir(), "prb457close-"));
+async function startServerOnPort(auth: SpaceAuth, port: number): Promise<{ proc: ChildProcess; dir: string; release: () => void }> {
+  const dir = mkdtempSync(pathJoin(tmpdir(), SMOKE_BROKER_TOKEN));
   const conf = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: pathJoin(dir, "js") });
   writeFileSync(pathJoin(dir, "server.conf"), conf);
   const proc = spawnProc("nats-server", ["-c", pathJoin(dir, "server.conf")], { stdio: "ignore" });
+  const release = teardownOnSignal(proc, dir);
   for (let i = 0; i < 25; i++) {
     if (proc.exitCode !== null) break;
-    if (await isReachable(`nats://127.0.0.1:${port}`)) return { proc, dir };
+    if (await isReachable(`nats://127.0.0.1:${port}`)) return { proc, dir, release };
     await new Promise((r) => setTimeout(r, 200));
   }
+  proc.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
+  release();
   throw new Error(`startServerOnPort: nats-server did not come up on ${port}`);
 }
 
@@ -425,6 +430,7 @@ async function runCloseMode(mutant: boolean): Promise<void> {
       console.log(`TRANSPORT_DROP_DEBUG {"transportClosed":${transportClosed},"transportPublishOk":${transportPublishOk}}`);
       console.log(`TRANSPORT_DROP_RESULT=${transportSurvived ? "SURVIVED" : "FAILED"}`);
       restarted.proc.kill("SIGTERM");
+      restarted.release();
       rmSync(restarted.dir, { recursive: true, force: true });
     }
   }
