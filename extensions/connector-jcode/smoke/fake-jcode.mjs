@@ -146,7 +146,7 @@ const foldJournal = () => {
   if (!journalPath || existsSync(`${journalPath}.folded`)) return;
   for (const path of sessionJournalPaths("fake-session")) {
     const records = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    writeFileSync(join(dirname(path), `${basename(path, ".journal.jsonl")}.json`), JSON.stringify({ messages: records }));
+    writeFileSync(join(dirname(path), `${basename(path, ".journal.jsonl")}.json`), JSON.stringify({ id: basename(path, ".journal.jsonl"), messages: records.flatMap((record) => record.append_messages ?? []) }));
     writeFileSync(path, "");
   }
   writeFileSync(`${journalPath}.folded`, "1");
@@ -154,7 +154,10 @@ const foldJournal = () => {
 };
 const appendTurnRecord = process.env.FAKE_JCODE_APPEND_RECORDS === "1"
   ? (frame) => {
-      const rec = { append_messages: [{ role: "assistant", content: [{ type: "text", text: `turn output ${String(frame.content ?? "").slice(0, 40)}` }], timestamp: new Date().toISOString() }] };
+      const content = process.env.FAKE_JCODE_FOLD_WITH_TOOL === "1" && String(frame.content ?? "").includes(process.env.FAKE_JCODE_FOLD_ON_CONTENT ?? "JCODE-JOURNAL-FOLD-1984")
+        ? [{ type: "tool_use", id: "checkpoint-tool", name: "bash", input: {} }]
+        : [{ type: "text", text: `turn output ${String(frame.content ?? "").slice(0, 40)}` }];
+      const rec = { append_messages: [{ role: "assistant", content, timestamp: new Date().toISOString() }] };
       for (const path of sessionJournalPaths(frame.session_id)) {
         mkdirSync(dirname(path), { recursive: true });
         appendJournal(path, rec);

@@ -206,10 +206,16 @@ journal under the seat's private home. The journal supplies a durable byte curso
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
-If Jcode compacts the journal into its snapshot, the connector detects the replacement and emits a
-terminal `RUN_ERROR` with code `jcode_journal_fold` for the open event run. The seat remains up,
-but records lost during compaction are not reconstructed or republished. A missing journal without
-the snapshot remains an emitter failure and stops the seat with exit code 1.
+If Jcode checkpoints its journal, the connector validates the saved session snapshot and ends the
+interrupted event observations with `RUN_ERROR`, code `jcode_journal_fold`. Open tool observations
+end before this error; this does not claim that their executions completed. The seat stays up while
+the next journal is absent, including during a long tool call. The reader keeps its previous cursor
+until it can read the new journal from its beginning. It does not reconstruct missing output from
+the snapshot. A tool result whose start was not observed produces `jcode_tool_start_missing`, not
+an invented tool start or an unpaired end. On restart, open tools are restored from the event WAL.
+
+A missing journal without a valid snapshot for the same session remains an emitter failure.
+Malformed cursors, invalid complete records and filesystem access refusals are not checkpoints.
 
 When the seat's mesh connection drops and the endpoint is rebuilding it, event publishing waits
 until the connection is live again and then publishes the queued records in order. The seat stays up

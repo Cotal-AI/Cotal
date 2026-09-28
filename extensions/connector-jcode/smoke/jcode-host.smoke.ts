@@ -409,6 +409,7 @@ try {
       FAKE_JCODE_FOLD_AFTER_RECORD: "1",
       FAKE_JCODE_FOLD_DELAY_MS: "5000",
       FAKE_JCODE_FOLD_ON_CONTENT: "JCODE-JOURNAL-FOLD-1984",
+      FAKE_JCODE_FOLD_WITH_TOOL: "1",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "foldpeer",
@@ -481,7 +482,7 @@ try {
   await waitFor("Jcode journal fold", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity",
-    () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR" && event.code === "jcode_journal_fold")) ? true : undefined,
+    () => fold.exitCode !== null || fold.signalCode !== null || frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR")) ? true : undefined,
   );
   const foldedFrames = frames.slice(foldStart);
   const foldEvents = foldedFrames.flatMap((frame) => frame.events);

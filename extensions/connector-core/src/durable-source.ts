@@ -69,6 +69,14 @@ export interface DurableSource<T> {
   read(cursor: string | undefined): Promise<SourceRead<T>>;
 }
 
+/** The file no longer has the identity or consumed prefix recorded by its cursor. */
+export class JsonlFileResetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JsonlFileResetError";
+  }
+}
+
 /**
  * A durable source over an append-only JSONL file — the shape both the Claude session transcript
  * and the Codex rollout log take.
@@ -221,12 +229,12 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // fragments of a document this reader has never seen. Re-adopting silently loses records and
       // restarting resends them, so neither is guessed here: the caller decides.
       if (from.dev !== dev || from.ino !== ino)
-        throw new Error(
+        throw new JsonlFileResetError(
           `JsonlFileSource: ${this.path} is not the file this cursor came from ` +
             `(cursor ${from.dev}:${from.ino}, now ${dev}:${ino}) — it was replaced or rotated`,
         );
       if (from.offset > size)
-        throw new Error(
+        throw new JsonlFileResetError(
           `JsonlFileSource: cursor offset ${from.offset} is past end ${size} for ${this.path} — the file was truncated`,
         );
       // The last 512 bytes of the consumed prefix must still be the bytes we consumed. dev/ino catch
@@ -235,7 +243,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // confined to bytes before `offset - 512` passes here. See `sealAt` for the bound and its edges.
       const seal = await JsonlFileSource.sealAt(fh, from.offset);
       if (seal !== from.seal)
-        throw new Error(
+        throw new JsonlFileResetError(
           `JsonlFileSource: the bytes before offset ${from.offset} in ${this.path} have changed ` +
             `(seal ${from.seal} -> ${seal}) — the file was rewritten in place, not appended to`,
         );
