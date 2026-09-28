@@ -25,6 +25,7 @@ export * from "./preflight.js";
 export * from "./render.js";
 export * from "./renewal.js";
 export * from "./secret-store-fs.js";
+export * from "./hosted-runtime.js";
 export * from "./seat-checkpoint.js";
 export * from "./space.js";
 export * from "./space-segmentation.js";
