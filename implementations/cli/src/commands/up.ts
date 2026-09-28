@@ -721,7 +721,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
     // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
     // it on the lock would refuse the very resume the lock is here to protect.
-    if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
     let server = values.server ?? DEFAULT_SERVER;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
@@ -731,6 +730,52 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
     // pair rather than starting a broker nothing can reach.
     if (values.host) server = reconcileHostAndServer(values.host, values.server);
+    // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
+    // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
+    // not silently fall back to the root's default store while the record still names a custom one.
+    // Never runs during a resume attempt, which keeps its own store checks. The reachability probe
+    // here is reused as `listenerReachable` further down instead of probing twice.
+    let repairProbe: boolean | undefined;
+    if (!resumeAttempt) {
+      const repairSpace = values.space ?? resolveSpace(process.cwd());
+      const repairRoot = cotalRoot();
+      const heldForRepair = loadMeshes().find(
+        (m) => m.origin !== "manual" && m.origin !== "catalog" && m.server === server && m.root === repairRoot && m.space === repairSpace,
+      );
+      if (heldForRepair) {
+        repairProbe = await isReachable(server);
+        if (!repairProbe) {
+          if (values["store-dir"] !== undefined) {
+            const requestedStoreDir = resolve(values["store-dir"]);
+            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir) {
+              console.error(
+                c.red(
+                  `✗ mesh "${repairSpace}" is recorded at ${server} with store ${heldForRepair.storeDir} - a stopped broker can't change --store-dir (it is fixed at start); repair it with \`cotal up --store-dir ${heldForRepair.storeDir}\`, or \`cotal down\` it first`,
+                ),
+              );
+              process.exit(1);
+            }
+          } else if (heldForRepair.storeDir !== undefined) {
+            values["store-dir"] = heldForRepair.storeDir;
+            console.log(c.dim(`reopening the recorded store ${heldForRepair.storeDir}`));
+          } else {
+            const defaultStore = cotalPath("nats");
+            let hasEntries = false;
+            try {
+              hasEntries = readdirSync(join(defaultStore, "jetstream")).length > 0;
+            } catch { /* absent: no jetstream dir yet */ }
+            if (!hasEntries) {
+              console.error(
+                c.yellow(
+                  `! mesh "${repairSpace}" was recorded before the store directory was kept, so this repair opens ${defaultStore}; if the previous broker used --store-dir, stop this one with \`cotal down\` and repair with that flag (its Store Directory: line is in ${repairRoot}/.cotal/nats.log)`,
+                ),
+              );
+            }
+          }
+        }
+      }
+    }
+    if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
     const restoredAttempt = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     if (restoredAttempt?.reentry) {
       if (!restoredAttempt.listenerProof)
