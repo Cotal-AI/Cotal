@@ -17,7 +17,7 @@ import {
   createSpaceAuth, credsClaims, credsFromJwt, isReachable, jwtFromCreds, mintCreds, mintLifecycleUid, newIdentity, remoteManagerActors, serverConfig,
   type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SpaceAuth,
 } from "@cotal-ai/core";
-import { authorizeRemoteManagerRenewal, issueRemoteManagerAuthority } from "@cotal-ai/auth";
+import { authorizeRemoteManagerRenewal, issueRemoteManagerAuthority } from "../../auth/src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../../auth/src/retained-manager-validation.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -158,6 +158,7 @@ try {
   });
   const runBefore = issued;
   await rejects("superseded holder refuses before signing", () => runIssue({ ...active, holder: `next.${"e".repeat(16)}`, takeoverId: "e".repeat(16) }), /activated run/);
+  await rejects("another holder on the same takeover refuses before signing", () => runIssue({ ...active, holder: `other.${"c".repeat(16)}` }), /activated run/);
   await rejects("advanced fencing token refuses before signing", () => runIssue({ ...active, fencingToken: 6 }), /activated run/);
   await rejects("run owned by another manager instance refuses before signing", () => runIssue({ ...active, instanceId: mintLifecycleUid() }), /activated run/);
   await rejects("terminal run refuses before signing", () => runIssue({ ...active, state: "completed" }), /activated run/);
