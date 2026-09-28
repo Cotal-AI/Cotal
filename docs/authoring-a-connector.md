@@ -48,6 +48,19 @@ the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.
 
+### Local listeners
+
+A connector that carries the `cotal_*` surface over any local listener, loopback TCP or a Unix
+socket, authenticates every connection with a secret the child receives through the launch
+material or an environment variable and never through argv. It compares the presented secret to
+its own in constant time, bounds the request body and the pre-authentication frame, and drops an
+unauthenticated connection before it can reach a tool. State the same-uid limit rather than
+claiming it away: a bind address is not a boundary on a shared workstation, only the secret is.
+Copy one of the two shipped shapes rather than inventing a third: the Codex loopback MCP endpoint
+(`extensions/connector-codex/src/mcp.ts`) or connector-core's control server
+(`extensions/connector-core/src/control.ts`, exported for reuse by a sibling listener in the same
+process).
+
 ## Packaging rules (enforced at `ext add`)
 
 `cotal ext add` verifies these and fails loud otherwise, because they are what keep every extension

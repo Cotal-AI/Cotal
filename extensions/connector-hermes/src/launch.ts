@@ -19,8 +19,9 @@ import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, sta
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
@@ -53,8 +54,28 @@ const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) |
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const PLUGIN_SRC = join(PKG_DIR, "plugin", "cotal");
 
-function bridgeSocketPath(space: string, name: string): string {
-  return join(tmpdir(), `cotal-hermes-bridge-${tok(space)}-${tok(name)}.sock`);
+/** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
+ *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
+ *  path from public identity the way the old `space`+`name` name let it. The token is what
+ *  authenticates the socket (see bridge.ts); the path merely stops it being guessed at a glance. */
+function bridgeSocketPath(space: string, name: string, token: string): string {
+  const id = createHash("sha256")
+    .update(`${space}\0${name}\0${process.pid}\0${token}\0bridge`)
+    .digest("base64url")
+    .slice(0, 32);
+  const path = join(tmpdir(), `cotal-hermes-bridge-${id}.sock`);
+  const bytes = Buffer.byteLength(path);
+  if (bytes > SUN_PATH_MAX_BYTES) {
+    const tail = `/cotal-hermes-bridge-${id}.sock`.length;
+    throw new Error(
+      `bridge socket path is ${bytes} bytes, over the ${SUN_PATH_MAX_BYTES}-byte sun_path limit on ` +
+        `${process.platform}, so it cannot be bound and the kernel would report only EINVAL: ${path}. ` +
+        `The socket name is a fixed ${tail} bytes, so the temp root must be at most ` +
+        `${SUN_PATH_MAX_BYTES - tail} bytes — TMPDIR is ${Buffer.byteLength(tmpdir())} bytes ` +
+        `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
+    );
+  }
+  return path;
 }
 
 function log(msg: string): void {
@@ -247,7 +268,7 @@ async function main(): Promise<void> {
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
   const control = controlEndpoint(config.space, config.name);
-  const bridgeSock = bridgeSocketPath(config.space, config.name);
+  const bridgeSock = bridgeSocketPath(config.space, config.name, control.token);
   const toolsFile = join(home, "cotal-tools.json");
   // This launcher mints the control endpoint itself, so it has to hand the token onward to two
   // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
