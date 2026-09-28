@@ -21,8 +21,9 @@ const nameFlag = (what: string) =>
 // sent). Mutually exclusive because they are two answers to "how should I read this".
 const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
 const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
+const slotsFlag = { name: "slots", type: "boolean", description: "list durable static slot rows instead of live seats (#1274); mutually exclusive with --wide" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, slotsFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
  *  which is right for a person at a terminal and wrong for a script that wants a single run with a
  *  single exit code. */
@@ -363,16 +364,57 @@ function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent =
   if (opts.wide) printWideFacts(r, indent);
 }
 
+/** One durable static slot row, the `slots` command's answer (#1274). Unlike `AgentRow` there is
+ *  no live/wide split: the row is already the full closed projection. */
+type SlotRow = {
+  name: string;
+  owner: string;
+  actor: string;
+  slotLifecycleUid: string;
+  slotPhase: "provisioning" | "active" | "terminalizing" | "retired";
+  cleanupComplete?: boolean;
+  slotRevision: number;
+  headState?: "active" | "retiring" | "retired";
+  headOp?: { opId: string; kind: "retirement" };
+  headLifecycleUid?: string;
+  headRevision?: number;
+  readOrder: ["slot", "head"];
+  consistency: "ordered-not-atomic";
+  live: boolean;
+  managerInstanceId: string;
+};
+
+/** `--slots` rendering, beside `printSeat`. `--json` prints the row unchanged; the human form is
+ *  one compact line naming phase, slot uid, cleanup, head and liveness. */
+function printSlot(r: SlotRow, opts: { json: boolean }, indent = ""): void {
+  if (opts.json) {
+    console.log(JSON.stringify(r));
+    return;
+  }
+  const cleanup = r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete);
+  const head = r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`;
+  console.log(`${indent}${r.name}  ${r.slotPhase}  slot ${r.slotLifecycleUid}  cleanupComplete=${cleanup}  head=${head}  live=${r.live}  readOrder=slot,head consistency=${r.consistency}`);
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
   // this" two different ways;
   // inventing a precedence would be a silent fallback, so refuse instead.
-  const opts = { wide: v.wide === true, json: v.json === true };
+  const opts = { wide: v.wide === true, json: v.json === true, slots: v.slots === true };
   if (opts.wide && opts.json) {
     console.error(c.red("✗ --wide and --json are mutually exclusive: --wide is the human table, --json the machine form"));
     process.exit(1);
   }
+  if (opts.slots && opts.wide) {
+    console.error(c.red("✗ --slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts"));
+    process.exit(1);
+  }
+  const command = opts.slots ? "slots" : "ps";
+  const emptyLine = opts.slots ? "(no nonretired static slots)" : "(no managed agents)";
+  const print = opts.slots
+    ? (r: unknown, indent = ""): void => printSlot(r as SlotRow, { json: opts.json }, indent)
+    : (r: unknown, indent = ""): void => printSeat(r as AgentRow, opts, indent);
   const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
@@ -380,16 +422,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
   if (on !== undefined) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: on });
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, { instanceId: on });
     failIfNotOk(reply);
-    const rows = (reply.data as AgentRow[]) ?? [];
+    const rows = (reply.data as unknown[]) ?? [];
     if (!rows.length) {
       // A JSON stream with zero rows is zero lines on stdout, not a prose line that would
       // corrupt a consumer reading JSONL.
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
 
@@ -407,18 +449,18 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // unreachable (pin 3).
   if (t.auth.bearer) {
     // No explicit --on on this branch; askManager uses the issuer's concrete selection.
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
-    const rows = (reply.data as AgentRow[]) ?? [];
+    const rows = (reply.data as unknown[]) ?? [];
     if (!rows.length) {
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
 
-  const scatter = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
+  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
     process.exit(1);
@@ -429,12 +471,12 @@ export async function ps(args: ParsedArgs): Promise<void> {
   );
   // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
   if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
-    const rows = (instances[0].data as AgentRow[]) ?? [];
+    const rows = (instances[0].data as unknown[]) ?? [];
     if (!rows.length) {
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
   // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
@@ -471,15 +513,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
       }
       continue;
     }
-    const rows = (inst.data as AgentRow[]) ?? [];
+    const rows = (inst.data as unknown[]) ?? [];
     header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
-    for (const r of rows) printSeat(r, opts, "  ");
+    for (const r of rows) print(r, "  ");
   }
   if (mismatches.length)
     console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
   if (incomplete) {
     console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
     process.exitCode = 1;
+
   }
 }
 

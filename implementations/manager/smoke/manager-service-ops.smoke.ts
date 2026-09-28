@@ -51,7 +51,7 @@ import {
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, managerShippedSurface } from "../src/manager-service-contract.js";
-import { activateStaticLifecycle, casStaticSlot, readStaticSlot, writeStaticSlotIntent } from "../src/static-lifecycle.js";
+import { activateStaticLifecycle, casStaticSlot, readStaticSlot, writeStaticSlotIntent, STATIC_SLOT_READ_FAILED_DETAIL } from "../src/static-lifecycle.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const shipped = managerShippedSurface();
 
@@ -139,6 +139,7 @@ registry.register(routeCon);
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
   managerInstanceId: string;
+  userMode: boolean;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
   goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
@@ -153,14 +154,14 @@ const M = mgr as unknown as {
 /** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
  * consume it before `inspect` observes it: slot `terminalizing`, then gate frozen and head
  * `retiring` under the deterministic retirement op. */
-async function plantStrandedSlot(alias: string): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
+async function plantStrandedSlot(alias: string, ownerInstanceId = M.managerInstanceId): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
   const actor = newIdentity().id;
   const lifecycleUid = mintLifecycleUid();
   const opId = retireOpId(lifecycleUid);
   await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
     await activateStaticLifecycle(transport, {
       owner: DEV_OWNER, alias, actor, lifecycleUid,
-      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId,
     });
     const slot = await readStaticSlot(transport, DEV_OWNER, alias);
     if (!slot) throw new Error(`missing planted slot ${alias}`);
@@ -247,7 +248,7 @@ try {
   await mgr.start();
 
   const A = await instrument([
-    { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "models" },
+    { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "slots" }, { command: "models" },
     { command: "spawn" }, { command: "despawn", owner: true }, { command: "attach", owner: true },
     { command: "define-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
     { command: "resume-preserved" }, { command: "commit-resume" }, { command: "finalize-resume" },
@@ -459,6 +460,77 @@ try {
       retiredReply.reply.ok === false && retiredReply.reply.error?.code === "not-found" &&
       retiredReply.reply.error?.details?.some((d) => d.kind === "ai.cotal.manager.static-slot-observation") !== true,
       retiredReply.reply);
+
+    const sibling = await plantStrandedSlot("sibling-inspect", "sibling-manager");
+    const siblingInspectReply = await A.call("inspect", { name: "sibling-inspect" });
+    check("inspect of a sibling manager's durable row (explicit foreign ownerInstanceId) is not-found, the same ownership filter `slots` uses",
+      siblingInspectReply.reply.ok === false && siblingInspectReply.reply.error?.code === "not-found",
+      siblingInspectReply.reply);
+
+    const slotsReply = await A.call("slots");
+    check("slots answers ok through the real service client", slotsReply.reply.ok === true, slotsReply.reply);
+    const slotRows = (slotsReply.reply.data ?? []) as Array<Record<string, unknown>>;
+    const byName = (n: string) => slotRows.find((r) => r.name === n);
+    const strandedRow = byName("stranded-inspect");
+    check("slots lists the stranded row projected with slotPhase/cleanupComplete/headState/headOp/uid/revisions/readOrder/consistency, live=false, this manager's id",
+      strandedRow !== undefined && strandedRow.slotPhase === "terminalizing" && strandedRow.cleanupComplete === true &&
+      strandedRow.headState === "retiring" && (strandedRow.headOp as { opId?: string } | undefined)?.opId === stranded.opId &&
+      strandedRow.slotLifecycleUid === stranded.lifecycleUid && typeof strandedRow.slotRevision === "number" &&
+      typeof strandedRow.headRevision === "number" && JSON.stringify(strandedRow.readOrder) === JSON.stringify(["slot", "head"]) &&
+      strandedRow.consistency === "ordered-not-atomic" && strandedRow.live === false && strandedRow.managerInstanceId === M.managerInstanceId,
+      strandedRow);
+    const provisioningRow = byName("provisioning-inspect");
+    check("slots lists the provisioning row with none of the four head fields",
+      provisioningRow !== undefined && provisioningRow.slotPhase === "provisioning" &&
+      !("headState" in provisioningRow) && !("headOp" in provisioningRow) &&
+      !("headLifecycleUid" in provisioningRow) && !("headRevision" in provisioningRow),
+      provisioningRow);
+    const activeRow = byName("active-inspect");
+    check("slots lists the active planted row as active with live=false (no manager row: contradictory stranded state)",
+      activeRow !== undefined && activeRow.slotPhase === "active" && activeRow.live === false,
+      activeRow);
+    check("slots never lists the retired row",
+      byName("retired-inspect") === undefined, slotRows.map((r) => r.name));
+    check("slots never lists a sibling manager's foreign-owned row (the same ownership filter inspect used above)",
+      byName("sibling-inspect") === undefined, slotRows.map((r) => r.name));
+    const w1Row = byName("w1");
+    check("slots lists the live spawned agent as active with live=true",
+      w1Row !== undefined && w1Row.slotPhase === "active" && w1Row.live === true, w1Row);
+    check("every slots row validates against the closed output schema",
+      slotRows.length > 0 && slotRows.every((r) => MANAGER_CONTRACTS.slots.output.validate([r]) === true),
+      slotRows);
+    check("a row copy with an extra property is rejected by the closed schema",
+      MANAGER_CONTRACTS.slots.output.validate([{ ...(strandedRow as Record<string, unknown>), credentialIds: [] }]) === false,
+      strandedRow);
+
+    {
+      const kvForSlots = M.goalWriter?.ctx.kv;
+      if (!kvForSlots) throw new Error("manager goal-writer KV is not standing");
+      const originalSlotsGet = kvForSlots.get;
+      kvForSlots.get = async (): Promise<unknown> => { throw new Error("simulated store outage"); };
+      try {
+        const outageReply = await A.call("slots");
+        const outageDetail = outageReply.reply.error?.details?.find((d) => d.kind === STATIC_SLOT_READ_FAILED_DETAIL) as Record<string, unknown> | undefined;
+        check("slots answers unavailable with a static-slot-read-failed detail when the durable store cannot be scanned, never ok:true",
+          outageReply.reply.ok === false && outageReply.reply.error?.code === "unavailable" && outageDetail !== undefined,
+          outageReply.reply);
+      } finally {
+        kvForSlots.get = originalSlotsGet;
+      }
+    }
+
+    {
+      const previousUserMode = M.userMode;
+      M.userMode = true;
+      try {
+        const userModeReply = await A.call("slots");
+        check("slots answers failed-precondition for a user-mode manager, which owns no durable static slot rows",
+          userModeReply.reply.ok === false && userModeReply.reply.error?.code === "failed-precondition",
+          userModeReply.reply);
+      } finally {
+        M.userMode = previousUserMode;
+      }
+    }
 
     const torn = await plantStrandedSlot("torn-inspect");
     const kv = M.goalWriter?.ctx.kv;
@@ -864,6 +936,12 @@ try {
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);
+    // #1274: the same instrument mint must carry the `slots` read row. The list cells above call
+    // through the suite's own wide harness credential, which cannot see a missing operator grant;
+    // this is the credential `cotal ps --slots` and `cotal invoke manager slots` actually mint.
+    const rSlots = await invokeCommand(opNc, space, svc, "slots", undefined, {});
+    check("instrument `slots` rides the manager.read row too (the #1274 CLI path is broker-authorized, not just the harness)",
+      rSlots.reply.ok === true && (rSlots.reply.data as { name: string; live: boolean }[]).some((r) => r.name === accW3.name && r.live === true), rSlots.reply);
     // NO-ARGS despawn — the exact shape the real CLI produces (`cotal stop --name <n>` strips the
     // alias into the target and has nothing left): the generic layer must marshal "no args" into
     // the contract's canonical empty form ({} for an object input), not ship undefined→null at a

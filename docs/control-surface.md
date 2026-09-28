@@ -94,6 +94,16 @@ If the file is missing, reaping uses that retained record and the existing kerne
 checks. An unknown reference without either record refuses cleanup. Reused process ids
 are never signalled on the strength of the old record.
 
+### Listing the durable slots
+
+Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows this manager
+owns. Only static managers hold these rows: a user-mode or open manager answers
+`failed-precondition`, and a manager whose durable store is not standing answers `unavailable`.
+Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
+is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
+row is never listed. `live` reflects the manager's live roster at render time, not the durable
+row.
+
 ## Spawn is a goal
 
 Long-running commands are **actions** ([SPEC §13.6](../SPEC.md#136-composites)): the caller

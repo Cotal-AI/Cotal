@@ -45,6 +45,8 @@ import {
   headBeginRetirement,
   headCompleteRetirement,
   type EvictionResult,
+  STATIC_SLOT_PREFIX,
+  walkKvEntries,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 
@@ -107,23 +109,14 @@ function boundedStaticRead<T>(record: "slot" | "head", read: Promise<T>): Promis
     .catch((error) => { throw new StaticSlotReadError(record, error); });
 }
 
-/** Point-read one durable slot, then its principal-keyed lifecycle head. Absence is returned only
- * after the slot read itself succeeded; callers must surface a store failure rather than converting
- * an unknown observation into `not-found`, which is the ambiguity this projection removes. */
-export async function observeStaticSlot(
-  recordsKv: KV,
-  owner: string,
-  alias: string,
-  managerInstanceId: string,
-): Promise<StaticSlotObservationDetail | undefined> {
-  const t = staticLifecycleTransport(recordsKv, recordsKv);
-  const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
-  if (slot === undefined) return undefined;
-  // `inspect` remains an instance-local reader. A sibling manager's durable row is not a miss on
-  // this manager becoming global by accident. Legacy rows predate multi-manager ownership and keep
-  // the existing single-manager interpretation used by boot reconciliation.
-  if (slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId) return undefined;
-  const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
+/** Build the `StaticSlotObservationDetail` projection from an already-read slot row and its
+ * optional already-read lifecycle head. Shared by the single-alias `observeStaticSlot` and the
+ * multi-row `listStaticSlotObservations` enumeration, so the two never drift on which fields the
+ * head contributes. */
+function projectStaticSlotObservation(
+  slot: { row: StaticManagedSlotRow; revision: number },
+  head: { mapping: LifecycleMapping; revision: number } | undefined,
+): StaticSlotObservationDetail {
   return {
     kind: STATIC_SLOT_OBSERVATION_DETAIL,
     name: slot.row.alias,
@@ -143,6 +136,63 @@ export async function observeStaticSlot(
     consistency: "ordered-not-atomic",
   };
 }
+
+/** Point-read one durable slot, then its principal-keyed lifecycle head. Absence is returned only
+ * after the slot read itself succeeded; callers must surface a store failure rather than converting
+ * an unknown observation into `not-found`, which is the ambiguity this projection removes. */
+export async function observeStaticSlot(
+  recordsKv: KV,
+  owner: string,
+  alias: string,
+  managerInstanceId: string,
+): Promise<StaticSlotObservationDetail | undefined> {
+  const t = staticLifecycleTransport(recordsKv, recordsKv);
+  const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
+  if (slot === undefined) return undefined;
+  // `inspect` remains an instance-local reader. A sibling manager's durable row is not a miss on
+  // this manager becoming global by accident. Legacy rows predate multi-manager ownership and keep
+  // the existing single-manager interpretation used by boot reconciliation.
+  if (slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId) return undefined;
+  const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
+  return projectStaticSlotObservation(slot, head);
+}
+
+/** Enumerate every nonretired durable static slot this manager instance owns, projected the same
+ * way `observeStaticSlot` projects one. Mirrors the boot sweep's key enumeration exactly
+ * (`manager.ts:8466-8470`: alias is the key split on `.` from the third token) so both walk the
+ * same rows. Foreign-owner rows (an explicit `ownerInstanceId` that differs) and `retired` rows are
+ * dropped BEFORE the head read, so N slot rows cost N slot reads plus only the survivors' head
+ * reads. Sorted by alias. */
+export async function listStaticSlotObservations(
+  recordsKv: KV,
+  owner: string,
+  managerInstanceId: string,
+): Promise<StaticSlotObservationDetail[]> {
+  const t = staticLifecycleTransport(recordsKv, recordsKv);
+  // `.keys()` binds an ephemeral ordered CONSUMER, a verb the goal-writer's standing connection
+  // is deliberately denied on the records stream (SPEC 13.9 site 3 / nats-server#8274: a
+  // CONSUMER.CREATE body is not subject-ACL confinable, so a durable minted here would outlive
+  // this connection). `walkKvEntries` reads the same rows over `STREAM.MSG.GET`, the verb the
+  // goal-writer already holds for every point read (`commitPrincipalGrants`).
+  const entries = await walkKvEntries(recordsKv, `${STATIC_SLOT_PREFIX}.${owner}.>`);
+  const survivors: { row: StaticManagedSlotRow; revision: number }[] = [];
+  for (const e of entries) {
+    if (e.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `the static slot row ${e.key} carries a ${e.operation} marker; a slot row is never deleted (corruption, not absence)`);
+    const row = parseStaticSlotRow(e.value, e.key);
+    if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== managerInstanceId) continue;
+    if (row.phase === "retired") continue;
+    survivors.push({ row, revision: e.revision });
+  }
+  const out: StaticSlotObservationDetail[] = [];
+  for (const slot of survivors) {
+    const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
+    out.push(projectStaticSlotObservation(slot, head));
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 
 function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): boolean {
   return a.v === b.v && a.principal === b.principal && a.alias === b.alias && a.lifecycleUid === b.lifecycleUid &&

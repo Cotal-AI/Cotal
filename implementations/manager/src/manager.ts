@@ -185,6 +185,7 @@ import {
   appendStaticCredentialRow,
   planStaticSlotResume,
   observeStaticSlot,
+  listStaticSlotObservations,
   renderStaticSlotObservation,
   StaticSlotReadError,
   STATIC_SLOT_READ_FAILED_DETAIL,
@@ -3159,6 +3160,31 @@ export class Manager {
           throw new EpEnvelopeError("not-found", `no agent "${name}"`);
         }
         return row;
+      }),
+      slots: (ctx) => this.serveGated(ctx, async () => {
+        // No manager-local durable static slot store exists for a user-mode or open manager: an
+        // empty list here would claim nothing is stranded from a store that was never consulted,
+        // the very ambiguity #1274 is about.
+        if (!this.auth || this.userMode)
+          throw new EpEnvelopeError("failed-precondition", "user-mode and open managers own no durable static slot rows; the projection is static-manager local");
+        const recordsKv = this.goalWriter?.ctx.kv;
+        if (!recordsKv)
+          throw new EpEnvelopeError("unavailable", "the durable static slot store is not ready", [
+            { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: "slot", operation: "scan" },
+          ]);
+        let observed;
+        try {
+          observed = await listStaticSlotObservations(recordsKv, DEV_OWNER, this.managerInstanceId);
+        } catch (error) {
+          throw new EpEnvelopeError("unavailable", `the durable static slot state could not be scanned: ${(error as Error).message}`, [
+            { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "scan" },
+          ]);
+        }
+        return observed.map(({ kind: _kind, ...detail }) => ({
+          ...detail,
+          live: this.agents.has(detail.name),
+          managerInstanceId: this.managerInstanceId,
+        }));
       }),
       models: (ctx) => this.serveGated(ctx, async () => {
         const data = unwrap(await this.opModels(args(ctx)));
