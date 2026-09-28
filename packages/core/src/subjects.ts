@@ -1,14 +1,26 @@
 /**
- * Subject naming — the routing half of the wire contract (v0).
+ * Subject naming — the routing half of the wire contract (v0). SPEC.md §3 is normative.
  *
- *   cotal.<space>.chat.<channel>      multicast to a channel (dotted + hierarchical: team.backend, subscribe team.>)
- *   cotal.<space>.svc.<service>       anycast to any one instance of a service (queue group)
- *   cotal.<space>.inst.<instance>     unicast to one specific instance
- *   cotal.<space>.ctl.<service>       control request/reply to a SERVER-SIDE service — the delivery
+ * Every principal rides the subject as two tokens, `<owner>.<actor>`. The builders below
+ * (chatSubject, anycastSubject, unicastSubject, controlServiceSubject) emit these shapes.
+ *
+ *   cotal.<space>.chat.<owner>.<actor>.<channel>
+ *                                     multicast to a channel (dotted + hierarchical: team.backend,
+ *                                     subscribe chat.*.*.team.>)
+ *   cotal.<space>.svc.<service>.<owner>.<actor>
+ *                                     anycast to any one instance of a service (queue group)
+ *   cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>
+ *                                     unicast to one principal; the sender is the last two tokens
+ *   cotal.<space>.ctl.<service>.<owner>.<actor>
+ *                                     control request/reply to a SERVER-SIDE service — the delivery
  *                                     daemon's delivery/delivery-admin carve-outs ONLY.
  *                                     The manager's ctl tiers were deleted in 1d, and the auth
  *                                     plane's rail moved to ep.one.auth in #350: both serve their
  *                                     control surface as v0.4 endpoints on the ep.* rails.
+ *   cotal.<space>.ep.<one|all|inst|reply>.…
+ *                                     v0.4 endpoint control surface; SPEC.md §13.2 defines each rail
+ *   cotal.<space>.ep.v1.<one|all|inst|reply>.…
+ *                                     the same rails for an issued caller (SPEC.md §13.15)
  *   cotal.<space>.trace.<instance>    ambient lifecycle trace (later)
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).

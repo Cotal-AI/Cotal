@@ -215,8 +215,9 @@ concrete mechanism you can check against the code.
 ### Identity and access
 
 - **Sender authenticity.** The sender rides the subject
-  (`cotal.<space>.inst.<target>.<sender>`), policed by the server against the agent's
-  JWT, not self-asserted. Identity claims in the payload are rejected, fail-closed.
+  (`cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>`), policed by
+  the server against the agent's JWT, not self-asserted. Identity claims in the payload
+  are rejected, fail-closed.
 - **Per-agent ACLs.** Decentralized JWT auth, account = space and user = agent. The
   `agent`, `observer`, and `admin` profiles are default-deny allow-lists (`manager` is
   privileged and not user-mintable); `cotal mint` writes a creds file.
