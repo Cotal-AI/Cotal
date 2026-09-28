@@ -672,12 +672,20 @@ export const cotal: Plugin = async () => {
     // so a straggler here can publish or SEND around it rather than merely out of order. An earlier
     // version of the generic line claimed the abandoned work was terminally silent, and this note
     // existed to contradict it; the contradiction is gone now that the line itself is accurate.
-    if (!settled)
+    if (!settled) {
       log(
         `admitted work outlived the ${INTAKE_SETTLE_MS}ms intake bound: the teardown stops waiting and ` +
           `ATTEMPTS the departure publish next, which is best effort and may not land; that work is ` +
           `NOT cancelled either, so it may still publish or send afterwards`,
       );
+      // AND THE ATTEMPT HAS TO BE ABLE TO RUN, which is a second thing from having stopped waiting.
+      // Presence writes are serialized agent-side, so departure would queue behind exactly the write
+      // this bound just abandoned: the wait ends, the publish does not happen, and the bound buys
+      // nothing. Releasing the chain here is what makes the line above true. It is deliberately
+      // inside this branch, because on the settled path the chain is already drained and departure
+      // must keep its ordering behind every write that DID land.
+      agent.abandonPresenceWrites();
+    }
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
     await settleWithin(events?.close(), SWAP_SETTLE_MS, "event holder at teardown");

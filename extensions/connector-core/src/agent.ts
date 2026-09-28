@@ -1981,6 +1981,26 @@ export class MeshAgent extends EventEmitter {
     return next;
   }
 
+  /** Detach the chain from writes the CALLER has abandoned, so the next write is ordered behind
+   *  what has actually settled rather than behind work nobody is waiting for any more.
+   *
+   *  The chain above orders departure after every admitted write, which is right while those writes
+   *  are still progressing and wrong once a teardown has given up on them. A host bounds its wait on
+   *  admitted intake and then attempts departure; without this, that attempt queues behind the very
+   *  write the bound just abandoned, so the bound buys nothing, offline never publishes, and the seat
+   *  stays at its last status until its presence TTL expires. The host says in its own log that
+   *  abandoned work is uncancelled and may land after departure, and the chain quietly contradicted
+   *  it.
+   *
+   *  ABANDONED IS NOT CANCELLED here either. The detached writes keep running and may still publish,
+   *  which is the same residual the caller already announces; what changes is only that departure
+   *  stops waiting on them. Call it exactly where the give-up is decided, never as a general reset:
+   *  a caller that invokes this while its writes are still progressing has reintroduced the race the
+   *  chain exists to close. */
+  abandonPresenceWrites(): void {
+    this.presenceChain = Promise.resolve();
+  }
+
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
     await this.inOrder(async () => {
     await this.requireConnected();
