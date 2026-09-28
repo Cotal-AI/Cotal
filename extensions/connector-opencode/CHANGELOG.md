@@ -1,5 +1,12 @@
 # @cotal-ai/connector-opencode
 
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- baf7596: Fixed the OpenCode 2.x adapter dropping `cotal spawn --prompt`'s kickoff text: `plugin2.ts` now reads `COTAL_OPENCODE_PROMPT` and submits it as its first connector-driven turn, alongside the briefing and the persona as `system`, the same floor the 1.x plugin already runs. A failed first submission keeps the text for the next drive.
+
 ## 0.56.0
 
 ### Minor Changes
