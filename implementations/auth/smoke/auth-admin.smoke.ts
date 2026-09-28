@@ -36,7 +36,7 @@ import {
   epRequestSubject,
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
-  resolveService, invokeCommand,
+  resolveService, invokeCommand, idFromCreds,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -123,7 +123,7 @@ async function request(
   args: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply"> {
   const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...caller, target } });
-  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
   try {
     const fullArgs = { serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH, ...args };
     const service = await resolveService(nc, space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000 });
@@ -231,8 +231,8 @@ try {
   check("the head reads retired after the rail request",
     (await readLifecycleHeadForOperation(wreg, OWNER, "w1"))?.mapping.state === "retired");
   const r1b = await request(MGR, { owner: OWNER, actor: "w1", lifecycleUid: uid1 }, { opId: op1 });
-  check("a REPEAT request answers already-retired (idempotent under the stable opId)",
-    r1b !== "no-reply" && r1b.ok === true && (r1b.data as { alreadyRetired?: boolean })?.alreadyRetired === true, r1b);
+  check("a REPEAT request answers already-retired (idempotent under the stable opId; the closed output schema has no alreadyRetired field, M3a)",
+    r1b !== "no-reply" && r1b.ok === true && (r1b.data as { retired?: boolean })?.retired === true, r1b);
 
   console.log("C. the refusal faces (rail-time serve-grant re-check + closed shapes)");
   const uid2 = mintLifecycleUid();
@@ -257,8 +257,8 @@ try {
   // Stale uid: the trigger names a previous incarnation.
   const staleUid2 = mintLifecycleUid();
   const r4 = await request(MGR, { owner: OWNER, actor: "w2", lifecycleUid: staleUid2 }, { opId: managedRetirementOpId(staleUid2) });
-  check("a STALE incarnation refuses naming the current one (never retires the wrong lifecycle)",
-    r4 !== "no-reply" && r4.ok === false && (r4.error ?? "").includes("stale incarnation") && (r4.error ?? "").includes(uid2), r4);
+  check("a STALE incarnation refuses naming the current one (never retires the wrong lifecycle): the generic client's target rides the subject, so the responder framework's own SPEC 13.3 currency check refuses this BEFORE the handler's stale-incarnation branch ever runs",
+    r4 !== "no-reply" && r4.ok === false && (r4.error ?? "").includes("expired on mapping mismatch") && (r4.error ?? "").includes(uid2), r4);
   // RE-POINTED (#350), not deleted. On `ctl` the caller CHOSE its reply target, so the listener had
   // to refuse an unbound one by inspecting `msg.reply` - a check that could be forgotten. On `ep`
   // the responder DERIVES the reply from the parsed request, and the generic client

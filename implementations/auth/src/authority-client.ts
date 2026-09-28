@@ -118,6 +118,8 @@ export { remoteManagerRegistrationProof };
  * single-token `epc.*` form {@link contractPublisherGrants} uses (never the wide `epc.>`).
  */
 export function authRegistrationExecutorGrants(space: string, connId: string, instanceId: string): { publish: string[]; subscribe: string[] } {
+  const auth = `KV_${epAuthBucket(space)}`;
+  const records = `KV_${recordsBucket(space)}`;
   const gateKey = epgateKey(AUTH_ENDPOINT, instanceId);
   const credPrefix = epcredFamilyPrefix(AUTH_ENDPOINT, instanceId);
   const repairKey = eprepairKey(AUTH_ENDPOINT, instanceId);
@@ -130,8 +132,17 @@ export function authRegistrationExecutorGrants(space: string, connId: string, in
   return {
     publish: [
       "$JS.API.INFO",
-      `$JS.API.STREAM.MSG.GET.${epAuthBucket(space)}`,
-      `$JS.API.STREAM.MSG.GET.${recordsBucket(space)}`,
+      `$JS.API.STREAM.MSG.GET.${auth}`,
+      `$JS.API.STREAM.MSG.GET.${records}`,
+      // Registration Phase 2 enumerates the epcred family (`kv.keys('epcred.<endpoint>.<instanceId>.>')`)
+      // to revoke + verify-evict a superseded serve family before publishing a new spec (SPEC 13.1).
+      // `kv.keys()` opens an ephemeral ordered consumer, so the executor needs CONSUMER lifecycle on
+      // the auth stream, scoped the same as the manager's own mirror (`endpointServeExecutorPermissions`,
+      // provision.ts:2477-2479): the whole bucket, since a subject-wildcard consumer cannot be key-pinned
+      // tighter by a broker ACL.
+      `$JS.API.CONSUMER.CREATE.${auth}.>`,
+      `$JS.API.CONSUMER.INFO.${auth}.>`,
+      `$JS.API.CONSUMER.DELETE.${auth}.>`,
       `$JS.API.DIRECT.GET.${recordsBucket(space)}`,
       `$JS.API.DIRECT.GET.${recordsBucket(space)}.>`,
       `$KV.${epAuthBucket(space)}.${gateKey}`,
