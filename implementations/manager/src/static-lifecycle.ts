@@ -46,6 +46,7 @@ import {
   headCompleteRetirement,
   type EvictionResult,
   STATIC_SLOT_PREFIX,
+  walkKvEntries,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 
@@ -168,9 +169,13 @@ export async function listStaticSlotObservations(
   managerInstanceId: string,
 ): Promise<StaticSlotObservationDetail[]> {
   const t = staticLifecycleTransport(recordsKv, recordsKv);
-  const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${owner}.>`);
-  const aliases: string[] = [];
-  for await (const k of keys) aliases.push(k.split(".").slice(2).join("."));
+  // `.keys()` binds an ephemeral ordered CONSUMER, a verb the goal-writer's standing connection
+  // is deliberately denied on the records stream (SPEC 13.9 site 3 / nats-server#8274: a
+  // CONSUMER.CREATE body is not subject-ACL confinable, so a durable minted here would outlive
+  // this connection). `walkKvEntries` reads the same rows over `STREAM.MSG.GET`, the verb the
+  // goal-writer already holds for every point read (`commitPrincipalGrants`).
+  const entries = await walkKvEntries(recordsKv, `${STATIC_SLOT_PREFIX}.${owner}.>`);
+  const aliases = entries.map((e) => e.key.split(".").slice(2).join("."));
   const survivors: { row: StaticManagedSlotRow; revision: number }[] = [];
   for (const alias of aliases) {
     const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
