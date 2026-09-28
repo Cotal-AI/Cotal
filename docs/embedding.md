@@ -127,7 +127,10 @@ a lost broker connection makes that context `unavailable` and closes it without 
 The host writes no discovery file for it. The auth plane can renew a registered manager's
 five standing credentials from the current service registration. Run-driver renewal still
 refuses without an authoritative activated-run reader, so these handles do not yet make a
-complete pooled auth and delivery host.
+complete pooled auth and delivery host. A fresh auth plane can initialize without a
+delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
+instance first: its admin rail must complete the broker connection-liveness sweep before the
+auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim.
 
 ### Long-lived endpoints take a bearer function
 
