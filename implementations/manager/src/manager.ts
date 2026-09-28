@@ -576,6 +576,11 @@ export interface ManagerResumeAgent {
   /** User-auth ledger delegation parent; distinct from manager process-ownership spawner. */
   authorityParent?: string;
   startedAt: string;
+  /** The CHAT stream frontier at the preservation cut (issue #545): the resumed launch carries it
+   *  as the seat's backfill floor so its boot backfill reads only what came after this incarnation
+   *  had already consumed, instead of replaying the whole retained window. Absent when the manager
+   *  held no local space authority to read the frontier at the cut (a remote-authority manager). */
+  backfillFloor?: number;
 }
 
 export interface ManagerResumeInventory {
@@ -1371,6 +1376,31 @@ export class Manager {
     return "open";
   }
 
+  /** The CHAT stream frontier at a preservation cut (issue #545), read through whichever local
+   *  authority this mesh mode holds: open mode's own endpoint already has `$JS.API.STREAM.INFO`
+   *  on the CHAT stream ({@link supervisorPermissions} grants it there); static/user mode's own
+   *  supervisor credential does NOT (it holds that grant only on the manager/presence/delivery
+   *  buckets), so those modes borrow the same ephemeral `provisioner` profile the manager already
+   *  mints per spawn, which DOES hold it under space auth. A remote-authority manager (`this.auth`
+   *  undefined in static/user mode) has no local space authority to mint that provisioner with, so
+   *  it prints one line and returns no floor — the inventory then carries none and resumed seats
+   *  behave exactly as before this fix, not a silent partial degrade. */
+  private async chatFrontierForPreservation(): Promise<number | undefined> {
+    switch (this.meshMode) {
+      case "open":
+        return this.ep.chatFrontier();
+      case "static":
+      case "user":
+        if (!this.auth) {
+          console.error(
+            "! preservation: this manager holds no local space authority to read the chat frontier; retained seats replay their channel windows on resume",
+          );
+          return undefined;
+        }
+        return this.withProvisioner((prov) => prov.chatFrontier());
+    }
+  }
+
   private readerRemedy(owner: string, channel: string): string {
     switch (this.meshMode) {
       case "user":
@@ -2148,11 +2178,17 @@ export class Manager {
   private async runPreparation(attemptId: string, generation: number): Promise<ManagerPreservationPlan> {
     await this.awaitLifecycleDrain();
     this.assertPreservationGeneration(attemptId, generation);
+    // Read the chat frontier BEFORE any child stops (issue #545): a message posted between this
+    // read and the child's stop is delivered live now and again as `historical` on resume, a
+    // duplicate bounded to the cut window that the seat's own id dedup on `durable` channels
+    // absorbs, whereas a read taken after the stops would instead skip messages the seat never
+    // actually saw.
+    const backfillFloor = await this.chatFrontierForPreservation();
     const inventory = this.preservationInventory ?? {
       version: "cotal-manager-resume/v1",
       space: this.space,
       createdAt: new Date().toISOString(),
-      agents: [...this.agents.values()].map((a) => this.resumeEntry(a)),
+      agents: [...this.agents.values()].map((a) => this.resumeEntry(a, backfillFloor)),
     } satisfies ManagerResumeInventory;
     const failures: ManagerPreserveFailure[] = [];
     for (const entry of inventory.agents) {
@@ -2362,7 +2398,7 @@ export class Manager {
     try { return this.fileDigest(path); } catch { return ""; }
   }
 
-  private resumeEntry(a: ManagedAgent): ManagerResumeAgent {
+  private resumeEntry(a: ManagedAgent, backfillFloor?: number): ManagerResumeAgent {
     const principal = a.userOwner
       ? parsePrincipalKey(a.id)
       : { owner: DEV_OWNER, actor: a.id };
@@ -2424,6 +2460,7 @@ export class Manager {
       spawner: a.spawner,
       authorityParent: a.authorityParent,
       startedAt: new Date(a.startedAt).toISOString(),
+      ...(backfillFloor !== undefined ? { backfillFloor } : {}),
     };
   }
 
@@ -5785,6 +5822,7 @@ export class Manager {
           // with no COTAL_LIFECYCLE_UID: static/user fail the connector auth gate and open self-mints a
           // fresh uid that orphans the preserved durables and never matches the readiness fence.
           lifecycleUid: entry.identity.lifecycleUid,
+          backfillFloor: entry.backfillFloor,
           acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
           servers: this.servers,
           configPath: entry.launch.source.configPath,
