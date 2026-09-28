@@ -50,7 +50,21 @@ are marked; import them with `import type`.
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
+| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
+
+The remote manager authority parser accepts `renewStandingBundle` and `renewRunDriver` only with
+an assigned account nkey, the current manager process epoch, and a host-authenticated registration
+proof. A run renewal also names its active holder, takeover, epoch, fencing token, and the two
+existing nkeys. The host must fresh-check those coordinates against its registration gate and run
+journal before issuing server-selected profiles. A host without that renewal authorization refuses
+the request. Until the host issuer wires the operations and validates them on real connections,
+the presence of these types is not an operational pooled renewal guarantee.
+
+With `renewStandingBundle` configured, the manager renews all five standing credentials together.
+It checks every returned credential for the held nkey and assigned account, test-connects each one,
+and adopts them only if the serve epoch has not moved. A refused or failed candidate leaves the
+current credentials in place and records the refusal as cleanup debt until a later renewal succeeds.
 
 **Provisioning and minting** (all `@cotal-ai/core`)
 

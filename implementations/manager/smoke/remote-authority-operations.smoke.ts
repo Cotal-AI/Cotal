@@ -13,6 +13,8 @@ const identities = {
   supervisor: newIdentity(), executor: newIdentity(), serve: newIdentity(),
   goalWriter: newIdentity(), sessionLedger: newIdentity(),
 };
+assert.throws(() => new Manager({ space: "demo", pooled: true, runtime: "pty" }), /pooled.*PTY|pooled.*custodial/i);
+assert.throws(() => new Manager({ space: "demo", pooled: true }), /pooled.*PTY|pooled.*custodial/i);
 let hostScans = 0;
 const manager = new Manager({
   space: "demo",

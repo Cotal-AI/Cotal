@@ -8,6 +8,46 @@ import {
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
+import { timingSafeEqual } from "node:crypto";
+import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+
+/** Host-only renewal authorization. The embedding host supplies a fresh gate and active run
+ * observation from its authoritative stores, never coordinates asserted by the participant. */
+export async function authorizeRemoteManagerRenewal(args: {
+  request: RemoteManagerAuthorityRequest;
+  owner: string;
+  space: string;
+  accountPublicKey: string;
+  proofSecret: string | Uint8Array;
+  observeManagerGate: (instanceId: string) => Promise<{
+    state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
+  } | null>;
+  observeRun: (runId: string) => Promise<{
+    state: string; holder: string; takeoverId: string; epoch: number; fencingToken: number; instanceId: string;
+  } | null>;
+}): Promise<void> {
+  const r = parseRemoteManagerAuthorityRequest(args.request);
+  if (r.operation !== "renewStandingBundle" && r.operation !== "renewRunDriver")
+    requestError("requires a renewal operation");
+  if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
+    throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
+  const gate = await args.observeManagerGate(r.instanceId);
+  if (!gate || gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", "manager-service renewal has no open registration gate");
+  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+    throw new EpEnvelopeError("permission-denied", "manager-service renewal gate belongs to another owner");
+  if (gate.processEpoch !== r.processEpoch)
+    throw new EpEnvelopeError("conflict", "manager-service renewal processEpoch is stale");
+  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
+  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
+    throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registration");
+  if (r.operation === "renewRunDriver") {
+    const run = await args.observeRun(r.run!.runId);
+    if (!run || run.state !== "running" || run.instanceId !== r.instanceId || run.holder !== r.run!.holder ||
+        run.takeoverId !== r.run!.takeoverId || run.epoch !== r.run!.epoch || run.fencingToken !== r.run!.fencingToken)
+      throw new EpEnvelopeError("conflict", "manager-service run renewal does not hold the activated run and takeover fence");
+  }
+}
 
 /** Host-only typed request after the IdP proof and ledger row have been authenticated. */
 export interface IssueRemoteManagerAuthorityArgs {
@@ -21,6 +61,9 @@ export interface IssueRemoteManagerAuthorityArgs {
     actors: ReturnType<typeof remoteManagerActors>;
     request: RemoteManagerAuthorityRequest;
   }) => Promise<{ credentials: RemoteManagerAuthorityMaterial["credentials"]; nextRegistrationProof?: string }>;
+  /** The host must fresh-read the assigned account, manager gate and, for a run, activated
+   * journal attempt before signing. No callback means the renewal operation is unavailable. */
+  authorizeRenewal?: (args: { owner: string; request: RemoteManagerAuthorityRequest }) => Promise<void>;
   now?: () => number;
 }
 
@@ -32,11 +75,11 @@ function requestError(what: string): never {
 export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerAuthorityRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) requestError("must be an object");
   const o = raw as Record<string, unknown>;
-  const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities"]);
+  const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run"]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (o.v !== 1 || o.kind !== "manager-service-authority") requestError('must carry { v: 1, kind: "manager-service-authority" }');
-  if (o.operation !== "prepare" && o.operation !== "activate" && o.operation !== "renew" && o.operation !== "session" && o.operation !== "retire")
-    requestError('operation must be "prepare", "activate", "renew", "session", or "retire"');
+  if (o.operation !== "prepare" && o.operation !== "activate" && o.operation !== "renew" && o.operation !== "session" && o.operation !== "retire" && o.operation !== "renewStandingBundle" && o.operation !== "renewRunDriver")
+    requestError('operation must be "prepare", "activate", "renew", "session", "retire", "renewStandingBundle", or "renewRunDriver"');
   for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
     if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
   assertLifecycleToken(o.instanceId as string, "manager authority instanceId");
@@ -44,12 +87,36 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) requestError("requestId must be a 22-64 character idempotency token");
   if (o.operation === "prepare" && (o.registrationProof !== undefined || o.contractArtifacts !== undefined))
     requestError("prepare must not carry registrationProof or contractArtifacts");
-  if ((o.operation === "activate" || o.operation === "renew" || o.operation === "session" || o.operation === "retire") && (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof)))
+  if (o.operation !== "prepare" && (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof)))
     requestError(`${o.operation} requires a sha256 registrationProof`);
   if (o.operation === "activate" && (!Array.isArray(o.contractArtifacts) || o.contractArtifacts.length === 0 || o.contractArtifacts.length > 64))
     requestError("activate requires 1-64 canonical manager contractArtifacts");
-  if ((o.operation === "renew" || o.operation === "session" || o.operation === "retire") && o.contractArtifacts !== undefined)
+  if (o.operation !== "activate" && o.contractArtifacts !== undefined)
     requestError(`${o.operation} must not carry contractArtifacts`);
+  const renewal = o.operation === "renewStandingBundle" || o.operation === "renewRunDriver";
+  if (renewal) {
+    if (typeof o.accountPublicKey !== "string" || !/^A[A-Z2-7]{55}$/.test(o.accountPublicKey))
+      requestError(`${o.operation} requires an accountPublicKey`);
+    if (typeof o.processEpoch !== "number" || !Number.isSafeInteger(o.processEpoch) || o.processEpoch < 0)
+      requestError(`${o.operation} requires a non-negative processEpoch`);
+  } else if (o.accountPublicKey !== undefined || o.processEpoch !== undefined)
+    requestError(`${o.operation} must not carry accountPublicKey or processEpoch`);
+  let run: RemoteManagerAuthorityRequest["run"];
+  if (o.operation === "renewRunDriver") {
+    const r = o.run as Record<string, unknown> | undefined;
+    if (!r || Object.keys(r).sort().join(",") !== "driverId,epoch,fencingToken,holder,mediatorId,runId,takeoverId")
+      requestError("renewRunDriver requires exactly runId, holder, takeoverId, epoch, fencingToken, driverId, mediatorId");
+    if (typeof r.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(r.runId) ||
+        typeof r.holder !== "string" || !/^[A-Za-z0-9_.-]{1,256}$/.test(r.holder) ||
+        typeof r.takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(r.takeoverId) ||
+        typeof r.epoch !== "number" || !Number.isSafeInteger(r.epoch) || r.epoch < 1 ||
+        typeof r.fencingToken !== "number" || !Number.isSafeInteger(r.fencingToken) || r.fencingToken < 1 ||
+        typeof r.driverId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.driverId) ||
+        typeof r.mediatorId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.mediatorId) || r.driverId === r.mediatorId ||
+        !r.holder.endsWith(`.${r.takeoverId}`))
+      requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
+    run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
+  } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
   if (o.operation === "session") {
     const s = o.session as Record<string, unknown> | undefined;
     if (!s || typeof s.id !== "string" || !/^U[A-Z2-7]{55}$/.test(s.id) || s.endpoint !== "manager" ||
@@ -107,6 +174,8 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
     managerLifecycleUid: o.managerLifecycleUid as string,
     requestId: o.requestId as string,
     ...(typeof o.registrationProof === "string" ? { registrationProof: o.registrationProof } : {}),
+    ...(renewal ? { accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number } : {}),
+    ...(run ? { run } : {}),
     ...(o.session && typeof o.session === "object" ? { session: o.session as RemoteManagerAuthorityRequest["session"] } : {}),
     ...(retirement ? { retirement } : {}),
     ...(Array.isArray(o.contractArtifacts) ? { contractArtifacts: o.contractArtifacts } : {}),
@@ -122,11 +191,21 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   const actors = remoteManagerActors(r.instanceId);
   const ids = Object.values(r.identities).map((identity) => identity.id);
   if (r.retirement) ids.push(r.retirement.id);
+  if (r.run) ids.push(r.run.driverId, r.run.mediatorId);
   if (new Set(ids).size !== ids.length)
     throw new EpEnvelopeError("bad-request", "manager-service identities must be distinct; one nkey cannot collapse separate authority lifetimes");
+  if (r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") {
+    if (!args.authorizeRenewal)
+      throw new EpEnvelopeError("unavailable", `manager-service ${r.operation} needs a host-owned current-account and duty-fence authorization`);
+    await args.authorizeRenewal({ owner: args.owner, request: r });
+  }
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
-  const required = r.operation === "prepare"
+  const required = r.operation === "renewStandingBundle"
+    ? ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"]
+    : r.operation === "renewRunDriver"
+      ? ["runDriver", "runMediator"]
+      : r.operation === "prepare"
     ? ["supervisor", "executor"]
     : r.operation === "activate"
       ? ["serve", "goalWriter", "sessionLedger"]
@@ -140,6 +219,9 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);
+  if ((r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") &&
+      Object.keys(credentials).sort().join(",") !== [...required].sort().join(","))
+    throw new EpEnvelopeError("internal", `manager-service ${r.operation} returned credentials outside its closed profile set`);
   const issuedAt = (args.now ?? Date.now)();
   const exps = Object.values(credentials).map((credential) => credential!.exp * 1000);
   return {
@@ -153,6 +235,8 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
     lifecycleUid: r.managerLifecycleUid,
     requestId: r.requestId,
     ...(r.registrationProof ? { registrationProof: r.registrationProof } : {}),
+    ...(r.accountPublicKey ? { accountPublicKey: r.accountPublicKey, processEpoch: r.processEpoch } : {}),
+    ...(r.run ? { run: r.run } : {}),
     ...(r.retirement ? { retirement: r.retirement } : {}),
     issuedAt,
     expiresAt: Math.min(...exps),
