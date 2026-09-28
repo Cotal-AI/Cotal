@@ -83,8 +83,8 @@ try {
   const held = await inspectors[0].readDeliveryLeaseEntry(0);
   assert.ok(held !== undefined, "A's restarted lease is readable");
   await inspectors[0].markDeliveryLeaseNotReady(0, held.revision);
-  assert.equal(await until(async () => restarted.readiness().state === "unavailable"), true, "fenced A reports unavailable");
-  assert.match(String((restarted.readiness() as { cause?: string }).cause), /stopped \(code 1\)/, "fenced A names its stop cause");
+  assert.equal(await until(async () => (await restarted.readiness()).state === "unavailable"), true, "fenced A reports unavailable");
+  assert.match(String(((await restarted.readiness()) as { cause?: string }).cause), /stopped \(code 1\)/, "fenced A names its stop cause");
   assert.equal((await inspectors[0].readDeliveryLease(0))?.holder, inspectors[0].card.id, "fenced A leaves the new holder's row intact");
   assert.equal(process.exit, exits, "no process exit after a fence");
   assert.equal((await second.readiness()).state, "ready", "B remains ready after A is fenced");
