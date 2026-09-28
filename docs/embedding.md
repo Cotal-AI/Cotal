@@ -124,8 +124,10 @@ under the explicit `stateDir`. The context never resolves a workspace root from 
 directory and has no local manager, so only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
-The host writes no discovery file for it. Standing-bundle and run-driver renewal are not wired yet,
-so these handles do not yet make a complete pooled auth and delivery host.
+The host writes no discovery file for it. The auth plane can renew a registered manager's
+five standing credentials from the current service registration. Run-driver renewal still
+refuses without an authoritative activated-run reader, so these handles do not yet make a
+complete pooled auth and delivery host.
 
 ### Long-lived endpoints take a bearer function
 
