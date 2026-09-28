@@ -13,7 +13,7 @@
  * own (`/api/model`, `/api/session`, `/api/session/:id/prompt`), measured separately because the
  * 2.x response shapes differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
-import { loadAgentFile } from "@cotal-ai/core";
+import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   hasIdentity,
@@ -24,8 +24,9 @@ import {
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
 } from "@cotal-ai/connector-core";
-import { modelRefusalSentence, computeInjection } from "./plugin.js";
+import { modelRefusalSentence, computeInjection, settleWithin } from "./plugin.js";
 import type { OpenCode2Context } from "./opencode2-types.js";
+import { buildCotalTools2 } from "./tools.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -58,6 +59,11 @@ async function verifyServerModel2(serverUrl: string, serverAuth: string, selecte
   if (slash < 1 || !model || !listing.data?.some((m) => m.providerID === provider && m.modelID === model))
     throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
 }
+
+/** How long the detached event loop's in-flight iteration may be waited on at teardown before it
+ *  is abandoned out loud — the same bounded-settle shape `plugin.ts`'s `quiesce` uses, via its
+ *  exported `settleWithin`, rather than a second copy of the tradeoff (see that file's note). */
+const EVENT_QUIESCE_MS = 10_000;
 
 /** The 2.x `setup(context)` entry point. */
 export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<void>) | void> {
@@ -157,6 +163,14 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     surfaced = [];
   }
 
+  const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
+    try {
+      if (agent.connected) await agent.setStatus(status, activity);
+    } catch {
+      /* presence is best-effort — never throw into opencode, same rule as plugin.ts's safeStatus */
+    }
+  };
+
   /** Drive a turn carrying the current inbox batch into the owned session, via
    *  `POST /api/session/:id/prompt` (2.x has no `prompt_async` — measured 404). Never prompts into
    *  a running turn (busy), matching 1.x's coalesce-avoidance. `override` is a bare nudge body (a
@@ -243,7 +257,86 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     void agent.setModel(`${e.model.providerID}/${e.model.id}`);
   });
 
+  // Surface the running tool as presence activity — parity with 1.x's `tool.execute.before`.
+  await ctx.tool.hook("execute.before", (e) => {
+    if (sessionID && e.sessionID !== sessionID) return;
+    void safeStatus("working", e.tool);
+  });
+
+  // Register the shared cotal_* tools, rendered by `buildCotalTools2` from the SAME specs
+  // `buildCotalTools` renders for 1.x (`./tools.ts`).
+  await ctx.tool.transform((ed) => {
+    for (const t of buildCotalTools2(agent, config)) ed.add(t);
+  });
+
+  // The event stream — a detached loop, never awaited here (setup must return). Maps the measured
+  // event names (fx105/measurements.md) to presence and turn-end/ack the same way plugin.ts's own
+  // event switch does, trimmed to this adapter's single-session scope (no swap, no `/new` reset).
+  const controller = new AbortController();
+  const eventLoop = (async () => {
+    try {
+      for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
+        const data = ev.data ?? {};
+        switch (ev.type) {
+          case "session.created": {
+            // Adopt the first session id we see if none is set yet (mirrors `ours()` in plugin.ts);
+            // this adapter owns exactly one top-level session, created above, so there is normally
+            // nothing to adopt here — this only covers a session created before ours resolved.
+            if (data.parentID) break;
+            const id = data.sessionID as string | undefined;
+            if (id && !sessionID) {
+              sessionID = id;
+              agent.setContextId(id);
+            }
+            break;
+          }
+          case "session.execution.started": {
+            if (sessionID && data.sessionID !== sessionID) break;
+            busy = true;
+            await safeStatus("working");
+            break;
+          }
+          case "session.execution.succeeded": {
+            if (sessionID && data.sessionID !== sessionID) break;
+            busy = false;
+            ackSurfaced(); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
+            await safeStatus("idle");
+            break;
+          }
+          case "session.execution.failed": {
+            if (sessionID && data.sessionID !== sessionID) break;
+            busy = false;
+            abandonSurfaced(); // leave the inbox unacked so the batch can retry on a later safe turn
+            await safeStatus("idle");
+            break;
+          }
+          case "session.execution.interrupted": {
+            if (sessionID && data.sessionID !== sessionID) break;
+            busy = false;
+            ackSurfaced(); // explicit user Stop: treat the surfaced batch as dismissed, not failed
+            await safeStatus("idle");
+            break;
+          }
+          case "permission.asked": {
+            const p = data as { sessionID?: string; title?: string };
+            if (!p.sessionID || !sessionID || p.sessionID === sessionID) await safeStatus("waiting", p.title);
+            break;
+          }
+          case "session.deleted": {
+            const id = (data as { info?: { id?: string } }).info?.id;
+            if (id && (!sessionID || id === sessionID)) await safeStatus("offline");
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) log(`event loop ended: ${(e as Error).message}`);
+    }
+  })();
+
   return async () => {
+    controller.abort();
+    await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
     await agent.stop();
   };
 }
