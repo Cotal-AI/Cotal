@@ -2098,6 +2098,16 @@ export class Manager {
     try { await renewal; } finally { if (this.remoteBundleRenewal === renewal) this.remoteBundleRenewal = undefined; }
   }
 
+  /** A signerless manager's closed standing connection re-dials through the all-duty family only.
+   *  A healthy holder re-dials as is. An unhealthy one waits for the closed renewal and adoption,
+   *  and a refusal fails this attempt with last-good and debt kept. Nothing is minted locally. */
+  private async renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void> {
+    if (inspectCredHealth(read() ?? "").state === "healthy") return;
+    await this.renewRemoteStandingBundle(true);
+    if (inspectCredHealth(read() ?? "").state !== "healthy")
+      throw new Error(`the ${label} credential is not healthy after all-duty renewal; last-good is kept and nothing is minted locally`);
+  }
+
   private async renewRemoteStandingBundleOnce(force: boolean): Promise<void> {
     const remote = this.remoteAuthority;
     if (!remote?.renewStandingBundle || !this.serviceServe) return;
@@ -6511,6 +6521,11 @@ export class Manager {
         // durable slot rows mirror it). Static mode carries no mapping-revision dimension, so
         // the revision is the constant 0 — a caller that pins a revision pins 0.
         resolveTarget: (t) => {
+          if (this.remoteAuthority) {
+            const key = principalKey(t.owner, t.actor).key;
+            for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+            return undefined;
+          }
           if (t.owner === DEV_OWNER) {
             for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
             return undefined;
@@ -6560,7 +6575,8 @@ export class Manager {
     console.error(`! manager service endpoint connection closed: ${err?.message ?? "unknown reason"}`);
     const recovered = await this.boundedReconnect("service endpoint", async () => {
       if (!s) return false;
-      if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
+      if (this.remoteAuthority) await this.renewRemoteBeforeRedial("serve", () => s.creds);
+      else if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
         s.creds = await this.remintServeCreds(s);
         this.scheduleServeRenewal(s.creds);
       }
@@ -6606,25 +6622,9 @@ export class Manager {
         grant: remote.serveGrant,
         creds: remote.serveCreds,
       };
-      const enc = new TextEncoder();
-      const nc = await this.dial({
-        authenticator: (nonce?: string) => credsAuthenticator(enc.encode(state.creds))(nonce),
-        inboxPrefix: `_INBOX_${state.identity.id}`,
-        maxReconnectAttempts: -1,
-      });
-      try {
-        state.handle = serveEndpoint(nc, this.space, state.grant, this.managerServiceDefs(), { public: true }, {
-          resolveTarget: (t) => {
-            const key = principalKey(t.owner, t.actor).key;
-            for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-            return undefined;
-          },
-          ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
-        });
-      } catch (e) {
-        await nc.drain().catch(() => nc.close());
-        throw e;
-      }
+      // The shared dialer wires the closed-connection handler, which re-dials through the all-duty family.
+      const { nc, handle } = await this.dialServeConnection(state);
+      state.handle = handle;
       state.nc = nc;
       this.serviceServe = state;
       console.error(`remote manager service endpoint activated: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${state.grant.epoch})`);
@@ -6933,7 +6933,8 @@ export class Manager {
     const gw = this.goalWriter;
     const recovered = await this.boundedReconnect("goal-writer", async () => {
       if (!gw) return false;
-      if (gw.creds !== undefined && inspectCredHealth(gw.creds).state !== "healthy") {
+      if (this.remoteAuthority) await this.renewRemoteBeforeRedial("goal-writer", () => gw.creds);
+      else if (gw.creds !== undefined && inspectCredHealth(gw.creds).state !== "healthy") {
         gw.creds = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
         this.goalWriterCreds = gw.creds;
       }
@@ -7044,7 +7045,8 @@ export class Manager {
     const identity = this.sessionLedgerIdentity;
     const recovered = await this.boundedReconnect("session-ledger", async () => {
       if (!sw || !identity) return false;
-      if (sw.creds !== undefined && inspectCredHealth(sw.creds).state !== "healthy") {
+      if (this.remoteAuthority) await this.renewRemoteBeforeRedial("session-ledger", () => sw.creds);
+      else if (sw.creds !== undefined && inspectCredHealth(sw.creds).state !== "healthy") {
         sw.creds = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
         this.sessionLedgerCreds = sw.creds;
       }
