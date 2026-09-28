@@ -701,7 +701,7 @@ try {
   }
   // THE SHAPE IS THE CELL. Without this the leg could grade a two-call set while claiming three, and
   // the mutation it exists to kill would survive again for the same reason it survived before.
-  check("interior-seat: three calls were admitted with the failing one between two parked ones",
+  check("interior-seat: three calls were admitted with the failing one in the middle",
     interiorReady, { interiorShape, interiorParked, interiorRejectParked });
 
   const interiorReply = await sendShutdown(interiorEp.path, interiorEp.token);

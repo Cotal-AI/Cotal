@@ -104,7 +104,7 @@ const noteAdmitted = (which: string): void => {
   // reason: the shape is a fact about the set the teardown must wait for, not about how many bodies
   // the chain happens to be running at once, which under serialization is always one.
   if (interiorShape && admitted.length === 3 && admitted[1] === "reject" && admitted[0] !== "reject" && admitted[2] !== "reject")
-    writeFileSync(interiorShape, "three calls admitted: two parked with the failing one between them\n");
+    writeFileSync(interiorShape, "three calls admitted, the failing one in the middle: one ahead of it settles and one behind it is still unstarted\n");
 };
 if (cross) {
   // THE ADMISSION SEAM, and it has to be here rather than one level down. `MeshAgent.setStatus` is
@@ -115,6 +115,7 @@ if (cross) {
   const originalStatus = MeshAgent.prototype.setStatus;
   MeshAgent.prototype.setStatus = function (status: Parameters<MeshAgent["setStatus"]>[0], activity?: string): Promise<void> {
     if (activity === "crossing-reject") noteAdmitted("reject");
+    else if (activity === "crossing-settles") noteAdmitted("settles");
     else if (activity === `crossing-${cross}`) noteAdmitted(cross);
     // The departure publish is the offline write that carries no activity. Recorded once, because
     // `agent.stop` publishes offline again at the very end of the teardown and that one is past the
@@ -410,8 +411,17 @@ if (cross) {
     // and the last, because in a set of two every index is already an end. A repair that wraps only
     // the ends passes both of them and still lets an interior rejection settle the wait early. This
     // is the smallest set that has an interior at all.
+    // THE FIRST ONE SETTLES, and it has to, which is what serialization changed about this seat. The
+    // chain runs one body at a time, so a call admitted behind a PARKED one never starts and can
+    // never fail: with two parked calls around it, the middle rejection this seat exists to stage
+    // simply does not happen, and the wait times out exactly as it does when nothing is wrong.
+    // Measured: C15 and C17 both survived that staging with the suite fully green, because the
+    // mutation they carry had nothing to act on.
+    // `crossing-settles` matches neither seam below, so its body runs straight through to a real
+    // presence write and resolves. That hands the chain to the failing call, which can then reject
+    // while the third is still in the set and unstarted, which is the shape the claim needs.
     else if (cross === "interior") {
-      void fireTool("ses_coop", "crossing-interior");
+      void fireTool("ses_coop", "crossing-settles");
       void fireTool("ses_coop", "crossing-reject");
       void fireTool("ses_coop", "crossing-interior");
     }
