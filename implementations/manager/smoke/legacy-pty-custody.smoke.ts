@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 
 let pass = 0;
@@ -44,7 +45,11 @@ const repo = join(managerRoot, "..", "..");
 const childProgram = "const fs=require('node:fs');fs.writeFileSync(process.env.PIDFILE,String(process.pid));let n=0;setInterval(()=>process.stdout.write(String(++n)+'\\n'),50)";
 writeFileSync(
   owner,
-  `import { PtyRuntime } from ${JSON.stringify(join(managerRoot, "dist", "runtime", "pty.js"))};\n` +
+  // A file URL, not a bare path. The generated owner is ESM, and on Windows an absolute path is
+  // not a valid specifier: node rejects `D:\...` with ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received
+  // protocol 'd:'") before the module loads, so the owner died with no record written. Same idiom
+  // spawn-action.smoke.ts uses for the same reason.
+  `import { PtyRuntime } from ${JSON.stringify(pathToFileURL(join(managerRoot, "dist", "runtime", "pty.js")).href)};\n` +
     `import { writeFileSync } from "node:fs";\n` +
     `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { ...${JSON.stringify(launchEnv())}, PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
     `writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined }));\n` +
