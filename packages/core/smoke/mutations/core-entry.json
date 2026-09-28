@@ -71,8 +71,8 @@
     {
       "name": "drop the publish-time JSON-value guard on message parts",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    assertPartsSerializable(msg.parts);",
-      "replace": "    void msg.parts;",
+      "find": "    if (!this.js) throw new Error(this.notLiveMsg());\n    assertPartsSerializable(msg.parts);",
+      "replace": "    if (!this.js) throw new Error(this.notLiveMsg());\n    void msg.parts;",
       "expectRed": "publish refuses a data part with top-level undefined (the key stringify drops)",
       "command": "pnpm smoke:dm-history-subject",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
