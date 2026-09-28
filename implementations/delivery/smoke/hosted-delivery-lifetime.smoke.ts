@@ -60,9 +60,9 @@ try {
   }));
   const signals = process.listenerCount("SIGTERM");
   const exits = process.exit;
-  await assert.rejects(startDeliveryService({ ...inputs[0], store: { get: (key: string) => stores[0].get(key), put: (key: string, value: string) => stores[0].put(key, value), delete: (key: string) => stores[0].delete(key) } }), /must declare a stable identity/);
-  await assert.rejects(startDeliveryService({ ...inputs[0], storeIdentity: stores[1].identity }), /identity does not match/);
-  await assert.rejects(startDeliveryService({ ...inputs[0], context: { ...inputs[0].context, accountPublicKey: inputs[1].context.accountPublicKey } }), /credential account does not match/);
+  await assert.rejects(startDeliveryService({ ...inputs[0], store: { get: (key: string) => stores[0].get(key), put: (key: string, value: string) => stores[0].put(key, value), delete: (key: string) => stores[0].delete(key) } }), /must declare a stable identity/, "identity-less store refuses");
+  await assert.rejects(startDeliveryService({ ...inputs[0], storeIdentity: stores[1].identity }), /identity does not match/, "wrong store identity refuses");
+  await assert.rejects(startDeliveryService({ ...inputs[0], context: { ...inputs[0].context, accountPublicKey: inputs[1].context.accountPublicKey } }), /credential account does not match/, "credential account does not match");
   const [first, second] = await Promise.all(inputs.map((input) => startDeliveryService(input)));
   handles.push(first, second);
   assert.deepEqual(first.readiness(), { state: "ready", context: inputs[0].context }, "A ready with assigned identity");
