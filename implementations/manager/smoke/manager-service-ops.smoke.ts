@@ -139,6 +139,7 @@ registry.register(routeCon);
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
   managerInstanceId: string;
+  userMode: boolean;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
   goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
@@ -153,14 +154,14 @@ const M = mgr as unknown as {
 /** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
  * consume it before `inspect` observes it: slot `terminalizing`, then gate frozen and head
  * `retiring` under the deterministic retirement op. */
-async function plantStrandedSlot(alias: string): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
+async function plantStrandedSlot(alias: string, ownerInstanceId = M.managerInstanceId): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
   const actor = newIdentity().id;
   const lifecycleUid = mintLifecycleUid();
   const opId = retireOpId(lifecycleUid);
   await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
     await activateStaticLifecycle(transport, {
       owner: DEV_OWNER, alias, actor, lifecycleUid,
-      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId,
     });
     const slot = await readStaticSlot(transport, DEV_OWNER, alias);
     if (!slot) throw new Error(`missing planted slot ${alias}`);
