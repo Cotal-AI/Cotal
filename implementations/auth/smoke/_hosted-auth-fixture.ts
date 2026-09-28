@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, serverConfig, type SecretStore } from "@cotal-ai/core";
+import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, serverConfig, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, saveServiceKeys } from "../src/store.js";
 import { pickFreePort } from "./_free-port.js";
@@ -23,12 +23,17 @@ export interface HostedAuthAccount {
   store: MemoryStore;
   stateDir: string;
   sentinelCreds: string;
+  /** The composed space auth, including the broker $SYS signing seed for the smoke-only KICK. */
+  auth: SpaceAuth;
 }
 
 export interface HostedAuthFixture {
   servers: string;
   dir: string;
   accounts: HostedAuthAccount[];
+  /** Provision one more injected store for an EXISTING space slug under a freshly created account
+   *  (same-slug recreation). The account is not preloaded on the broker. */
+  recreateSlug(space: string, coordinate: string): Promise<{ store: MemoryStore; accountPublicKey: string }>;
   close(): Promise<void>;
 }
 
@@ -55,7 +60,7 @@ export async function startHostedAuthFixture(label: string, count = 2): Promise<
     mkdirSync(stateDir, { recursive: true });
     ensurePinnedIdp(stateDir, "http://127.0.0.1:1/api/auth");
     calloutAccounts.push({ pub: callout.account.pub, jwt: callout.account.jwt });
-    accounts.push({ space, accountPublicKey: auth.account.pub, store, stateDir, sentinelCreds: callout.sentinelCreds });
+    accounts.push({ space, accountPublicKey: auth.account.pub, store, stateDir, sentinelCreds: callout.sentinelCreds, auth });
   }
   writeFileSync(join(dir, "server.conf"), serverConfig(broker, spaceAccounts, { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js"), extraAccounts: calloutAccounts }));
   const nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -65,6 +70,15 @@ export async function startHostedAuthFixture(label: string, count = 2): Promise<
   if (!up) { await killAndAwaitExit(nats, "SIGKILL"); release(); throw new Error(`nats-server did not come up on ${port}`); }
   return {
     servers, dir, accounts,
+    async recreateSlug(space, coordinate) {
+      const auth = composeSpaceAuth(broker, await createSpaceAccountAuth(broker, space));
+      const store = new MemoryStore({ kind: "injected", coordinate });
+      await ensureCalloutAuth(store, { space, operatorSeed: broker.operator.seed!, accountPub: auth.account.pub });
+      await ensureIssuer(store, space);
+      await ensureOwnerSecret(store, space);
+      await saveServiceKeys(store, space, { dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed! } });
+      return { store, accountPublicKey: auth.account.pub };
+    },
     async close() {
       await killAndAwaitExit(nats, "SIGKILL");
       nats.unref();

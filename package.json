@@ -628,6 +628,7 @@
     "smoke:delivery-teardown": "tsx implementations/cli/smoke/delivery-teardown.smoke.ts",
     "smoke:auth-store": "tsx implementations/auth/smoke/auth-store.smoke.ts",
     "smoke:hosted-auth-lifetime": "tsx implementations/auth/smoke/hosted-auth-lifetime.smoke.ts",
+    "smoke:hosted-auth-fence": "tsx implementations/auth/smoke/hosted-auth-fence.smoke.ts",
     "smoke:session-caller-grant": "tsx packages/core/smoke/session-caller-grant.smoke.ts",
     "smoke:session-serving-grant": "tsx packages/core/smoke/session-serving-grant.smoke.ts",
     "smoke:eps-grant-sweep": "tsx packages/core/smoke/eps-grant-sweep.smoke.ts",
