@@ -12,6 +12,7 @@ import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { bootPlugin } from "./_boot-plugin.js";
 import { CotalEndpoint } from "@cotal-ai/core";
+import { MeshAgent } from "@cotal-ai/connector-core";
 
 // The plugin calls OpenCode's HTTP API at boot to own a session. A shutdown test drives no turn, so
 // only POST /session is needed.
@@ -62,17 +63,52 @@ const rejectParked = process.env.COOP_REJECT_PARKED?.trim() || undefined;
 // element apart from absorbing only the ends, because in a set of two every index IS an end. The
 // interior seat admits THREE and puts the failing call in the middle, and this marker is what proves
 // the set really had that shape when the stop landed rather than the cell grading two calls it
-// believed were three.
+// believed were three. Written by `noteAdmitted` below, from the admitted order; it used to be
+// written from the endpoint seam by counting parked bodies, which serialization caps at one.
 const interiorShape = process.env.COOP_INTERIOR_SHAPE?.trim() || undefined;
-const noteShape = (): void => {
-  if (interiorShape && parked.length === 2 && parkedReject.length === 1)
-    writeFileSync(interiorShape, "three calls admitted: two parked with the failing one between them\n");
-};
 const parked: Array<() => void> = [];
 // Released on its own trigger, and BEFORE the parked one, so the failure lands while the teardown is
 // still waiting rather than after it has given up.
 const parkedReject: Array<() => void> = [];
+// ADMISSION, NOT ENTRY, and the distinction is the whole reason these markers moved. Presence writes
+// are serialized agent-side (#2065): `inOrder` returns a promise at CALL time and the teardown's
+// `inFlight` holds exactly that promise, but only ONE write's body runs at a time, so a second
+// admitted call never reaches `setActivity` while the first is parked there. A marker written from
+// inside the endpoint patch therefore says nothing about any call after the first, and the cells that
+// read it were grading a set of one while claiming two or three. What the teardown waits on is the
+// admitted set, so admission is what these record.
+const admitted: string[] = [];
+const noteAdmitted = (which: string): void => {
+  admitted.push(which);
+  if (which === "reject" && rejectParked)
+    writeFileSync(rejectParked, "the failing call was admitted and is waiting to fail\n");
+  // THE MIRROR SEAT IS THE ONE WHERE THIS CALL IS SECOND, which is the whole reason that seat exists:
+  // it puts the FAILING call at the head of the set so the absorption is shown to reach the head and
+  // not only the tail. Under serialization the head is the body that runs, so this call is the one
+  // behind it and its body never starts, which is what "parked behind it" means here. Every other
+  // seat admits this call first, its body does reach the write and park there, and the marker keeps
+  // being written from that seam below, because a precondition that says "parked inside its presence
+  // write" must not be satisfied by an admission alone.
+  if (which === cross && cross === "mirror" && crossParked)
+    writeFileSync(crossParked, "the mirror call is admitted and parked behind the failing one\n");
+  // Three admitted with the failing one between two others. Counted from admissions for the same
+  // reason: the shape is a fact about the set the teardown must wait for, not about how many bodies
+  // the chain happens to be running at once, which under serialization is always one.
+  if (interiorShape && admitted.length === 3 && admitted[1] === "reject" && admitted[0] !== "reject" && admitted[2] !== "reject")
+    writeFileSync(interiorShape, "three calls admitted: two parked with the failing one between them\n");
+};
 if (cross) {
+  // THE ADMISSION SEAM, and it has to be here rather than one level down. `MeshAgent.setStatus` is
+  // the door every one of these calls goes through, and it is ABOVE `inOrder`: it is reached at call
+  // time even by a call whose body the chain will not start for seconds. `CotalEndpoint.setActivity`
+  // below is the opposite, the place a write BLOCKS, which is what the parking needs and exactly what
+  // an admission marker must not be read from.
+  const originalStatus = MeshAgent.prototype.setStatus;
+  MeshAgent.prototype.setStatus = function (status: Parameters<MeshAgent["setStatus"]>[0], activity?: string): Promise<void> {
+    if (activity === "crossing-reject") noteAdmitted("reject");
+    else if (activity === `crossing-${cross}`) noteAdmitted(cross);
+    return originalStatus.call(this, status, activity);
+  };
   // The model record publishes presence through a different endpoint method than a status write,
   // so the model door needs its own seam rather than a third case on the activity one.
   const originalModel = CotalEndpoint.prototype.setCardModel;
@@ -95,8 +131,6 @@ if (cross) {
     if (activity === "crossing-reject") {
       await new Promise<void>((r) => {
         parkedReject.push(r);
-        if (rejectParked) writeFileSync(rejectParked, "the failing call was admitted and is waiting to fail\n");
-        noteShape();
       });
       throw new Error("admitted presence write failed");
     }
@@ -104,7 +138,6 @@ if (cross) {
       await new Promise<void>((r) => {
         parked.push(r);
         if (crossParked) writeFileSync(crossParked, `the pre-stop ${cross} call is parked inside its presence write\n`);
-        noteShape();
       });
     }
     return original.call(this, activity);
@@ -374,10 +407,23 @@ if (cross) {
       void (
         hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> }
       )["chat.message"]({ sessionID: "ses_coop", model: { providerID: "crossing", modelID: "model" } }, { parts: [] });
-    while (rejectRelease && !existsSync(rejectRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
-    for (const release of parkedReject) release();
-    while (!existsSync(crossRelease as string)) await new Promise((r) => setTimeout(r, 25).unref?.());
-    for (const release of parked) release();
+    // DRAIN ON A LOOP, NOT ONCE. The chain starts one body at a time, so a call admitted second parks
+    // only after the first has been released, which is long after its own trigger file appeared. A
+    // single pass fired against an empty list, released nothing, and left that body held by nobody:
+    // the teardown then waited forever on a write that could never finish, and the whole suite wedged
+    // rather than failing. Each drain keeps clearing its list for as long as the process lives; the
+    // timers are unref'd so none of this holds the process open on its own.
+    const drain = (queue: Array<() => void>, trigger: string): void => {
+      void (async () => {
+        while (!existsSync(trigger)) await new Promise((r) => setTimeout(r, 25).unref?.());
+        for (;;) {
+          while (queue.length > 0) (queue.shift() as () => void)();
+          await new Promise((r) => setTimeout(r, 25).unref?.());
+        }
+      })();
+    };
+    if (rejectRelease) drain(parkedReject, rejectRelease);
+    drain(parked, crossRelease as string);
   })();
 }
 
