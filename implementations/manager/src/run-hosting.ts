@@ -100,12 +100,21 @@ export interface RunHostingContext {
   /** The space signer on an auth mesh; undefined on an open mesh (bare connections). */
   readonly auth: SpaceAuth | undefined;
   readonly log: (line: string) => void;
+  /** Signerless host: the closed `renewRunDriver` issuance for one live attempt's SAME driver and
+   *  mediator nkeys. When set, renewal never mints locally; a refusal keeps last-good and records
+   *  debt on the slot. */
+  readonly renewRun?: (args: {
+    runId: string; holder: string; takeoverId: string; epoch: number; fencingToken: number;
+    driver: Identity; mediator: Identity;
+  }) => Promise<{ driver: string; mediator: string }>;
 }
 
 interface HostedRun {
   readonly runId: string;
   readonly takeoverId: string;
   readonly epoch: number;
+  /** The attempt's journal fencing token, set with the epoch at launch. */
+  readonly fencingToken?: number;
   readonly identity: Identity;
   readonly mediatorIdentity: Identity;
   placements: readonly { endpoint: string; instanceId: string }[];
@@ -117,6 +126,8 @@ interface HostedRun {
    *  on every (re)connect. Undefined on an open mesh. */
   creds?: string;
   mediatorCreds?: string;
+  /** Signerless renewal refused or unadoptable: last-good stays in place, nothing is minted. */
+  renewalDebt?: { at: number; reason: string };
 }
 
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
@@ -427,6 +438,7 @@ export class RunHosting {
    *  coordinates when it is past its renewal point; the connection presents the fresh one on its
    *  next (re)connect. Open mesh: nothing to renew. */
   async renew(): Promise<void> {
+    if (this.ctx.renewRun) return this.renewRemote(this.ctx.renewRun);
     const auth = this.ctx.auth;
     if (!auth) return;
     for (const run of this.runs.values()) {
@@ -448,6 +460,32 @@ export class RunHosting {
         } catch (e) {
           this.ctx.log(`! run-mediator renewal for ${run.runId}: ${(e as Error).message}`);
         }
+      }
+    }
+  }
+
+  /** Both-or-none adoption of the host-issued pair for the attempt's own coordinates. The pair is
+   *  adopted only while the same attempt still holds the slot; anything else keeps last-good. */
+  private async renewRemote(renewRun: NonNullable<RunHostingContext["renewRun"]>): Promise<void> {
+    for (const run of [...this.runs.values()]) {
+      if (run.creds === undefined || run.mediatorCreds === undefined || run.fencingToken === undefined) continue;
+      if (inspectCredHealth(run.creds).state === "healthy" && inspectCredHealth(run.mediatorCreds).state === "healthy") continue;
+      try {
+        const pair = await renewRun({
+          runId: run.runId, holder: `${this.ctx.holder.id}.${run.takeoverId}`, takeoverId: run.takeoverId,
+          epoch: run.epoch, fencingToken: run.fencingToken, driver: run.identity, mediator: run.mediatorIdentity,
+        });
+        for (const [name, cred] of [["driver", pair.driver], ["mediator", pair.mediator]] as const)
+          if (typeof cred !== "string" || inspectCredHealth(cred).state !== "healthy")
+            throw new Error(`host returned an unusable run-${name} credential`);
+        if (this.stopping || this.runs.get(run.runId) !== run)
+          throw new Error("the attempt left this host while its renewal was in flight");
+        run.creds = pair.driver;
+        run.mediatorCreds = pair.mediator;
+        run.renewalDebt = undefined;
+      } catch (e) {
+        run.renewalDebt = { at: Date.now(), reason: (e as Error).message };
+        this.ctx.log(`! run-driver/mediator renewal for ${run.runId}: ${(e as Error).message} - last-good kept, nothing minted locally`);
       }
     }
   }
@@ -539,7 +577,7 @@ export class RunHosting {
       : undefined;
     // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from
     // these, and the epoch is a per-attempt fact.
-    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
+    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.
