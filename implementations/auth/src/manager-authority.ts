@@ -8,6 +8,11 @@ import {
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteRunAdmissionRequest,
+  type RemoteRunAttemptRequest,
+  type RunAdmissionView,
+  type RunStatusValue,
+  type RunDriverGrantArgs,
+  type RunOperatorGrantArgs,
   type RemoteRunAdmissionResult,
   type RunAdmission,
   type IssuedStore,
@@ -376,4 +381,97 @@ export async function admitRemoteRun(args: {
       throw new EpEnvelopeError("conflict", `run ${r.run.runId} is already admitted for another caller or instance`);
     return { v: 1, kind: "manager-run-admission", requestId: r.requestId, runId: r.run.runId, revision: entry.revision, admission: written };
   }
+}
+
+const NKEY_USER = /^U[A-Z2-7]{55}$/;
+const ID_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Closed parser for {@link RemoteRunAttemptRequest}. */
+export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequest {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) admissionError("must be an object");
+  const o = raw as Record<string, unknown>;
+  if (o.kind !== "manager-run-attempt") admissionError("must be v1 manager-run-attempt");
+  const { attempt, operator, ...rest } = o;
+  if ((attempt === undefined) === (operator === undefined)) admissionError("carries exactly one of attempt or operator");
+  const base = parseRemoteRunAdmissionRequest({ ...rest, kind: "manager-run-admission", run: { runId: `run-${"0".repeat(32)}`, subject: "" } });
+  const { run: _run, kind: _kind, ...registered } = base;
+  const plain = (v: unknown, keys: string[], optional: string[] = []) => {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) admissionError("attempt/operator must be an object");
+    const k = Object.keys(v as object);
+    if (k.some((x) => !keys.includes(x) && !optional.includes(x)) || keys.some((x) => !k.includes(x))) admissionError(`attempt/operator must carry exactly ${keys.join(", ")}`);
+    return v as Record<string, unknown>;
+  };
+  const runIdOk = (v: unknown) => typeof v === "string" && /^run-[0-9a-f]{32}$/.test(v);
+  if (attempt !== undefined) {
+    const a = plain(attempt, ["runId", "takeoverId", "epoch", "fencingToken", "driverId", "mediatorId"]);
+    if (!runIdOk(a.runId) || typeof a.takeoverId !== "string" || !ID_TOKEN.test(a.takeoverId) ||
+        !Number.isSafeInteger(a.epoch) || (a.epoch as number) < 1 || !Number.isSafeInteger(a.fencingToken) || (a.fencingToken as number) < 1 ||
+        typeof a.driverId !== "string" || !NKEY_USER.test(a.driverId) || typeof a.mediatorId !== "string" || !NKEY_USER.test(a.mediatorId) || a.driverId === a.mediatorId)
+      admissionError("attempt requires a run id, takeover id, positive epoch/fencingToken and distinct driver/mediator nkeys");
+    return { ...registered, kind: "manager-run-attempt", attempt: { runId: a.runId as string, takeoverId: a.takeoverId, epoch: a.epoch as number, fencingToken: a.fencingToken as number, driverId: a.driverId, mediatorId: a.mediatorId } };
+  }
+  const op = plain(operator, ["id", "takeoverId"], ["runId", "answers"]);
+  if (typeof op.id !== "string" || !NKEY_USER.test(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
+      (op.runId !== undefined && !runIdOk(op.runId)))
+    admissionError("operator requires an nkey id, a takeover id and an optional run id");
+  let answers: { token: string } | undefined;
+  if (op.answers !== undefined) {
+    const t = plain(op.answers, ["token"]);
+    if (typeof t.token !== "string" || !ID_TOKEN.test(t.token) || op.runId !== undefined) admissionError("operator answers carries exactly one checkpoint token and no run id");
+    answers = { token: t.token };
+  }
+  return { ...registered, kind: "manager-run-attempt", operator: { id: op.id, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId as string } : {}), ...(answers ? { answers } : {}) } };
+}
+
+/** What the host then signs, and nothing else: one fixed profile per caller-held nkey. */
+export type RemoteRunAttemptGrant =
+  | { kind: "attempt"; driver: { id: string; profile: "run-driver"; runDriver: RunDriverGrantArgs }; mediator: { id: string; profile: "run-mediator"; runMediator: RunDriverGrantArgs } }
+  | { kind: "operator"; operator: { id: string; profile: "run-operator"; runOperator: RunOperatorGrantArgs } };
+
+/**
+ * Host-only authorization for {@link RemoteRunAttemptRequest}. Every coordinate the returned grant
+ * pins is derived from host stores: the admission must exist unrevoked on this instance, the
+ * attempt must be exactly the next epoch/fencing token the run record implies (1/1 for a first
+ * attempt with no record, as stock `start` launches), and an answer must name a waiting pause.
+ * Refuses before the host signs anything.
+ */
+export async function authorizeRemoteRunAttempt(args: {
+  request: unknown;
+  owner: string;
+  space: string;
+  accountPublicKey: string;
+  proofSecret: string | Uint8Array;
+  endpoint: string;
+  observeManagerGate: (instanceId: string) => Promise<ManagerGate | null>;
+  readAdmission: (runId: string) => Promise<RunAdmissionView>;
+  readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
+  checkpointWaiting: (token: string) => Promise<boolean>;
+}): Promise<RemoteRunAttemptGrant> {
+  const r = parseRemoteRunAttemptRequest(args.request);
+  await authenticateRegisteredManager(r, args, "run attempt");
+  const admitted = async (runId: string) => {
+    const view = await args.readAdmission(runId);
+    if (view.revoked !== undefined)
+      throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; a revoked run is issued nothing (SPEC 14.8)`);
+    if (view.admission.instanceId !== r.instanceId || view.admission.endpoint !== args.endpoint || view.admission.space !== r.space)
+      throw new EpEnvelopeError("permission-denied", `run ${runId} was admitted on another manager instance or endpoint`);
+    return view.admission;
+  };
+  if (r.attempt) {
+    const a = r.attempt;
+    const admission = await admitted(a.runId);
+    const status = await args.readRunStatus(a.runId);
+    if (status?.state === "completed" || status?.state === "failed")
+      throw new EpEnvelopeError("failed-precondition", `run ${a.runId} is ${status.state}; a terminal run gets no new attempt`);
+    if (a.epoch !== (status?.epoch ?? 0) + 1 || a.fencingToken !== (status?.fencingToken ?? 0) + 1)
+      throw new EpEnvelopeError("conflict", `run ${a.runId} attempt must be the next recorded epoch/fencing token`);
+    const pin: RunDriverGrantArgs = { endpoint: args.endpoint, runId: a.runId, owner: admission.caller.owner, takeoverId: a.takeoverId, instanceId: r.instanceId, epoch: a.epoch };
+    return { kind: "attempt", driver: { id: a.driverId, profile: "run-driver", runDriver: pin }, mediator: { id: a.mediatorId, profile: "run-mediator", runMediator: { ...pin } } };
+  }
+  const op = r.operator!;
+  if (op.runId !== undefined) await admitted(op.runId);
+  if (op.answers !== undefined && !(await args.checkpointWaiting(op.answers.token)))
+    throw new EpEnvelopeError("failed-precondition", "run operator answers only a checkpoint that is still waiting");
+  const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(op.answers ? { answers: op.answers } : {}) };
+  return { kind: "operator", operator: { id: op.id, profile: "run-operator", runOperator } };
 }
