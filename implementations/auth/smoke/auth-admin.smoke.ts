@@ -39,6 +39,7 @@ import {
   resolveService, invokeCommand, idFromCreds,
   recordsBucket, recordSpecKey, recordStatusKey, RECORD_KINDS, parseServiceSpec, parseServiceStatus, SERVICE_READY,
   epCallerReplyFilter, parseEndpointReply,
+  EpEnvelopeError,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { loadAuthInstanceIdentity } from "@cotal-ai/workspace";
@@ -572,6 +573,35 @@ try {
       const reply = parseEndpointReply(JSON.parse(new TextDecoder().decode(msg.data)));
       check("a body target disagreeing with the exact subject triple is refused target-mismatch",
         reply.ok === false && reply.error?.code === "target-mismatch", reply);
+    } finally {
+      await nc.close().catch(() => {});
+    }
+  }
+
+  console.log("F. M4b: malformed args are refused on the client before publish");
+  {
+    const uidBad = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wbadargs", lifecycleUid: uidBad, managerInstance: "smoke" });
+    const target = { owner: OWNER, actor: "wbadargs", lifecycleUid: uidBad };
+    const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...MGR, target } });
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
+    try {
+      const service = await resolveService(nc, space, AUTH_ENDPOINT, MGR, { deadlineMs: 10_000 });
+      const outBefore = nc.stats().outMsgs;
+      // §13.7: the caller's own compiled input contract gates args BEFORE publish (`buildRequest`
+      // in `endpoint-verbs.ts` calls `assertArgsValid` ahead of any subject/publish work) - a
+      // malformed body never reaches the wire, so this is a client-side throw, not a round trip.
+      let threw: unknown;
+      try {
+        await invokeCommand(nc, space, service, EP_CMD_RETIRE_LIFECYCLE, { lifecycleUid: 42 } as unknown as Record<string, unknown>, {
+          target: { mode: "exact", owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid },
+          deadlineMs: 8_000,
+        });
+      } catch (e) { threw = e; }
+      check("malformed args (lifecycleUid: 42) throw bad-request on the client",
+        threw instanceof EpEnvelopeError && threw.code === "bad-request", threw);
+      check("no message reached the wire for the refused call",
+        nc.stats().outMsgs === outBefore, { outBefore, outAfter: nc.stats().outMsgs });
     } finally {
       await nc.close().catch(() => {});
     }
