@@ -75,7 +75,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 const conns: NatsConnection[] = [];
 let releaseBroker: (() => void) | undefined;
@@ -99,6 +99,10 @@ try {
   const IID_LIVE = (live as unknown as MgrPriv).managerInstanceId;
   const IID_CORPSE = (corpse as unknown as MgrPriv).managerInstanceId;
   // The crash shape: connections drop, nothing is written, the registration survives.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (corpse as unknown as MgrPriv).leaseStopping = true;
   await ((corpse as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
 
