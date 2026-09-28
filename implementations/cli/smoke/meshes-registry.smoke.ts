@@ -1260,6 +1260,23 @@ try {
     (await run([])).code === 0 && loadMeshes().some((m) => m.space === "tabbed"));
   removeMesh("tabbed");
   recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+
+  // ── storeDir shape (#2218) ──────────────────────────────────────────────────────────────────
+  const absStoreDir = join(root, "custom-store");
+  recordMesh({ space: "with-store", server: LIVE, root, mode: "open", origin: "manual", storeDir: absStoreDir, ts: new Date(0).toISOString() });
+  check("a record with an absolute storeDir round-trips through loadMeshes", findMesh("with-store")?.storeDir === absStoreDir, findMesh("with-store"));
+  removeMesh("with-store");
+  writeFileSync(brokenFile, JSON.stringify({ space: "relative-store", server: LIVE, root, mode: "open", storeDir: "relative/path", ts: new Date(0).toISOString() }));
+  let storeDirError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    storeDirError = (e as Error).message;
+  }
+  check("a record with a relative storeDir refuses naming the file and storeDir",
+    storeDirError.includes(brokenFile) && storeDirError.includes("storeDir") && storeDirError.includes("relative/path"), storeDirError);
+  rmSync(brokenFile);
+
   // The kernel hands a completer the words AFTER the command name (`emitCommandCompletion`).
   check("completion offers the subcommands first", meshesComplete([""]).items.some((i) => i.value === "add"));
   check("completion offers registered spaces after `rm`", meshesComplete(["rm", ""]).items.some((i) => i.value === "tabbed"));
