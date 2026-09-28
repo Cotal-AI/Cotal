@@ -99,7 +99,8 @@ const guarded = new Proxy(agent as unknown as MeshAgent, {
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-hermes-closed-"));
 const socketPath = join(dir, "bridge.sock");
-const bridge = startBridgeServer(guarded, config, socketPath);
+const TOKEN = "tool-input-closed-token";
+const bridge = startBridgeServer(guarded, config, socketPath, TOKEN);
 
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
 try {
@@ -128,6 +129,10 @@ try {
     }
     return r;
   };
+
+  // The first frame must authenticate before any tool frame is honored.
+  sock.write(`${JSON.stringify({ t: "subscribe", token: TOKEN })}\n`);
+  await new Promise((res) => setTimeout(res, 50));
 
   const result = await callTool("probe", TOOL, { ...IDENTITY_EXTRA });
   const error = String(result?.error ?? "");

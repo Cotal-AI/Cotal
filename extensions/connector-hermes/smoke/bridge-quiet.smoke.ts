@@ -67,7 +67,8 @@ const config = {
 };
 
 const agent = new FakeAgent();
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath);
+const TOKEN = "quiet-bridge-token";
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, TOKEN);
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -103,7 +104,15 @@ try {
     throw new Error(`timed out waiting for bridge frame: ${JSON.stringify(frames)}`);
   };
 
-  client.write(JSON.stringify({ t: "subscribe" }) + "\n");
+  // ---- a tokenless subscribe is dropped ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    raw.write(JSON.stringify({ t: "subscribe" }) + "\n");
+    await once(raw, "close");
+  }
+
+  client.write(JSON.stringify({ t: "subscribe", token: TOKEN }) + "\n");
   const incoming = await waitFrame((frame) => frame.t === "incoming");
   assert.equal((incoming.msg as { id?: string }).id, "dm", "older quiet ambient must not block or join automatic Hermes delivery");
 

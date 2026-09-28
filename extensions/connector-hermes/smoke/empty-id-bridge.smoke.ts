@@ -75,7 +75,8 @@ const config = {
 };
 
 const agent = new FakeAgent();
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath);
+const TOKEN = "empty-id-bridge-token";
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath, TOKEN);
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -104,7 +105,39 @@ try {
     throw new Error(`timed out waiting for bridge frame: ${JSON.stringify(frames)}`);
   };
 
-  client.write(JSON.stringify({ t: "subscribe" }) + "\n");
+  // ---- 0a) a subscribe with no token is dropped before it becomes the adapter ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    raw.write(JSON.stringify({ t: "subscribe" }) + "\n");
+    await once(raw, "close");
+    agent.emitIncoming(); // nothing to receive it: the connection never became the adapter
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(frames.length, 0, "no frame reaches a connection that never authenticated");
+  }
+
+  // ---- 0b) a tool frame from an unauthenticated connection gets no tool_result ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    let sawResult = false;
+    raw.setEncoding("utf8");
+    raw.on("data", (d) => { if (String(d).includes("tool_result")) sawResult = true; });
+    raw.write(JSON.stringify({ t: "tool", id: "x", name: "cotal_send", args: {} }) + "\n");
+    await once(raw, "close");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(sawResult, false, "a tool frame before auth gets no tool_result");
+  }
+
+  // ---- 0c) a subscribe with a wrong token is dropped ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    raw.write(JSON.stringify({ t: "subscribe", token: "wrong" }) + "\n");
+    await once(raw, "close");
+  }
+
+  client.write(JSON.stringify({ t: "subscribe", token: TOKEN }) + "\n");
 
   // ---- 1) an empty-id message is pumped like any other ----
   agent.items.push(emptyIdDelivery("first empty-id body"));
@@ -130,7 +163,7 @@ try {
   assert.deepEqual(agent.drained, [firstMsg.recvKey, secondKey], "the second empty-id delivery is retired too: not a one-shot unwedge");
 
   client.destroy();
-  console.log("✓ hermes empty-id bridge: id-less deliveries pump, ack, and unwedge by receive key");
+  console.log("✓ hermes empty-id bridge: unauthenticated connections are dropped; the legit client still receives incoming after authenticating; id-less deliveries pump, ack, and unwedge by receive key");
 } finally {
   bridge.close();
   rmSync(dir, { recursive: true, force: true });

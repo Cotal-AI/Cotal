@@ -33,7 +33,7 @@ import { createHash, randomBytes } from "node:crypto";
  * documented `sun_path` size and is NOT measured here; it is the smaller of the two, so taking it
  * as the cap fails closed.
  */
-const SUN_PATH_MAX_BYTES = process.platform === "darwin" ? 104 : 108;
+export const SUN_PATH_MAX_BYTES = process.platform === "darwin" ? 104 : 108;
 
 export function controlEndpoint(
   space: string,
