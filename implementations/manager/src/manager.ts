@@ -6506,7 +6506,6 @@ export class Manager {
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
     });
-    nc.closed().then((err) => { void this.onServeConnectionClosed(err ?? undefined); });
     let handle: EpServeHandle;
     try {
       // The 1b typed surface + the derived `describe`. The descriptor stays PUBLIC in static
@@ -6540,6 +6539,9 @@ export class Manager {
       await nc.drain().catch(() => nc.close());
       throw e;
     }
+    // Wired only once the connection serves: a connection this method drains itself after a
+    // refused serve is not a fault to recover, and the caller already sees the refusal.
+    nc.closed().then((err) => { void this.onServeConnectionClosed(err ?? undefined); });
     return { nc, handle };
   }
 
