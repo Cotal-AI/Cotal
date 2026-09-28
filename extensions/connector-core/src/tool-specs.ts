@@ -890,8 +890,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
       async run(agent, _config, { to, text: msg }: { to: string; text: string }) {
         try {
-          const { peer } = await agent.dm(to, msg);
-          return ok(`DM sent to ${peer.card.name}.`);
+          const { peer, ack, recipientStatusAtSend } = await agent.dm(to, msg);
+          const dup = ack.duplicate ? " duplicate publication." : "";
+          return ok(
+            `DM stored as seq ${ack.seq} for ${peer.card.name} (recipient was ${recipientStatusAtSend} at send; delivery not confirmed).${dup}`,
+          );
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
