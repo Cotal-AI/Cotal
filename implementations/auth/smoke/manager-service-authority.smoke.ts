@@ -46,6 +46,25 @@ const credentials = {
   executor: { jwt: "a.b.c", exp: 150 },
 };
 const registrationProof = `sha256:${"a".repeat(64)}`;
+const renewal = {
+  ...request, operation: "renewStandingBundle" as const, registrationProof,
+  accountPublicKey: `A${"A".repeat(55)}`, processEpoch: 3,
+};
+await cell("standing bundle renewal carries an assigned account and process epoch", () => {
+  assert.deepEqual(parseRemoteManagerAuthorityRequest(renewal), renewal);
+});
+await rejects("standing bundle renewal rejects a missing process fence", () =>
+  parseRemoteManagerAuthorityRequest({ ...renewal, processEpoch: undefined }), /processEpoch/);
+const runRenewal = {
+  ...renewal, operation: "renewRunDriver" as const,
+  run: { runId: `run-${"a".repeat(32)}`, holder: "manager-holder", takeoverId: mintLifecycleUid(),
+    epoch: 2, fencingToken: 3, driverId: newIdentity().id, mediatorId: newIdentity().id },
+};
+await cell("run driver renewal binds both nkeys and the takeover fence", () => {
+  assert.deepEqual(parseRemoteManagerAuthorityRequest(runRenewal), runRenewal);
+});
+await rejects("run driver renewal rejects a missing write fence", () =>
+  parseRemoteManagerAuthorityRequest({ ...runRenewal, run: { ...runRenewal.run, fencingToken: undefined } }), /fencingToken/);
 const retirementTarget = { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "worker", lifecycleUid: mintLifecycleUid() };
 const retirement = {
   id: newIdentity().id,

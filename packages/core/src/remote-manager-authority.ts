@@ -13,7 +13,7 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, asse
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session" | "retire";
+  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver";
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
@@ -23,6 +23,19 @@ export interface RemoteManagerAuthorityRequest {
   /** Activate/renew proves the registration phase that preceded it. The opaque digest is minted
    * and validated by the host; it never carries permissions itself. */
   registrationProof?: string;
+  /** Renewals only: account and current registration process fence, checked by the issuer. */
+  accountPublicKey?: string;
+  processEpoch?: number;
+  /** Run renewal only: the active journal attempt and both caller-held connection nkeys. */
+  run?: {
+    runId: string;
+    holder: string;
+    takeoverId: string;
+    epoch: number;
+    fencingToken: number;
+    driverId: string;
+    mediatorId: string;
+  };
   /** Session only: one fresh caller-generated serving nkey and the exact session coordinates. */
   session?: { id: string; endpoint: string; sessionId: string; epoch: number; exp: number };
   /** Retire only: one fresh requester nkey plus the exact terminal operation. The opId is stable
@@ -74,6 +87,9 @@ export interface RemoteManagerAuthorityMaterial {
   lifecycleUid: string;
   requestId: string;
   registrationProof?: string;
+  accountPublicKey?: string;
+  processEpoch?: number;
+  run?: RemoteManagerAuthorityRequest["run"];
   retirement?: RemoteManagerAuthorityRequest["retirement"];
   issuedAt: number;
   /** Earliest `exp` among the envelope's credentials, in milliseconds, as the issuer computes it.
@@ -93,6 +109,8 @@ export interface RemoteManagerAuthorityMaterial {
     serve: RemoteManagerCredential;
     goalWriter: RemoteManagerCredential;
     sessionLedger: RemoteManagerCredential;
+    runDriver: RemoteManagerCredential;
+    runMediator: RemoteManagerCredential;
     sessionServing: RemoteManagerCredential;
     retirementRequester: RemoteManagerCredential;
   }>;
