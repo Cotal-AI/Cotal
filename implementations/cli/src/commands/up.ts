@@ -990,7 +990,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // no transport decision to record — and `recordOurMesh` writes the entry whole, so omitting
       // the field here would erase the requirement on every bare refresh, exactly the way dropping
       // `attachHost` would silently demote the mesh to loopback.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ...(heldMaxSessions !== undefined ? { maxSessions: heldMaxSessions } : {}), ...(held.maxFileStore !== undefined ? { maxFileStore: held.maxFileStore } : {}), ts: new Date().toISOString() }, "refresh");
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ...(heldMaxSessions !== undefined ? { maxSessions: heldMaxSessions } : {}), ...(held.maxFileStore !== undefined ? { maxFileStore: held.maxFileStore } : {}), ...(held.storeDir !== undefined ? { storeDir: held.storeDir } : {}), ts: new Date().toISOString() }, "refresh");
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -1273,6 +1273,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
       ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
       ...(maxFileStore !== undefined ? { maxFileStore } : {}),
+      storeDir,
       ts: new Date().toISOString(),
     }, "started");
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
@@ -1632,6 +1633,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, held
     ...(adoptAttachHost ? { attachHost: adoptAttachHost } : {}),
     ...(adoptMaxSessions !== undefined ? { maxSessions: adoptMaxSessions } : {}),
     ...(pending.maxFileStore !== undefined ? { maxFileStore: pending.maxFileStore } : {}),
+    storeDir: resolve(pending.storeDir),
     ts: new Date().toISOString(),
   }, "started");
   const controlPlane = await startDeliveryWithBroker(pending.space, pending.server, adoptedTlsRequired(pending.root), {
@@ -1685,6 +1687,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?:
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(restoreAttachHost ? { attachHost: restoreAttachHost } : {}),
     ...(restoreMaxSessions !== undefined ? { maxSessions: restoreMaxSessions } : {}),
+    storeDir: resolve(prepared.targetPath),
     ts: new Date().toISOString(),
   }, "started");
   const controlPlane = await startDeliveryWithBroker(prepared.space, prepared.server, adoptedTlsRequired(prepared.root), {
@@ -2406,6 +2409,7 @@ export async function startMeshDetached(
     ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
     ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
     ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}),
+    storeDir,
     ts: new Date().toISOString(),
   }, "started");
   // Commit policy BEFORE delivery launch (S9). Listener is proved; refuse paths never reach here.
