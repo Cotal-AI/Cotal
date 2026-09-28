@@ -5,12 +5,13 @@
  * short-lived JWTs for five held nkeys. The broker expires them and the manager's own close handlers
  * run. The issuer side runs the shipped authorizeRemoteManagerRenewal and issueRemoteManagerAuthority
  * against the live registration gate, and the manager validates the echo with
- * remoteManagerRenewalCredentials. The first request carries a foreign owner and is refused. The
+ * remoteManagerRenewalCredentials. Requests in the first 3s carry a foreign owner, and each close handler's first attempt is refused. The
  * manager keeps last-good and records debt. The next request is adopted for the same nkeys, and
  * every standing connection serves again under the same instance and serve epoch.
  *
  * Limit: the issuer signer is this smoke's test account key standing in for the host service route,
- * which the auth-service owner has not wired yet. Run-driver and mediator renewal are not exercised.
+ * which the auth-service owner has not wired yet. Clean deregistration with an expired executor is not
+ * reached, because recovery renews the executor first. Run-driver and mediator renewal are not exercised.
  *
  * Run: tsx implementations/manager/smoke/remote-start-expiry-recovery.smoke.ts (needs nats-server on PATH)
  */
@@ -110,6 +111,7 @@ try {
   };
   let calls = 0;
   let refusals = 0;
+  let refuseUntil = 0;
   let adopted: Record<Name, string> | undefined;
   const renewStandingBundle = async (processEpoch: number) => {
     calls++;
@@ -121,8 +123,10 @@ try {
       identities: Object.fromEntries(names.map((n) => [n, { id: held[n].id }])) as RemoteManagerAuthorityRequest["identities"],
     };
     const request = { ...base, registrationProof: remoteManagerCurrentRegistrationProof("proof-secret", owner, base, current) } as RemoteManagerAuthorityRequest;
-    // The first request is authenticated as a foreign owner, so the real authorizer refuses it.
-    const caller = calls === 1 ? `u_${"f".repeat(26)}` : owner;
+    // Requests in the first 3s are authenticated as a foreign owner, so the real authorizer refuses
+    // each handler's first attempt. Later requests carry the registered owner.
+    if (calls === 1) refuseUntil = Date.now() + 3_000;
+    const caller = Date.now() < refuseUntil ? `u_${"f".repeat(26)}` : owner;
     let material: RemoteManagerAuthorityMaterial;
     try {
       material = await issueRemoteManagerAuthority({
@@ -178,7 +182,8 @@ try {
   });
   await cell("the close handlers ask for the all-duty family, the foreign-owner request is refused, and last-good is kept with debt", async () => {
     assert.ok(await until(() => refusals >= 1, 10_000), "no all-duty request was refused");
-    assert.ok(logged.some((l) => /re-dial attempt failed: .*another owner/.test(l)), "the refusal was not reported by a close handler");
+    for (const label of ["service endpoint", "goal-writer", "session-ledger"])
+      assert.ok(await until(() => logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`).test(l)), 5_000) || logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`).test(l)), `the ${label} close handler did not report the all-duty refusal`);
     assert.ok(m.remoteRenewalDebt === undefined || m.remoteRenewalDebt.processEpoch === epoch);
     if (!adopted) {
       assert.equal(m.remoteSupervisorCreds, initial.supervisor);
@@ -189,7 +194,7 @@ try {
   await cell("the next attempt adopts the repaired family for the same nkeys and every standing connection serves again", async () => {
     assert.ok(await until(async () => adopted !== undefined && (await Promise.all(conns().map(flushes))).every(Boolean), 40_000),
       `standing connections not restored: ${JSON.stringify(await Promise.all(conns().map(flushes)))}`);
-    assert.equal(refusals, 1);
+    assert.ok(refusals >= 1);
     assert.equal(m.remoteRenewalDebt, undefined);
     assert.equal(m.remoteSupervisorCreds, adopted!.supervisor);
     assert.equal(m.remoteExecutorCreds, adopted!.executor);
