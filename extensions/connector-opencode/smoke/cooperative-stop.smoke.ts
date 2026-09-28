@@ -663,6 +663,8 @@ try {
   const interiorArm = join(dir, "interior-arm");
   const interiorParked = join(dir, "interior-parked");
   const interiorDepartureAdmitted = join(dir, "interior-departure-admitted");
+  const interiorFirstParked = join(dir, "interior-first-parked");
+  const interiorFirstRelease = join(dir, "interior-first-release");
   const interiorRelease = join(dir, "interior-release");
   const interiorRejectParked = join(dir, "interior-reject-parked");
   const interiorRejectRelease = join(dir, "interior-reject-release");
@@ -677,6 +679,8 @@ try {
       COOP_CROSS_ARM: interiorArm,
       COOP_CROSS_PARKED: interiorParked,
       COOP_DEPARTURE_ADMITTED: interiorDepartureAdmitted,
+      COOP_FIRST_PARKED: interiorFirstParked,
+      COOP_FIRST_RELEASE: interiorFirstRelease,
       COOP_CROSS_RELEASE: interiorRelease,
       COOP_REJECT_PARKED: interiorRejectParked,
       COOP_REJECT_RELEASE: interiorRejectRelease,
@@ -697,18 +701,28 @@ try {
   let interiorReady = false;
   for (let i = 0; i < 60 && !interiorReady; i++) {
     await wait(50);
-    interiorReady = existsSync(interiorShape);
+    interiorReady = existsSync(interiorShape) && existsSync(interiorFirstParked);
   }
   // THE SHAPE IS THE CELL. Without this the leg could grade a two-call set while claiming three, and
   // the mutation it exists to kill would survive again for the same reason it survived before.
+  // The leading call must also be RUNNING and not merely admitted, because the teardown's snapshot
+  // holds only writes that have not finished. A leading call that had already completed would be
+  // absent from it, the failing call would be entry 0, and the set would have no interior again.
   check("interior-seat: three calls were admitted with the failing one in the middle",
-    interiorReady, { interiorShape, interiorParked, interiorRejectParked });
+    interiorReady, { interiorShape, interiorFirstParked, interiorParked, interiorRejectParked });
 
   const interiorReply = await sendShutdown(interiorEp.path, interiorEp.token);
   check("interior-seat: control server acked the shutdown",
     interiorReply.trim() === JSON.stringify({ ok: true }), interiorReply);
 
-  await wait(100);
+  // THREE RELEASES IN ORDER, all inside the 1s intake bound. The leading call goes first and
+  // completes, which hands the chain to the failing one; the failing one then rejects at entry 1 of
+  // the teardown's snapshot, with the third still unstarted behind it. Releasing them together, or
+  // releasing the failing one alone, puts the only possible failure at entry 0 and leaves every
+  // mutation that absorbs entry 0 indistinguishable from waiting properly.
+  await wait(50);
+  writeFileSync(interiorFirstRelease, "go\n");
+  await wait(50);
   writeFileSync(interiorRejectRelease, "go\n");
   await wait(200);
   const interiorBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Ivy")?.status;
