@@ -59,6 +59,11 @@ journal before issuing server-selected profiles. A host without that renewal aut
 the request. Until the host issuer wires the operations and validates them on real connections,
 the presence of these types is not an operational pooled renewal guarantee.
 
+With `renewStandingBundle` configured, the manager renews all five standing credentials together.
+It checks every returned credential for the held nkey and assigned account, test-connects each one,
+and adopts them only if the serve epoch has not moved. A refused or failed candidate leaves the
+current credentials in place and records the refusal as cleanup debt until a later renewal succeeds.
+
 **Provisioning and minting** (all `@cotal-ai/core`)
 
 | symbol | purpose |
