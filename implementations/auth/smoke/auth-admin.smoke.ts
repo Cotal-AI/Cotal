@@ -37,6 +37,7 @@ import {
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
   resolveService, invokeCommand, idFromCreds,
+  recordsBucket, recordSpecKey, recordStatusKey, RECORD_KINDS, parseServiceSpec, parseServiceStatus, SERVICE_READY,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { loadAuthInstanceIdentity } from "@cotal-ai/workspace";
@@ -462,6 +463,25 @@ try {
         planeInstanceId !== undefined && service.responder.instanceId === planeInstanceId, { planeInstanceId, resolved: service.responder.instanceId });
     } finally {
       await nc.close().catch(() => {});
+    }
+  }
+
+  console.log("F. M4b: svc.auth.<instanceId>.spec exists and reads ready after the plane opens");
+  {
+    const planeInstanceId2 = loadAuthInstanceIdentity(dir, space)?.instanceId;
+    if (planeInstanceId2 === undefined) throw new Error("no persisted auth instance identity found under the harness dir");
+    const recKv = await new Kvm(wide!.nc).open(recordsBucket(space));
+    const specEntry = await recKv.get(recordSpecKey(RECORD_KINDS.svc, [AUTH_ENDPOINT, planeInstanceId2]));
+    check("svc.auth.<instanceId>.spec exists in the records KV", specEntry !== null && specEntry.value.length > 0);
+    if (specEntry) {
+      const spec = parseServiceSpec(JSON.parse(new TextDecoder().decode(specEntry.value)), { endpoint: AUTH_ENDPOINT });
+      check("the spec's endpoint agrees with \"auth\"", spec.endpoint === AUTH_ENDPOINT);
+    }
+    const statusEntry = await recKv.get(recordStatusKey(RECORD_KINDS.svc, [AUTH_ENDPOINT, planeInstanceId2]));
+    check("svc.auth.<instanceId>.status exists in the records KV", statusEntry !== null && statusEntry.value.length > 0);
+    if (statusEntry) {
+      const status = parseServiceStatus(JSON.parse(new TextDecoder().decode(statusEntry.value)));
+      check("the status reads \"ready\" after the plane opens", status.state === SERVICE_READY, status);
     }
   }
 
