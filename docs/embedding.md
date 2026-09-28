@@ -343,7 +343,7 @@ returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host
 consumer connection and its create/delete rights. The five-minute executor already renews through
 `remoteAuthority.renewExecutor`. The signerless supervisor, serve, goal-writer, session-ledger and
 per-run driver credentials do not yet have a complete remote renewal and adoption path. The
-[hosted runtime contract](design/hosted-runtime-contracts.md) records the bounded additions and
+[hosted runtime contract](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/hosted-runtime-contracts.md) records the bounded additions and
 their ownership; it is not a shipped pooled service.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime
