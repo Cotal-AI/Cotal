@@ -44,7 +44,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 
 {
   const sim = new SimHandler({
-    turns: { build: [{ status: "blocked", at: 0 }, { status: "done", at: 0 }] },
+    turns: { build: [{ status: "blocked" }, { status: "done" }] },
     clock: { start: 1_000_000, turn: "5m" },
   });
   const s = new KeyScope();
@@ -61,7 +61,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 // ---- 2) an unscripted effect fails loudly -----------------------------------------------------
 
 {
-  const sim = new SimHandler({ turns: { build: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { build: { status: "done" } } });
   const s = new KeyScope();
   let err: SimUnscriptedError | null = null;
   try {
@@ -78,7 +78,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 // ---- 3) running past the end of a scripted list also fails --------------------------------------
 
 {
-  const sim = new SimHandler({ turns: { build: [{ status: "blocked", at: 0 }] } });
+  const sim = new SimHandler({ turns: { build: [{ status: "blocked" }] } });
   const s = new KeyScope();
   await sim.turn({ agent: { agent: "a", persona: "p" } }, ctxFor(s.nextEffect("turn", "build")));
   let threw = false;
@@ -191,7 +191,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 {
   // The adversarial cases the runtime has to survive: an agent dying at a specific occurrence.
   const sim = new SimHandler({
-    turns: { build: [{ status: "done", at: 0 }, { status: "done", at: 0 }] },
+    turns: { build: [{ status: "done" }, { status: "done" }] },
     faults: [{ at: "turn:build#1", kind: "agent-down" }],
   });
   const s = new KeyScope();
@@ -252,7 +252,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 // bind time turns "before settling" from a title into a comparison.
 {
   const sim = new SimHandler({
-    turns: { build: { status: "done", at: 0 } },
+    turns: { build: { status: "done" } },
     asks: { q: { n: 3 } },
     checkpoints: {
       gate: [{ status: "resolved", value: true, by: "sim" }, { status: "resolved", value: true, by: "sim" }],
@@ -346,7 +346,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     checkpoints: SimScript["checkpoints"] = { gate: { status: "resolved", value: true, by: "sim" } },
   ) => {
     const sim = new SimHandler({
-      turns: { build: { status: "done", at: 0 } },
+      turns: { build: { status: "done" } },
       asks: { q: { n: 3 } },
       checkpoints,
     });
@@ -410,7 +410,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     checkpoints: SimScript["checkpoints"] = { gate: { status: "resolved", value: true, by: "sim" } },
   ) => {
     const sim = new SimHandler({
-      turns: { build: { status: "done", at: 0 } },
+      turns: { build: { status: "done" } },
       asks: { q: { n: 3 } },
       checkpoints,
     });
@@ -451,7 +451,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 
 {
   const sim = new SimHandler({
-    turns: { build: { status: "done", at: 0 }, "verify-it": { status: "done", at: 0 } },
+    turns: { build: { status: "done" }, "verify-it": { status: "done" } },
   });
   const s = new KeyScope();
   await sim.turn({ agent: { agent: "a", persona: "p" } }, ctxFor(s.nextEffect("turn", "build")));

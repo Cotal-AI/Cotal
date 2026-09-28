@@ -299,12 +299,12 @@ const differences = (a: Arm, b: Arm): string[] => {
 
 const WORKFLOW_SCRIPT = {
   turns: {
-    "draft-plan": { status: "done", at: 0 },
+    "draft-plan": { status: "done" },
     build: [
-      { status: "blocked", at: 0 },
-      { status: "done", at: 0 },
+      { status: "blocked" },
+      { status: "done" },
     ],
-    unblock: { status: "done", at: 0 },
+    unblock: { status: "done" },
   },
   checkpoints: { "approve-plan": { status: "resolved", value: true, at: 0 } },
   clock: { start: 1_000_000 },
@@ -385,12 +385,12 @@ log("rounds", rounds, r.status);`,
   [
     "a checkpoint that expires",
     'const c = await checkpoint("go", "Go?", { timeout: "1m", onExpiry: "proceed" });\nlog(c.status);',
-    { checkpoints: { go: { status: "expired", at: 0 } } },
+    { checkpoints: { go: { status: "expired" } } },
   ],
   [
     "an effect the handler faults",
     'try { const a = await spawn("one"); await turn(a, { name: "t" }); } catch (e) { log(e.code, e.kind); }',
-    { turns: { t: { status: "done", at: 0 } }, faults: [{ at: "turn:t#0", kind: "agent", code: "E_AGENT" }] },
+    { turns: { t: { status: "done" } }, faults: [{ at: "turn:t#0", kind: "agent", code: "E_AGENT" }] },
   ],
   [
     "effects before a refusal, so the journal is a prefix",
@@ -495,9 +495,9 @@ log("rounds", rounds, r.status);`,
   [
     "a fan-out over one agent",
     'const a = await spawn("one");\nconst rs = await fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: (m) => m.agent });\nlog(len(rs));',
-    { turns: { t: { status: "done", at: 0 } } },
+    { turns: { t: { status: "done" } } },
   ],
-  ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done", at: 0 } } }, "L3021"],
+  ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done" } } }, "L3021"],
   // A MEMBER WRITE HAS TO TRAVEL THROUGH `set`, and until these two nothing in the corpus said so: a
   // native `o[k] = v` emission left every corpus program green and showed up only as a declared
   // divergence. Both refusals are the write path's own - the curated table on the key, the receiver
@@ -591,7 +591,7 @@ log("rounds", rounds, r.status);`,
   [
     "a fan-out whose key is awaited",
     'const a = await spawn("one");\nconst keyer = async () => { await sleep("1m", { name: "warm" }); return (m) => m.agent; };\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: await keyer() });\nlog("done");',
-    { turns: { t: { status: "done", at: 0 } } },
+    { turns: { t: { status: "done" } } },
   ],
   // AND THE BODY IS EVALUATED INSIDE THE SCOPE. Both arms journal `fanOut:f` BEFORE `sleep:warm`,
   // which is what says the body travelled unevaluated: an eager one would have journalled its sleep
@@ -599,7 +599,7 @@ log("rounds", rounds, r.status);`,
   [
     "a fan-out whose body is awaited",
     'const a = await spawn("one");\nconst choose = async () => { await sleep("1m", { name: "warm" }); return (m) => turn(m, { name: "t" }); };\nawait fanOut([a], await choose(), { name: "f", key: (m) => m.agent });\nlog("done");',
-    { turns: { t: { status: "done", at: 0 } } },
+    { turns: { t: { status: "done" } } },
   ],
   [
     "a conclave",
@@ -1089,7 +1089,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   ["the same effect twice", 'await sleep("1m", { name: "s" }); await sleep("2m", { name: "s" }); log(now());', {}],
   ["an effect in a loop", 'for (const n of ["a", "b", "c"]) { await sleep("1m", { name: n }); } log(now());', {}],
   ["an effect inside a function, called twice", 'const step = async (n) => { await sleep("1m", { name: n }); return now(); }; log(await step("one"), await step("two"));', {}],
-  ["two agents and a turn", 'const a = await spawn("one"); await turn(a, { name: "t" }); log(a.agent);', { turns: { t: { status: "done", at: 0 } } }],
+  ["two agents and a turn", 'const a = await spawn("one"); await turn(a, { name: "t" }); log(a.agent);', { turns: { t: { status: "done" } } }],
 ];
 
 {

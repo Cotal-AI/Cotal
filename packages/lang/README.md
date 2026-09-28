@@ -37,7 +37,7 @@ log(r.status)
 
 validate(source);                       // throws LangErrors, every refusal with code, cause, fix
 
-const script = { turns: { build: { status: "done", at: 1 } } };
+const script = { turns: { build: { status: "done" } } };
 const plan = await dryRun(source, script);   // what it would do, with no agent touched
 
 const first = await run(source, { runId: "r-1", handler: new SimHandler(script) });

@@ -58,9 +58,9 @@ while (r.status === "blocked") {
 
 const SCRIPT = {
   turns: {
-    "draft-plan": { status: "done", at: 0 } as const,
-    build: [{ status: "blocked", at: 0 }, { status: "done", at: 0 }] as const,
-    unblock: { status: "done", at: 0 } as const,
+    "draft-plan": { status: "done" } as const,
+    build: [{ status: "blocked" }, { status: "done" }] as const,
+    unblock: { status: "done" } as const,
   },
   checkpoints: { "approve-plan": { status: "resolved", value: true, at: 0 } as const },
   clock: { start: 1_000_000 },
@@ -152,7 +152,7 @@ log(built.status);
     runId: "r-3b",
     onLog: sink,
     handler: new SimHandler({
-      turns: { build: [{ status: "done", at: 0 }, { status: "done", at: 0 }] },
+      turns: { build: [{ status: "done" }, { status: "done" }] },
       faults: [{ at: "turn:build#0", kind: "agent-down" }],
     }),
   });
@@ -188,7 +188,7 @@ const out = await parallel({
 `;
   const r = await run(CONCURRENT, {
     runId: "r-4",
-    handler: new SimHandler({ turns: { review: [{ status: "done", at: 0 }, { status: "done", at: 0 }] } }),
+    handler: new SimHandler({ turns: { review: [{ status: "done" }, { status: "done" }] } }),
   });
   const keys = keysOf(r.journal);
   ok(
@@ -219,7 +219,7 @@ const reviews = await fanOut(
 `;
   const r = await run(FAN, {
     runId: "r-5",
-    handler: new SimHandler({ turns: { review: [{ status: "done", at: 0 }, { status: "done", at: 0 }] } }),
+    handler: new SimHandler({ turns: { review: [{ status: "done" }, { status: "done" }] } }),
   });
   const keys = keysOf(r.journal);
   ok(
@@ -238,7 +238,7 @@ const out = await fanOut([{ n: 1 }, { n: 2 }], async (i) => turn(await spawn("r"
 `;
   let threw = "";
   try {
-    await run(BAD, { runId: "r-6", handler: new SimHandler({ turns: { review: { status: "done", at: 0 } } }) });
+    await run(BAD, { runId: "r-6", handler: new SimHandler({ turns: { review: { status: "done" } } }) });
   } catch (e) {
     threw = (e as Error).message;
   }
@@ -255,7 +255,7 @@ const out = await fanOut(
 `;
   const good = await run(GOOD, {
     runId: "r-6b",
-    handler: new SimHandler({ turns: { review: [{ status: "done", at: 0 }, { status: "done", at: 0 }] } }),
+    handler: new SimHandler({ turns: { review: [{ status: "done" }, { status: "done" }] } }),
   });
   const gk = keysOf(good.journal);
   ok(
@@ -275,7 +275,7 @@ const out = await fanOut(
 `;
   let dup = "";
   try {
-    await run(DUP, { runId: "r-6c", handler: new SimHandler({ turns: { review: { status: "done", at: 0 } } }) });
+    await run(DUP, { runId: "r-6c", handler: new SimHandler({ turns: { review: { status: "done" } } }) });
   } catch (e) {
     dup = (e as Error).message;
   }
@@ -448,7 +448,7 @@ const a = await spawn("x");
 await turn(a, { name: "go" });
 log(random());
 `;
-  const script = { turns: { go: { status: "done", at: 0 } as const } };
+  const script = { turns: { go: { status: "done" } as const } };
   logged.length = 0;
   const first = await run(RAND, { runId: "r-10", seed: "seed-1", handler: new SimHandler(script), onLog: sink });
   const firstDraw = (logged[0] ?? [])[0];
@@ -480,7 +480,7 @@ log(chased.status);
     onLog: sink,
     handler: new SimHandler({
       events: { "await-reply": [null] },
-      turns: { chase: { status: "done", at: 0 } },
+      turns: { chase: { status: "done" } },
     }),
   });
   ok("a timed-out event resolves null and ?? takes the fallback", (logged[0] ?? [])[0] === "done", logged[0]);
@@ -504,7 +504,7 @@ log(caught, r.status);
   await run(FREEZE, {
     runId: "r-12",
     onLog: sink,
-    handler: new SimHandler({ turns: { go: { status: "done", at: 0 } } }),
+    handler: new SimHandler({ turns: { go: { status: "done" } } }),
   });
   const v = { caught: (logged[0] ?? [])[0] as string, status: (logged[0] ?? [])[1] as string };
   // Whether the assignment throws or is silently ignored, what must hold is that the recorded
@@ -721,13 +721,13 @@ log(c.status);
   // which is why it read as correct; the whole point of writing the id down is the case where it
   // does not. Plant a different id on the pending row and require the handler to see THAT.
   const P = `await turn(await spawn("a", { name: "a" }), { name: "go" });\n`;
-  const live = await run(P, { runId: "r-16b", handler: new SimHandler({ turns: { go: { status: "done", at: 0 } } }) });
+  const live = await run(P, { runId: "r-16b", handler: new SimHandler({ turns: { go: { status: "done" } } }) });
   const entries = live.journal.entries().map((e) =>
     e.kind === "turn" ? { ...e, state: "pending" as const, status: undefined, requestId: "PLANTED-ID" } : e,
   );
 
   const seen: string[] = [];
-  const sim = new SimHandler({ turns: { go: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { go: { status: "done" } } });
   const innerTurn = sim.turn.bind(sim);
   (sim as unknown as { turn: unknown }).turn = async (req: never, ctx: { requestId: string }) => {
     seen.push(ctx.requestId);
@@ -998,7 +998,7 @@ log(c.status);
  */
 {
   const P = `await turn(await spawn("a", { name: "a" }), { name: "go" });\n`;
-  const script = { turns: { go: { status: "done" as const, at: 0 } } };
+  const script = { turns: { go: { status: "done" as const } } };
   const live = await run(P, { runId: "r-19", handler: new SimHandler(script) });
 
   // The crash: the turn bound a real resource and never settled.
@@ -1347,7 +1347,7 @@ fact.outcome = "flipped";`;
     class ShallowHandler extends SimHandler {
       override async turn(req: Parameters<SimHandler["turn"]>[0], ctx: EffectContext) {
         void req; void ctx;
-        return Object.freeze({ status: "done" as const, at: 1, inner: { touched: false } }) as never;
+        return Object.freeze({ status: "done" as const, inner: { touched: false } }) as never;
       }
     }
     let verdict = "no throw";
@@ -1471,7 +1471,7 @@ try {
       }
     }
   }
-  const TURNS = { turns: { t1: { status: "done" as const, at: 1 }, t2: { status: "done" as const, at: 2 } } };
+  const TURNS = { turns: { t1: { status: "done" as const }, t2: { status: "done" as const } } };
   const same = new ProbeHandler(TURNS);
   await run(`
 const a = await spawn("w", { name: "a" });
@@ -1501,7 +1501,7 @@ await parallel({
       return await this.guard(async () => await super.ask(req, ctx));
     }
   }
-  const mixed = new MixedProbe({ turns: { t1: { status: "done" as const, at: 1 } }, asks: { q1: { estimate: 3 } } });
+  const mixed = new MixedProbe({ turns: { t1: { status: "done" as const } }, asks: { q1: { estimate: 3 } } });
   await run(`
 const a = await spawn("w", { name: "a" });
 await parallel({
