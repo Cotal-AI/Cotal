@@ -54,11 +54,12 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
-import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { startAuthCallout } from "./callout.js";
@@ -254,6 +255,10 @@ export async function openAuthAuthorityPlane(opts: {
    *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
    *  no natural failure to inject). Production compositions never set this. */
   probePlaneDeath?: (kill: { ledger: () => Promise<void>; records: () => Promise<void> }) => void;
+  /** The composition's local manager instance, read per selection. The plane never resolves a
+   *  workspace root itself: the CLI wrapper passes its root's persisted identity, and a hosted
+   *  context passes none, so only remote manager gates can be candidates. Absent means none. */
+  localManager?: () => ManagerInstanceIdentity | undefined;
 }): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
@@ -446,9 +451,9 @@ export async function openAuthAuthorityPlane(opts: {
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
-  const root = findCotalRoot();
+  const loadLocalManager = opts.localManager ?? (() => undefined);
   const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
-    const localManager = loadManagerInstanceIdentity(root, space);
+    const localManager = loadLocalManager();
     const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
     if (!gate) return "unknown";
     if (gate.state !== "open") return "not open";
@@ -477,7 +482,7 @@ export async function openAuthAuthorityPlane(opts: {
     const remoteInstances: string[] = [];
     const remoteLive: string[] = [];
     let localCandidate: string | undefined;
-    const localManager = loadManagerInstanceIdentity(root, space);
+    const localManager = loadLocalManager();
     for (const raw of await scanner.scanManagerGates()) {
       if (raw.op !== undefined) continue;
       const parts = raw.key.split(".");
@@ -1005,6 +1010,104 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
       await new Promise((r) => setTimeout(r, hold));
     }
   }
+  const started = await startAuthContext({
+    space,
+    server,
+    port,
+    dir,
+    secrets,
+    hostedStore: store !== undefined,
+    ...(publicPort !== undefined ? { publicFace: { port: publicPort, urlFlag: publicUrlFlag, trustedProxy, advertisedServer, agentProvisioningUrl } } : {}),
+    // The CLI composition's local manager is this workspace root's persisted instance, re-read per
+    // selection exactly as before. A hosted context passes no local manager at all.
+    localManager: () => loadManagerInstanceIdentity(root, space),
+  });
+
+  // All planes bound — NOW write the discovery file (its existence is the readiness signal).
+  saveAuthServiceInfo(dir, { url: started.url, pid: process.pid, cap: started.cap, ...(started.publicUrl !== undefined ? { publicUrl: started.publicUrl } : {}) });
+  console.log(
+    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${started.url}${started.publicUrl !== undefined ? `, public exchange at ${started.publicUrl}` : ""}`,
+  );
+
+  // The CLI wrapper, not the context, owns process signals and exit codes.
+  const stop = async () => {
+    clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
+    await started.handle.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void stop());
+  process.on("SIGTERM", () => void stop());
+
+  // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
+  // owns restarts, and a callout that silently stopped answering would hang every user connect.
+  // A FENCED plane is equally fatal (SPEC 13.13): its scanners are no longer whole, every authority
+  // operation already refuses, and a daemon that stayed up would look healthy while a successor
+  // reclaims — down the whole service instead.
+  const ended = await started.ended;
+  clearAuthServiceInfo(dir);
+  if (ended.kind === "fenced") {
+    console.error(`✗ auth-service: ${ended.cause} - exiting`);
+    process.exit(1);
+  }
+  if (ended.cause !== undefined) {
+    console.error(`✗ auth-service: broker connection closed (${ended.cause}) - exiting`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+/** An embedded auth-service context: the loopback exchange URL plus the hosted lifecycle handle. */
+export interface AuthServiceHandle extends HostedServiceHandle {
+  readonly url: string;
+  readonly publicUrl?: string;
+}
+
+/** Start one account-scoped auth-service context. Every input is explicit: the state dir, the
+ *  injected store with its proved identity, the assigned data account and the broker. The context
+ *  installs no process signal handler, never exits the process, never selects a root from cwd,
+ *  and has no local manager. It returns only after the authority plane, the callout subscription
+ *  and the loopback listener are bound. A failed start releases what it acquired and throws. A
+ *  mid-life fence or broker loss makes only this context `unavailable` and closes its resources. */
+export async function startAuthService(inputs: HostedContextInputs & { port?: number }): Promise<AuthServiceHandle> {
+  if (!inputs.context?.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
+    throw new Error("auth-service: hosted context needs an account, lifecycle, space, server and stateDir");
+  if (inputs.store.identity === undefined)
+    throw new Error("auth-service: hosted SecretStore must declare a stable identity");
+  const actual = parseSecretStoreIdentity(inputs.store.identity);
+  if (actual.kind !== "injected" || !sameSecretStoreIdentity(actual, inputs.storeIdentity))
+    throw new Error("auth-service: hosted SecretStore identity does not match the assigned store identity");
+  const port = inputs.port ?? 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`auth-service: port must be a port number, got ${port}`);
+  const started = await startAuthContext({
+    space: inputs.space,
+    server: inputs.servers,
+    port,
+    dir: resolve(inputs.stateDir),
+    secrets: inputs.store,
+    hostedStore: true,
+    localManager: () => undefined,
+    context: inputs.context,
+  });
+  return started.handle;
+}
+
+type AuthContextEnd = { kind: "fenced"; cause: string } | { kind: "broker"; cause?: string };
+
+interface AuthContextOptions {
+  space: string;
+  server: string;
+  port: number;
+  dir: string;
+  secrets: SecretStore;
+  hostedStore: boolean;
+  publicFace?: { port: number; urlFlag?: string; trustedProxy: boolean; advertisedServer?: string; agentProvisioningUrl?: string };
+  localManager: () => ManagerInstanceIdentity | undefined;
+  /** Present only for a hosted context: the assigned account the loaded data account must match. */
+  context?: HostedContextKey;
+}
+
+async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; publicUrl?: string; cap: string; handle: AuthServiceHandle; ended: Promise<AuthContextEnd> }> {
+  const { space, server, dir, secrets, port } = o;
   const keys = await loadServiceKeys(secrets, space);
   const callout = await loadCalloutAuth(secrets, space);
   const issuer = await loadIssuer(secrets, space);
@@ -1019,11 +1122,13 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
       ...(idp ? [] : [`IdP pin under ${dir}`]),
     ];
     throw new Error(
-      `auth-service: user-auth material is missing (${missing.join(", ")}) - ${store ? "the hosted composition must provision the secret store before starting this daemon" : "enable it with `cotal up --user-auth --idp <url>`"}`,
+      `auth-service: user-auth material is missing (${missing.join(", ")}) - ${o.hostedStore ? "the hosted composition must provision the secret store before starting this daemon" : "enable it with `cotal up --user-auth --idp <url>`"}`,
     );
   }
   if (issuer.issuer !== spaceIssuer(space))
     throw new Error(`auth-service: issuer pin ${issuer.issuer} does not match space "${space}"`);
+  if (o.context !== undefined && keys.dataAccount.pub !== o.context.accountPublicKey)
+    throw new Error("auth-service: the store's data account does not match the assigned hosted context");
 
   if (!(await isReachable(server, { creds: callout.calloutCreds })))
     throw new Error(`auth-service: can't reach the broker at ${server} with the callout creds - is the mesh up (with the callout account preloaded)?`);
@@ -1036,140 +1141,166 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     dir,
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log: (l) => console.error(l),
+    localManager: o.localManager,
   });
-
-  // ---- Plane 2: the callout, on its own callout-account connection ----
-  const nc: NatsConnection = await connect({
-    servers: server,
-    authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
-    name: `cotal:auth-service:${space}`,
-  });
-  startAuthCallout(nc as never, {
-    xkeySeed: callout.xkey.seed,
-    authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
-    dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
-    space,
-    token: { key: issuer.localKeySet(), issuer: issuer.issuer },
-    authorizeActor: plane.authorizeConnect,
-    permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller),
-    log: (l) => console.error(l),
-  });
-  // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
-  // usable user mesh while the SUB was still in flight would intermittently deny first connects.
-  await nc.flush();
-
-  // ---- Plane 1: the exchange + JWKS, loopback HTTP ----
-  const bridgeIdp = { issuer: idp.issuer, audience: idp.audience, key: pinnedJwksResolver(idp.jwksUri) };
-  const bridge = createIdpBridge({
-    idp: bridgeIdp,
-    space,
-    spaceSecret: ownerSecret,
-    issuer,
-    authorizeActor: ledgerAuthorizeGrant(dir),
-    mintConnectCredential: plane.mintConnectCredential,
-  });
-  const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
-  const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
-  const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const ctx: HandlerCtx = {
-    issuer,
-    bridge,
-    bridgeIdp,
-    ownerSecret,
-    managerServiceAuthority: plane.issueManagerServiceAuthority,
-    maintainRemoteManager: plane.maintainRemoteManager,
-    validateRetainedAgent: plane.validateRetainedAgent,
-    verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
-    verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
-    scanManagerGoalIndex: plane.scanManagerGoalIndex,
-    authorizeManagerAdmin: plane.authorizeManagerAdmin,
-    secrets,
-    retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
-    retireManagedLifecycle: plane.retireManagedLifecycle,
-    cap,
-    failures,
-    badCaps,
-    space,
-    dir,
-    mintConnectCredential: plane.mintConnectCredential,
-    selectManagerInstance: plane.selectManagerInstance,
-  };
-  const http = createServer((req, res) => void handle(req, res, ctx));
-  await new Promise<void>((resolvePort, reject) => {
-    http.once("error", reject);
-    http.listen(port, "127.0.0.1", () => resolvePort());
-  });
-  const addr = http.address();
-  const boundPort = typeof addr === "object" && addr ? addr.port : port;
-  const url = `http://127.0.0.1:${boundPort}`;
-
-  // The optional PUBLIC face: its own server, its own closed route table, its own budgets — also
-  // loopback-bound (the operator's reverse proxy terminates TLS and forwards here).
+  let nc: NatsConnection | undefined;
+  let http: ReturnType<typeof createServer> | undefined;
   let publicHttp: ReturnType<typeof createServer> | undefined;
-  let publicUrl: string | undefined;
-  if (publicPort !== undefined) {
-    // The discovery bundle is GENERATED from the daemon's own recorded config — the pinned IdP,
-    // the flags, the callout material — so it cannot drift from what this process enforces.
-    // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
-    // the pre-bind port would advertise an address nothing listens on.
-    const bundle = composeUserBundle({
-      space,
-      // What participants DIAL, not what the callout dials: the daemon reaches the broker on its
-      // loopback/LAN address (--server), which is meaningless off this machine. --advertised-server
-      // is the publicly dialable address (e.g. wss://… through the reverse proxy).
-      server: advertisedServer ?? server,
-      idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
-      sentinelCreds: callout.sentinelCreds,
-      ...(agentProvisioningUrl ? { agentProvisioningUrl } : {}),
-    });
-    publicHttp = createServer(makePublicHandler(ctx, makePublicPolicy(trustedProxy), bundle));
-    await new Promise<void>((resolvePort, reject) => {
-      publicHttp!.once("error", reject);
-      publicHttp!.listen(publicPort, "127.0.0.1", () => resolvePort());
-    });
-    const paddr = publicHttp.address();
-    const boundPublic = typeof paddr === "object" && paddr ? paddr.port : publicPort;
-    publicUrl = publicUrlFlag ?? `http://127.0.0.1:${boundPublic}`;
-    finalizeUserBundleEndpoint(bundle, publicUrl);
-  }
-
-  // All planes bound — NOW write the discovery file (its existence is the readiness signal).
-  saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
-  console.log(
-    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
-  );
-
-  const stop = async () => {
-    clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
-    http.close();
-    publicHttp?.close();
-    await plane.close().catch(() => {});
-    await nc.close().catch(() => {});
-    process.exit(0);
+  // Stop admission, let accepted requests settle within the public request deadline, then cut
+  // whatever is still open so a stuck client cannot hold this context's close forever.
+  const closeServer = async (srv: ReturnType<typeof createServer> | undefined): Promise<void> => {
+    if (srv === undefined || !srv.listening) return;
+    const closed = new Promise<void>((r) => srv.close(() => r()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([closed, new Promise<void>((r) => { timer = setTimeout(r, PUBLIC_DEADLINE_MS); })]);
+    clearTimeout(timer);
+    srv.closeAllConnections();
+    await closed;
   };
-  process.on("SIGINT", () => void stop());
-  process.on("SIGTERM", () => void stop());
+  try {
+    // ---- Plane 2: the callout, on its own callout-account connection ----
+    nc = await connect({
+      servers: server,
+      authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
+      name: `cotal:auth-service:${space}`,
+    });
+    startAuthCallout(nc as never, {
+      xkeySeed: callout.xkey.seed,
+      authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
+      dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+      space,
+      token: { key: issuer.localKeySet(), issuer: issuer.issuer },
+      authorizeActor: plane.authorizeConnect,
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller),
+      log: (l) => console.error(l),
+    });
+    // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
+    // usable user mesh while the SUB was still in flight would intermittently deny first connects.
+    await nc.flush();
 
-  // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
-  // owns restarts, and a callout that silently stopped answering would hang every user connect.
-  // A FENCED plane is equally fatal (SPEC 13.13): its scanners are no longer whole, every authority
-  // operation already refuses, and a daemon that stayed up would look healthy while a successor
-  // reclaims — down the whole service instead.
-  await Promise.race([
-    (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
-      clearAuthServiceInfo(dir);
-      if (err) {
-        console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
-        process.exit(1);
+    // ---- Plane 1: the exchange + JWKS, loopback HTTP ----
+    const bridgeIdp = { issuer: idp.issuer, audience: idp.audience, key: pinnedJwksResolver(idp.jwksUri) };
+    const bridge = createIdpBridge({
+      idp: bridgeIdp,
+      space,
+      spaceSecret: ownerSecret,
+      issuer,
+      authorizeActor: ledgerAuthorizeGrant(dir),
+      mintConnectCredential: plane.mintConnectCredential,
+    });
+    const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
+    const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
+    const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
+    const ctx: HandlerCtx = {
+      issuer,
+      bridge,
+      bridgeIdp,
+      ownerSecret,
+      managerServiceAuthority: plane.issueManagerServiceAuthority,
+      maintainRemoteManager: plane.maintainRemoteManager,
+      validateRetainedAgent: plane.validateRetainedAgent,
+      verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
+      verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
+      scanManagerGoalIndex: plane.scanManagerGoalIndex,
+      authorizeManagerAdmin: plane.authorizeManagerAdmin,
+      secrets,
+      retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
+      retireManagedLifecycle: plane.retireManagedLifecycle,
+      cap,
+      failures,
+      badCaps,
+      space,
+      dir,
+      mintConnectCredential: plane.mintConnectCredential,
+      selectManagerInstance: plane.selectManagerInstance,
+    };
+    const loopback = createServer((req, res) => void handle(req, res, ctx));
+    http = loopback;
+    await new Promise<void>((resolvePort, reject) => {
+      loopback.once("error", reject);
+      loopback.listen(port, "127.0.0.1", () => resolvePort());
+    });
+    const addr = loopback.address();
+    const boundPort = typeof addr === "object" && addr ? addr.port : port;
+    const url = `http://127.0.0.1:${boundPort}`;
+
+    // The optional PUBLIC face: its own server, its own closed route table, its own budgets — also
+    // loopback-bound (the operator's reverse proxy terminates TLS and forwards here).
+    let publicUrl: string | undefined;
+    if (o.publicFace !== undefined) {
+      const face = o.publicFace;
+      // The discovery bundle is GENERATED from the daemon's own recorded config — the pinned IdP,
+      // the flags, the callout material — so it cannot drift from what this process enforces.
+      // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
+      // the pre-bind port would advertise an address nothing listens on.
+      const bundle = composeUserBundle({
+        space,
+        // What participants DIAL, not what the callout dials: the daemon reaches the broker on its
+        // loopback/LAN address (--server), which is meaningless off this machine. --advertised-server
+        // is the publicly dialable address (e.g. wss://… through the reverse proxy).
+        server: face.advertisedServer ?? server,
+        idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
+        sentinelCreds: callout.sentinelCreds,
+        ...(face.agentProvisioningUrl ? { agentProvisioningUrl: face.agentProvisioningUrl } : {}),
+      });
+      const pub = createServer(makePublicHandler(ctx, makePublicPolicy(face.trustedProxy), bundle));
+      publicHttp = pub;
+      await new Promise<void>((resolvePort, reject) => {
+        pub.once("error", reject);
+        pub.listen(face.port, "127.0.0.1", () => resolvePort());
+      });
+      const paddr = pub.address();
+      const boundPublic = typeof paddr === "object" && paddr ? paddr.port : face.port;
+      publicUrl = face.urlFlag ?? `http://127.0.0.1:${boundPublic}`;
+      finalizeUserBundleEndpoint(bundle, publicUrl);
+    }
+
+    const callNc = nc;
+    let state: HostedServiceState["state"] = "ready";
+    let cause: string | undefined;
+    let closePromise: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      if (closePromise !== undefined) return closePromise;
+      if (state === "ready") state = "draining";
+      closePromise = (async () => {
+        await Promise.all([closeServer(http), closeServer(publicHttp)]);
+        await plane.close().catch(() => {});
+        await callNc.close().catch(() => {});
+      })();
+      return closePromise;
+    };
+    const ended: Promise<AuthContextEnd> = Promise.race([
+      (callNc as { closed(): Promise<Error | void> }).closed().then((err): AuthContextEnd => ({ kind: "broker", ...(err ? { cause: err.message } : {}) })),
+      plane.fenced.then((reason): AuthContextEnd => ({ kind: "fenced", cause: reason })),
+    ]).then((end) => {
+      // A clean broker close after this context's own close() is the orderly end, not a failure.
+      if (end.kind === "fenced" || end.cause !== undefined || closePromise === undefined) {
+        state = "unavailable";
+        cause = end.kind === "fenced" ? end.cause : `broker connection closed${end.cause !== undefined ? ` (${end.cause})` : ""}`;
+        void close();
       }
-      process.exit(0);
-    }),
-    plane.fenced.then((reason) => {
-      clearAuthServiceInfo(dir);
-      console.error(`✗ auth-service: ${reason} - exiting`);
-      process.exit(1);
-    }),
-  ]);
+      return end;
+    });
+    const context = o.context ?? { accountPublicKey: keys.dataAccount.pub, lifecycleUid: "" };
+    const service: AuthServiceHandle = {
+      url,
+      ...(publicUrl !== undefined ? { publicUrl } : {}),
+      readiness(): HostedServiceState {
+        if (state === "unavailable") return { state, context, cause: cause ?? "auth-service context is unavailable" };
+        return { state: closePromise === undefined ? "ready" : "draining", context };
+      },
+      drain: close,
+      close,
+    };
+    return { url, ...(publicUrl !== undefined ? { publicUrl } : {}), cap, handle: service, ended };
+  } catch (e) {
+    // A failed start releases only what THIS context acquired, in reverse order.
+    await closeServer(publicHttp).catch(() => {});
+    await closeServer(http).catch(() => {});
+    await nc?.close().catch(() => {});
+    await plane.close().catch(() => {});
+    throw e;
+  }
 }
 
 interface HandlerCtx {
