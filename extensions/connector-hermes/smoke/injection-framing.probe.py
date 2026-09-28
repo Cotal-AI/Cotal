@@ -84,6 +84,8 @@ sys.modules.update(
 # The adapter's constructor builds the bridge client singleton, which reads this path and does not
 # dial it. The inject path under test never touches the socket.
 os.environ.setdefault("COTAL_BRIDGE_SOCKET", "/nonexistent/cotal-injection-framing.sock")
+# The probe never connects (its socket path does not exist); the token only lets the authenticated client construct.
+os.environ.setdefault("COTAL_CONTROL_TOKEN", "injection-framing-probe-token")
 sys.path.insert(0, PLUGIN_PARENT)
 
 from cotal.adapter import CotalAdapter  # noqa: E402
