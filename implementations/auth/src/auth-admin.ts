@@ -61,7 +61,6 @@ import {
   epResponderReplyPattern,
   assertCommandToken,
   spacePrefix,
-  mintLifecycleUid,
   managedRetirementOpId,
   parseEpSubject,
   principalKey,
@@ -216,16 +215,19 @@ export async function openAuthAdminListener(opts: {
   reg: LifecycleRegistry;
   retirement: RetirementDeps;
   barrierFlight: RetirementFlights;
+  /** The plane's #399 M2-registered instance id and current process epoch (`authServeGrant.epoch`)
+   *  — the SAME instance/epoch the registration ceremony fenced. The gate's process-epoch reader is
+   *  the fence now; there is no separate fixed responder identity to mint. */
+  instanceId: string;
+  epoch: number;
   log: (line: string) => void;
 }): Promise<AuthAdminListener> {
   const { space, log } = opts;
-  // The auth plane's responder identity. The plane is SINGLE per space by construction (§13.13:
-  // at most one authority plane holds the sealed scanners, by a broker-visible claim), so the
-  // instance id is per-process and the epoch is fixed: there is no successor to fence and no
-  // registration whose epoch could advance beneath us. It exists because the reply plane pins the
-  // responder triple in the grant; callers read replies through a filter that wildcards these
-  // positions (`ep.reply.*.*.*.<cO>.<cA>.<cUid>.*`), so they never need to learn it.
-  const responder = { instanceId: mintLifecycleUid(), epoch: 0 };
+  // The auth plane's responder identity is the #399 M2-registered instance/epoch (the SAME triple
+  // `registerServiceInstance` fenced and `authorizeServeGrant` minted a serve grant for). The reply
+  // plane pins this triple in the grant; callers read replies through a filter that wildcards the
+  // caller-suffix positions (`ep.reply.*.*.*.<cO>.<cA>.<cUid>.*`), so they never need to learn it.
+  const responder = { instanceId: opts.instanceId, epoch: opts.epoch };
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space, dataAccount: opts.dataAccount,
     label: `cotal:auth-admin:${space}`,
