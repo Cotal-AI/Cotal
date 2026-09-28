@@ -186,6 +186,19 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("and the clock moves by the whole timeout", sim.now() === 20 * 60_000, sim.now());
 }
 
+// ---- 6b) a scripted wait value is read back, not replaced by a default -----------------------------
+
+{
+  const sim = new SimHandler({ events: { "await-build": ["hello"] }, clock: { start: 0 } });
+  const s = new KeyScope();
+  const v = await sim.wait(
+    { event: { event: "replied", agent: "b" }, timeout: "20m" },
+    ctxFor(s.nextEffect("wait", "await-build")),
+  );
+  ok("a scripted wait delivers hello", v === "hello", v);
+  ok("a delivered wait advances by its 1m wait clock, not the timeout", sim.now() === 60_000, sim.now());
+}
+
 // ---- 7) fault injection ----------------------------------------------------------------------------
 
 {
@@ -326,6 +339,17 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     decided.outcome === "resolved" && decided.value === "ship"
       && decided.by === "david" && decided.artifact === "plan.md",
     { ...decided });
+}
+
+// ---- 8d) an ask advances by its own scripted clock, not a default that merely moved ---------------
+
+{
+  const sim = new SimHandler({ asks: { q: { n: 3 } }, clock: { ask: "2m" } });
+  const s = new KeyScope();
+  const agent = { agent: "a", persona: "p" };
+  const t1 = sim.now();
+  await sim.ask({ agent, schema: {} }, ctxFor(s.nextEffect("ask", "q")));
+  ok("an ask advances by its scripted two-minute clock", sim.now() === t1 + 120_000, { t1, now: sim.now() });
 }
 
 // ---- 8c) and none of them SETTLES while its own bind is still in flight -------------------------
