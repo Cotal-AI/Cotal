@@ -44,20 +44,40 @@ const EVENTS_REFUSAL =
 
 /** 2.x model check: `GET /api/model` lists the configured model directly (no `/provider.all`
  *  nesting to walk, unlike 1.x's `verifyServerModel`). Same refusal sentence shape, different
- *  route and body — measured in fx105/measurements.md (routes). */
-async function verifyServerModel2(serverUrl: string, serverAuth: string, selectedModel: string): Promise<void> {
-  const response = await fetch(`${serverUrl}/api/model`, {
-    headers: { authorization: serverAuth },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok)
-    throw new Error(`opencode connector: server /api/model returned HTTP ${response.status} while checking model ${selectedModel}`);
-  const listing = (await response.json()) as { data?: Array<{ providerID?: string; modelID?: string }> };
+ *  route and body — measured in fx105/measurements.md (routes). The server answers `/api/model`
+ *  with an empty listing for up to about a second after the location boot its first `/api/config`
+ *  triggers (fx105/brief-g.md measurement), so an empty listing is polled every 200 ms until the
+ *  provider appears rather than refused on the first read. The wait is bounded: a server that
+ *  never lists anything within the deadline is a real refusal, not a hang. */
+export const MODEL_LIST_SETTLE_MS = 10_000;
+
+async function verifyServerModel2(
+  serverUrl: string,
+  serverAuth: string,
+  selectedModel: string,
+  settleMs = MODEL_LIST_SETTLE_MS,
+): Promise<void> {
   const slash = selectedModel.indexOf("/");
   const provider = selectedModel.slice(0, slash);
   const model = selectedModel.slice(slash + 1);
-  if (slash < 1 || !model || !listing.data?.some((m) => m.providerID === provider && m.modelID === model))
-    throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const response = await fetch(`${serverUrl}/api/model`, {
+      headers: { authorization: serverAuth },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok)
+      throw new Error(`opencode connector: server /api/model returned HTTP ${response.status} while checking model ${selectedModel}`);
+    const listing = (await response.json()) as { data?: Array<{ providerID?: string; modelID?: string }> };
+    if (slash < 1 || !model) throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
+    const data = listing.data ?? [];
+    if (data.some((m) => m.providerID === provider && m.modelID === model)) return;
+    if (data.some((m) => m.providerID === provider))
+      throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
+    if (Date.now() >= deadline)
+      throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));
+    await new Promise((r) => setTimeout(r, 200));
+  }
 }
 
 /** How long the detached event loop's in-flight iteration may be waited on at teardown before it
@@ -87,9 +107,11 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   const serverAuth = `Basic ${Buffer.from(`${serverUsername}:${serverPassword}`).toString("base64")}`;
 
   const selectedModel = process.env.COTAL_MODEL?.trim();
+  const settleOverride = Number(process.env.COTAL_MODEL_LIST_SETTLE_MS);
+  const settleMs = Number.isFinite(settleOverride) && settleOverride > 0 ? settleOverride : MODEL_LIST_SETTLE_MS;
   const modelReady = (async () => {
     if (!selectedModel) return;
-    await verifyServerModel2(serverUrl, serverAuth, selectedModel);
+    await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);
   })();
 
   const agent = new MeshAgent(config);

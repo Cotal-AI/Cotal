@@ -512,6 +512,8 @@ try {
   const releaseBroker2 = teardownOnSignal(srv2, dir2);
   const auth2 = `Basic ${Buffer.from("opencode:test-secret-2").toString("base64")}`;
   const prompts2: { body: { text?: string } }[] = [];
+  let modelListing: Array<{ providerID: string; modelID: string }> = [];
+  let modelReads = 0;
 
   const oc2 = createHttpServer((req, res) => {
     if (req.headers.authorization !== auth2) {
@@ -527,7 +529,8 @@ try {
         return;
       }
       if (req.method === "GET" && req.url === "/api/model") {
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [] }));
+        modelReads++;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: modelListing }));
         return;
       }
       if (req.method === "POST" && req.url === `/api/session/${SID2}/prompt`) {
@@ -569,8 +572,9 @@ try {
 
     // 2.x model check: `GET /api/model` (not 1.x's `/provider`) must refuse before join when the
     // configured model is not in the server's list — parity with 1.x's catalog/server mismatch
-    // cell. The fake server above always answers `GET /api/model` with an empty list, so this
-    // model is never listed and the check must throw before any session is created.
+    // cell. The listing below names the provider but not the model, so the check must throw
+    // before any session is created without waiting on the settle loop.
+    modelListing = [{ providerID: "prov", modelID: "other" }];
     process.env.COTAL_MODEL = "prov/absent-model";
     process.env.COTAL_NAME = "ModelReadiness2";
     process.env.COTAL_ID = "modelreadiness2";
@@ -602,6 +606,80 @@ try {
     );
     await disposeMR?.();
     delete process.env.COTAL_MODEL;
+
+    // 2.x model check: the server's listing is empty for a while after boot (measured race,
+    // fx105/brief-g.md), so an empty listing is waited on rather than refused immediately.
+    modelReads = 0;
+    modelListing = [];
+    process.env.COTAL_MODEL = "prov/m";
+    process.env.COTAL_NAME = "ModelWait2";
+    process.env.COTAL_ID = "modelwait2";
+    let refusalLineWait = "";
+    const originalStderrWriteWait = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("Refusing before join")) refusalLineWait = line;
+      return originalStderrWriteWait.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+    const ctxWait = fakeOpenCode2Context();
+    const disposeWait = await bootPlugin2(ctxWait);
+    setTimeout(() => {
+      modelListing = [{ providerID: "prov", modelID: "m" }];
+    }, 500);
+    let waitOnline = false;
+    for (let i = 0; i < 100; i++) {
+      if (pub2.getRoster().some((p) => p.card.name === "ModelWait2")) {
+        waitOnline = true;
+        break;
+      }
+      await sleep(100);
+    }
+    process.stderr.write = originalStderrWriteWait;
+    check(
+      "2.x: an empty listing is waited on, and the model check passes once the server lists it",
+      waitOnline && modelReads >= 2 && !refusalLineWait.includes("Refusing before join"),
+      { waitOnline, modelReads, refusalLineWait },
+    );
+    await disposeWait?.();
+    delete process.env.COTAL_MODEL;
+
+    // 2.x model check: a listing still empty at the settle deadline is a real refusal, not a hang.
+    modelListing = [];
+    process.env.COTAL_MODEL = "prov/m";
+    process.env.COTAL_MODEL_LIST_SETTLE_MS = "700";
+    process.env.COTAL_NAME = "ModelDeadline2";
+    process.env.COTAL_ID = "modeldeadline2";
+    let modelRefusalDeadline = "";
+    let exitCodeDeadline: number | undefined;
+    const originalExitDeadline = process.exit;
+    const originalStderrWriteDeadline = process.stderr.write;
+    process.exit = ((code?: number) => {
+      exitCodeDeadline = code;
+    }) as typeof process.exit;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("prov/")) modelRefusalDeadline = line;
+      return originalStderrWriteDeadline.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+    const ctxDeadline = fakeOpenCode2Context();
+    const disposeDeadline = await bootPlugin2(ctxDeadline);
+    for (let i = 0; i < 30 && exitCodeDeadline === undefined; i++) await sleep(100);
+    process.exit = originalExitDeadline;
+    process.stderr.write = originalStderrWriteDeadline;
+    check(
+      "2.x: a listing still empty at the deadline refuses, naming the wait",
+      exitCodeDeadline === 1 &&
+        modelRefusalDeadline.includes("prov/") &&
+        modelRefusalDeadline.includes("listed no provider within"),
+      { exitCodeDeadline, modelRefusalDeadline },
+    );
+    await disposeDeadline?.();
+    delete process.env.COTAL_MODEL;
+    delete process.env.COTAL_MODEL_LIST_SETTLE_MS;
+
+    modelListing = [{ providerID: "dead", modelID: "m" }];
     process.env.COTAL_NAME = "Otto2";
     process.env.COTAL_ID = "otto2";
     delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;

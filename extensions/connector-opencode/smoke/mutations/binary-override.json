@@ -34,11 +34,20 @@
     {
       "name": "plugin2.ts skips the 2.x GET /api/model check, joining with an unverified model",
       "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "    if (!selectedModel) return;\n    await verifyServerModel2(serverUrl, serverAuth, selectedModel);",
+      "find": "    if (!selectedModel) return;\n    await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);",
       "replace": "    return;",
       "command": "pnpm smoke:opencode",
       "expectRed": "2.x: an unlisted model refuses before join (GET /api/model, empty list)",
       "cell": "2.x: an unlisted model refuses before join (GET /api/model, empty list)"
+    },
+    {
+      "name": "plugin2.ts refuses on the first empty listing instead of waiting",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (Date.now() >= deadline)\n      throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));",
+      "replace": "    throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: an empty listing is waited on, and the model check passes once the server lists it",
+      "cell": "2.x: an empty listing is waited on, and the model check passes once the server lists it"
     }
   ]
 }
