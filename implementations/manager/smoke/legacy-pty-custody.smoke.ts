@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 
 let pass = 0;
 let fail = 0;
@@ -45,16 +46,25 @@ writeFileSync(
   owner,
   `import { PtyRuntime } from ${JSON.stringify(join(managerRoot, "dist", "runtime", "pty.js"))};\n` +
     `import { writeFileSync } from "node:fs";\n` +
-    `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { PATH: process.env.PATH ?? "", PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
+    `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { ...${JSON.stringify(launchEnv())}, PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
     `writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined }));\n` +
     `setInterval(() => {}, 1_000);\n`,
 );
 
+// Both spawns take the OS allow-list a real connector supplies, not a bare PATH. On Windows a node
+// child without `SystemRoot` aborts at startup before its first line, and a pty (ConPTY) child does
+// not inherit it the way a plain child_process does (see connector-core's OS_ENV_ALLOW). With only
+// PATH set the owner died on launch and this suite read the silence as "fixture did not write its
+// ownership record", which is how it reddened `Windows / required` once #2047 stopped skipping it.
 let ownerProcess: ChildProcess | undefined;
+let ownerStderr = "";
 try {
   ownerProcess = spawn(process.execPath, [owner], {
-    env: { PATH: process.env.PATH ?? "", READY: ready, PIDFILE: pidfile },
-    stdio: "ignore",
+    env: { ...launchEnv(), READY: ready, PIDFILE: pidfile },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  ownerProcess.stderr?.on("data", (chunk: Buffer | string) => {
+    ownerStderr += String(chunk);
   });
   const armed = await until(() => {
     try {
@@ -63,8 +73,8 @@ try {
       return false;
     }
   }, 10_000);
-  check("isolated manager fixture armed", armed);
-  if (!armed) throw new Error("fixture did not write its ownership record");
+  check("isolated manager fixture armed", armed, armed ? undefined : { ownerStderr: ownerStderr.slice(-800) });
+  if (!armed) throw new Error(`fixture did not write its ownership record${ownerStderr === "" ? "" : `; owner stderr: ${ownerStderr.slice(-800)}`}`);
   const ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number; hasReference: boolean };
   check("counter child is live before manager death", state(ids.childPid) !== "gone" && state(ids.childPid) !== "Z", { childPid: ids.childPid, state: state(ids.childPid) });
   check("legacy PTY exposes no durable reference a successor can adopt", ids.hasReference === false, ids);
