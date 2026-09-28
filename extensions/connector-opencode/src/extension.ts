@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { opencodeLine } from "./opencode-line.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
  *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`,
@@ -76,12 +77,26 @@ function parseModels(stdout: string): ModelInfo[] {
 }
 
 function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
+  const env = discoveryEnv();
+  // Detect the line first (same rule serve.ts uses), on the same binary the discovery below would
+  // run, before running any 2.x-incompatible subcommand: `opencode models --pure --verbose` exits 1
+  // on 2.x with the help text (measured, fx105/measurements.md M4) rather than a real catalog.
+  const versionRaw = execFileSync("opencode", ["--version"], {
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  const line = opencodeLine(versionRaw, "opencode");
+  if (line === 2)
+    throw new Error(
+      "opencode connector: 'cotal models' is not available for OpenCode 2.x (the catalog is served by a running opencode server, not the CLI); pass --model provider/model",
+    );
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
     const stdout = execFileSync("opencode", args, {
       encoding: "utf8",
-      env: discoveryEnv(),
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
     });
