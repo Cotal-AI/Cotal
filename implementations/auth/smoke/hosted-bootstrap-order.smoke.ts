@@ -2,14 +2,16 @@
  * of a dead predecessor must wait for the real delivery-admin CONNZ oracle. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
-  connzRequestSubject, ensureAuthorityStores, leaseKey, MEMBERSHIP_INBOX_PREFIX,
+  connzRequestSubject, credsClaims, ensureAuthorityStores, identityFromCreds, leaseKey, probeConnect, MEMBERSHIP_INBOX_PREFIX,
   mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, openDeliveryRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
-import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, type HostedServiceHandle } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, putSpaceAuth, remintDaemonCreds, type HostedServiceHandle } from "@cotal-ai/workspace";
 import { startDeliveryService } from "../../delivery/src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openAuthLedgerScannerCandidate } from "../src/ledger-scanner.js";
@@ -120,28 +122,49 @@ try {
     check("expired delivery credential refused before acquiring duty claim/lease", (await dlvKv.get(leaseKey(0)).catch(() => null)) === null);
     check("failed delivery start leaves no leaked broker connection", (await countDeliveryConns()) === 0);
     check("failed delivery start leaves no leaked process signal listeners", process.listenerCount("SIGTERM") === signals);
-  } finally {
-    // Stock fixture provisioning into the injected store, NOT automatic service renewal:
-    // Missing production renewal glue (manager/host daemon background re-signing into the injected store)
-    // is documented as a remaining workspace renewal obligation for the next turn.
+  } catch (e) {
     await a.store.put(key, validDelivery);
+    throw e;
   }
 
-  // The same injected SecretStore object and identity now accepts an authorized fresh candidate
-  // through stock provisioning without any hidden cwd/local-store substitute.
+  // Trusted recovery through the stock renewal owner: remintDaemonCreds re-signs the EXPIRED
+  // delivery cred for its existing nkey through the same injected store, gated by a real broker
+  // preflight. The root is a path that does not exist, so no cwd or workspace store can serve.
+  const expiredCred = await a.store.get(key);
+  // The renewal owner's signer lives in the same injected store (stock putSpaceAuth), the store the
+  // manager passes remintDaemonCreds as its secretStore. A store with no signer cannot renew.
+  check("an injected store without the space signer renews nothing and preserves the last-good cred",
+    (await remintDaemonCreds(join(fx.dir, "no-such-root"), a.space, a.store)).every((r) => !r.ok) && (await a.store.get(key)) === expiredCred);
+  await putSpaceAuth(a.store, a.auth);
+  const refused = await remintDaemonCreds(join(fx.dir, "no-such-root"), a.space, a.store, { preflight: async () => false });
+  check("a candidate the broker preflight refuses preserves the last-good cred",
+    refused.every((r) => !r.ok) && (await a.store.get(key)) === expiredCred);
+  const reminted = await remintDaemonCreds(join(fx.dir, "no-such-root"), a.space, a.store, {
+    preflight: async (creds) => (await probeConnect(fx.servers, { creds })).ok,
+  });
+  const renewedCred = await a.store.get(key);
+  check("stock remint renews the expired delivery cred through the injected store after broker preflight",
+    reminted.find((r) => r.file === DELIVERY_CREDS_KIND)?.ok === true && renewedCred !== expiredCred &&
+    (credsClaims(renewedCred!).exp ?? 0) > Date.now() / 1000);
+  check("the renewed delivery cred keeps its existing nkey",
+    identityFromCreds(renewedCred!).id === identityFromCreds(expiredCred!).id);
+  check("trusted remint consulted no workspace root", !existsSync(join(fx.dir, "no-such-root")));
+
+  // The same injected SecretStore object and identity now serves the reminted candidate
+  // without any hidden cwd/local-store substitute.
   check("delivery context preserves the exact injected store object and identity",
     inputs[0].store === a.store && inputs[0].storeIdentity === a.store.identity && a.store.identity.kind === "injected");
 
   const aDelivery = await startDeliveryService(inputs[0]);
   deliveries.push(aDelivery);
   check("delivery admin starts with the same injected store and assigned account", (await aDelivery.readiness()).state === "ready");
-  check("delivery duty claim is acquired after authorized candidate is provisioned", (await dlvKv.get(leaseKey(0)))?.value !== undefined);
+  check("delivery duty claim is acquired after the reminted candidate is adopted", (await dlvKv.get(leaseKey(0)))?.value !== undefined);
   check("broker sees A's active delivery connection after authorized start", (await countDeliveryConns()) === 1);
 
   const aAuth = await startAuthService(inputs[0]);
   auths.push(aAuth);
   check("real delivery-admin CONNZ oracle reclaims dead predecessor and starts A", (await aAuth.readiness()).state === "ready" && (await fetch(`${aAuth.url}/health`)).ok);
-  check("A acquires its delivery lease only after a valid credential replaces the expired one", (await aDelivery.readiness()).state === "ready");
+  check("A acquires its delivery lease only after the trusted remint replaces the expired one", (await aDelivery.readiness()).state === "ready");
   check("B still serves while A recovers its predecessor", (await bAuth.readiness()).state === "ready" && (await fetch(`${bAuth.url}/health`)).ok);
   console.log(`hosted bootstrap order: ${passed} native assertions passed`);
 } finally {
