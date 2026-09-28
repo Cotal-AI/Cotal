@@ -521,6 +521,50 @@ try {
     }
   }
 
+  console.log("F. M4b: a body target that disagrees with the exact subject triple is refused target-mismatch");
+  {
+    const uidMismatch = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wmismatch", lifecycleUid: uidMismatch, managerInstance: "smoke" });
+    const mismatchTarget = { owner: OWNER, actor: "wmismatch", lifecycleUid: uidMismatch };
+    const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...MGR, target: mismatchTarget } });
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
+    try {
+      const nonce = "m".repeat(30);
+      const subject = epRequestSubject(space, {
+        route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
+        target: { mode: "exact", tOwner: mismatchTarget.owner, tActor: mismatchTarget.actor, tUid: mismatchTarget.lifecycleUid },
+        caller: MGR, nonce,
+      });
+      const replyP = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
+        const sub = nc.subscribe(epCallerReplyFilter(space, MGR), {
+          callback: (err, msg) => {
+            if (err) { reject(err); return; }
+            sub.unsubscribe();
+            resolve({ subject: msg.subject, data: msg.data });
+          },
+        });
+        setTimeout(() => { try { sub.unsubscribe(); } catch { /* already dead */ } reject(new Error("no reply within 5s")); }, 5000);
+      });
+      // A well-formed v1 envelope whose BODY target disagrees with the subject's own exact triple
+      // (a different actor than the subject carries): the subject is the boundary and the body
+      // only ever narrows (SPEC 13.3) — a disagreeing body is refused, never silently overridden.
+      const env = {
+        v: 1, id: "m".repeat(22), op: { endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE },
+        class: "ephemeral", replyExpected: true, deadlineMs: 8000,
+        target: { owner: mismatchTarget.owner, actor: "someone-else", lifecycleUid: mismatchTarget.lifecycleUid },
+        args: { opId: managedRetirementOpId(uidMismatch), serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH },
+        from: { id: `${MGR.owner}.${MGR.actor}`, name: MGR.actor },
+      };
+      nc.publish(subject, new TextEncoder().encode(JSON.stringify(env)));
+      const msg = await replyP;
+      const reply = parseEndpointReply(JSON.parse(new TextDecoder().decode(msg.data)));
+      check("a body target disagreeing with the exact subject triple is refused target-mismatch",
+        reply.ok === false && reply.error?.code === "target-mismatch", reply);
+    } finally {
+      await nc.close().catch(() => {});
+    }
+  }
+
   console.log(`\nAUTH-ADMIN SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
