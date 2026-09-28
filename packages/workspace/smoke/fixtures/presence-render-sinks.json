@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 509,
+    "total": 512,
     "honest-text": 35,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 407
+    "non-render/control": 410
   },
   "renderers": [
     {
@@ -300,9 +300,9 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.\\n\\n${rendered}`",
+      "anchor": "`${preface}\\n\\n${rendered}`",
       "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "rationale": "Textual presence status: composes the NOT-LIVE preface with the rendered roster, whose rows carry the explicit working progress uncertainty. #2083 split the single template into preface plus this composition, so the anchor moved here.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
         "anchor": "assert.match(result.text, /Presence view is NOT LIVE/,"
@@ -2901,9 +2901,9 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": ";\n    } finally {\n      this._status = status;\n    }\n  }\n\n  private a",
+      "anchor": ";\n    } finally {\n      this._status = status;\n    }\n    });\n  }\n\n  p",
       "class": "non-render/control",
-      "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim."
+      "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim. #2065 wrapped the body in inOrder, which added the closing });."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
@@ -3723,6 +3723,27 @@
       "anchor": "rgba(col, 0.85)",
       "class": "presence-only-glyph/count",
       "rationale": "Canvas styling: color helper output used for presence emphasis; no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/doctor.ts",
+      "kind": "status-token",
+      "anchor": "et authority: \"lease\" | \"offline\";\n\n    if (target) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Doctor renewal authority: declares whether the pass took the mesh lease or recorded an offline repair; not an agent presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/doctor.ts",
+      "kind": "status-token",
+      "anchor": "ace);\n      authority = \"offline\";\n    }\n\n    // A local ",
+      "class": "non-render/control",
+      "rationale": "Doctor renewal authority: records that the repair ran without the mesh lease; not an agent presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/doctor.ts",
+      "kind": "status-token",
+      "anchor": "ion}${rec.authority === \"offline\" ? c.dim(\" · offline\") :",
+      "class": "non-render/control",
+      "rationale": "Doctor renewal record: renders how the LAST RENEWAL PASS was authorised, not any agent's presence; the token matches only because the authority is spelled offline."
     }
   ]
 }
