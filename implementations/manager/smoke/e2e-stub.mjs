@@ -39,7 +39,13 @@ const ep = new CotalEndpoint({
   // COTAL_E2E_KIND lets the authority-bypass probe claim kind:"endpoint" (client-authored
   // metadata) to skip the library register-only proof — the manager readiness lifecycle fence
   // must still reject it. Defaults to a real agent.
-  card: { id: e.COTAL_ID, name: e.COTAL_NAME, role: "worker", kind: e.COTAL_E2E_KIND || "agent" },
+  card: {
+    id: e.COTAL_ID,
+    name: e.COTAL_NAME,
+    role: "worker",
+    kind: e.COTAL_E2E_KIND || "agent",
+    ...(e.COTAL_E2E_META_PROVIDER ? { meta: { provider: e.COTAL_E2E_META_PROVIDER } } : {}),
+  },
   lifecycleUid: e.COTAL_LIFECYCLE_UID,
   channels: [],
   consume: e.COTAL_E2E_CONSUME === "1",

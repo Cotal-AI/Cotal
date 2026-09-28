@@ -361,7 +361,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
+| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.

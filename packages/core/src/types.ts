@@ -38,7 +38,8 @@ export interface AgentCard {
   tags?: string[];
   skills?: AgentSkill[];
   /** Free-form advisory display metadata. Reserved flat string keys are `connector`, `model`,
-   *  `host`, `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. */
+   *  `provider` (the effective provider the connector reported), `host`, `cwd`, `repo`, `branch`,
+   *  `head`, `sessionKind`, and `sessionId`. */
   meta?: Record<string, unknown>;
   /** Wire-contract version this participant speaks (the SPEC.md version, `"0.2"` today). A change
    *  signal, not negotiation: v0 has none, but a peer can detect a mismatch instead of silently

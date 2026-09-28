@@ -2049,11 +2049,13 @@ export class MeshAgent extends EventEmitter {
 
   /** Record the host's actual model and optional variant learned after launch, so peers see the
    *  selection in `cotal_roster` and the web roster even when the operator never pinned one. Explicit
-   *  `model:` / `variant:` config wins; this only fills the gap. Best-effort presence mirror (no
-   *  `requireConnected` — safe pre-connect; it rides the first publish). */
-  async setModel(model: string, variant?: string): Promise<void> {
-    if (this.config.model) return; // operator pin is authoritative — never override it with the runtime value
-    await this.inOrder(() => this.ep.setCardModel(model, this.config.variant ?? variant));
+   *  `model:` / `variant:` config wins; this only fills the gap. `provider` is best-effort and
+   *  reported independently of the model pin: a pinned seat can still report which provider is
+   *  serving it, so the early return only short-circuits when no provider was given either. Best-
+   *  effort presence mirror (no `requireConnected` — safe pre-connect; it rides the first publish). */
+  async setModel(model: string, variant?: string, provider?: string): Promise<void> {
+    if (this.config.model && provider === undefined) return; // operator pin is authoritative for the model
+    await this.inOrder(() => this.ep.setCardModel(this.config.model ?? model, this.config.variant ?? variant, provider));
   }
 
   // ---- channel registry ----------------------------------------------------

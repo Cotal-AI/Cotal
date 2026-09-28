@@ -26,8 +26,8 @@
     {
       "name": "M1 report the session default instead of the route serving this model",
       "file": "extensions/connector-jcode/src/route-identity.ts",
-      "find": "  const provider = matched?.provider ?? runtime?.provider;",
-      "replace": "  const provider = runtime?.provider ?? matched?.provider;",
+      "find": "  return activeModelRoute(runtime, model)?.provider || runtime?.provider || undefined;",
+      "replace": "  return runtime?.provider || activeModelRoute(runtime, model)?.provider || undefined;",
       "expectRed": "names the provider actually serving THIS model",
       "cell": "names the provider actually serving THIS model"
     },

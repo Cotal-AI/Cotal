@@ -2620,14 +2620,20 @@ export class CotalEndpoint extends EventEmitter {
   /** Overlay the host's live model and optional variant onto the card's display-only metadata, then
    *  republish presence. For connectors that learn their actual selection only after launch (e.g.
    *  Claude Code's `SessionStart` hook). The mutated card is read live by every later publish, so even
-   *  a pre-connect call surfaces on the first presence write. */
-  async setCardModel(model: string, variant?: string): Promise<void> {
+   *  a pre-connect call surfaces on the first presence write. `provider` is the effective provider
+   *  the connector reported serving the model; when omitted an existing `meta.provider` is left
+   *  untouched (unlike `variant`, it is never deleted, since a caller that does not know the
+   *  provider says nothing about whether one still applies). */
+  async setCardModel(model: string, variant?: string, provider?: string): Promise<void> {
     const m = model.trim();
     const v = variant?.trim();
-    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v)) return;
+    const p = provider?.trim();
+    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v && (p === undefined || this.card.meta?.provider === p)))
+      return;
     const meta: Record<string, unknown> = { ...(this.card.meta ?? {}), model: m };
     if (v) meta.variant = v;
     else delete meta.variant;
+    if (p) meta.provider = p;
     this.card.meta = meta;
     await this.publishPresence();
   }

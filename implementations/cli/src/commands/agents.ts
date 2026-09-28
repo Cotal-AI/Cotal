@@ -94,6 +94,7 @@ type AgentRow = {
   // no model pin; a runtime that owns no real process has no pid).
   model?: string;
   variant?: string;
+  provider?: string;
   cwd?: string;
   pid?: number;
   spawner?: string;
@@ -335,8 +336,9 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 /** Extra operational facts for `--wide`. Model and requested variant are already in the compact
  *  identity row, so repeating them here would make wide output noisier without adding provenance.
  *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
-export function agentWideFacts(r: Pick<AgentRow, "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
   const facts: string[] = [];
+  if (r.provider) facts.push(`provider ${r.provider}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
   if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
   if (r.spawner) facts.push(`spawner ${r.spawner}`);
