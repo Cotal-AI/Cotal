@@ -83,17 +83,17 @@ export interface ControlServerOpts {
 /** Hard cap on the first (only) frame: a control request is a token + one small lifecycle event —
  *  kilobytes at most. Generous headroom for a legit event, tiny next to the ~512MB string limit an
  *  unauthenticated spewer would otherwise drive `buf` toward to crash the process. */
-const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
+export const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
 /** ABSOLUTE deadline (not an idle timeout — a slow-loris dribbling one byte at a time would keep
  *  resetting an idle timer) for a connection to deliver its complete auth frame. Past it, an
  *  unauthenticated connection is dropped so a local process can't camp on a finite pipe instance.
  *  Cleared the instant a full frame is in hand (the token-bearing client then owns the connection). */
-const AUTH_DEADLINE_MS = 5_000;
+export const AUTH_DEADLINE_MS = 5_000;
 
 /** Constant-time match of a presented token against the endpoint's. Both sides are SHA-256'd first
  *  so the compare is fixed-length (and length-independent) regardless of the presented value — a
  *  non-string or wrong-length token can never throw `timingSafeEqual` or leak length via timing. */
-function tokenMatches(presented: unknown, digest: Buffer): boolean {
+export function tokenMatches(presented: unknown, digest: Buffer): boolean {
   if (typeof presented !== "string") return false;
   return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
 }
