@@ -372,11 +372,34 @@ try {
   );
 
   const daveActor = `dave_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  await alice.unicast(principalKey(DEV_OWNER, daveActor).key, "published before activation");
+  const { ack: davePreActivationAck } = await alice.unicastAttributed(
+    principalKey(DEV_OWNER, daveActor).key,
+    "published before activation",
+  );
+  check(
+    "a pre-activation attributed publish still returns a stored sequence",
+    typeof davePreActivationAck?.seq === "number" && davePreActivationAck.seq >= 1,
+    davePreActivationAck,
+  );
+  const daveLifecycleUid = mintLifecycleUid();
+  const daveNotYetActiveDurable = dmDurable(DEV_OWNER, daveActor, daveLifecycleUid);
+  let daveDurableThrewBeforeActivation = false;
+  const daveDurableProbe = await connect({ servers: SERVERS });
+  try {
+    await (await jetstreamManager(daveDurableProbe)).consumers.info(dmStream(SPACE), daveNotYetActiveDurable);
+  } catch {
+    daveDurableThrewBeforeActivation = true;
+  } finally {
+    await daveDurableProbe.close();
+  }
+  check(
+    "a stream append is not an active durable before the lifecycle ever ran",
+    daveDurableThrewBeforeActivation,
+  );
   const dave = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
-    lifecycleUid: mintLifecycleUid(),
+    lifecycleUid: daveLifecycleUid,
     card: { id: daveActor, name: "dave", role: "tester", kind: "agent" },
     channels: [],
     heartbeatMs: 300,
@@ -473,7 +496,7 @@ try {
   if (brokerExited && storeRemoved) releaseBroker();
 }
 
-const EXPECTED_BEFORE_COUNT = 28;
+const EXPECTED_BEFORE_COUNT = 30;
 check(
   `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
   pass + fail === EXPECTED_BEFORE_COUNT,
