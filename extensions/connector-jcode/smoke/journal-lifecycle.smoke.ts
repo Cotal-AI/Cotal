@@ -113,6 +113,11 @@ try {
     await snapshot("cursor");
     await assert.rejects(new JcodeJournalSource(path, 10).read("invalid"), /malformed cursor/);
   });
+  await check("a missing journal cannot disguise a malformed cursor behind a valid snapshot", async () => {
+    const path = join(root, "missing-invalid.journal.jsonl");
+    await snapshot("missing-invalid");
+    await assert.rejects(new JcodeJournalSource(path, 10).read("invalid"), /malformed cursor/);
+  });
   await check("a valid snapshot cannot disguise an invalid complete journal record", async () => {
     const path = join(root, "invalid.journal.jsonl");
     await writeFile(path, line({ append_messages: [start] }));

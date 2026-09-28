@@ -198,6 +198,8 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<T>> {
+    // Invalid persisted state must refuse even when the file is temporarily absent.
+    const from = cursor === undefined ? undefined : JsonlFileSource.parseCursor(cursor);
     // O_NOFOLLOW: a symlinked source is REFUSED, not followed.
     //
     // No seam feeds this class a caller-controlled path today — each connector supplies its own
@@ -219,10 +221,8 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // still appending: adopt at byte 1 of `{"i":1`, let the writer finish `2}\n`, and the source
       // emits `2}` while the real record is `{"i":12}`. That is the truncated-record corruption the
       // partial-line rule exists to prevent, reached through the adopt path instead of the read one.
-      if (cursor === undefined)
+      if (from === undefined)
         return { records: [], cursor: await here(await JsonlFileSource.lastCompleteBoundary(fh, size)) };
-
-      const from = JsonlFileSource.parseCursor(cursor);
 
       // Replacement is DETECTED by identity, not inferred from size — a replacement that is the
       // same size or larger looks exactly like an append, and resuming at the old offset emits
