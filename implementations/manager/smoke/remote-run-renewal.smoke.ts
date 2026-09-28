@@ -18,8 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
-  createSpaceAuth, credsClaims, inspectCredHealth, isReachable, jwtFromCreds, mintCreds, mintLifecycleUid, newIdentity,
-  remoteManagerActors, serverConfig, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest,
+  createRunSpec, createSpaceAuth, credsClaims, inspectCredHealth, isReachable, jwtFromCreds, mintCreds, mintLifecycleUid, newIdentity,
+  observeHostedRunAttempt, openRecordsBucket, remoteManagerActors, serverConfig, setupSpaceStreams, standaloneConnectOpts, writeRunStatus, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
 import { authorizeRemoteManagerRenewal, issueRemoteManagerAuthority } from "../../auth/src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../../auth/src/retained-manager-validation.js";
@@ -68,21 +68,42 @@ try {
   };
   const registrationProof = remoteManagerCurrentRegistrationProof("proof-secret", owner, { ...base, requestId: "x" } as RemoteManagerAuthorityRequest, gate);
 
-  const holderId = `${owner}.mgr`;
+  // The registered supervisor nkey: the hosting manager's endpoint id and the holder prefix.
+  const holderId = held.supervisor.id;
   const runId = `run-${"d".repeat(32)}`;
   const takeoverId = "c".repeat(16);
   const driver = newIdentity();
   const mediator = newIdentity();
-  // The journal's activated attempt, as the issuer's authoritative reader would see it.
-  let journal = { state: "running", holder: `${holderId}.${takeoverId}`, takeoverId, epoch: 2, fencingToken: 5, instanceId };
+  // The run's authoritative status record on the real records bucket; the issuer reads it back
+  // through the core observation, bound to the REGISTERED supervisor id and instance only.
+  const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space, creds: provisioner });
+  // The status is written as the run's own driver, the principal the hosted drive writes it as.
+  const writerCreds = await mintCreds(auth, newIdentity(), "run-driver", {
+    principal: { owner, actor: "wf_renew" }, runDriver: { endpoint: "manager", runId, takeoverId, instanceId, epoch: 2, owner },
+  });
+  const pnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: writerCreds, tls: false }) });
+  const kv = await openRecordsBucket(pnc, space);
+  // The issuer's reader: a separate trusted connection, as the host's own authority plane reads.
+  const rnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
+  const readKv = await openRecordsBucket(rnc, space);
+  await createRunSpec(kv, "manager", runId, {
+    pins: { seed: "s", startedAt: Date.now(), yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" }, createdAt: Date.now(),
+  });
+  let statusRevision = await writeRunStatus(kv, "manager", runId,
+    { observedSpecRevision: 1, state: "running", holder: `${holderId}.${takeoverId}`, epoch: 2, fencingToken: 5, journalHigh: 1, at: Date.now() });
+  const setStatus = async (patch: { holder?: string; fencingToken?: number }) => {
+    statusRevision = await writeRunStatus(kv, "manager", runId, {
+      observedSpecRevision: 1, state: "running", holder: patch.holder ?? `${holderId}.${takeoverId}`, epoch: 2,
+      fencingToken: patch.fencingToken ?? 5, journalHigh: 1, at: Date.now(),
+    }, statusRevision);
+  };
+  const registered = { supervisorId: held.supervisor.id, instanceId };
   let signed = 0;
   // When set, the issuer signs a pair that has already expired by the time it returns.
   let issueExpired = false;
 
-  const hosting = new RunHosting({
-    space, servers: SERVERS, endpoint: "manager", instanceId,
-    holder: { id: holderId, lifecycleUid: mintLifecycleUid() }, auth: undefined, log: () => undefined,
-    renewRun: async (a) => {
+  const renewRun: ConstructorParameters<typeof RunHosting>[0]["renewRun"] = async (a) => {
       const request = {
         ...base, requestId: `renewRunDriver${mintLifecycleUid()}`, registrationProof,
         run: { runId: a.runId, holder: a.holder, takeoverId: a.takeoverId, epoch: a.epoch, fencingToken: a.fencingToken, driverId: a.driver.id, mediatorId: a.mediator.id },
@@ -91,7 +112,7 @@ try {
         request, owner, scope: ["supervise"],
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
           request: r, owner: o, space, accountPublicKey: auth.account.pub, proofSecret: "proof-secret",
-          observeManagerGate: async () => gate, observeRun: async () => journal,
+          observeManagerGate: async () => gate, observeRun: (id) => observeHostedRunAttempt(readKv, "manager", id, registered),
         }),
         issue: async () => {
           signed++;
@@ -109,8 +130,12 @@ try {
         },
       });
       return remoteRunRenewalCredentials(material, request, owner, a.driver, a.mediator);
-    },
+  };
+  const hostAs = (id: string) => new RunHosting({
+    space, servers: SERVERS, endpoint: "manager", instanceId,
+    holder: { id, lifecycleUid: mintLifecycleUid() }, auth: undefined, log: () => undefined, renewRun,
   });
+  const hosting = hostAs(holderId);
 
   // An activated attempt whose pair has already expired: last-good the broker now refuses.
   const binding = { endpoint: "manager", runId, takeoverId, instanceId, epoch: 2, owner };
@@ -127,7 +152,7 @@ try {
     assert.equal(await brokerAccepts(expiring.driver), false);
   });
 
-  journal = { ...journal, fencingToken: 6 };
+  await setStatus({ fencingToken: 6 });
   await hosting.renew();
   await cell("a superseded fencing token keeps last-good, records debt and never signs", () => {
     assert.equal(signed, 0);
@@ -136,7 +161,31 @@ try {
     assert.match(String((slot.renewalDebt as { reason?: string } | undefined)?.reason), /activated run/);
   });
 
-  journal = { ...journal, fencingToken: 5 };
+  // Same takeover suffix and fence, but under a holder prefix that is not the registered
+  // supervisor: the observation binds no instance, so the gate refuses before signing.
+  await setStatus({ holder: `${newIdentity().id}.${takeoverId}` });
+  await hosting.renew();
+  await cell("a holder under an unregistered supervisor prefix binds no instance and never signs", () => {
+    assert.equal(signed, 0);
+    assert.equal(slot.creds, expiring.driver);
+    assert.match(String((slot.renewalDebt as { reason?: string } | undefined)?.reason), /activated run/);
+  });
+
+  // The registered caller names another manager's holder in its own request: holder, takeover
+  // and fence all match the record, and only the registered-prefix binding refuses.
+  const foreignId = newIdentity().id;
+  await setStatus({ holder: `${foreignId}.${takeoverId}` });
+  const claimant = hostAs(foreignId);
+  const claimed = { ...slot };
+  (claimant as unknown as { runs: Map<string, unknown> }).runs.set(runId, claimed);
+  await claimant.renew();
+  await cell("a registered caller claiming another manager's holder binds no instance and never signs", () => {
+    assert.equal(signed, 0);
+    assert.equal(claimed.creds, expiring.driver);
+    assert.match(String((claimed.renewalDebt as { reason?: string } | undefined)?.reason), /activated run/);
+  });
+
+  await setStatus({});
   issueExpired = true;
   await hosting.renew();
   issueExpired = false;
@@ -160,6 +209,8 @@ try {
 
   await hosting.renew();
   await cell("a healthy pair does not re-issue", () => assert.equal(signed, 2));
+  await pnc.close();
+  await rnc.close();
 } finally {
   releaseBroker();
   await killAndAwaitExit(srv);
