@@ -548,13 +548,13 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
-      '@nats-io/jetstream':
-        specifier: ^3.4.0
-        version: 3.4.0
       '@nats-io/kv':
         specifier: ^3.4.0
         version: 3.4.0
