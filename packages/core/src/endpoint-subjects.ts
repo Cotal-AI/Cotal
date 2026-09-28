@@ -138,7 +138,7 @@ export interface EpCaller {
  *  (`local` or `u_`+base32 per §2, never a bare mode word); the implementation's owner validator
  *  also admits legacy principal tokens, so the parser's discrimination rests on membership in
  *  this set PLUS each mode's pinned arity, not on the owner grammar alone. */
-export const EP_AUTHZ_MODES = Object.freeze(["self", "owner", "any", "child", "ledger", "handle"] as const);
+export const EP_AUTHZ_MODES = Object.freeze(["self", "owner", "any", "child", "ledger", "handle", "exact"] as const);
 export type EpAuthzMode = (typeof EP_AUTHZ_MODES)[number];
 const AUTHZ_SET = new Set<string>(EP_AUTHZ_MODES);
 /** Is `m` a registered targeted-command authorization mode? Consults the PRIVATE module-load set,
@@ -148,18 +148,21 @@ export function isEpAuthzMode(m: string): boolean { return AUTHZ_SET.has(m); }
 
 /** Per-mode pinned target-token arity: `self` carries none (the caller triple IS the target);
  *  `owner`/`any`/`child`/`ledger` pin one `<tOwner>`; `handle` pins the full redemption-minted
- *  target triple. The target's lifecycle UID is otherwise body-carried (§13.3), never a token. */
+ *  target triple; `exact` pins the same triple shape as a distinct PRIVILEGED, non-redemption
+ *  mode (SPEC 13.2 `exact`, Cotal #399): a literal exact incarnation, no issuer artifact, no
+ *  redemption, no lineage — the handler fresh-checks currency and fails closed. The target's
+ *  lifecycle UID is otherwise body-carried (§13.3), never a token. */
 export type EpTarget =
   | { mode: "self" }
   | { mode: "owner" | "any" | "child" | "ledger"; tOwner: string }
-  | { mode: "handle"; tOwner: string; tActor: string; tUid: string };
+  | { mode: "handle" | "exact"; tOwner: string; tActor: string; tUid: string };
 
-const TARGET_ARITY: Record<EpAuthzMode, number> = { self: 0, owner: 1, any: 1, child: 1, ledger: 1, handle: 3 };
+const TARGET_ARITY: Record<EpAuthzMode, number> = { self: 0, owner: 1, any: 1, child: 1, ledger: 1, handle: 3, exact: 3 };
 
 function targetTokens(target: EpTarget): string[] {
   if (target.mode === "self") return ["self"];
-  if (target.mode === "handle")
-    return ["handle", assertBoundedOwner(target.tOwner, "target owner"), assertBoundedOwner(target.tActor, "target actor"), assertLifecycleToken(target.tUid, "target lifecycleUid")];
+  if (target.mode === "handle" || target.mode === "exact")
+    return [target.mode, assertBoundedOwner(target.tOwner, "target owner"), assertBoundedOwner(target.tActor, "target actor"), assertLifecycleToken(target.tUid, "target lifecycleUid")];
   return [target.mode, assertBoundedOwner(target.tOwner, "target owner")];
 }
 
@@ -432,7 +435,7 @@ function parseTail(parts: string[], i: number, withNonce: boolean, issued = fals
     if (t.length !== arity) return null;
     target =
       mode === "self" ? { mode }
-      : mode === "handle" ? { mode, tOwner: t[0], tActor: t[1], tUid: t[2] }
+      : mode === "handle" || mode === "exact" ? { mode, tOwner: t[0], tActor: t[1], tUid: t[2] }
       : { mode, tOwner: t[0] };
     i += 1 + arity;
   }

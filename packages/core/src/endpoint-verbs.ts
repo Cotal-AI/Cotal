@@ -36,7 +36,7 @@ import { freezeExpectedSet, registrationReconciler, serviceEpochReader, type Fro
  *  disagree. `self` carries no body target (the caller triple IS the target, §13.3). */
 export type EpVerbTarget =
   | { mode: "self" }
-  | { mode: "owner" | "any" | "child" | "ledger" | "handle"; owner: string; actor: string; lifecycleUid: string; mappingRevision?: number };
+  | { mode: "owner" | "any" | "child" | "ledger" | "handle" | "exact"; owner: string; actor: string; lifecycleUid: string; mappingRevision?: number };
 
 /** What every verb needs to address one command: the compiled §13.7 contracts (digests derive
  *  from `closureDigest`, exactly like the serve table), the caller triple the credential pins,
@@ -74,8 +74,8 @@ const nonce = (): string => randomBytes(24).toString("base64url"); // 32 tokens 
 
 function subjectTarget(t: EpVerbTarget): EpTarget {
   if (t.mode === "self") return { mode: "self" };
-  if (t.mode === "handle")
-    return { mode: "handle", tOwner: t.owner, tActor: t.actor, tUid: t.lifecycleUid };
+  if (t.mode === "handle" || t.mode === "exact")
+    return { mode: t.mode, tOwner: t.owner, tActor: t.actor, tUid: t.lifecycleUid };
   return { mode: t.mode, tOwner: t.owner };
 }
 

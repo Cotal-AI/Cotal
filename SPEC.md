@@ -1442,6 +1442,7 @@ per mode, zero to three pinned target tokens between the command and the caller:
 | Class, `owner`/`any` | `cotal.<space>.ep.one.<endpoint>.<command>.<authz>.<tOwner>.<owner>.<actor>.<uid>.<nonce>` | 12 |
 | Class, `child`/`ledger` | `cotal.<space>.ep.one.<endpoint>.<command>.<authz>.<tOwner>.<owner>.<actor>.<uid>.<nonce>` | 12 |
 | Class, `handle` | `cotal.<space>.ep.one.<endpoint>.<command>.handle.<tOwner>.<tActor>.<tUid>.<owner>.<actor>.<uid>.<nonce>` | 14 |
+| Class, `exact` | `cotal.<space>.ep.one.<endpoint>.<command>.exact.<tOwner>.<tActor>.<tUid>.<owner>.<actor>.<uid>.<nonce>` | 14 |
 | Scatter | as class forms with mode token `all` | 10-14 |
 | Instance | `cotal.<space>.ep.inst.<endpoint>.<instanceId>.<command>[.<authz>[.<target tokens per mode>]].<owner>.<actor>.<uid>.<nonce>` | 11-15 |
 | Reply | `cotal.<space>.ep.reply.<endpoint>.<instanceId>.<epoch>.<owner>.<actor>.<uid>.<nonce>` | 11 |
@@ -1505,7 +1506,7 @@ binding constraint; minted-credential size is, §13.9.)
 
 **The authorization-mode token** (`<authz>`) makes the authority gradient explicit and
 broker-enforced where it is statically expressible, and honestly validator-primary where it is
-not. Six modes:
+not. Seven modes:
 
 - `self`, the target IS the caller: the form carries **no target tokens and no body
   `target`** (a supplied one is `target-mismatch`, never ignored); the endpoint derives the
@@ -1529,6 +1530,15 @@ not. Six modes:
   capability, never wildcarded. Broker-confined on the full target triple; the validator
   re-checks only currency; a subject `<tUid>` that no longer matches the current mapping is
   `expired`.
+- `exact`, **privileged exact incarnation, minted only through its owning profile** (Cotal
+  #399): the target block is `exact.<tOwner>.<tActor>.<tUid>` (THREE target tokens), the same
+  literal-triple shape `handle` carries, minus the redemption promise. There is no issuer-signed
+  artifact, no redemption step, and no `sourceChain`; the row is built directly by the profile
+  that owns this command under root authority for one target it names, never a standing
+  capability, never wildcarded. Broker-confined on the full target triple, exactly as `handle`;
+  the validator re-checks only currency, and a subject `<tUid>` that no longer matches the
+  current mapping is `expired`. A generic reader of this mode infers precisely a privileged,
+  grant-pinned exact triple with a current-mapping check, and nothing more.
 - `child`, static-mesh own-child (`spawner == caller`): a **distinct trusted-validator form**.
   The grant means "may ask this validator", not "already authorized"; the handler MUST
   fresh-check the immutable spawner relation against durable state and fail closed. Its
@@ -1539,7 +1549,7 @@ not. Six modes:
   Its grants pin literal `<tOwner>` values named at mint; a wildcard target owner in `ledger`
   mode is mintable only for operator/admin profiles.
 
-`any`, `child`, `ledger`, and `handle` are never wildcard-reachable from a `self`/`owner`
+`any`, `child`, `ledger`, `handle`, and `exact` are never wildcard-reachable from a `self`/`owner`
 grant (distinct token ⇒ distinct subject ⇒ distinct grant row). A handler MUST resolve the target (the
 revision-pinned `(alias, lifecycleUid)` mapping, §13.1) immediately before effect and reject
 any request whose body target disagrees with the subject target tokens (`target-mismatch`) or

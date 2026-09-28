@@ -48,8 +48,8 @@ export interface EpCapability {
  *  a smuggled `.`/`*`/`>` that widens the minted permission beyond the grammar. */
 function targetGrantTokens(target: EpTarget, caller: EpCaller): string[] {
   if (target.mode === "self") return ["self"];
-  if (target.mode === "handle")
-    return ["handle", assertBoundedOwner(target.tOwner, "target owner"), assertBoundedOwner(target.tActor, "target actor"), assertLifecycleToken(target.tUid, "target lifecycleUid")];
+  if (target.mode === "handle" || target.mode === "exact")
+    return [target.mode, assertBoundedOwner(target.tOwner, "target owner"), assertBoundedOwner(target.tActor, "target actor"), assertLifecycleToken(target.tUid, "target lifecycleUid")];
   if (target.mode === "any" || target.mode === "ledger")
     return [target.mode, target.tOwner === "*" ? "*" : assertBoundedOwner(target.tOwner, "target owner")];
   if (target.tOwner !== caller.owner)
@@ -136,6 +136,8 @@ export function epCallerGrantRows(
   for (const cap of caps) {
     if (cap.target?.mode === "handle")
       throw new Error(`a "handle"-mode capability on "${cap.endpoint}.${cap.command}" is redemption-minted only (SPEC 13.2), never a standing capability`);
+    if (cap.target?.mode === "exact")
+      throw new Error(`an "exact"-mode capability on "${cap.endpoint}.${cap.command}" is minted only through its owning profile (SPEC 13.2), never a standing capability`);
     pub.push(...epRequestGrantRows(space, cap, caller));
     if (cap.journal) pub.push(epJournalGrantRow(space, cap, caller));
     if (GOAL_BEARING_SET.has(cap.command) && !progressEndpoints.includes(cap.endpoint)) progressEndpoints.push(cap.endpoint);
