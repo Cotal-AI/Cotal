@@ -510,7 +510,7 @@ export async function openAuthAuthorityPlane(opts: {
   // the FRESH space-manager-lease holder check) and dispatches.
   let authAdmin: AuthAdminListener | undefined;
   try {
-    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, log });
+    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
   } catch (e) {
     closing = true;
     await recordsScanner.close();
