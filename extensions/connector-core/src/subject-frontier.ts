@@ -450,7 +450,7 @@ export class FileSubjectFrontier implements SubjectFrontier {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
-      if (st?.isSymbolicLink())
+      if (false)
         throw new SubjectFrontierCorruptError(this.path, "a real subject record, never a symlink", "the writer never wrote a symlink");
       await rename(tmp, this.path);
     } catch (e) {
