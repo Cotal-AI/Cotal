@@ -59,7 +59,7 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, type EpGateState } from "@cotal-ai/core";
-import { admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -68,7 +68,7 @@ import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
-import { admitRemoteRun, authorizeRemoteManagerRenewal, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest } from "./manager-authority.js";
+import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -202,6 +202,14 @@ export interface AuthAuthorityPlane {
     scope: string[];
     request: unknown;
   }) => Promise<import("@cotal-ai/core").RemoteRunAdmissionResult>;
+  /** First-attempt/resume or operator issuance for one hosted run, asked by a registered signerless manager.
+   *  The plane authenticates the registration, derives coordinates from native admission/records/checkpoints,
+   *  and signs ONLY the returned fixed grant args. JWT responses contain no seeds. */
+  issueManagerRunAttempt: (args: {
+    owner: string;
+    scope: string[];
+    request: unknown;
+  }) => Promise<unknown>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -1016,6 +1024,78 @@ export async function openAuthAuthorityPlane(opts: {
         }
       });
     },
+    issueManagerRunAttempt: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      if (!scope.includes("supervise"))
+        throw new EpEnvelopeError("permission-denied", 'manager run attempt needs scope "supervise"; spawn/admin do not imply it');
+      const req = parseRemoteRunAttemptRequest(request);
+      const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
+      const grant = await authorizeRemoteRunAttempt({
+        request,
+        owner,
+        space,
+        accountPublicKey: dataAccount.pub,
+        proofSecret: dataAccount.signingSeed,
+        endpoint: "manager",
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+        readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
+        readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
+        checkpointWaiting: async (token) => (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value.state === "waiting",
+      });
+      const hostAuth: SpaceAuth = {
+        space,
+        operator: { seed: "", jwt: "" },
+        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+        sys: { pub: "", jwt: "" },
+      };
+      if (grant.kind === "attempt") {
+        const caller = runDriverCaller(grant.driver.runDriver.runId, owner);
+        const driverCreds = await mintCreds(hostAuth, { id: grant.driver.id, seed: newIdentity().seed }, "run-driver", {
+          principal: { owner, actor: caller.actor },
+          runDriver: grant.driver.runDriver,
+          expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+        });
+        const mediatorCreds = await mintCreds(hostAuth, { id: grant.mediator.id, seed: newIdentity().seed }, "run-mediator", {
+          principal: { owner, actor: caller.actor },
+          runMediator: grant.mediator.runMediator,
+          expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+        });
+        return {
+          v: 1 as const,
+          kind: "manager-run-attempt" as const,
+          space,
+          owner,
+          actor: req.actor,
+          instanceId: req.instanceId,
+          managerLifecycleUid: req.managerLifecycleUid,
+          requestId: req.requestId,
+          driver: { jwt: jwtFromCreds(driverCreds)!, exp: credsClaims(driverCreds).exp! },
+          mediator: { jwt: jwtFromCreds(mediatorCreds)!, exp: credsClaims(mediatorCreds).exp! },
+        };
+      }
+      const operatorCreds = await mintCreds(hostAuth, { id: grant.operator.id, seed: newIdentity().seed }, "run-operator", {
+        principal: { owner, actor: `operator.${grant.operator.id}` },
+        runOperator: grant.operator.runOperator,
+        expiresInSeconds: 60,
+      });
+      return {
+        v: 1 as const,
+        kind: "manager-run-attempt" as const,
+        space,
+        owner,
+        actor: req.actor,
+        instanceId: req.instanceId,
+        managerLifecycleUid: req.managerLifecycleUid,
+        requestId: req.requestId,
+        operator: {
+          jwt: jwtFromCreds(operatorCreds)!,
+          exp: credsClaims(operatorCreds).exp!,
+        },
+      };
+    },
     fenced,
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
@@ -1359,6 +1439,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
+      issueManagerRunAttempt: plane.issueManagerRunAttempt,
       secrets,
       retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
       retireManagedLifecycle: plane.retireManagedLifecycle,
@@ -1472,6 +1553,7 @@ interface HandlerCtx {
   scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
   authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
   admitManagerRun: AuthAuthorityPlane["admitManagerRun"];
+  issueManagerRunAttempt: AuthAuthorityPlane["issueManagerRunAttempt"];
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   retireManagedLifecycle: AuthAuthorityPlane["retireManagedLifecycle"];
@@ -1489,7 +1571,7 @@ interface HandlerCtx {
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun">,
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -1528,6 +1610,8 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
   if (request.kind === "manager-run-admission")
     return ctx.admitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  if (request.kind === "manager-run-attempt")
+    return ctx.issueManagerRunAttempt({ owner, scope: row.scope ?? [], request: body.request });
   if (request.kind === "manager-service-maintenance")
     return ctx.maintainRemoteManager({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerMaintenanceRequest });
   return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
@@ -1975,7 +2059,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
 
 /** Loopback/operator-only typed manager authority exchange. The public route table never includes
  * this path, and the loopback capability is checked here in addition to the route separation. */
-async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
