@@ -33,7 +33,7 @@ import { authorizeRemoteManagerRenewal, issueRemoteManagerAuthority } from "../.
 import { remoteManagerCurrentRegistrationProof } from "../../auth/src/retained-manager-validation.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { Manager } from "../src/manager.js";
-import { remoteManagerRenewalCredentials } from "../src/remote-authority.js";
+import { remoteStandingBundleRenewal } from "../src/remote-authority.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 
 let pass = 0;
@@ -113,16 +113,23 @@ try {
   let refusals = 0;
   let refuseUntil = 0;
   let adopted: Record<Name, string> | undefined;
-  const renewStandingBundle = async (processEpoch: number) => {
+  const current = (await observeManagerGate()) as unknown as { processEpoch: number; registrationRevision: number };
+  const base = {
+    v: 1 as const, kind: "manager-service-authority" as const, operation: "renewStandingBundle" as const,
+    space, actor: "cli", instanceId, managerLifecycleUid, requestId: `req${mintLifecycleUid()}`,
+    accountPublicKey: auth.account.pub, processEpoch: current.processEpoch,
+    identities: Object.fromEntries(names.map((n) => [n, { id: held[n].id }])) as RemoteManagerAuthorityRequest["identities"],
+  };
+  const registrationProof = remoteManagerCurrentRegistrationProof("proof-secret", owner, base, current);
+  const standing = remoteStandingBundleRenewal({
+    state: { v: 1, space, instanceId, lifecycleUid: managerLifecycleUid, identities: held },
+    owner, registrationProof, supervisorCreds: initial.supervisor,
+    call: async (request) => {
     calls++;
-    const current = (await observeManagerGate()) as unknown as { processEpoch: number; registrationRevision: number };
-    const base = {
-      v: 1 as const, kind: "manager-service-authority" as const, operation: "renewStandingBundle" as const,
-      space, actor: "cli", instanceId, managerLifecycleUid, requestId: `req${mintLifecycleUid()}`,
-      accountPublicKey: auth.account.pub, processEpoch,
-      identities: Object.fromEntries(names.map((n) => [n, { id: held[n].id }])) as RemoteManagerAuthorityRequest["identities"],
-    };
-    const request = { ...base, registrationProof: remoteManagerCurrentRegistrationProof("proof-secret", owner, base, current) } as RemoteManagerAuthorityRequest;
+    assert.equal(request.operation, "renewStandingBundle");
+    assert.equal(request.registrationProof, registrationProof);
+    assert.equal(request.accountPublicKey, auth.account.pub);
+    assert.deepEqual(request.identities, base.identities);
     // Requests in the first 3s are authenticated as a foreign owner, so the real authorizer refuses
     // each handler's first attempt. Later requests carry the registered owner.
     if (calls === 1) refuseUntil = Date.now() + 3_000;
@@ -142,7 +149,11 @@ try {
         },
       });
     } catch (e) { refusals++; throw e; }
-    adopted = remoteManagerRenewalCredentials(material, request, owner, held) as Record<Name, string>;
+    return material;
+    },
+  });
+  const renewStandingBundle = async (processEpoch: number) => {
+    adopted = await standing.renewStandingBundle(processEpoch);
     return adopted;
   };
 
@@ -150,7 +161,7 @@ try {
     space, servers: SERVERS, runtime: "pty", workspaceRoot: mkdtempSync(join(tmpdir(), "fstart-")),
     remoteAuthority: {
       owner, actors, instanceId, lifecycleUid: managerLifecycleUid, identities: held,
-      accountPublicKey: auth.account.pub,
+      accountPublicKey: standing.accountPublicKey,
       supervisorCreds: initial.supervisor, executorCreds: initial.executor, serveCreds: initial.serve,
       goalWriterCreds: initial.goalWriter, sessionLedgerCreds: initial.sessionLedger,
       renewExecutor: async () => { throw new Error("per-duty executor renewal must not run under the all-duty family"); },
