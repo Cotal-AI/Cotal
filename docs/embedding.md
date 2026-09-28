@@ -340,11 +340,11 @@ The remote authority's instance executor remains the scoped maintenance credenti
 deregistration and exact instance registration operations. It carries no records-stream consumer
 lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
 returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
-consumer connection and its create/delete rights. The executor remains a five-minute credential for
-registration operations and clean deregistration. A hosted process expected to
-run beyond that window cannot yet renew it in place. Clean deregistration then fails loud and the
-operator removes the stale instance with `cotal deregister-instance`. Wiring the typed `renew` phase
-into the running manager remains required for unattended long-lived hosting.
+consumer connection and its create/delete rights. The five-minute executor already renews through
+`remoteAuthority.renewExecutor`. The signerless supervisor, serve, goal-writer, session-ledger and
+per-run driver credentials do not yet have a complete remote renewal and adoption path. The
+[hosted runtime contract](design/hosted-runtime-contracts.md) records the bounded additions and
+their ownership; it is not a shipped pooled service.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime
 runs agent children under the *same* OS uid and the *same* `workspaceRoot`, so mode-0600 on
