@@ -17,7 +17,7 @@ const deliveryCommands: Command[] = [
     group: "Manager",
     summary:
       "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1); or `deliver pending <name>` to inspect a recipient's held DMs",
-    positionals: "[pending <name> [--limit <n>] [--uid <lifecycle>]]",
+    positionals: "[pending <name> [--limit <n>] [--durable <name>]]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the broker recorded for --space, else the local mesh)" },
@@ -27,7 +27,7 @@ const deliveryCommands: Command[] = [
       { name: "shards", type: "string", value: "<n>", description: "shard count (N=1 only; >1 is rejected)" },
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },
       { name: "limit", type: "string", value: "<n>", description: "pending: max recent candidate ids to print (default 20)" },
-      { name: "uid", type: "string", value: "<lifecycle>", description: "pending: read a specific lifecycle's durable when the agent's card is gone" },
+      { name: "durable", type: "string", value: "<name>", description: "pending: read this exact DM durable (a live read's printed name) instead of resolving <name>" },
       { name: "json", type: "boolean", description: "pending: print the facts as one JSON object" },
     ],
     prepareMeshTarget: false,

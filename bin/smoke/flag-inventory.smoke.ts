@@ -204,8 +204,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
     // long ago and the SERVER half did not, which is this whole feature in one line.
     flags: [
-      "creds:string", "dev-mint:boolean", "json:boolean", "limit:string", "server:string",
-      "shard:string", "shards:string", "space:string", "tls:boolean", "uid:string",
+      "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
+      "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
     ],
     positionals: true,
   },

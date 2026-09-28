@@ -20,7 +20,7 @@ import {
 import { connectOrExit } from "@cotal-ai/workspace";
 import { jetstream, jetstreamManager, JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 
-type Values = { space?: string; server?: string; creds?: string; limit?: string; uid?: string; json?: boolean };
+type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string; json?: boolean };
 
 /** A short presence watch, the shape `send.ts` polls: an `offline` card still counts as a resolved
  *  peer (the recipient may be dead, that is exactly what this verb exists to inspect). */
@@ -38,11 +38,30 @@ function notFound(name: string, space: string): never {
   process.exit(1);
 }
 
+function notFoundDurable(durable: string, space: string): never {
+  console.error(`✗ not-found: no DM durable "${durable}" in space ${space}`);
+  process.exit(1);
+}
+
+/** Inverse of {@link dmDurable} for the `dm_<owner>-<actor>-<lifecycleUid>` name form. Owner/actor
+ *  tokens ban `-` ({@link assertValidOwnerToken}) and the lifecycleUid token is `[a-z0-9]{26,32}`
+ *  (also `-`-free), so splitting the part after the well-known `dm_` prefix on `-` is unambiguous
+ *  exactly when it yields three parts each matching its own token grammar; anything else (a name
+ *  typed by hand, a different durable kind) is reported as unparseable rather than guessed at. */
+function parseDmDurable(durable: string): { owner: string; actor: string } | null {
+  if (!durable.startsWith("dm_")) return null;
+  const parts = durable.slice(3).split("-");
+  if (parts.length !== 3) return null;
+  const [owner, actor, uid] = parts;
+  if (!/^[A-Za-z0-9_]+$/.test(owner) || !/^[A-Za-z0-9_]+$/.test(actor) || !/^[a-z0-9]{26,32}$/.test(uid)) return null;
+  return { owner, actor };
+}
+
 export async function runPending(args: ParsedArgs): Promise<void> {
   const values = args.values as Values;
   const name = args.positionals[1];
   if (!name || args.positionals.length > 2) {
-    console.error('usage: cotal deliver pending <name> [--limit <n>] [--uid <lifecycle>] [--space <s>] [--server <url>] [--creds <file>]');
+    console.error('usage: cotal deliver pending <name> [--limit <n>] [--durable <name>] [--space <s>] [--server <url>] [--creds <file>]');
     process.exit(1);
   }
   const limit = values.limit ? Number(values.limit) : 20;
@@ -58,34 +77,37 @@ export async function runPending(args: ParsedArgs): Promise<void> {
   const conn = await connectOrExit(values, "admin");
   const { server, space, tls } = conn;
 
-  // Resolve <name> via a short presence watch (offline counts, resolvePeer admits it) unless the
-  // card is gone entirely, in which case --uid is the only route to the durable.
-  const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    creds: conn.creds,
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: true,
-    card: { name: "deliver-pending", kind: "endpoint" },
-  });
-  await ep.start();
-  let uid: string | undefined;
-  let peer: Presence | undefined;
-  try {
-    peer = await pollPresence(ep, name);
-    uid = peer?.lifecycleUid ?? values.uid;
-  } finally {
-    await ep.stop();
+  // `<name>` stays required and is only echoed in error text; `--durable` (the exact consumer
+  // name a live read prints, via dmDurable/lifecycleNameKey) skips the presence watch entirely so
+  // an old lifecycle's held DMs stay reachable once its card is gone from the roster (a same-name
+  // respawn's card can never be steered back to a dead lifecycle's owner/actor by name alone).
+  let durable: string;
+  let recip: { owner: string; actor: string } | undefined;
+  if (values.durable) {
+    durable = values.durable;
+    recip = parseDmDurable(durable) ?? undefined;
+  } else {
+    const ep = new CotalEndpoint({
+      space,
+      servers: server,
+      creds: conn.creds,
+      channels: [],
+      consume: false,
+      registerPresence: false,
+      watchPresence: true,
+      card: { name: "deliver-pending", kind: "endpoint" },
+    });
+    let peer: Presence | undefined;
+    await ep.start();
+    try {
+      peer = await pollPresence(ep, name);
+    } finally {
+      await ep.stop();
+    }
+    if (!peer?.lifecycleUid) notFound(name, space);
+    recip = parsePrincipalKey(peer.card.id) ?? undefined;
+    durable = dmDurable(recip?.owner ?? name, recip?.actor ?? name, peer.lifecycleUid);
   }
-  if (!uid) notFound(name, space);
-
-  const recip = peer ? parsePrincipalKey(peer.card.id) : undefined;
-  // Without a live card (e.g. --uid on a gone lifecycle) the durable's owner/actor tokens must
-  // come from the target name itself; a candidate-id read additionally needs owner/actor to filter
-  // subjects, so that half is skipped when there is no resolved peer.
-  const durable = dmDurable(recip?.owner ?? name, recip?.actor ?? name, uid);
   const stream = dmStream(space);
 
   const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds: conn.creds, tls }), maxReconnectAttempts: 0 });
@@ -95,7 +117,10 @@ export async function runPending(args: ParsedArgs): Promise<void> {
     try {
       info = await jsm.consumers.info(stream, durable);
     } catch (e) {
-      if (e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound) notFound(name, space);
+      if (e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound) {
+        if (values.durable) notFoundDurable(durable, space);
+        notFound(name, space);
+      }
       throw e;
     }
     const streamInfo = await jsm.streams.info(stream);
@@ -127,7 +152,11 @@ export async function runPending(args: ParsedArgs): Promise<void> {
 
     // Bounded read of recent candidate ids from the ack floor - an ephemeral ordered consumer,
     // never acked, never durable. Not proof of a hole: it names what is there, nothing more.
-    if (recip) {
+    // Needs owner/actor to filter subjects; skipped (and said so) when neither a resolved card
+    // nor an unambiguous --durable parse supplied them.
+    if (!recip) {
+      console.log("recent candidate ids: not read (no resolved card)");
+    } else {
       const js = jetstream(nc);
       const subjects = [unicastSubject(space, recip.owner, recip.actor, "*", "*")];
       const start = facts.ackFloor + 1;

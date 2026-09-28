@@ -1664,7 +1664,7 @@ See [Watch a mesh](watch-a-mesh.md).
 
 ```bash
 cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--shard <n>] [--shards <n>] [--dev-mint]
-cotal deliver pending <name> [--limit <n>] [--uid <lifecycle>] [--json]
+cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
 ```
 
 With no positional, `cotal deliver` runs the delivery daemon (see
@@ -1685,8 +1685,10 @@ The verb needs the `admin` credential profile: it runs through the same static-m
 `cotal mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,
 because there is no user-mode inspection authority yet. Pass `--creds <file>` for an off-registry
 admin credential. A same-name respawn never inherits a predecessor's held DMs (the durable is
-lifecycle-keyed); use `--uid <lifecycle>` to read an old incarnation's durable by its lifecycle id
-once its card is gone from the roster.
+lifecycle-keyed); an old lifecycle's durable is reachable only by the name a live read printed
+(the `<durable>` line on the first line of this verb's output). Pass that name with `--durable
+<name>` to read it directly once the lifecycle's card is gone from the roster. This skips the
+presence watch on `<name>` entirely, so `<name>` is required but only echoed in error text.
 
 ## mint
 

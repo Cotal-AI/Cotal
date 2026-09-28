@@ -37,7 +37,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 27;
+const EXPECTED = 29;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -308,6 +308,15 @@ try {
     pendingBob.stdout.includes(offlineText) || /recent candidate ids/.test(pendingBob.stdout),
     pendingBob.stdout,
   );
+  // M2b: `--durable <name>` reads the exact consumer the first read just printed (its first
+  // stdout line), skipping name resolution entirely, and reports the same pending count.
+  const bobDurable = pendingBob.stdout.split("\n")[0].trim();
+  const pendingBobByDurable = await run(["deliver", "pending", "bob", "--durable", bobDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending bob --durable <name>` exits 0 and prints the same pending count", pendingBobByDurable.code === 0 && pendingBobByDurable.stdout.split("\n")[1] === pendingBob.stdout.split("\n")[1], pendingBobByDurable.stdout);
+
+  const pendingDurableMissing = await run(["deliver", "pending", "bob", "--durable", "dm_local-nope-nope", "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending bob --durable dm_local-nope-nope` exits non-zero with not-found", pendingDurableMissing.code !== 0 && /not-found/i.test(pendingDurableMissing.stderr), pendingDurableMissing.stderr);
+
   const pendingCarolForId = await run(["deliver", "pending", "carol", "--creds", adminCreds, "--space", space, "--server", servers]);
   const carolIdMatch = pendingCarolForId.stdout.match(/^\s*([0-9a-f-]{8,})\s+from=/m);
   check(
