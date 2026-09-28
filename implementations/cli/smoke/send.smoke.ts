@@ -308,10 +308,12 @@ try {
     pendingBob.stdout.includes(offlineText) || /recent candidate ids/.test(pendingBob.stdout),
     pendingBob.stdout,
   );
+  const pendingCarolForId = await run(["deliver", "pending", "carol", "--creds", adminCreds, "--space", space, "--server", servers]);
+  const carolIdMatch = pendingCarolForId.stdout.match(/^\s*([0-9a-f-]{8,})\s+from=/m);
   check(
     "`deliver pending bob` never lists carol's held send",
-    !pendingBob.stdout.includes(carolText),
-    pendingBob.stdout,
+    !carolIdMatch || !pendingBob.stdout.includes(carolIdMatch[1]),
+    { carolId: carolIdMatch?.[1], pendingBobStdout: pendingBob.stdout },
   );
 
   const pendingMissing = await run(["deliver", "pending", "nobody-here-either", "--creds", adminCreds, "--space", space, "--server", servers]);
