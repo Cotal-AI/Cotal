@@ -63,25 +63,32 @@ export function createJcodeMapper(opts: {
   threadId: string;
   mintRunId: () => string;
   resumeRunId?: string;
+  resumeTools?: readonly string[];
   now?: () => number;
 }): JcodeMapper {
   const now = opts.now ?? (() => Date.now());
   let open: string | null = opts.resumeRunId ?? null;
+  const tools = new Set(opts.resumeTools ?? []);
+  const interrupt = (message: string, code: string, timestamp: number): AguiEvent[] => {
+    // End the interrupted observations, not the underlying tool executions. The terminal error
+    // names the loss; neither a successful result nor a successful run is manufactured.
+    const events = [...tools].sort().map((toolCallId) => toolCallEnd({ toolCallId, timestamp }));
+    tools.clear();
+    open = null;
+    return [...events, runError({ message, code, timestamp })];
+  };
   const map: RecordMapper<PositionedJcodeJournalRecord> = ({ cursor, record }) => {
     if (record?.journal_fold) {
       const runId = open;
-      open = null;
       return runId === null
         ? null
         : {
             runId,
-            events: [
-              runError({
-                message: "Jcode session journal compacted into its snapshot; records not yet emitted were lost and are not reconstructed",
-                code: "jcode_journal_fold",
-                timestamp: now(),
-              }),
-            ],
+            events: interrupt(
+              "Jcode session journal compacted into its snapshot; records not yet emitted were lost and are not reconstructed",
+              "jcode_journal_fold",
+              now(),
+            ),
           };
     }
     if (record === null || typeof record !== "object" || !Array.isArray(record.append_messages)) return null;
@@ -119,6 +126,18 @@ export function createJcodeMapper(opts: {
       if (open === null) continue;
       runId = open;
 
+      if (message.role === "user") {
+        const remaining = new Set(tools);
+        const missingStart = parts.some((part) => part?.type === "tool_result" &&
+          typeof part.tool_use_id === "string" && part.tool_use_id.length > 0 && !remaining.delete(part.tool_use_id));
+        if (missingStart) {
+          // A checkpoint can consume the start before this reader sees it. Do not invent that
+          // start or emit an unpaired end. Mark this record's interrupted observation explicitly.
+          events.push(...interrupt("Jcode tool result has no observed start; this record cannot be replayed as a complete event sequence", "jcode_tool_start_missing", timestamp));
+          return { runId, events };
+        }
+      }
+
       parts.forEach((part, partIndex) => {
         if (part === null || typeof part !== "object") return;
         const observationId = messageId(opts.threadId, cursor, messageIndex, partIndex);
@@ -139,6 +158,7 @@ export function createJcodeMapper(opts: {
           return;
         }
         if (message.role === "assistant" && part.type === "tool_use" && typeof part.id === "string" && part.id.length > 0) {
+          tools.add(part.id);
           events.push(
             toolCallStart({
               toolCallId: part.id,
@@ -151,6 +171,7 @@ export function createJcodeMapper(opts: {
           return;
         }
         if (message.role === "user" && part.type === "tool_result" && typeof part.tool_use_id === "string" && part.tool_use_id.length > 0) {
+          tools.delete(part.tool_use_id);
           events.push(toolCallEnd({ toolCallId: part.tool_use_id, timestamp, ...timeMeta }));
         }
       });
@@ -162,7 +183,10 @@ export function createJcodeMapper(opts: {
   return {
     map,
     forgetOpenRun(runId: string): void {
-      if (open === runId) open = null;
+      if (open === runId) {
+        open = null;
+        tools.clear();
+      }
     },
   };
 }

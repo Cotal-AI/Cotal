@@ -450,8 +450,8 @@ export async function runJcodeHost(): Promise<void> {
           // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
           // wins over the current journal end and replays everything appended after that cursor.
           await initializeJcodeEventBoundary(journalPath, wal);
-          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+          const resumeBrackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
           return AguiEmitter.start<PositionedJcodeJournalRecord>({
             endpoint: agent.ep,
             wal,
