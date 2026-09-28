@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -98,6 +98,10 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       // issuance family is reachable through this server-side connection.
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.epcred.manager.>`,
+      // Standing renewal re-derives the serve surface from the registered spec's content-addressed
+      // cluster artifacts: read-only Direct Get on the space's contract store, nothing else.
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}`,
     ],
     subscribe: base.subscribe,
   };
