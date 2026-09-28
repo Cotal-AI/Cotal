@@ -6,6 +6,8 @@
  * attempt adopts the repaired family for the same held nkeys and re-dials. The per-duty executor
  * renewal and every local mint path stay unused.
  *
+ * The last cell calls the pre-re-dial check directly with a holder that renewal did not repair.
+ *
  * Limit: the serve and goal-writer close handlers share this routing but are not driven live here,
  * and full Manager.start() is not run.
  *
@@ -74,7 +76,13 @@ type Internals = {
   ep: { reconnect(): Promise<void> };
   remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
   leaseStopping: boolean;
+  renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void>;
 };
+
+// The operator-visible reason each failed re-dial attempt logs.
+const logged: string[] = [];
+const origError = console.error;
+console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); origError(...args); };
 
 let m!: Internals;
 try {
@@ -138,6 +146,8 @@ try {
     assert.equal(m.remoteRenewalDebt!.processEpoch, 7);
     assert.equal(sw.creds, initial.sessionLedger);
     assert.equal(m.remoteExecutorCreds, initial.executor);
+    assert.ok(logged.some((l) => /session-ledger re-dial attempt failed: injected issuer refusal/.test(l)),
+      "the failed attempt must report the issuer's refusal, not a generic health failure");
   });
   await cell("the next attempt adopts the repaired family and re-dials on a new connection", async () => {
     assert.ok(await until(() => sw.nc !== first, 15_000), "the session ledger was never re-dialed");
@@ -157,7 +167,13 @@ try {
     await wait(2_000);
     await sw.nc.flush();
   });
+  // Direct call: a holder the adopted family did not repair (an expired credential the renewal
+  // could not replace) must fail the attempt instead of re-dialing with it.
+  await cell("a holder still unhealthy after all-duty renewal refuses the re-dial", async () => {
+    await assert.rejects(m.renewRemoteBeforeRedial("probe", () => initial.sessionLedger), /not healthy after all-duty renewal/);
+  });
 } finally {
+  console.error = origError;
   if (m) m.leaseStopping = true;
   await m?.sessionLedgerConn?.nc?.close().catch(() => {});
   releaseBroker();
