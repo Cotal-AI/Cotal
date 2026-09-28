@@ -1265,25 +1265,46 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   process.on("SIGTERM", stop);
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
-  child.on("exit", async (code) => {
+  child.on("exit", async (code, signal) => {
     removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
     // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
     await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-    // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
-    // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
-    // record — removing by name would clobber the live winner and hide it from the registry.
-    // …and only if it is still OUR kind of record. A concurrent `cotal meshes add --force` can
-    // replace it with a hand-registered one carrying the same server + root; that record outlives
-    // this broker by design (it is the operator's, and only they remove it), so unrecording it on
-    // our exit would delete a registration this process never owned.
-    const mine = findMesh(space);
-    if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
-      removeMesh(space);
-      if (getCurrent() === space) clearCurrent();
+    // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
+    // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
+    // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
+    if (stopping) {
+      // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
+      // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
+      // record — removing by name would clobber the live winner and hide it from the registry.
+      // …and only if it is still OUR kind of record. A concurrent `cotal meshes add --force` can
+      // replace it with a hand-registered one carrying the same server + root; that record outlives
+      // this broker by design (it is the operator's, and only they remove it), so unrecording it on
+      // our exit would delete a registration this process never owned.
+      const mine = findMesh(space);
+      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
+        removeMesh(space);
+        if (getCurrent() === space) clearCurrent();
+      }
+      if (activationFinished) process.exit(code ?? 0);
+    } else {
+      // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
+      // `up` reopens that SAME store instead of falling back to the root's default, and a
+      // supervising unit's restart takes the refresh path against the recorded store rather than
+      // racing a second broker into existence. Foreground stdio is inherited (its own log lines
+      // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
+      const detail = signal ? `signal ${signal}` : `code ${code}`;
+      console.error(
+        c.red(
+          `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
+        ),
+      );
+      // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
+      // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
+      // stop and left the unit sitting dead.
+      if (activationFinished) process.exit(code ?? 1);
     }
-    if (activationFinished) process.exit(code ?? 0);
   });
 
   const ready = await waitReady(server, setup?.creds);
