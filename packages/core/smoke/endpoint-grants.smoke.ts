@@ -133,9 +133,14 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + define-persona + the run family, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 14
+  operatorInstrumentCapabilities("privileged").length === 15
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,goal-result,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+// The two class-scatter reads (`cotal ps` and `cotal ps --slots`) carry the `all` route beside
+// `one`; every other read is anycast-only. A `slots` row without `all` is exactly the #1274 hand
+// test's broker refusal on a static mesh: the CLI scatters it like `ps`.
+c("the instrument's `ps` and `slots` rows are the only reads minted on the scatter rail",
+  operatorInstrumentCapabilities("privileged").filter((cap) => cap.routes?.includes("all")).map((cap) => cap.command).join(",") === "ps,slots");
 // The `run` capability (SPEC 14.3): four untargeted run-* rows, self-targeted run-answer, PLUS the whole spawn set, and
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
@@ -147,7 +152,7 @@ c("the run capability set: run-start/run-resume/run-status/run-ps untargeted, ru
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 28
+  adminCaps.length === 29
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

@@ -586,8 +586,8 @@ try {
     // decided by an argument the classifier cannot see. Asserting the two vocabularies are equal
     // would re-couple them and re-admit exactly that bug.
     check("...while the manager READS stay retry-safe (the guard did not widen)",
-      (["status", "ps", "inspect"] as const).every(safe),
-      (["status", "ps", "inspect"] as const).filter((c) => !safe(c)));
+      (["status", "ps", "slots", "inspect"] as const).every(safe),
+      (["status", "ps", "slots", "inspect"] as const).filter((c) => !safe(c)));
     check("...but `models` is NOT repeat-safe: its effect depends on an ARGUMENT, not its name",
       !safe("models"));
     // An unknown command must default to UNSAFE. This is the fail-closed property, and it is the

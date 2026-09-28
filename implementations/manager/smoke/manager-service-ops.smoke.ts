@@ -936,6 +936,12 @@ try {
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);
+    // #1274: the same instrument mint must carry the `slots` read row. The list cells above call
+    // through the suite's own wide harness credential, which cannot see a missing operator grant;
+    // this is the credential `cotal ps --slots` and `cotal invoke manager slots` actually mint.
+    const rSlots = await invokeCommand(opNc, space, svc, "slots", undefined, {});
+    check("instrument `slots` rides the manager.read row too (the #1274 CLI path is broker-authorized, not just the harness)",
+      rSlots.reply.ok === true && (rSlots.reply.data as { name: string; live: boolean }[]).some((r) => r.name === accW3.name && r.live === true), rSlots.reply);
     // NO-ARGS despawn — the exact shape the real CLI produces (`cotal stop --name <n>` strips the
     // alias into the target and has nothing left): the generic layer must marshal "no args" into
     // the contract's canonical empty form ({} for an object input), not ship undefined→null at a

@@ -233,7 +233,7 @@ export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
 /** The manager endpoint's read commands (`manager.read` class). */
-export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
+export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "slots", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
  *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
  *  NEVER an agent/spawn profile (the ratified 1c pin). */
@@ -278,7 +278,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  it derives nothing from a descriptor, which is the part §13.7 forbids. `smoke:unfenced-responder`
  *  tripwires that pin so the version cannot move without this table being named. */
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect", "list-personas", "show-persona", "run-status", "run-ps", "goal-result"]),
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "slots", "inspect", "list-personas", "show-persona", "run-status", "run-ps", "goal-result"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
@@ -386,9 +386,10 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     ...MANAGER_READ_SNAP.map((command) => ({
       endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
       // `ps` is the CLASS-SCATTER read (P2 item 3, `cotal ps` default): the instrument publishes it
-      // on the `all` scatter rail to gather every instance's rows in a multi-manager space. The
+      // on the `all` scatter rail to gather every instance's rows in a multi-manager space. `slots`
+      // (`cotal ps --slots`, #1274) scatters the same way, one durable-row list per manager. The
       // other reads stay `one`-only (anycast, or `inst` when a resolve pins `--on`).
-      ...(command === "ps" ? { routes: ["one", "all"] as ("one" | "all")[] } : {}),
+      ...(command === "ps" || command === "slots" ? { routes: ["one", "all"] as ("one" | "all")[] } : {}),
     })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
