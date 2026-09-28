@@ -874,6 +874,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      // The store directory is fixed the same way: an explicit --store-dir on a live refresh can
+      // only be refused when it disagrees with what the running broker actually opened. Absent
+      // `held.storeDir` (a pre-field record) has nothing to compare against, so it is not checked.
+      if (values["store-dir"] !== undefined && held.storeDir !== undefined && resolve(values["store-dir"]) !== held.storeDir) {
+        console.error(
+          c.red(
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --store-dir (it is fixed at start); \`cotal down\` it first, then \`cotal up --store-dir ${resolve(values["store-dir"])}\``,
+          ),
+        );
+        process.exit(1);
+      }
       // `--max-sessions` is fixed when the manager starts. A refresh reuses a live manager as-is
       // (`ensureManager` returns immediately), then used to persist the requested ceiling anyway.
       // That printed `✓ already running` over an unchanged plane and left MeshEntry lying about it.
