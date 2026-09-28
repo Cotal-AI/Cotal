@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/package-test-contract.json",
   "grades": "tool",
   "why": [
-    "FOUR MUTATIONS. M1 removes one affected package from the pinned set, so the size assertion",
+    "FIVE MUTATIONS. M1 removes one affected package from the pinned set, so the size assertion",
     "catches an incomplete enumeration before any package command runs.",
     "",
     "M2 removes one package's test declaration and restores the original silent-success defect. The",
@@ -23,7 +23,10 @@
     "workspace package from disappearing out of both the loop and the expected count.",
     "",
     "The anchors are unique code-only spans. This config grades a self-testing repository gate, so it is",
-    "classified as a tool config rather than folded into shipped-package mutation coverage."
+    "classified as a tool config rather than folded into shipped-package mutation coverage.",
+    "M5 removes the issue-orchestrator example from the explicit inventory. Independent discovery",
+    "must name the omitted workspace rather than accepting an incomplete package census.",
+    ""
   ],
   "mutations": [
     {
@@ -55,6 +58,14 @@
       "file": "bin/smoke/package-test-contract.smoke.ts",
       "find": "const discovered = discoverWorkspacePackages();",
       "replace": "const discovered = Object.fromEntries(Object.entries(discoverWorkspacePackages()).filter(([name]) => name !== \"@cotal-ai/delivery\"));",
+      "expectRed": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory",
+      "cell": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory"
+    },
+    {
+      "name": "the explicit inventory drops the existing issue-orchestrator example",
+      "file": "bin/smoke/package-test-contract.smoke.ts",
+      "find": "  \"@cotal-ai/example-07-issue-orchestrator\": \"examples/07-issue-orchestrator\",\n",
+      "replace": "",
       "expectRed": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory",
       "cell": "✗ FAIL: independent workspace discovery exactly matches the pinned package inventory"
     }
