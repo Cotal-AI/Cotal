@@ -578,6 +578,83 @@ try {
     }
   }
 
+  console.log("F. M4: the v1 envelope measures at least 700 bytes and an oversized correlation field is refused before any retirement effect");
+  {
+    const uidEnv = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wenvelope", lifecycleUid: uidEnv, managerInstance: "smoke" });
+    const envTarget = { owner: OWNER, actor: "wenvelope", lifecycleUid: uidEnv };
+    const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...MGR, target: envTarget } });
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
+    try {
+      const nonce = "e".repeat(30);
+      const subject = epRequestSubject(space, {
+        route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
+        target: { mode: "exact", tOwner: envTarget.owner, tActor: envTarget.actor, tUid: envTarget.lifecycleUid },
+        caller: MGR, nonce,
+      });
+      // Digests pinned the same way the target-mismatch cell above pins them (resolveService's
+      // resolved command contract); resolved and fully drained BEFORE the reply subscription for
+      // the same reason (resolveService's own describe round trip on this connection would
+      // otherwise race the retire-lifecycle reply this cell wants to catch).
+      const service = await resolveService(nc, space, AUTH_ENDPOINT, MGR, { deadlineMs: 10_000 });
+      const resolvedCmd = service.commands.get(EP_CMD_RETIRE_LIFECYCLE);
+      if (resolvedCmd === undefined) throw new Error("retire-lifecycle absent from the resolved surface");
+      // PART C (the max_payload boundary, decided and closed): the plane's own bootstrap needs a
+      // broker max_payload of at least 580 (fails at 550); this schema-valid v1 retirement
+      // envelope measures 802 bytes wire-complete with this repo's 71-character sha256: digests,
+      // and at max_payload=801 the failure already fires inside resolveService's describe round
+      // trip, not on the retire-lifecycle publish — a suite-owned broker cannot be sized near this
+      // body without breaking its own bootstrap first. The envelope's only bounded optional fields
+      // are EndpointRef.correlation.tracestate (512 bytes) and .baggage (8192 bytes), validated in
+      // endpoint-envelope.ts's pickCorrelation(); neither can carry an 802-byte envelope past the
+      // suite broker's default 1 MiB max_payload, so the exact/one-byte-over pair from the brief is
+      // graded here with the envelope's own bounded field instead (the broker-side max_payload
+      // refusal is NOT graded on this lane; see notes and the PR body for the floor and the field
+      // bounds this substitutes for it).
+      const baseEnv = {
+        v: 1, id: "e".repeat(22), op: {
+          endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
+          inputDigest: resolvedCmd.contract.input.closureDigest, outputDigest: resolvedCmd.contract.output.closureDigest,
+        },
+        class: "ephemeral", replyExpected: true, deadlineMs: 8000,
+        target: { owner: envTarget.owner, actor: envTarget.actor, lifecycleUid: envTarget.lifecycleUid },
+        args: { opId: managedRetirementOpId(uidEnv), serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH },
+        from: { id: `${MGR.owner}.${MGR.actor}`, name: MGR.actor },
+      };
+      const measuredBytes = Buffer.byteLength(JSON.stringify(baseEnv), "utf8");
+      check("the v1 envelope measures at least 700 bytes (a regression that drops a required field is visible)",
+        measuredBytes >= 700, { measuredBytes });
+
+      // A second, otherwise-identical envelope carrying an 8193-byte correlation.baggage (one byte
+      // over pickCorrelation's 8192-byte bound): sent through the same raw-publish path the
+      // target-mismatch cell above uses.
+      const oversizedEnv = { ...baseEnv, correlation: { baggage: "b".repeat(8193) } };
+      const replyP = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
+        const sub = nc.subscribe(epCallerReplyFilter(space, MGR), {
+          callback: (err, msg) => {
+            if (err) { reject(err); return; }
+            sub.unsubscribe();
+            resolve({ subject: msg.subject, data: msg.data });
+          },
+        });
+        setTimeout(() => { try { sub.unsubscribe(); } catch { /* already dead */ } reject(new Error("no reply within 5s")); }, 5000);
+      });
+      nc.publish(subject, new TextEncoder().encode(JSON.stringify(oversizedEnv)));
+      const msg = await replyP;
+      const reply = parseEndpointReply(JSON.parse(new TextDecoder().decode(msg.data)));
+      // The refusal is produced server-side, inside parseEndpointRequest's pickCorrelation (SPEC
+      // 13.3), which endpoint-serve.ts's handler catches and converts to this bad-request reply -
+      // never a client-side EpEnvelopeError, since this cell publishes the raw envelope directly
+      // (bypassing invokeCommand's own builder) the same way the target-mismatch cell does.
+      check("the oversized correlation.baggage is refused bad-request (server-side envelope validation, not the client)",
+        reply.ok === false && reply.error?.code === "bad-request" && (reply.error?.message ?? "").includes("correlation.baggage"), reply);
+      check("the lifecycle head is NOT retired after the refused oversized-correlation request",
+        (await readLifecycleHeadForOperation(wreg, OWNER, "wenvelope"))?.mapping.state === "active");
+    } finally {
+      await nc.close().catch(() => {});
+    }
+  }
+
   console.log("F. M4b: malformed args are refused on the client before publish");
   {
     const uidBad = mintLifecycleUid();
