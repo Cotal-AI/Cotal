@@ -141,7 +141,7 @@ try {
     pinned: new Set([IID_LIVE, IID_CORPSE]), probeDeadlineMs: 2_000, report: () => {},
   });
   const outBefore = asker.nc.stats().outMsgs;
-  const outsiderVerdict = await narrow.probeLiveness(OUTSIDER);
+  const outsiderVerdict = await narrow.probeLiveness(OUTSIDER).catch((e: Error) => `threw: ${e.message.slice(0, 80)}`);
   const outsiderSent = asker.nc.stats().outMsgs - outBefore;
   check("an id OUTSIDE the pinned set is UNKNOWN - never `gone`, so it can never shortcut a deadline",
     outsiderVerdict === "unknown", outsiderVerdict);
