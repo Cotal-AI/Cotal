@@ -3,7 +3,8 @@
  * holds no space signer. An expired driver/mediator pair re-issues only through the closed
  * `renewRunDriver` chain: the issuer authorizes the current gate and the activated run's holder,
  * takeover, epoch and fencing token, and the manager validates the echo before adopting both.
- * A superseded fence keeps last-good, records debt and never reaches the signer.
+ * A superseded fence keeps last-good, records debt and never reaches the signer. An issued pair
+ * that is already unusable is not adopted.
  *
  * Limit: the hosted slot is installed by hand. This proves the renewal path, not a parked
  * workflow timer or accepted goal surviving expiry.
@@ -75,6 +76,8 @@ try {
   // The journal's activated attempt, as the issuer's authoritative reader would see it.
   let journal = { state: "running", holder: `${holderId}.${takeoverId}`, takeoverId, epoch: 2, fencingToken: 5, instanceId };
   let signed = 0;
+  // When set, the issuer signs a pair that has already expired by the time it returns.
+  let issueExpired = false;
 
   const hosting = new RunHosting({
     space, servers: SERVERS, endpoint: "manager", instanceId,
@@ -97,9 +100,11 @@ try {
             const binding = { endpoint: "manager", runId, takeoverId, instanceId, epoch: 2, owner };
             const creds = await mintCreds(auth, id, name === "runDriver" ? "run-driver" : "run-mediator", {
               principal: { owner, actor: "wf_renew" }, ...(name === "runDriver" ? { runDriver: binding } : { runMediator: binding }),
+              ...(issueExpired ? { expiresInSeconds: 1 } : {}),
             });
             credentials[name] = { jwt: jwtFromCreds(creds)!, exp: credsClaims(creds).exp! };
           }
+          if (issueExpired) await new Promise((r) => setTimeout(r, 2100));
           return { credentials };
         },
       });
@@ -132,9 +137,19 @@ try {
   });
 
   journal = { ...journal, fencingToken: 5 };
+  issueExpired = true;
+  await hosting.renew();
+  issueExpired = false;
+  await cell("an issued pair that is already expired is not adopted: last-good and debt kept", () => {
+    assert.equal(signed, 1);
+    assert.equal(slot.creds, expiring.driver);
+    assert.equal(slot.mediatorCreds, expiring.mediator);
+    assert.match(String((slot.renewalDebt as { reason?: string } | undefined)?.reason), /unusable run-driver/);
+  });
+
   await hosting.renew();
   await cell("the activated attempt adopts a host-issued pair for the same nkeys and clears debt", async () => {
-    assert.equal(signed, 1);
+    assert.equal(signed, 2);
     assert.notEqual(slot.creds, expiring.driver);
     assert.equal(credsClaims(slot.creds as string).sub, driver.id);
     assert.equal(credsClaims(slot.mediatorCreds as string).sub, mediator.id);
@@ -144,7 +159,7 @@ try {
   });
 
   await hosting.renew();
-  await cell("a healthy pair does not re-issue", () => assert.equal(signed, 1));
+  await cell("a healthy pair does not re-issue", () => assert.equal(signed, 2));
 } finally {
   releaseBroker();
   await killAndAwaitExit(srv);
