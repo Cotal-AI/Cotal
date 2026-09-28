@@ -91,15 +91,26 @@ try {
     console.log("  – skipped: M1 red: legacy manager death ends the manager-owned counter PTY (the Z residue is /proc state after SIGKILL, Linux-only)");
   }
 } finally {
+  // The verdict is printed and the exit code set BEFORE teardown, because teardown has already
+  // eaten one. On Windows every cell here passed and the process then died inside this block within
+  // 36 ms, printing nothing at all, so the run read as a failing suite when the suite had in fact
+  // passed. Cleanup is best effort and must never be able to decide the result.
+  console.log(`\nLEGACY PTY CUSTODY ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
+  process.exitCode = fail === 0 ? 0 : 1;
   try {
     const ids = JSON.parse(readFileSync(ready, "utf8")) as { childPid: number };
-    if (state(ids.childPid) !== "gone") process.kill(ids.childPid, "SIGKILL");
+    // Only Linux kills the counter by the pid the owner recorded. The owner held the pty, so the
+    // child goes with it on every platform, and killing a recorded pid is the one operation in this
+    // block that can reach a process we do not own if the number has been reused.
+    if (process.platform === "linux" && state(ids.childPid) !== "gone") process.kill(ids.childPid, "SIGKILL");
   } catch {
     // The fixture did not arm, so it owns no child PID to clean up.
   }
-  if (ownerProcess?.exitCode === null) ownerProcess.kill("SIGKILL");
-  rmSync(root, { recursive: true, force: true });
+  try {
+    if (ownerProcess?.exitCode === null) ownerProcess.kill("SIGKILL");
+    // maxRetries is what makes this survive Windows holding a handle on the tree for a moment.
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    console.log(`  (teardown left something behind, which does not change the verdict: ${String(err)})`);
+  }
 }
-
-console.log(`\nLEGACY PTY CUSTODY ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-process.exitCode = fail === 0 ? 0 : 1;
