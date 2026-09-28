@@ -7,6 +7,7 @@ import { isAbsolute, join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
   accountFromCreds,
+  credsClaims,
   DEFAULT_SERVER,
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
@@ -1269,6 +1270,9 @@ export class Manager {
   private remoteExecutorCreds?: string;
   private remoteSupervisorCreds?: string;
   private remoteBundleRenewal?: Promise<void>;
+  /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
+   * family stays live and this records what the host may have signed but the manager never adopted. */
+  private remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
 
   /** Every broker dial this manager makes, through ONE transport decision.
    *
@@ -2100,8 +2104,10 @@ export class Manager {
     const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
       this.goalWriterCreds, this.sessionLedgerCreds];
     if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) return;
+    const processEpoch = this.serviceServe.grant.epoch;
+    let candidate: Awaited<ReturnType<NonNullable<typeof remote.renewStandingBundle>>> | undefined;
     try {
-      const candidate = await remote.renewStandingBundle(this.serviceServe.grant.epoch);
+      candidate = await remote.renewStandingBundle(processEpoch);
       const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
       if (Object.keys(candidate).sort().join(",") !== [...names].sort().join(","))
         throw new Error("host returned an incomplete or widened standing credential family");
@@ -2110,10 +2116,13 @@ export class Manager {
           throw new Error(`host returned an unreadable ${name} credential`);
         if (!remote.accountPublicKey || accountFromCreds(candidate[name]) !== remote.accountPublicKey)
           throw new Error(`host returned a ${name} credential for another account`);
-        const nc = await this.dial({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(candidate[name]))(nonce), maxReconnectAttempts: 0 });
+        if (credsClaims(candidate[name]).sub !== remote.identities[name].id)
+          throw new Error(`host returned a ${name} credential for a different nkey than the held identity`);
+        const staged = candidate[name];
+        const nc = await this.dial({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(staged))(nonce), maxReconnectAttempts: 0 });
         await nc.close();
       }
-      if (this.leaseStopping || !this.serviceServe || this.serviceServe.grant.epoch !== remote.serveGrant.epoch)
+      if (this.leaseStopping || !this.serviceServe || this.serviceServe.grant.epoch !== processEpoch)
         throw new Error("manager changed its active serve epoch while standing renewal was in flight");
       this.remoteSupervisorCreds = candidate.supervisor;
       this.remoteExecutorCreds = candidate.executor;
@@ -2122,12 +2131,20 @@ export class Manager {
       this.sessionLedgerCreds = candidate.sessionLedger;
       if (this.goalWriter) this.goalWriter.creds = candidate.goalWriter;
       if (this.sessionLedgerConn) this.sessionLedgerConn.creds = candidate.sessionLedger;
+      // Adoption is committed above; a connection that cannot come back yet is a push failure the
+      // endpoint's own reconnect loop retries with the adopted credential, not unadopted debt.
+      this.remoteRenewalDebt = undefined;
       await Promise.all([
-        this.ep.reconnect(), this.pushRenewedCreds(this.serviceServe.nc),
+        this.ep.reconnect().catch((e) => console.error(`! remote manager supervisor reconnect after renewal: ${(e as Error).message}`)),
+        this.pushRenewedCreds(this.serviceServe.nc),
         ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
         ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
       ]);
     } catch (e) {
+      const unadoptedSubjects = candidate && typeof candidate === "object"
+        ? Object.values(candidate).flatMap((cred) => { try { return typeof cred === "string" && credsClaims(cred).sub ? [credsClaims(cred).sub!] : []; } catch { return []; } })
+        : [];
+      this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: (e as Error).message, unadoptedSubjects };
       console.error(`! remote manager all-duty renewal: ${(e as Error).message} - no unsigned or local replacement is available`);
       if (force) throw e;
     }
