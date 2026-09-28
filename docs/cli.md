@@ -998,7 +998,7 @@ reach needs the `admin` scope). An open mesh has no service registry.
 ## Managed seats
 
 ```bash
-cotal ps [--on <instance>] [--wide | --json] [--space <s>]
+cotal ps [--on <instance>] [--wide | --json] [--slots] [--space <s>]
 cotal stop --name <n> [--on <instance>] [--space <s>]
 cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 ```
@@ -1010,6 +1010,7 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
 | `--wide` (`ps`) | off | After each seat's compact row, print extra operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, copied unchanged from the manager row. Instance headers and errors go to stderr, so stdout contains only rows. Mutually exclusive with `--wide` |
+| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `live=false`; a retired row never prints |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
@@ -1018,6 +1019,8 @@ entry, is the route that does.
 
 The human `ps` row is presentation text and is not a stable parsing target. Scripts use `--json`,
 which is the machine-readable row contract.
+
+`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
 
 These are operator clients over the running manager's control plane. The default row includes the
 connector, model pin, optional requested variant, and runtime as operational descriptors for the
