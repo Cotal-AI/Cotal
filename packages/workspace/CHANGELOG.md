@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.57.0
+
+### Patch Changes
+
+- 33357d9: Expose provider-neutral hosted context lifecycle types for explicit service inputs and readiness, without changing existing CLI behavior.
+- Updated dependencies [e7c702a]
+- Updated dependencies [6f64bcc]
+- Updated dependencies [42448fa]
+  - @cotal-ai/core@0.57.0
+
 ## 0.56.1
 
 ### Patch Changes
