@@ -719,23 +719,49 @@ console.log("4. the auth endpoint rail profiles (piece 3)");
   const req = decode(await mintCreds(auth, newIdentity(), "retirement-requester", {
     retirementRequester: { ...CALLER, target: T },
   }));
-  c("the retirement-requester mint is EXACTLY its own request subject + own reply-plane filter + inbox (no store reads, no executing right)",
+  c("the retirement-requester mint is EXACTLY its own exact-mode request subject + the describe wildcard + the epc direct-get row + own reply-plane filter + inbox (no store WRITE, no executing right)",
     JSON.stringify(req.pub) === JSON.stringify([
-      `cotal.${S}.ep.one.auth.retire-lifecycle.handle.${T.owner}.${T.actor}.${T.lifecycleUid}.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`,
+      `cotal.${S}.ep.one.auth.retire-lifecycle.exact.${T.owner}.${T.actor}.${T.lifecycleUid}.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`,
+      `cotal.${S}.ep.one.*.describe.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`,
+      `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`,
     ])
     && req.sub.length === 2
     && req.sub[0] === `cotal.${S}.ep.reply.*.*.*.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`
     && req.sub[1]!.startsWith("_INBOX_"),
     req);
-  c("the requester's TARGET is grant-pinned: it cannot ask to retire a DIFFERENT incarnation (the handle triple is literal, only the nonce wildcards)",
-    req.pub.length === 1 && req.pub[0]!.includes(`.handle.${T.owner}.${T.actor}.${T.lifecycleUid}.`)
+  c("the requester's TARGET is grant-pinned: it cannot ask to retire a DIFFERENT incarnation (the target triple is literal, only the nonce wildcards)",
+    req.pub[0] === `cotal.${S}.ep.one.auth.retire-lifecycle.exact.${T.owner}.${T.actor}.${T.lifecycleUid}.${CALLER.owner}.${CALLER.actor}.${CALLER.uid}.*`
+    && req.pub[0]!.includes(`.exact.${T.owner}.${T.actor}.${T.lifecycleUid}.`)
     && (req.pub[0]!.match(/\*/g) ?? []).length === 1 && req.pub[0]!.endsWith(".*"));
   const RESP = { instanceId: mintLifecycleUid(), epoch: 0 };
   const listener = authAdminListenerGrants(S, CONN, RESP);
-  c("the auth listener grant is EXACTLY reply-plane publish + $JS.API.INFO + the ONE serve-gate read + inbox, subscribing only the queue-qualified class rail",
+  c("the auth listener grant is EXACTLY the serve-egress rows (both reply rails, events, timer schedule, records) + $JS.API.INFO + the ONE serve-gate read + inbox, subscribing only the queue-qualified class rail on both rails plus the derived describe rows and the epoch-pinned timer fire",
     JSON.stringify(listener) === JSON.stringify({
-      publish: [`cotal.${S}.ep.reply.auth.${RESP.instanceId}.0.*.*.*.*`, "$JS.API.INFO", `$JS.API.STREAM.MSG.GET.KV_cotal_auth_${S}`],
-      subscribe: [`cotal.${S}.ep.one.auth.retire-lifecycle.> auth`, `_INBOX_${CONN}.>`],
+      publish: [
+        `cotal.${S}.ep.reply.auth.${RESP.instanceId}.0.*.*.*.*`,
+        `cotal.${S}.ep.v1.reply.auth.${RESP.instanceId}.0.*.*.*.*.*`,
+        `cotal.${S}.epe.auth.${RESP.instanceId}.0.>`,
+        `cotal.${S}.ept.auth.${RESP.instanceId}.0.*.schedule`,
+        `cotal.${S}.epr.auth.${RESP.instanceId}.0.>`,
+        "$JS.API.INFO",
+        `$JS.API.STREAM.MSG.GET.KV_cotal_auth_${S}`,
+      ],
+      subscribe: [
+        `cotal.${S}.ep.one.auth.retire-lifecycle.> auth`,
+        `cotal.${S}.ep.all.auth.retire-lifecycle.>`,
+        `cotal.${S}.ep.inst.auth.${RESP.instanceId}.retire-lifecycle.>`,
+        `cotal.${S}.ep.v1.one.auth.retire-lifecycle.> auth`,
+        `cotal.${S}.ep.v1.all.auth.retire-lifecycle.>`,
+        `cotal.${S}.ep.v1.inst.auth.${RESP.instanceId}.retire-lifecycle.>`,
+        `cotal.${S}.ep.one.auth.describe.> auth`,
+        `cotal.${S}.ep.all.auth.describe.>`,
+        `cotal.${S}.ep.inst.auth.${RESP.instanceId}.describe.>`,
+        `cotal.${S}.ep.v1.one.auth.describe.> auth`,
+        `cotal.${S}.ep.v1.all.auth.describe.>`,
+        `cotal.${S}.ep.v1.inst.auth.${RESP.instanceId}.describe.>`,
+        `cotal.${S}.ept.auth.${RESP.instanceId}.0.*.fire`,
+        `_INBOX_${CONN}.>`,
+      ],
     }), listener);
   // THIS CELL EXISTS BECAUSE ITS PREDECESSOR WAS VACUOUS: it asserted a PLAIN subject row while its
   // own name claimed "queue-qualified", and passed 55/55 asserting the opposite of what it said.
@@ -749,11 +775,12 @@ console.log("4. the auth endpoint rail profiles (piece 3)");
     !listener.subscribe.some((r) => r.startsWith(`cotal.${S}.ep.one.auth.>`)));
   // The self-forge closure SURVIVES the rail change, in the stronger form the ep grammar allows:
   // on `ctl` the request and reply shared one subtree, so the check was "no publish row reaches a
-  // bare request subject". Here the planes are disjoint, so the equivalent is that no publish row
-  // touches the REQUEST plane at all.
-  c("the listener publish CANNOT reach a request subject (self-forge closed by the GRAMMAR): every non-JS row is on the ep.reply plane",
-    listener.publish.filter((r) => !r.startsWith("$JS.")).every((r) => r.startsWith(`cotal.${S}.ep.reply.`))
-    && !listener.publish.some((r) => /\.ep\.(one|all|inst)\./.test(r)));
+  // bare request subject". Here the planes are disjoint (reply/event/timer-schedule/record egress
+  // vs. the request planes), so the equivalent is that no publish row touches the REQUEST plane
+  // (`ep.one`/`ep.all`/`ep.inst`, either rail) at all — the serve-egress rows (`epe`/`ept`/`epr`)
+  // are egress planes the requester never reads, not a request subject.
+  c("the listener publish CANNOT reach a request subject (self-forge closed by the GRAMMAR): no publish row touches the ep.(one|all|inst) request plane on either rail",
+    !listener.publish.some((r) => /\.ep(\.v1)?\.(one|all|inst)\./.test(r)));
   c("the listener's reply publish is instance- and epoch-PINNED (only the caller suffix spans)",
     listener.publish.some((r) => r.startsWith(`cotal.${S}.ep.reply.auth.${RESP.instanceId}.0.`))
     && !listener.publish.some((r) => /\.ep\.reply\.(\*|>)/.test(r)));
