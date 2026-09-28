@@ -535,6 +535,15 @@ try {
         target: { mode: "exact", tOwner: mismatchTarget.owner, tActor: mismatchTarget.actor, tUid: mismatchTarget.lifecycleUid },
         caller: MGR, nonce,
       });
+      // The digests are pinned the way a generic client pins them (resolveService's resolved
+      // command contract, SPEC 13.7); a hand-built envelope with no digests is refused
+      // contract-mismatch before the target check ever runs. Resolved and fully drained BEFORE
+      // the reply subscription below: resolveService runs its own describe request/reply pair on
+      // this same connection, so subscribing to the broad epCallerReplyFilter first races that
+      // reply against the retire-lifecycle reply this cell actually wants to catch.
+      const service = await resolveService(nc, space, AUTH_ENDPOINT, MGR, { deadlineMs: 10_000 });
+      const resolvedCmd = service.commands.get(EP_CMD_RETIRE_LIFECYCLE);
+      if (resolvedCmd === undefined) throw new Error("retire-lifecycle absent from the resolved surface");
       const replyP = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
         const sub = nc.subscribe(epCallerReplyFilter(space, MGR), {
           callback: (err, msg) => {
@@ -549,7 +558,10 @@ try {
       // (a different actor than the subject carries): the subject is the boundary and the body
       // only ever narrows (SPEC 13.3) — a disagreeing body is refused, never silently overridden.
       const env = {
-        v: 1, id: "m".repeat(22), op: { endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE },
+        v: 1, id: "m".repeat(22), op: {
+          endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
+          inputDigest: resolvedCmd.contract.input.closureDigest, outputDigest: resolvedCmd.contract.output.closureDigest,
+        },
         class: "ephemeral", replyExpected: true, deadlineMs: 8000,
         target: { owner: mismatchTarget.owner, actor: "someone-else", lifecycleUid: mismatchTarget.lifecycleUid },
         args: { opId: managedRetirementOpId(uidMismatch), serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH },
