@@ -23,6 +23,9 @@ const context: HostedContextInputs = {
   storeIdentity: { kind: "injected", coordinate: "test-assigned-space" },
   stateDir: "fixture-state",
 };
+// @ts-expect-error the account key is mandatory, not inferred from the display space
+const missingAccount: HostedContextInputs = { ...context, context: { lifecycleUid: "fixture-uid" } };
+void missingAccount;
 let stopped = false;
 const handle: HostedServiceHandle = {
   readiness(): HostedServiceState {
