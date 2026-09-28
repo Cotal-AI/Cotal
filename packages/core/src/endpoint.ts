@@ -5432,11 +5432,14 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** Current frontier (last sequence) of the chat stream — a channel's join watermark, and the
-   *  focus-watermark a connector captures on entering `focus` (recall reads ambient after it). */
+  /** Current frontier (last sequence) of the chat stream — a channel's join watermark, the
+   *  focus-watermark a connector captures on entering `focus` (recall reads ambient after it), and
+   *  the backfill floor a preservation cut records for each retained seat. The manager reads it in
+   *  open mode over its own `consume: false` endpoint, which binds no JetStream manager at start, so
+   *  the manager is obtained lazily here rather than assumed. */
   async chatFrontier(): Promise<number> {
-    if (!this.jsm) throw new Error("endpoint not started");
-    return (await this.jsm.streams.info(chatStream(this.space))).state.last_seq;
+    const jsm = await this.manager();
+    return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
   }
 
   /** Phase 1 of a join — arm each channel's tail-drop watermark at the current frontier. MUST run

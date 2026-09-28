@@ -238,6 +238,27 @@ try {
   check("live multicast still arrives with a floor above the frontier", has(Bf4.got, "log-floor-above-live").length === 1);
   await Bf4.ep.stop();
 
+  // (e) the manager's own shape: a non-consuming endpoint reads the frontier the cut records.
+  const M = new CotalEndpoint({
+    space, servers, card: { name: "m", kind: "endpoint", id: "m_pub" }, channels: [],
+    consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  M.on("error", () => {});
+  await M.start();
+  let managerFrontier: number | undefined;
+  let managerFrontierError = "";
+  try {
+    managerFrontier = await M.chatFrontier();
+  } catch (e) {
+    managerFrontierError = (e as Error).message;
+  }
+  await M.stop();
+  check(
+    "a non-consuming endpoint reads the chat frontier for a preservation cut",
+    managerFrontier !== undefined && managerFrontier === (await A.chatFrontier()),
+    managerFrontierError || managerFrontier,
+  );
+
   // ---- restart with a CHANGED config backfills the full (replay) boot set ----
   const B3 = recorder("B", "B_join", ["log", "incident"]); // boot set now log + incident (both have history)
   await B3.ep.start();
