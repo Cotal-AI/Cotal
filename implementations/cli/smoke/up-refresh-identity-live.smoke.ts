@@ -14,9 +14,9 @@
  * reaches the registry's own refusal.
  * Run: pnpm smoke:up-refresh-identity:live
  */
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -30,7 +30,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29;
+const EXPECTED_CHECKS = 29 + 13 + 5 + 11; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -165,6 +165,190 @@ async function foreignRootRefusal(): Promise<void> {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** #2218/#1014 gap 3 — a repair `up` on a same-root record whose broker died reopens the store
+ *  the record names, refuses a disagreeing explicit `--store-dir`, and a pre-field record (no
+ *  `storeDir`) warns instead of refusing. Each cell kills the live broker with SIGKILL (a crash,
+ *  not a `down`) so the record is the M3 "stays recorded" kind, then drives a repair `up` through
+ *  the shipped binary. */
+async function storeRecordRepair(): Promise<void> {
+  const fixture = await makeFixture("store-repair");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { findMesh } = await import("@cotal-ai/workspace");
+  const space = "store-repair";
+  const storeA = join(fixture.root, "store-a");
+  const other = join(fixture.root, "other");
+  let started = false;
+  try {
+    const up1 = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space, "--store-dir", storeA]);
+    started = up1.status === 0;
+    check("(1) a fresh --store-dir start succeeds", started, `${up1.stdout}${up1.stderr}`);
+    if (!started) return;
+    check("(1) the record carries the resolved --store-dir", findMesh(space)?.storeDir === resolve(storeA), findMesh(space));
+
+    let railsUp = false;
+    for (let i = 0; i < 6 && !railsUp; i++) {
+      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      if (set.status === 0) railsUp = true;
+      else await sleep(5_000);
+    }
+    check("(2) the manager answers channels set within the poll budget", railsUp);
+
+    const pidPath = join(fixture.root, ".cotal", "nats.pid");
+    const pid = Number(readFileSync(pidPath, "utf8").trim());
+    process.kill(pid, "SIGKILL");
+    let unreachable = false;
+    for (let i = 0; i < 20 && !unreachable; i++) {
+      const st = cotal(fixture, ["status", "--server", fixture.server, "--space", space]);
+      if (/unreachable/.test(`${st.stdout}${st.stderr}`)) unreachable = true;
+      else await sleep(1_000);
+    }
+    check("(3) status observes the killed broker unreachable within the poll budget", unreachable);
+
+    const repair = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space]);
+    check("(4) the bare repair exits 0", repair.status === 0, `${repair.stdout}${repair.stderr}`);
+    check("(4) the repair output names reopening the recorded store", /reopening the recorded store/.test(`${repair.stdout}${repair.stderr}`), `${repair.stdout}${repair.stderr}`);
+    const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
+    const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
+    check("(4) the log's last Store Directory: line names store-a/jetstream", lastStoreLine.includes(join("store-a", "jetstream")), lastStoreLine);
+    const list = cotal(fixture, ["channels", "list", "--server", fixture.server, "--space", space]);
+    check("(4) channels list still shows the pre-crash channel", /#probe/.test(`${list.stdout}${list.stderr}`), `${list.stdout}${list.stderr}`);
+
+    const pid2 = Number(readFileSync(pidPath, "utf8").trim());
+    process.kill(pid2, "SIGKILL");
+    await sleep(1_000);
+    const refused = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space, "--store-dir", other]);
+    check("(5) a disagreeing --store-dir repair refuses", refused.status !== 0, `${refused.stdout}${refused.stderr}`);
+    check("(5) the refusal names store-a and --store-dir", `${refused.stdout}${refused.stderr}`.includes("store-a") && `${refused.stdout}${refused.stderr}`.includes("--store-dir"), `${refused.stdout}${refused.stderr}`);
+    let pidStillDead = true;
+    try {
+      const nowPid = readFileSync(pidPath, "utf8").trim();
+      if (nowPid !== "" && Number(nowPid) !== pid2) pidStillDead = false;
+    } catch { /* absent is fine */ }
+    check("(5) no new broker started (pidfile still names the dead pid or is absent)", pidStillDead);
+    check("(5) the record's storeDir is unchanged", findMesh(space)?.storeDir === resolve(storeA), findMesh(space));
+
+    const same = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space, "--store-dir", storeA]);
+    check("(6) repairing with the SAME --store-dir starts", same.status === 0, `${same.stdout}${same.stderr}`);
+
+    started = !(await stop(fixture));
+  } finally {
+    if (started) await stop(fixture);
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+/** A pre-field record (`storeDir` absent, written before the field existed) warns rather than
+ *  refuses on repair, and opens the root's default store. */
+async function preFieldWarning(): Promise<void> {
+  const fixture = await makeFixture("pre-field");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { findMesh, recordMesh } = await import("@cotal-ai/workspace");
+  const space = "pre-field";
+  let started = false;
+  try {
+    const up1 = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space]);
+    started = up1.status === 0;
+    check("pre-field fixture starts", started, `${up1.stdout}${up1.stderr}`);
+    if (!started) return;
+
+    const pidPath = join(fixture.root, ".cotal", "nats.pid");
+    const pid = Number(readFileSync(pidPath, "utf8").trim());
+    process.kill(pid, "SIGKILL");
+    await sleep(1_000);
+
+    const held = findMesh(space);
+    if (!held) throw new Error("FAIL: pre-field record missing before rewrite");
+    const { storeDir: _drop, ...withoutStoreDir } = held;
+    recordMesh(withoutStoreDir);
+
+    const repair = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space]);
+    check("a pre-field repair exits 0", repair.status === 0, `${repair.stdout}${repair.stderr}`);
+    check("...and warns it was recorded before the store directory was kept", /recorded before the store directory was kept/.test(`${repair.stdout}${repair.stderr}`), `${repair.stdout}${repair.stderr}`);
+    check("...naming .cotal/nats.log", `${repair.stdout}${repair.stderr}`.includes(join(".cotal", "nats.log")), `${repair.stdout}${repair.stderr}`);
+    const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
+    const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
+    check("...and the log's last Store Directory: line names the default store", lastStoreLine.includes(join(".cotal", "nats", "jetstream")), lastStoreLine);
+
+    started = !(await stop(fixture));
+  } finally {
+    if (started) await stop(fixture);
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+/** #2218 M3 — a foreground `up` whose broker exits unexpectedly (killed, not stopped) keeps the
+ *  mesh record and exits non-zero; the control is the same foreground `up` ended with SIGINT
+ *  (the intended stop), which exits 0 and drops the record. */
+async function foregroundCrashKeepsRecord(): Promise<void> {
+  const fixture = await makeFixture("fg-crash");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { findMesh } = await import("@cotal-ai/workspace");
+  const space = "fg-crash";
+  const child = spawn(TSX, [CLI, "up", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (c) => { stdout += c; });
+  child.stderr?.on("data", (c) => { stderr += c; });
+  try {
+    let railsUp = false;
+    for (let i = 0; i < 60 && !railsUp; i++) {
+      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      if (set.status === 0) railsUp = true;
+      else await sleep(1_000);
+    }
+    check("the foreground fixture answers channels set within the poll budget", railsUp);
+
+    const pidPath = join(fixture.root, ".cotal", "nats.pid");
+    const pid = Number(readFileSync(pidPath, "utf8").trim());
+    process.kill(pid, "SIGKILL");
+    const exitCode = await new Promise<number | null>((res) => child.once("exit", (code) => res(code)));
+    check("a killed broker makes the foreground `up` exit non-zero", exitCode !== 0, { exitCode, stdout, stderr });
+    check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
+    check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
+    check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);
+    check("the record survives the crash", findMesh(space) !== undefined, findMesh(space));
+    const meshes = cotal(fixture, ["meshes"]);
+    check("`cotal meshes` tags the crashed mesh offline", new RegExp(`${space}[^\n]*offline`).test(`${meshes.stdout}`), meshes.stdout);
+
+    const stopped = await stop(fixture);
+    check("`stop` (down) also removes the kept record", stopped && findMesh(space) === undefined, findMesh(space));
+  } finally {
+    if (child.exitCode === null) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+  }
+
+  // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
+  // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
+  const control = spawn(TSX, [CLI, "up", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    let railsUp = false;
+    for (let i = 0; i < 60 && !railsUp; i++) {
+      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      if (set.status === 0) railsUp = true;
+      else await sleep(1_000);
+    }
+    check("(control) the second foreground fixture answers channels set within the poll budget", railsUp);
+    control.kill("SIGINT");
+    const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
+    check("(control) SIGINT (intended stop) exits 0", controlExit === 0, controlExit);
+    check("(control) SIGINT drops the record", findMesh(space) === undefined, findMesh(space));
+  } finally {
+    if (control.exitCode === null) { try { control.kill("SIGKILL"); } catch { /* already gone */ } }
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
 /** #1697 — `--host` takes a bind HOST, not a URL and not a host:port. Both refusals used to be
  *  reachable only past the IPv6 bracketing: a URL was wrapped into `nats://[nats://…]:4222`, which
  *  nothing validated — with no `--server` the garbage string reached the registry comparison and
@@ -227,6 +411,9 @@ try {
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);
   await orderedRefresh("omega-root", "alpha-tenant", ["alpha-tenant", "omega-root"]);
   await foreignRootRefusal();
+  await storeRecordRepair();
+  await preFieldWarning();
+  await foregroundCrashKeepsRecord();
   if (passed !== EXPECTED_CHECKS)
     throw new Error(`FAIL: expected ${EXPECTED_CHECKS} checks, ran ${passed}`);
   console.log(`\nUP REFRESH IDENTITY LIVE SMOKE OK ✅ (${passed} checks passed)`);
