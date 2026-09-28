@@ -91,6 +91,9 @@ Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 steps return instantly, and the first unrecorded step is performed live. It refuses a journal that
 belongs to another run, a pin that differs from the recorded ones, and a different language version.
 
+A failed journal entry replays its error, while a pending entry lets the handler recover the
+external work it bound before the interruption.
+
 **Migrate** moves a run onto edited source. A dry walk of the new program over the recorded journal
 finds every recorded step the edit changed (a divergence) and every one it no longer reaches (an
 orphan), and the orphan table says what each means: a removed `sleep` is nothing, a removed `turn`
