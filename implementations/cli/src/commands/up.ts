@@ -802,7 +802,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
       throw new Error(`resume attempt ${resumeAttempt} is manager-committed but has no adoptable bound listener; preserving the commit token and retained suppression`);
-    const listenerReachable = await isReachable(server);
+    const listenerReachable = repairProbe !== undefined ? repairProbe : await isReachable(server);
     if (resumeAttempt && listenerReachable)
       throw new Error(`resume attempt ${resumeAttempt} refuses the unproven occupied listener at ${server}`);
     if (listenerReachable) {
