@@ -427,11 +427,12 @@ operations and a one-shot **retire** phase for one exact managed lifecycle. Each
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
-credential pinned to that target. The manager sends it on the existing auth retirement rail with the
-operation id derived from the target lifecycle UID. The terminal rail recomputes it from the
-broker-pinned target before any durable access. A caller cannot substitute another valid operation
-identity for the same target, and retries plus auth-service boot recovery finish the same terminal
-barrier. It never exposes the barrier executor or a general mint surface.
+credential pinned to that target. The manager invokes the registered `auth` endpoint's
+`retire-lifecycle` command through the generic client, resolving the service and calling it with
+an exact target and the operation id derived from the target lifecycle UID. The endpoint
+recomputes that id from the broker-pinned target before any durable access. A caller cannot
+substitute another valid operation identity for the same target, and retries plus auth-service
+boot recovery finish the same terminal barrier. It never exposes the barrier executor or a general mint surface.
 
 Registration maintenance stays on the host. Eviction accepts only a principal found by the host's
 sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family. Reconciliation may
