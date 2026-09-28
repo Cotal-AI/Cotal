@@ -39,7 +39,7 @@ await sleep("2h", { name: "cool-off" });
 `;
 
 const SCRIPT = {
-  turns: { "draft-plan": { status: "done", at: 0 }, build: { status: "done", at: 0 } },
+  turns: { "draft-plan": { status: "done" }, build: { status: "done" } },
   checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim" } },
 } as const;
 
@@ -90,7 +90,7 @@ const realMs = Date.now() - realStart;
   let caught: unknown;
   try {
     // The checkpoint is scripted; the second turn is not.
-    await dryRun(PROGRAM, { turns: { "draft-plan": { status: "done", at: 0 } }, checkpoints: SCRIPT.checkpoints });
+    await dryRun(PROGRAM, { turns: { "draft-plan": { status: "done" } }, checkpoints: SCRIPT.checkpoints });
   } catch (e) {
     caught = e;
   }

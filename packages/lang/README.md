@@ -37,7 +37,7 @@ log(r.status)
 
 validate(source);                       // throws LangErrors, every refusal with code, cause, fix
 
-const script = { turns: { build: { status: "done", at: 1 } } };
+const script = { turns: { build: { status: "done" } } };
 const plan = await dryRun(source, script);   // what it would do, with no agent touched
 
 const first = await run(source, { runId: "r-1", handler: new SimHandler(script) });
@@ -52,7 +52,9 @@ const again = await run(source, {
 ```
 
 `run` performs effects through the `EffectHandler` you pass and records each in the `Journal`;
-hand the same journal and pins back and the same program resumes. `SimHandler` scripts turns, asks,
+hand the same journal and pins back and the same program resumes. A handler binds in-flight
+external work before awaiting it; a thrown failure replays on resume, while a pending bound
+effect can reattach. `SimHandler` scripts turns, asks,
 checkpoints and events and refuses anything unscripted (L6001), so a simulation cannot silently
 invent an answer. Time is discrete-event simulated on one virtual clock: timed effects park at
 their wake times and are delivered in wake order, so concurrent branches accumulate their own

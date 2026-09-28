@@ -208,7 +208,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // lands with the step key the walker would have allocated.
 
 {
-  const h = harness({ script: { turns: { build: { status: "done", at: 0 } } } });
+  const h = harness({ script: { turns: { build: { status: "done" } } } });
   // What the transform emits, hand-written: `await turn(agent, { name: "build" })`.
   const module = `(ctx) => async () => {
     await ctx.fuel();
@@ -921,7 +921,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
 
 {
-  const first = harness({ script: { turns: { build: { status: "done", at: 0 } } }, runId: "eng-replay" });
+  const first = harness({ script: { turns: { build: { status: "done" } } }, runId: "eng-replay" });
   const module = `(ctx) => async () => {
     const agent = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
     return await ctx.effect("turn", [agent, ctx.born({ name: "build" })]);
@@ -987,7 +987,7 @@ const MODULE = `(ctx) => async () => {
   const r = await ctx.effect("turn", [builder, ctx.born({ name: "build" })]);
   await ctx.free("log", ["status", ctx.get(r, "status")]);
 }`;
-const SCRIPT = { turns: { build: { status: "done" as const, at: 0 } } };
+const SCRIPT = { turns: { build: { status: "done" as const } } };
 
 {
   const logs: unknown[][] = [];
