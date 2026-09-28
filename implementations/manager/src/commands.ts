@@ -38,7 +38,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -275,13 +275,26 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
+      const supervisorCreds = materialCredential(material, "supervisor", state.identities.supervisor);
+      // The closed all-duty family renewal over the same registration, proof and store. Without it
+      // the manager renews its executor alone and the serve, goal-writer and session-ledger
+      // connections die at their expiry.
+      const standing = remoteStandingBundleRenewal({
+        state, owner: material.owner, registrationProof: retainedRegistrationProof, supervisorCreds,
+        call: (renewalRequest) => provider.managerServiceAuthority!({
+          store: workspaceSecretStore(findCotalRoot()),
+          dir: join(findCotalRoot(), ".cotal", "auth", space),
+          request: renewalRequest,
+        }),
+      });
       remoteAuthority = {
+        ...standing,
         owner: material.owner,
         actors,
         instanceId: state.instanceId,
         lifecycleUid: state.lifecycleUid,
         identities: state.identities,
-        supervisorCreds: materialCredential(material, "supervisor", state.identities.supervisor),
+        supervisorCreds,
         executorCreds: materialCredential(material, "executor", state.identities.executor),
         renewExecutor: async () => {
           const renewed = await provider.managerServiceAuthority!({
