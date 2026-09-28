@@ -615,7 +615,12 @@ try {
     process.env.COTAL_NAME = "ModelWait2";
     process.env.COTAL_ID = "modelwait2";
     let refusalLineWait = "";
+    let exitCodeWait: number | undefined;
+    const originalExitWait = process.exit;
     const originalStderrWriteWait = process.stderr.write;
+    process.exit = ((code?: number) => {
+      exitCodeWait = code;
+    }) as typeof process.exit;
     process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
       const line = String(chunk);
       if (line.includes("Refusing before join")) refusalLineWait = line;
@@ -635,11 +640,12 @@ try {
       }
       await sleep(100);
     }
+    process.exit = originalExitWait;
     process.stderr.write = originalStderrWriteWait;
     check(
       "2.x: an empty listing is waited on, and the model check passes once the server lists it",
-      waitOnline && modelReads >= 2 && !refusalLineWait.includes("Refusing before join"),
-      { waitOnline, modelReads, refusalLineWait },
+      waitOnline && modelReads >= 2 && exitCodeWait === undefined && !refusalLineWait.includes("Refusing before join"),
+      { waitOnline, modelReads, exitCodeWait, refusalLineWait },
     );
     await disposeWait?.();
     delete process.env.COTAL_MODEL;
