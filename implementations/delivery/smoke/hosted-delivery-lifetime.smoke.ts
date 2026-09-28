@@ -3,9 +3,13 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { connect, credsAuthenticator, NoRespondersError, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds,
-  mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams, type SecretStore, type SpaceAuth,
+  mintMembershipObserverCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
+  controlServiceSubject, connzRequestSubject, MEMBERSHIP_INBOX_PREFIX, CONTROL_DELIVERY, DEV_OWNER,
+  type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
 import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, type HostedServiceHandle } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -37,6 +41,7 @@ const nats = spawn("nats-server", ["-c", join(brokerDir, "server.conf")], { stdi
 const release = teardownOnSignal(nats, brokerDir);
 const inspectors: CotalEndpoint[] = [];
 const handles: HostedServiceHandle[] = [];
+const callers: NatsConnection[] = [];
 try {
   assert.equal(await until(() => isReachable(servers)), true, "broker ready");
   const stores: MemoryStore[] = [];
@@ -58,6 +63,46 @@ try {
     context: { accountPublicKey: accounts[i].account.pub, lifecycleUid: `life-${i}` },
     space, servers, store: stores[i], storeIdentity: stores[i].identity, stateDir: join(brokerDir, `state-${i}`),
   }));
+  // A broker request, not the handle's own state or lease row, witnesses whether the owned
+  // Plane-3 control responder still serves after the host is fenced.
+  const ask = await Promise.all(spaces.map(async (space, i) => {
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const creds = await mintCreds(auths[i], id, "agent", { lifecycleUid: uid });
+    const nc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${id.id}` });
+    callers.push(nc);
+    const subject = controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, id.id);
+    return async (): Promise<"answered" | "absent"> => {
+      try {
+        await nc.request(subject, JSON.stringify({
+          op: "listMemberships", args: { lifecycleUid: uid },
+          from: { id: `${DEV_OWNER}.${id.id}`, name: "fence-probe", kind: "agent" },
+        }), { timeout: 1500, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
+        return "answered";
+      } catch (e) {
+        if (e instanceof NoRespondersError || (e instanceof RequestError && e.isNoResponders())) return "absent";
+        throw e; // a timeout or permission refusal is not proof that the responder is gone
+      }
+    };
+  }));
+  const observers = await Promise.all(accounts.map(async (account, i) => {
+    const nc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintMembershipObserverCreds(auths[i], newIdentity()))), inboxPrefix: MEMBERSHIP_INBOX_PREFIX });
+    callers.push(nc);
+    return async (): Promise<number> => {
+      const reply = `${MEMBERSHIP_INBOX_PREFIX}.hosted.${randomUUID()}`;
+      const sub = nc.subscribe(reply, { max: 1 });
+      try {
+        nc.publish(connzRequestSubject(account.account.pub), JSON.stringify({ subscriptions: false, limit: 1024 }), { reply });
+        await nc.flush();
+        const response = await Promise.race([
+          (async () => { for await (const msg of sub) return msg.json<{ data?: { connections?: Array<{ name?: string }> } }>(); })(),
+          wait(2000).then(() => undefined),
+        ]);
+        if (!response?.data?.connections) throw new Error("broker CONNZ did not answer the assigned account");
+        return response.data.connections.filter((c) => c.name === "cotal:delivery").length;
+      } finally { sub.unsubscribe(); }
+    };
+  }));
   const signals = process.listenerCount("SIGTERM");
   const exits = process.exit;
   await assert.rejects(startDeliveryService({ ...inputs[0], store: { get: (key: string) => stores[0].get(key), put: (key: string, value: string) => stores[0].put(key, value), delete: (key: string) => stores[0].delete(key) } }), /must declare a stable identity/, "identity-less store refuses");
@@ -68,6 +113,10 @@ try {
   assert.deepEqual(first.readiness(), { state: "ready", context: inputs[0].context }, "A ready with assigned identity");
   assert.deepEqual(second.readiness(), { state: "ready", context: inputs[1].context }, "B ready with assigned identity");
   assert.equal(await until(async () => Boolean((await inspectors[0].readDeliveryLease(0))?.ready && (await inspectors[1].readDeliveryLease(0))?.ready)), true, "both distinct accounts hold ready delivery leases");
+  assert.equal(await ask[0](), "answered", "A answers its native delivery control request before the fence");
+  assert.equal(await ask[1](), "answered", "B answers its native delivery control request before the fence");
+  assert.equal(await observers[0](), 1, "broker sees A's live delivery connection");
+  assert.equal(await observers[1](), 1, "broker sees B's live delivery connection");
   await assert.rejects(startDeliveryService(inputs[0]), /wrong last sequence|lease|already exists/i, "duplicate must refuse locally");
   assert.equal(process.exit, exits, "no process exit during context-local failure");
   assert.equal(process.listenerCount("SIGTERM"), signals, "no hosted global signal listeners");
@@ -89,6 +138,10 @@ try {
   assert.equal(process.exit, exits, "no process exit after a fence");
   assert.equal((await second.readiness()).state, "ready", "B remains ready after A is fenced");
   assert.equal((await inspectors[1].readDeliveryLease(0))?.ready, true, "B keeps its lease after A is fenced");
+  assert.equal(await until(async () => (await ask[0]()) === "absent"), true, "fenced A stops answering its owned delivery control rail");
+  assert.equal(await ask[1](), "answered", "B still answers its delivery control rail after A is fenced");
+  assert.equal(await until(async () => (await observers[0]()) === 0), true, "fenced A closes its broker connection after withdrawing its delivery duty");
+  assert.equal(await observers[1](), 1, "broker still sees B's delivery connection after A is fenced");
   const taken = await inspectors[0].readDeliveryLeaseEntry(0);
   await inspectors[0].releaseDeliveryLease(0, taken?.revision);
   await restarted.close();
@@ -96,9 +149,10 @@ try {
   await second.close();
   await second.close();
   assert.equal((await inspectors[1].readDeliveryLease(0))?.ready, undefined, "B releases only its own lease");
-  console.log("hosted delivery lifetime: 24 two-account assertions passed");
+  console.log("hosted delivery lifetime: 32 two-account assertions passed");
 } finally {
   for (const h of handles) await h.close();
+  for (const nc of callers) await nc.close();
   for (const ep of inspectors) { try { await ep.stop(); } catch { /* broker may be gone */ } }
   await killAndAwaitExit(nats, "SIGKILL");
   nats.unref();
