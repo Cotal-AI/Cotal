@@ -450,6 +450,10 @@ Replay / catch-up on join:
    backstop, so a message surfaces once. Receiver deduplication MUST NOT coalesce copies solely
    because `id` is the empty string (§4).
 
+   Informative: an implementation preserving an incarnation across a local restart may start step
+   3's read from the sequence that incarnation had reached, rather than from the retained window's
+   start; a fresh joiner reads the window.
+
 `replay=false` is noise control, not confidentiality. CHAT history is readable only within an
 instance's read ACL (`allowSubscribe`, §9); confidential content MUST use DM or anycast.
 
