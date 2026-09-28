@@ -38,6 +38,7 @@ import {
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
   resolveService, invokeCommand, idFromCreds,
   recordsBucket, recordSpecKey, recordStatusKey, RECORD_KINDS, parseServiceSpec, parseServiceStatus, SERVICE_READY,
+  epCallerReplyFilter, parseEndpointReply,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { loadAuthInstanceIdentity } from "@cotal-ai/workspace";
@@ -482,6 +483,41 @@ try {
     if (statusEntry) {
       const status = parseServiceStatus(JSON.parse(new TextDecoder().decode(statusEntry.value)));
       check("the status reads \"ready\" after the plane opens", status.state === SERVICE_READY, status);
+    }
+  }
+
+  console.log("F. M4b: a legacy body is refused unsupported-version (envelope validation, not an ACL denial)");
+  {
+    const uidLegacy = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wlegacy", lifecycleUid: uidLegacy, managerInstance: "smoke" });
+    const legacyTarget = { owner: OWNER, actor: "wlegacy", lifecycleUid: uidLegacy };
+    const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...MGR, target: legacyTarget } });
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
+    try {
+      const nonce = "l".repeat(30);
+      const subject = epRequestSubject(space, {
+        route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
+        target: { mode: "exact", tOwner: legacyTarget.owner, tActor: legacyTarget.actor, tUid: legacyTarget.lifecycleUid },
+        caller: MGR, nonce,
+      });
+      const replyP = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
+        const sub = nc.subscribe(epCallerReplyFilter(space, MGR), {
+          callback: (err, msg) => {
+            if (err) { reject(err); return; }
+            sub.unsubscribe();
+            resolve({ subject: msg.subject, data: msg.data });
+          },
+        });
+        setTimeout(() => { try { sub.unsubscribe(); } catch { /* already dead */ } reject(new Error("no reply within 5s")); }, 5000);
+      });
+      // The LEGACY shape (`ctl`-era): a bare `{ op: "retireLifecycle" }`, no `v` envelope field.
+      nc.publish(subject, new TextEncoder().encode(JSON.stringify({ op: "retireLifecycle" })));
+      const msg = await replyP;
+      const reply = parseEndpointReply(JSON.parse(new TextDecoder().decode(msg.data)));
+      check("a legacy body is refused unsupported-version (envelope validation fires before any ACL question)",
+        reply.ok === false && reply.error?.code === "unsupported-version", reply);
+    } finally {
+      await nc.close().catch(() => {});
     }
   }
 
