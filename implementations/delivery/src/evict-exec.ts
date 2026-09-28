@@ -66,7 +66,7 @@ export interface ScanTarget {
  * REQUIRED: its absence is not an error, and a hosted composition never has one.
  */
 export function validateScanTarget(target: ScanTarget, verb = "delivery startup"): { accountId: string } {
-  const live = findCotalRoot();
+  const live = target.source.injected ? target.root : findCotalRoot();
   if (live !== target.root)
     throw new Error(
       `${verb}: the mesh root resolved at this request (${live}) is not the one this daemon started in (${target.root}); ` +

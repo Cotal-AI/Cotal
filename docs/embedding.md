@@ -45,6 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
+| `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
@@ -93,6 +94,15 @@ The runners take a CLI-shaped `ParsedArgs`, not a typed options object, so a hos
 ```ts
 const args: ParsedArgs = { values: { space, server, port: "0" }, positionals: [], raw: [] };
 ```
+
+For an embedded delivery instance, use `startDeliveryService` instead. Its `HostedContextInputs`
+include the account public key and lifecycle UID, space, broker URL, injected store, stable
+`storeIdentity`, and an explicit `stateDir`. The store must declare that same injected identity.
+The initial delivery credential must belong to the assigned account. The function returns only
+after the delivery responder is bound. `close()` withdraws serving and releases only the lease
+owned by that instance. A failed start refuses locally without exiting the host process or
+stopping another account's delivery service. Auth-service is still a process runner in this cut,
+so this delivery handle alone does not make a complete pooled auth and delivery host.
 
 ### Long-lived endpoints take a bearer function
 

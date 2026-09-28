@@ -32,6 +32,7 @@ import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonica
 import { startMembership } from "./membership.js";
 import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
+import type { HostedContextInputs, HostedServiceHandle, HostedServiceState } from "@cotal-ai/workspace";
 
 type Values = Record<string, string | undefined>;
 
@@ -366,11 +367,36 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   }
 }
 
+/** Start one independently owned delivery context. No cwd, process signal, pidfile, or exit
+ * policy is borrowed from the CLI runner. The caller owns its explicit state path and store. */
+export async function startDeliveryService(inputs: HostedContextInputs): Promise<HostedServiceHandle> {
+  if (!inputs.context.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
+    throw new Error("delivery: hosted context needs an account, lifecycle, space, server and stateDir");
+  if (inputs.store.identity === undefined)
+    throw new Error("delivery: hosted SecretStore must declare a stable identity");
+  const actual = parseSecretStoreIdentity(inputs.store.identity);
+  if (!sameSecretStoreIdentity(actual, inputs.storeIdentity) || actual.kind !== "injected")
+    throw new Error("delivery: hosted SecretStore identity does not match the assigned store identity");
+  let releaseOnStartupFailure: (() => Promise<void>) | undefined;
+  try {
+    return await runStartedDelivery(
+      { values: { space: inputs.space, server: inputs.servers }, positionals: [], raw: [] } as ParsedArgs,
+      inputs.store,
+      (release) => { releaseOnStartupFailure = release; },
+      inputs,
+    ) as HostedServiceHandle;
+  } catch (error) {
+    await releaseOnStartupFailure?.();
+    throw error;
+  }
+}
+
 async function runStartedDelivery(
   args: ParsedArgs,
   store: SecretStore | undefined,
   publishReleaser: (release: () => Promise<void>) => void,
-): Promise<void> {
+  hosted?: HostedContextInputs,
+): Promise<void | HostedServiceHandle> {
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -393,6 +419,8 @@ async function runStartedDelivery(
   if (v.creds !== undefined)
     assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  if (hosted !== undefined && accountFromCreds(creds.initial) !== hosted.context.accountPublicKey)
+    throw new Error("delivery: scoped credential account does not match the assigned hosted context");
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
   // WHICH BROKER, WORKSTATION COMPOSITION (#756, the deliver half). `cotal ps`/`spawn`/`attach`/
@@ -467,9 +495,11 @@ async function runStartedDelivery(
           ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${space}\` to unregister it`
           : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
       );
+      if (hosted !== undefined) throw new Error(`delivery: no broker answered at ${server}`);
       process.exit(1);
     }
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
+    if (hosted !== undefined) throw new Error(`delivery: can't reach NATS at ${server}`);
     process.exit(1);
   }
 
@@ -485,7 +515,7 @@ async function runStartedDelivery(
   // is known for certain, rather than inferred later by probing the store or sniffing the
   // filesystem, both of which report "workstation" for a hosted daemon and would emit a CLI repair
   // the host cannot run. It selects the REPAIR IDIOM only; failure semantics never fork on it.
-  const scanRoot = findCotalRoot();
+  const scanRoot = hosted?.stateDir ?? findCotalRoot();
   const scanTarget: ScanTarget = {
     root: scanRoot,
     expectedAccount: accountFromCreds(creds.initial),
@@ -526,7 +556,8 @@ async function runStartedDelivery(
   const say = (e: Error) => console.error(`! delivery endpoint: ${e.message}`);
   ep.on("error", say);
   ep.on("warning", say);
-  await ep.start();
+  try { await ep.start(); }
+  catch (error) { await ep.stop(); throw error; }
 
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
@@ -560,6 +591,7 @@ async function runStartedDelivery(
       console.error(`✗ delivery: acquiring the lease for shard ${shard} failed: ${(e as Error).message}. Not binding.`);
     }
     await ep.stop();
+    if (hosted !== undefined) throw e;
     process.exit(1);
     return;
   }
@@ -584,6 +616,14 @@ async function runStartedDelivery(
   // it is provably ours, then exit. Once the real `shutdown` is installed it REPLACES this, and
   // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both.
   let stopping = false;
+  let unavailable: string | undefined;
+  let closePromise: Promise<void> | undefined;
+  let membership: MembershipFeedHandle | undefined;
+  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
+  let timerWriterAttempt: Promise<void> | undefined;
+  let stopLeaseWatch: (() => void) | undefined;
+  let renew: ReturnType<typeof setInterval> | undefined;
+  let brokerWatch: ReturnType<typeof setInterval> | undefined;
   /** Removes THIS process's liveness record, once it has one. Declared BEFORE the handlers that
    *  call it and assigned below, so a signal landing between the two is a no-op rather than a
    *  temporal-dead-zone throw: at that instant nothing has been written, so there is nothing to
@@ -606,8 +646,10 @@ async function runStartedDelivery(
   };
   const earlySigint = (): void => earlyStop(0);
   const earlySigterm = (): void => earlyStop(0);
-  process.on("SIGINT", earlySigint);
-  process.on("SIGTERM", earlySigterm);
+  if (hosted === undefined) {
+    process.on("SIGINT", earlySigint);
+    process.on("SIGTERM", earlySigterm);
+  }
   // THE LIVENESS RECORD GOES HERE, AFTER THE ACQUIRE AND NOT BEFORE IT (#1528).
   //
   // The record answers "which process is this space's delivery daemon", and until this line this
@@ -623,7 +665,7 @@ async function runStartedDelivery(
   // own `ready` flag already carries it; the pidfile only ever claimed a process.
   //
   // Placed one statement after the signal handlers, so every exit path from here on can remove it.
-  unrecordPid = recordDeliveryPid(findCotalRoot(), space);
+  if (hosted === undefined) unrecordPid = recordDeliveryPid(findCotalRoot(), space);
   // AND THE SAME RELEASE, REACHABLE BY AN ORDINARY `catch`. The two process-level guards below
   // only see a fault that reaches the RUNTIME. A start-up rejection on the public CLI path does
   // not: `runCli` awaits this function inside its own try/catch (cli/src/command.ts), so the
@@ -634,16 +676,28 @@ async function runStartedDelivery(
   // exists". So the release is published HERE, to a scope that a plain `catch` around the rest of
   // start-up can reach, and the process guards stay as the backstop for faults that never become
   // a rejection this function can see (a synchronous throw in a timer, say).
-  publishReleaser(async (): Promise<void> => {
-    if (stopping) return;
+  const close = (): Promise<void> => {
+    if (closePromise !== undefined) return closePromise;
     stopping = true;
-    unrecordPid?.(); // the record dies with the daemon it describes, including on a start-up failure
-    try {
-      const own = await ep.readDeliveryLeaseEntry(shard);
-      if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-    } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
-    try { await ep.stop(); } catch { /* broker may be gone */ }
-  });
+    if (renew !== undefined) clearInterval(renew);
+    if (brokerWatch !== undefined) clearInterval(brokerWatch);
+    stopLeaseWatch?.();
+    unrecordPid?.();
+    closePromise = (async () => {
+      try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
+      try {
+        const own = await ep.readDeliveryLeaseEntry(shard);
+        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+      } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
+      try { await membership?.stop(); } catch { /* broker may be gone */ }
+      try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
+      try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
+      try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
+      try { await ep.stop(); } catch { /* broker may be gone */ }
+    })();
+    return closePromise;
+  };
+  publishReleaser(close);
   // A START-UP FAILURE AFTER THE ACQUIRE MUST ALSO GIVE THE SHARD BACK. Between this point and the
   // handler swap far below, a throw would otherwise propagate out of `runDelivery` with the row
   // still claiming the shard, stranding it for the bucket TTL exactly as an unhandled signal did -
@@ -669,12 +723,13 @@ async function runStartedDelivery(
   };
   const earlyUncaught = (e: Error): void => earlyFault("faulted", e);
   const earlyRejection = (e: unknown): void => earlyFault("rejected a promise", e);
-  process.on("uncaughtException", earlyUncaught);
-  process.on("unhandledRejection", earlyRejection);
+  if (hosted === undefined) {
+    process.on("uncaughtException", earlyUncaught);
+    process.on("unhandledRejection", earlyRejection);
+  }
 
   // Broker-sourced graph membership handle — declared BEFORE Plane-3 so the delivery-admin reload
   // hook below can close over it (it starts further down; the closure reads it live).
-  let membership: MembershipFeedHandle | undefined;
   // WHY the feed is down, carried from `startMembership` so the adoption refusal below names the real
   // fault instead of its symptom. Without it, an expired $SYS observer cred surfaces to the operator
   // only as "membership feed is not running" (#338).
@@ -715,7 +770,10 @@ async function runStartedDelivery(
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
   // not merely that the single-flight slot was claimed.
   try { revision = await ep.markDeliveryLeaseReady(shard, revision); }
-  catch { /* lost the lease between acquire and ready — the renew loop's CAS failure will exit us */ }
+  catch (error) {
+    if (hosted !== undefined) throw error;
+    /* CLI: the renew loop's CAS failure will exit us if the lease was lost. */
+  }
   console.log(`✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
@@ -745,8 +803,7 @@ async function runStartedDelivery(
   // module-per-connection isolation), re-dialed with the FRESHEST cred by a supervised restart
   // loop: a fault never kills delivery, is never silent (each attempt logs why the space cannot
   // expire pauses right now), and a cred that gains rows at renewal is picked up on the next dial.
-  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
-  void (async () => {
+  timerWriterAttempt = (async () => {
     let backoffMs = 5_000;
     for (;;) {
       if (stopping) return;
@@ -758,14 +815,16 @@ async function runStartedDelivery(
           name: "cotal-delivery-timer-writer",
           maxReconnectAttempts: -1,
         });
+        if (stopping) { await nc.close(); return; }
         const handle = await startTimerWriter(nc, space);
+        if (stopping) { await handle.stop(); await nc.close(); return; }
         timerWriter = { handle, nc };
         backoffMs = 5_000;
         console.log(`✓ timer writer up (space ${space}) — workflow pauses on this space expire`);
         await handle.done; // resolves only through stop(); a fault rejects
         return;
       } catch (e) {
-        if (stopping) return;
+        if (stopping) { try { await nc?.close(); } catch { /* already closed */ } return; }
         console.error(
           `! timer writer: down (${(e as Error).message}) — retrying in ${Math.round(backoffMs / 1000)}s; pauses on this space do not expire until it is back`,
         );
@@ -778,11 +837,16 @@ async function runStartedDelivery(
   })();
 
   const shutdown = (code: number): void => {
+    if (hosted !== undefined) {
+      unavailable = `delivery context stopped (code ${code})`;
+      void close();
+      return;
+    }
     if (stopping) return;
     stopping = true;
-    clearInterval(renew);
-    clearInterval(brokerWatch);
-    stopLeaseWatch();
+    if (renew !== undefined) clearInterval(renew);
+    if (brokerWatch !== undefined) clearInterval(brokerWatch);
+    stopLeaseWatch?.();
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
     // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
     // hung is a record that outlives its process, which is this issue's defect re-entering through
@@ -858,16 +922,18 @@ async function runStartedDelivery(
   // knows nothing of the renew timer, the membership feed or the timer writer - would run first and
   // set `stopping`, making the full teardown a no-op. `stopping` still guards the swap itself, so a
   // signal delivered between these two statements is handled exactly once.
-  process.off("SIGINT", earlySigint);
-  process.off("SIGTERM", earlySigterm);
-  // The start-up fault guards go too, and BY REFERENCE: `removeAllListeners` here would strip
-  // listeners this daemon does not own. They exist to cover the window where no `shutdown` exists;
-  // past this line a fault should surface normally rather than become a quiet exit that skips the
-  // full teardown.
-  process.off("uncaughtException", earlyUncaught);
-  process.off("unhandledRejection", earlyRejection);
-  process.on("SIGINT", () => shutdown(0));
-  process.on("SIGTERM", () => shutdown(0));
+  if (hosted === undefined) {
+    process.off("SIGINT", earlySigint);
+    process.off("SIGTERM", earlySigterm);
+    // The start-up fault guards go too, and BY REFERENCE: `removeAllListeners` here would strip
+    // listeners this daemon does not own. They exist to cover the window where no `shutdown` exists;
+    // past this line a fault should surface normally rather than become a quiet exit that skips the
+    // full teardown.
+    process.off("uncaughtException", earlyUncaught);
+    process.off("unhandledRejection", earlyRejection);
+    process.on("SIGINT", () => shutdown(0));
+    process.on("SIGTERM", () => shutdown(0));
+  }
   /** What the broker says about THIS shard's lease key right now, the verdict a failed renew does
    *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
    *  looking and finding nothing (#1318).
@@ -931,6 +997,7 @@ async function runStartedDelivery(
    *  caller has just proven ownership; `why` is what proved it, since "it started serving again" is
    *  only auditable next to the evidence that permitted it. */
   const resumeServing = async (why: string): Promise<void> => {
+    if (stopping) return;
     try { await ep.rearmPlane3(); }
     catch (e) { console.error(`! delivery: ${why} but could not resume Plane-3 (${(e as Error).message})`); return; }
     // `ready` MEANS "THE RESPONDER IS UP", and it is what `ensureDelivery` waits on and what the
@@ -976,7 +1043,7 @@ async function runStartedDelivery(
   // establish it refuses to start, loudly (the await below throws out of start-up and the
   // releaser gives the shard back), rather than degrade into the polled window this issue is
   // about. The stop handle is cleared on every exit path the renew interval is: `shutdown`.
-  const stopLeaseWatch = await ep.watchDeliveryLease(shard, (info) => {
+  stopLeaseWatch = await ep.watchDeliveryLease(shard, (info) => {
    if (stopping) return;
    // The row as this event states it: an event for a row we own answers ITSELF (no state
    // change); a row we do not own, or a delete, needs the broker's word on what is there NOW
@@ -1048,7 +1115,7 @@ async function runStartedDelivery(
   // second refused over a sequence the first legitimately moved, a conflict this daemon manufactures
   // itself and then reads as someone else's takeover.
   let renewInFlight = false;
-  const renew = setInterval(() => {
+  renew = setInterval(() => {
     if (stopping || renewInFlight) return;
     renewInFlight = true;
     void (async () => {
@@ -1226,7 +1293,7 @@ async function runStartedDelivery(
   // would be ended only by the backstop, with the wrong reason in its log. The budget and the
   // judgment have to come from the same place.
   const probeBudgetMs = defaultProbeTimeoutMs(server);
-  const brokerWatch = setInterval(() => {
+  brokerWatch = setInterval(() => {
     if (stopping) return;
     // Measure FIRST, before any await: this is the gap since the previous firing, and it is the
     // only place the daemon can learn that it was not scheduled.
@@ -1338,5 +1405,17 @@ async function runStartedDelivery(
       });
   }, PROBE_INTERVAL_MS);
 
-  await new Promise<void>(() => {}); // run until signalled
+  if (hosted !== undefined) {
+    const context = hosted.context;
+    return {
+      readiness(): HostedServiceState {
+        return unavailable !== undefined
+          ? { state: "unavailable", context, cause: unavailable }
+          : { state: stopping ? "draining" : "ready", context };
+      },
+      async drain(): Promise<void> { await close(); },
+      close,
+    };
+  }
+  await new Promise<void>(() => {}); // CLI runs until signalled
 }
