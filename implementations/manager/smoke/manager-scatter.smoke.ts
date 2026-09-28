@@ -62,7 +62,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -125,6 +125,10 @@ try {
   // the exact state this section exists to test. A host that dies writes nothing: its connections
   // drop and its registration stays READY forever. Closing the serve connection under the manager
   // reproduces that on the rails that matter, and nothing else here reproduces it at all.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (m2 as unknown as MgrPriv).leaseStopping = true;
   await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   m2 = undefined; // left unstopped on purpose: a stop would deregister the corpse this section needs
   await wait(500);

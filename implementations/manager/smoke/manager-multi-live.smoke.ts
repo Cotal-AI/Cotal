@@ -76,7 +76,7 @@ const mkRoot = (tag: string, agentName: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -133,6 +133,10 @@ try {
   // for pin 3. Pin 3 is about the instance that leaves its registration behind, so its serving
   // connection is dropped under it: connections go, nothing is written, the record stays READY.
   // The manager object is kept for the teardown below, which still stops its agent.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (m2 as unknown as MgrPriv).leaseStopping = true;
   await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const scatter2 = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });
