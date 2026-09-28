@@ -175,14 +175,14 @@ export async function listStaticSlotObservations(
   // this connection). `walkKvEntries` reads the same rows over `STREAM.MSG.GET`, the verb the
   // goal-writer already holds for every point read (`commitPrincipalGrants`).
   const entries = await walkKvEntries(recordsKv, `${STATIC_SLOT_PREFIX}.${owner}.>`);
-  const aliases = entries.map((e) => e.key.split(".").slice(2).join("."));
   const survivors: { row: StaticManagedSlotRow; revision: number }[] = [];
-  for (const alias of aliases) {
-    const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
-    if (slot === undefined) continue;
-    if (slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId) continue;
-    if (slot.row.phase === "retired") continue;
-    survivors.push(slot);
+  for (const e of entries) {
+    if (e.operation !== "PUT")
+      throw new EpEnvelopeError("failed-precondition", `the static slot row ${e.key} carries a ${e.operation} marker; a slot row is never deleted (corruption, not absence)`);
+    const row = parseStaticSlotRow(e.value, e.key);
+    if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== managerInstanceId) continue;
+    if (row.phase === "retired") continue;
+    survivors.push({ row, revision: e.revision });
   }
   const out: StaticSlotObservationDetail[] = [];
   for (const slot of survivors) {
