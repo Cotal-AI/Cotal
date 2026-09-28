@@ -8,6 +8,46 @@ import {
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
+import { timingSafeEqual } from "node:crypto";
+import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+
+/** Host-only renewal authorization. The embedding host supplies a fresh gate and active run
+ * observation from its authoritative stores, never coordinates asserted by the participant. */
+export async function authorizeRemoteManagerRenewal(args: {
+  request: RemoteManagerAuthorityRequest;
+  owner: string;
+  space: string;
+  accountPublicKey: string;
+  proofSecret: string | Uint8Array;
+  observeManagerGate: (instanceId: string) => Promise<{
+    state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
+  } | null>;
+  observeRun: (runId: string) => Promise<{
+    state: string; holder: string; takeoverId: string; epoch: number; fencingToken: number; instanceId: string;
+  } | null>;
+}): Promise<void> {
+  const r = parseRemoteManagerAuthorityRequest(args.request);
+  if (r.operation !== "renewStandingBundle" && r.operation !== "renewRunDriver")
+    requestError("requires a renewal operation");
+  if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
+    throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
+  const gate = await args.observeManagerGate(r.instanceId);
+  if (!gate || gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", "manager-service renewal has no open registration gate");
+  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+    throw new EpEnvelopeError("permission-denied", "manager-service renewal gate belongs to another owner");
+  if (gate.processEpoch !== r.processEpoch)
+    throw new EpEnvelopeError("conflict", "manager-service renewal processEpoch is stale");
+  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
+  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
+    throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registration");
+  if (r.operation === "renewRunDriver") {
+    const run = await args.observeRun(r.run!.runId);
+    if (!run || run.state !== "running" || run.instanceId !== r.instanceId || run.holder !== r.run!.holder ||
+        run.takeoverId !== r.run!.takeoverId || run.epoch !== r.run!.epoch || run.fencingToken !== r.run!.fencingToken)
+      throw new EpEnvelopeError("conflict", "manager-service run renewal does not hold the activated run and takeover fence");
+  }
+}
 
 /** Host-only typed request after the IdP proof and ledger row have been authenticated. */
 export interface IssueRemoteManagerAuthorityArgs {
@@ -21,6 +61,9 @@ export interface IssueRemoteManagerAuthorityArgs {
     actors: ReturnType<typeof remoteManagerActors>;
     request: RemoteManagerAuthorityRequest;
   }) => Promise<{ credentials: RemoteManagerAuthorityMaterial["credentials"]; nextRegistrationProof?: string }>;
+  /** The host must fresh-read the assigned account, manager gate and, for a run, activated
+   * journal attempt before signing. No callback means the renewal operation is unavailable. */
+  authorizeRenewal?: (args: { owner: string; request: RemoteManagerAuthorityRequest }) => Promise<void>;
   now?: () => number;
 }
 
@@ -64,12 +107,13 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
     if (!r || Object.keys(r).sort().join(",") !== "driverId,epoch,fencingToken,holder,mediatorId,runId,takeoverId")
       requestError("renewRunDriver requires exactly runId, holder, takeoverId, epoch, fencingToken, driverId, mediatorId");
     if (typeof r.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(r.runId) ||
-        typeof r.holder !== "string" || r.holder.length === 0 || r.holder.length > 256 ||
-        typeof r.takeoverId !== "string" || r.takeoverId.length === 0 || r.takeoverId.length > 128 ||
+        typeof r.holder !== "string" || !/^[A-Za-z0-9_.-]{1,256}$/.test(r.holder) ||
+        typeof r.takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(r.takeoverId) ||
         typeof r.epoch !== "number" || !Number.isSafeInteger(r.epoch) || r.epoch < 1 ||
         typeof r.fencingToken !== "number" || !Number.isSafeInteger(r.fencingToken) || r.fencingToken < 1 ||
         typeof r.driverId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.driverId) ||
-        typeof r.mediatorId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.mediatorId) || r.driverId === r.mediatorId)
+        typeof r.mediatorId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.mediatorId) || r.driverId === r.mediatorId ||
+        !r.holder.endsWith(`.${r.takeoverId}`))
       requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
     run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
   } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
@@ -150,6 +194,11 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   if (r.run) ids.push(r.run.driverId, r.run.mediatorId);
   if (new Set(ids).size !== ids.length)
     throw new EpEnvelopeError("bad-request", "manager-service identities must be distinct; one nkey cannot collapse separate authority lifetimes");
+  if (r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") {
+    if (!args.authorizeRenewal)
+      throw new EpEnvelopeError("unavailable", `manager-service ${r.operation} needs a host-owned current-account and duty-fence authorization`);
+    await args.authorizeRenewal({ owner: args.owner, request: r });
+  }
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
   const required = r.operation === "renewStandingBundle"

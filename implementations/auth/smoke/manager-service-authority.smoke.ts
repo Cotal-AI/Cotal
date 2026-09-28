@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
 import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
+import { authorizeRemoteManagerRenewal } from "../src/manager-authority.js";
+import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
 
@@ -57,7 +59,7 @@ await rejects("standing bundle renewal rejects a missing process fence", () =>
   parseRemoteManagerAuthorityRequest({ ...renewal, processEpoch: undefined }), /processEpoch/);
 const runRenewal = {
   ...renewal, operation: "renewRunDriver" as const,
-  run: { runId: `run-${"a".repeat(32)}`, holder: "manager-holder", takeoverId: mintLifecycleUid(),
+  run: { runId: `run-${"a".repeat(32)}`, holder: `manager-holder.${"c".repeat(16)}`, takeoverId: "c".repeat(16),
     epoch: 2, fencingToken: 3, driverId: newIdentity().id, mediatorId: newIdentity().id },
 };
 await cell("run driver renewal binds both nkeys and the takeover fence", () => {
@@ -65,6 +67,80 @@ await cell("run driver renewal binds both nkeys and the takeover fence", () => {
 });
 await rejects("run driver renewal rejects a missing write fence", () =>
   parseRemoteManagerAuthorityRequest({ ...runRenewal, run: { ...runRenewal.run, fencingToken: undefined } }), /fencingToken/);
+const renewalOwner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const gate = { state: "open" as const, principal: `${renewalOwner}.${remoteManagerActors(instanceId).serve}`, processEpoch: 3, registrationRevision: 9 };
+const renewWithProof = { ...renewal, registrationProof: remoteManagerCurrentRegistrationProof("test-only-proof", renewalOwner, renewal, gate) };
+const runWithProof = { ...runRenewal, registrationProof: renewWithProof.registrationProof };
+const observedRun = { ...runRenewal.run, state: "running", instanceId };
+const verifyRenewal = (candidate: typeof renewWithProof | typeof runWithProof, overrides: {
+  owner?: string; accountPublicKey?: string; gate?: typeof gate | null; run?: typeof observedRun | null;
+} = {}) => authorizeRemoteManagerRenewal({
+  request: candidate, owner: overrides.owner ?? renewalOwner, space: "demo",
+  accountPublicKey: overrides.accountPublicKey ?? renewal.accountPublicKey, proofSecret: "test-only-proof",
+  observeManagerGate: async () => overrides.gate === undefined ? gate : overrides.gate,
+  observeRun: async () => overrides.run === undefined ? observedRun : overrides.run,
+});
+await cell("current registration allows the five-identity renewal request", () => verifyRenewal(renewWithProof));
+await rejects("foreign account refuses before signing", () => verifyRenewal(renewWithProof, { accountPublicKey: `A${"B".repeat(55)}` }), /account/);
+await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /processEpoch/);
+await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /owner/);
+await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /open registration gate/);
+await cell("activated run allows same takeover and write fence", () => verifyRenewal(runWithProof));
+await rejects("superseded run holder refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, holder: "successor" } }), /activated run/);
+await rejects("superseded run fencing token refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, fencingToken: 4 } }), /activated run/);
+await rejects("unproven run activation refuses before signing", () => verifyRenewal(runWithProof, { run: null }), /activated run/);
+await rejects("missing host authorization refuses renewal before issuer callback", () => issueRemoteManagerAuthority({
+  request: renewWithProof, owner: renewalOwner, scope: ["supervise"], issue: async () => { throw new Error("issuer was called"); },
+}), /host-owned/);
+await cell("issuer sees only authorized standing coordinates and returns all five named credentials", async () => {
+  let authorized = false;
+  const all = { ...credentials, serve: credentials.supervisor, goalWriter: credentials.supervisor, sessionLedger: credentials.supervisor };
+  const result = await issueRemoteManagerAuthority({
+    request: renewWithProof, owner: renewalOwner, scope: ["supervise"],
+    authorizeRenewal: async ({ owner, request: seen }) => {
+      await verifyRenewal(seen as typeof renewWithProof, { owner }); authorized = true;
+    },
+    issue: async ({ request: seen }) => {
+      assert.equal(authorized, true);
+      assert.equal(seen.accountPublicKey, renewal.accountPublicKey);
+      return { credentials: all };
+    },
+  });
+  assert.deepEqual(result.credentials, all);
+  assert.equal(result.processEpoch, 3);
+  assert.equal(result.accountPublicKey, renewal.accountPublicKey);
+});
+await rejects("partial standing bundle is never returned to a caller", () => issueRemoteManagerAuthority({
+  request: renewWithProof, owner: renewalOwner, scope: ["supervise"], authorizeRenewal: async () => {},
+  issue: async () => ({ credentials }),
+}), /required credential serve/);
+await rejects("extra credential is never returned with a standing bundle", () => issueRemoteManagerAuthority({
+  request: renewWithProof, owner: renewalOwner, scope: ["supervise"], authorizeRenewal: async () => {},
+  issue: async () => ({ credentials: { ...credentials, serve: credentials.supervisor,
+    goalWriter: credentials.supervisor, sessionLedger: credentials.supervisor, sessionServing: credentials.supervisor } }),
+}), /outside its closed profile set/);
+await cell("run renewal echoes its exact activated coordinates", async () => {
+  const result = await issueRemoteManagerAuthority({
+    request: runWithProof, owner: renewalOwner, scope: ["supervise"],
+    authorizeRenewal: async ({ request: seen }) => verifyRenewal(seen as typeof runWithProof),
+    issue: async () => ({ credentials: { runDriver: credentials.supervisor, runMediator: credentials.executor } }),
+  });
+  assert.deepEqual(result.run, runRenewal.run);
+  assert.deepEqual(Object.keys(result.credentials), ["runDriver", "runMediator"]);
+});
+await rejects("run renewal never accepts the same nkey as a standing connection", () => issueRemoteManagerAuthority({
+  request: { ...runWithProof, run: { ...runWithProof.run, driverId: identities.supervisor.id } },
+  owner: renewalOwner, scope: ["supervise"], authorizeRenewal: async () => {}, issue: async () => ({ credentials }),
+}), /identities must be distinct/);
+await rejects("run renewal cannot omit a separately activated mediator nkey", () => parseRemoteManagerAuthorityRequest({
+  ...runWithProof, run: { ...runWithProof.run, mediatorId: undefined },
+}), /mediatorId/);
+await rejects("standing renewal cannot carry run coordinates", () => parseRemoteManagerAuthorityRequest({
+  ...renewWithProof, run: runWithProof.run,
+}), /must not carry run/);
+await rejects("run renewal cannot carry profile or grant input", () => parseRemoteManagerAuthorityRequest({
+  ...runWithProof, profile: "run-operator",
+}), /unknown field/);
 const retirementTarget = { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "worker", lifecycleUid: mintLifecycleUid() };
 const retirement = {
   id: newIdentity().id,

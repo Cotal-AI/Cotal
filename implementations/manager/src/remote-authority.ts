@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsFromJwt,
+  accountFromCreds,
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
@@ -364,6 +365,63 @@ export function materialCredential(
   if (claims.exp !== credential.exp || !Number.isFinite(envelopeExpiry) || material.expiresAt !== envelopeExpiry || credential.exp * 1000 < material.expiresAt)
     throw new Error(`manager-service ${name} expiry does not match the material envelope`);
   return credsFromJwt(credential.jwt, identity);
+}
+
+/** The whole standing family is validated before any holder receives one renewed credential.
+ * A mismatched echo, missing profile or foreign nkey leaves the current live family untouched. */
+export function remoteManagerRenewalCredentials(
+  material: RemoteManagerAuthorityMaterial,
+  request: RemoteManagerAuthorityRequest,
+  owner: string,
+  identities: RemoteManagerIdentityState["identities"],
+): Record<keyof RemoteManagerIdentityState["identities"], string> {
+  const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+  if (request.operation !== "renewStandingBundle" || material.operation !== request.operation ||
+      material.v !== 1 || material.kind !== request.kind || material.space !== request.space ||
+      material.owner !== owner || material.actor !== request.actor || material.instanceId !== request.instanceId ||
+      material.lifecycleUid !== request.managerLifecycleUid || material.requestId !== request.requestId ||
+      material.registrationProof !== request.registrationProof || material.accountPublicKey !== request.accountPublicKey ||
+      material.processEpoch !== request.processEpoch || material.run !== undefined ||
+      JSON.stringify(material.identities) !== JSON.stringify(request.identities) ||
+      JSON.stringify(material.actors) !== JSON.stringify(remoteManagerActors(request.instanceId)) ||
+      Object.values(material.credentials).some((credential) => credential === undefined) ||
+      Object.keys(material.credentials).sort().join(",") !== [...names].sort().join(","))
+    throw new Error("manager-service renewal returned different coordinates or an incomplete standing family");
+  for (const name of names) if (request.identities[name].id !== identities[name].id)
+    throw new Error("manager-service renewal identities differ from the caller-held nkeys");
+  const result = Object.fromEntries(names.map((name) => [name, materialCredential(material, name, identities[name])])) as
+    Record<(typeof names)[number], string>;
+  for (const name of names) if (accountFromCreds(result[name]) !== request.accountPublicKey)
+    throw new Error(`manager-service ${name} JWT names a foreign account`);
+  return result;
+}
+
+/** Validate the pair before a hosted drive replaces either connection's credential. The
+ * issuer's grant is checked by broker preflight at the adoption site, not by JWT decode. */
+export function remoteRunRenewalCredentials(
+  material: RemoteManagerAuthorityMaterial,
+  request: RemoteManagerAuthorityRequest,
+  owner: string,
+  driver: Identity,
+  mediator: Identity,
+): { driver: string; mediator: string } {
+  if (request.operation !== "renewRunDriver" || material.operation !== request.operation ||
+      material.v !== 1 || material.kind !== request.kind || material.space !== request.space ||
+      material.owner !== owner || material.actor !== request.actor || material.instanceId !== request.instanceId ||
+      material.lifecycleUid !== request.managerLifecycleUid || material.requestId !== request.requestId ||
+      material.registrationProof !== request.registrationProof || material.accountPublicKey !== request.accountPublicKey ||
+      material.processEpoch !== request.processEpoch ||
+      JSON.stringify(material.run) !== JSON.stringify(request.run) ||
+      JSON.stringify(material.identities) !== JSON.stringify(request.identities) ||
+      JSON.stringify(material.actors) !== JSON.stringify(remoteManagerActors(request.instanceId)) ||
+      Object.values(material.credentials).some((credential) => credential === undefined) ||
+      Object.keys(material.credentials).sort().join(",") !== "runDriver,runMediator" ||
+      request.run?.driverId !== driver.id || request.run?.mediatorId !== mediator.id)
+    throw new Error("manager-service run renewal returned different coordinates or an incomplete driver/mediator pair");
+  const result = { driver: materialCredential(material, "runDriver", driver), mediator: materialCredential(material, "runMediator", mediator) };
+  if (accountFromCreds(result.driver) !== request.accountPublicKey || accountFromCreds(result.mediator) !== request.accountPublicKey)
+    throw new Error("manager-service run renewal returned a foreign account");
+  return result;
 }
 
 export function expectedRemoteManagerActors(state: RemoteManagerIdentityState) {

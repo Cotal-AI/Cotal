@@ -6,6 +6,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } f
 import { isAbsolute, join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
+  accountFromCreds,
   DEFAULT_SERVER,
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
@@ -318,6 +319,9 @@ function sameStrings(a: readonly string[] | undefined, b: readonly string[] | un
 
 export interface ManagerOptions {
   space: string;
+  /** Hosted pooled control must not start a local PTY or custody its agents. A composition
+   * must supply a non-custodial hosted/participant runtime explicitly. Stock CLI is unchanged. */
+  pooled?: boolean;
   servers?: string;
   name?: string;
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
@@ -389,6 +393,13 @@ export interface ManagerOptions {
     supervisorCreds: string;
     executorCreds: string;
     renewExecutor: () => Promise<string>;
+    /** Host-issued, fully staged five-identity family. The callback validates response echoes
+     * before returning, and the manager preflights all five before adopting any. */
+    renewStandingBundle?: (processEpoch: number) => Promise<{
+      supervisor: string; executor: string; serve: string; goalWriter: string; sessionLedger: string;
+    }>;
+    /** Immutable assigned data-account nkey. Pooled control never infers it from a slug. */
+    accountPublicKey?: string;
     serveCreds: string;
     goalWriterCreds: string;
     sessionLedgerCreds: string;
@@ -1256,6 +1267,8 @@ export class Manager {
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
   private remoteExecutorCreds?: string;
+  private remoteSupervisorCreds?: string;
+  private remoteBundleRenewal?: Promise<void>;
 
   /** Every broker dial this manager makes, through ONE transport decision.
    *
@@ -1270,6 +1283,10 @@ export class Manager {
   }
 
   constructor(opts: ManagerOptions) {
+    if (opts.pooled && (!opts.remoteAuthority || opts.runtime === undefined || opts.runtime === "auto" || opts.runtime === "pty"))
+      throw new Error("pooled control requires signerless remote authority and an explicit non-PTY runtime; local custodial execution is forbidden");
+    if (opts.pooled && !opts.remoteAuthority?.renewStandingBundle)
+      throw new Error("pooled control requires a closed host-issued all-duty renewal callback before construction");
     this.space = opts.space;
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
@@ -1278,6 +1295,10 @@ export class Manager {
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
     this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
+    this.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
+    if (opts.pooled && (!opts.remoteAuthority?.accountPublicKey ||
+        accountFromCreds(opts.remoteAuthority.supervisorCreds) !== opts.remoteAuthority.accountPublicKey))
+      throw new Error("pooled control requires a proved assigned account for its initial supervisor credential");
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     this.secretStoreIdentity = opts.secretStore
@@ -1285,6 +1306,8 @@ export class Manager {
       : { kind: "fs", root: resolve(this.workspaceRoot) };
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
+    if (opts.pooled && isCustodialRuntime(this.runtime))
+      throw new Error(`pooled control refuses custodial runtime "${this.runtime.kind}" before starting agents`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
     this.endpointServeExecutorExpiresInSeconds = opts.endpointServeExecutorExpiresInSeconds;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
@@ -1519,7 +1542,7 @@ export class Manager {
     if (this.remoteAuthority) {
       const remote = this.remoteAuthority;
       id = remote.identities.supervisor.id;
-      creds = async () => remote.supervisorCreds;
+      creds = async () => this.remoteSupervisorCreds!;
     } else if (this.auth) {
       const identity = newIdentity();
       const auth = this.auth;
@@ -1621,8 +1644,11 @@ export class Manager {
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     } else if (this.remoteAuthority) {
-      await this.renewRemoteExecutor();
-      this.credRenewTimer = setInterval(() => { void this.renewRemoteExecutor(); }, credRenewIntervalMs(5 * 60));
+      if (this.remoteAuthority.renewStandingBundle) await this.renewRemoteStandingBundle();
+      else await this.renewRemoteExecutor();
+      this.credRenewTimer = setInterval(() => {
+        void (this.remoteAuthority?.renewStandingBundle ? this.renewRemoteStandingBundle() : this.renewRemoteExecutor());
+      }, credRenewIntervalMs(5 * 60));
       this.credRenewTimer.unref?.();
     }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
@@ -2054,6 +2080,55 @@ export class Manager {
       this.remoteExecutorCreds = await this.remoteAuthority.renewExecutor();
     } catch (e) {
       console.error(`! remote manager executor renewal: ${(e as Error).message} - registration maintenance and clean deregistration remain unavailable until renewal succeeds`);
+      if (force) throw e;
+    }
+  }
+
+  /** A signerless manager cannot renew one duty in isolation. The issuer stages the closed
+   * credential family first; broker preflight proves every JWT and existing caller-held nkey
+   * before any mutable holder changes. A failed candidate leaves all current creds intact. */
+  private async renewRemoteStandingBundle(force = false): Promise<void> {
+    if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
+    const renewal = this.renewRemoteStandingBundleOnce(force);
+    this.remoteBundleRenewal = renewal;
+    try { await renewal; } finally { if (this.remoteBundleRenewal === renewal) this.remoteBundleRenewal = undefined; }
+  }
+
+  private async renewRemoteStandingBundleOnce(force: boolean): Promise<void> {
+    const remote = this.remoteAuthority;
+    if (!remote?.renewStandingBundle || !this.serviceServe) return;
+    const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
+      this.goalWriterCreds, this.sessionLedgerCreds];
+    if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) return;
+    try {
+      const candidate = await remote.renewStandingBundle(this.serviceServe.grant.epoch);
+      const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+      if (Object.keys(candidate).sort().join(",") !== [...names].sort().join(","))
+        throw new Error("host returned an incomplete or widened standing credential family");
+      for (const name of names) {
+        if (typeof candidate[name] !== "string" || inspectCredHealth(candidate[name]).state === "unreadable")
+          throw new Error(`host returned an unreadable ${name} credential`);
+        if (!remote.accountPublicKey || accountFromCreds(candidate[name]) !== remote.accountPublicKey)
+          throw new Error(`host returned a ${name} credential for another account`);
+        const nc = await this.dial({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(candidate[name]))(nonce), maxReconnectAttempts: 0 });
+        await nc.close();
+      }
+      if (this.leaseStopping || !this.serviceServe || this.serviceServe.grant.epoch !== remote.serveGrant.epoch)
+        throw new Error("manager changed its active serve epoch while standing renewal was in flight");
+      this.remoteSupervisorCreds = candidate.supervisor;
+      this.remoteExecutorCreds = candidate.executor;
+      this.serviceServe.creds = candidate.serve;
+      this.goalWriterCreds = candidate.goalWriter;
+      this.sessionLedgerCreds = candidate.sessionLedger;
+      if (this.goalWriter) this.goalWriter.creds = candidate.goalWriter;
+      if (this.sessionLedgerConn) this.sessionLedgerConn.creds = candidate.sessionLedger;
+      await Promise.all([
+        this.ep.reconnect(), this.pushRenewedCreds(this.serviceServe.nc),
+        ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
+        ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
+      ]);
+    } catch (e) {
+      console.error(`! remote manager all-duty renewal: ${(e as Error).message} - no unsigned or local replacement is available`);
       if (force) throw e;
     }
   }
