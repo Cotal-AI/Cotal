@@ -30,7 +30,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 13 + 5 + 11; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 13 + 5 + 13; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -251,9 +251,13 @@ async function preFieldWarning(): Promise<void> {
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
   const { findMesh, recordMesh } = await import("@cotal-ai/workspace");
   const space = "pre-field";
+  // A custom --store-dir keeps the root's DEFAULT store virgin, so the pre-field repair below is
+  // exercising the real gap: the record loses its storeDir field (simulating a record written
+  // before the field existed) while the broker actually used a non-default store the whole time.
+  const preFieldStore = join(fixture.root, "pre-field-store");
   let started = false;
   try {
-    const up1 = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space]);
+    const up1 = cotal(fixture, ["up", "--detach", "--open", "--server", fixture.server, "--space", space, "--store-dir", preFieldStore]);
     started = up1.status === 0;
     check("pre-field fixture starts", started, `${up1.stdout}${up1.stderr}`);
     if (!started) return;
@@ -324,8 +328,12 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     const meshes = cotal(fixture, ["meshes"]);
     check("`cotal meshes` tags the crashed mesh offline", new RegExp(`${space}[^\n]*offline`).test(`${meshes.stdout}`), meshes.stdout);
 
-    const stopped = await stop(fixture);
-    check("`stop` (down) also removes the kept record", stopped && findMesh(space) === undefined, findMesh(space));
+    // Not the shared `stop()` helper: a crashed broker leaves no pidfile of its own for `down` to
+    // find, so `cotal down` here reports "Nothing running" and exits non-zero even though its
+    // registry sweep (which runs unconditionally on a bare down, ahead of that exit) still clears
+    // the crash-kept record — the real, documented effect this cell checks.
+    cotal(fixture, ["down", "manager", "nats"]);
+    check("`stop` (down) also removes the kept record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (child.exitCode === null) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
   }
