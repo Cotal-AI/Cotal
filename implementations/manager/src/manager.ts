@@ -6370,7 +6370,7 @@ export class Manager {
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
     if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy"))
-      await this.renewRemoteExecutor(true);
+      await (this.remoteAuthority.renewStandingBundle ? this.renewRemoteStandingBundle(true) : this.renewRemoteExecutor(true));
     const creds = this.remoteExecutorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },

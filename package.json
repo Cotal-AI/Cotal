@@ -310,6 +310,7 @@
     "smoke:remote-renewal-broker": "tsx implementations/manager/smoke/remote-renewal-broker.smoke.ts",
     "smoke:remote-standing-adoption": "tsx implementations/manager/smoke/remote-standing-adoption.smoke.ts",
     "smoke:remote-closed-connection-recovery": "tsx implementations/manager/smoke/remote-closed-connection-recovery.smoke.ts",
+    "smoke:remote-start-expiry-recovery": "tsx implementations/manager/smoke/remote-start-expiry-recovery.smoke.ts",
     "smoke:hosted-retirement-order": "tsx implementations/manager/smoke/hosted-retirement-order.smoke.ts",
     "probe:hosted-retirement-stock-supervise": "tsx implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts",
     "smoke:core-boundary": "tsx packages/core/smoke/core-boundary.smoke.ts",
