@@ -194,6 +194,11 @@ export interface EndpointOptions {
    *  lifecycle-keyed messaging durables (`dm_…-<uid>`, `dlv_…-<uid>`, `chathist_…-<uid>`) — an
    *  endpoint without one (a pure operator/daemon connection) can not consume DM/chat history. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before its preservation cut (a supervised
+   *  preserve/resume, never a fresh join). The boot backfill reads only what came after it instead of
+   *  the whole retained window. Core reads no environment variable for this — the caller (a launcher)
+   *  resolves it and passes it explicitly. */
+  backfillFloor?: number;
   /** The accepted-row token of this credential's issuance (SPEC 13.15). Set when the launcher
    *  minted the credential as an issuance: after connecting, the endpoint reads the generation the
    *  ISSUER bound under this token (a broker-enforced per-key read) and pins it into every caller
@@ -635,6 +640,8 @@ export class CotalEndpoint extends EventEmitter {
   readonly actorIsEphemeral: boolean;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
+  /** See {@link EndpointOptions.backfillFloor}. */
+  private readonly backfillFloor?: number;
   private readonly acceptedToken?: string;
   /** The issuer-bound generation, learned once per connection from the accepted row. */
   private issuedGeneration?: string;
@@ -771,6 +778,11 @@ export class CotalEndpoint extends EventEmitter {
         : this.authed
           ? undefined
           : mintLifecycleUid();
+    if (opts.backfillFloor !== undefined) {
+      if (!Number.isInteger(opts.backfillFloor) || opts.backfillFloor < 0)
+        throw new Error(`EndpointOptions.backfillFloor must be a non-negative integer stream sequence, got ${opts.backfillFloor}`);
+      this.backfillFloor = opts.backfillFloor;
+    }
     if (opts.acceptedToken !== undefined) {
       if (!opts.creds) throw new Error("EndpointOptions.acceptedToken names a static issuance and needs creds beside it (SPEC 13.15)");
       this.acceptedToken = assertGeneration(opts.acceptedToken, "acceptedToken");
@@ -5204,7 +5216,7 @@ export class CotalEndpoint extends EventEmitter {
       for (const ch of this.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
       for (const ch of this.channels) this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", ch));
-      if (armed) await this.backfillArmed(armed);
+      if (armed) await this.backfillArmed(armed, this.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
@@ -5442,12 +5454,17 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Phase 2 of a join — backfill each armed channel's history up to its frontier (replay-gated),
-   *  AFTER the filter flip. Returns the total backfilled. */
-  private async backfillArmed(frontiers: Map<string, number>): Promise<number> {
+   *  AFTER the filter flip. `floorSeq`, when set, is this incarnation's last-consumed CHAT stream
+   *  sequence before a preservation cut (SPEC-external, manager-recorded) — it bounds the read from
+   *  below so a resumed seat does not re-read messages it already consumed. Only the boot-channel
+   *  call site (`start()`) passes it; `joinChannel`'s mid-session call never does (a channel joined
+   *  after the cut was never read by this incarnation, so its replay window is the join contract).
+   *  Returns the total backfilled. */
+  private async backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
       const policy = await this.joinPolicyFresh(ch);
-      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs);
+      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
     }
     return total;
   }
@@ -5540,11 +5557,20 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Read a channel's retained history up to `upToSeq` (the join frontier) and emit each message
    *  as a `historical` "message" event. `sinceMs` bounds how far back via a native consumer
-   *  `start_time` (now − window); unset ⇒ the full retained window. New messages (`seq > upToSeq`)
-   *  are skipped — the live tail owns them. Reads through the contained {@link collectHistory}. */
-  private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number): Promise<number> {
+   *  `start_time` (now − window); unset ⇒ the full retained window. `floorSeq`, when set, is a
+   *  tighter lower bound than the window: this incarnation had already consumed everything up to
+   *  and including it before a preservation cut, so the read starts at `floorSeq + 1` and the
+   *  `sinceMs` window is not consulted (the floor is the tighter bound by construction — the seat
+   *  was live for the window's tail). `floorSeq >= upToSeq` means there is nothing new to read at
+   *  all; return 0 without creating a consumer. A floor below the stream's oldest retained sequence
+   *  is fine: JetStream's `DeliverPolicy.StartSequence` begins at the first retained message at or
+   *  after it, which is exactly the catch-up. New messages (`seq > upToSeq`) are skipped — the live
+   *  tail owns them. Reads through the contained {@link collectHistory}. */
+  private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number, floorSeq?: number): Promise<number> {
+    if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
     const subject = chatSubject(this.space, "*", "*", channel);
-    const start = sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
+    const start =
+      floorSeq !== undefined ? { seq: floorSeq + 1 } : sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
     let msgs: JsMsg[];
     try {
       msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });
