@@ -26,9 +26,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epgateKey, epAuthBucket, epfStreamName, epwStreamName,
-  epRequestSubject, epCallerReplyFilter, parseEpSubject, EpEnvelopeError,
+  EpEnvelopeError,
   createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
   mintCreds, managedRetirementOpId, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
+  resolveService, invokeCommand, idFromCreds,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, grantManagedActor, newActorToken, openAuthAuthorityPlane, revokeManagedActor } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -92,38 +93,25 @@ const MGR = { owner: DEV_OWNER, actor: MGR_SERVE.id, uid: mintLifecycleUid() };
 const MGR_INST = mintLifecycleUid();
 const SERVE_EPOCH = 1;
 
-/** One participant rail request (the late manager's path), exactly as auth-admin.smoke.ts sends it. */
+/** One participant rail request (the late manager's path), sent through the GENERIC client
+ *  (`resolveService` + `invokeCommand` from `@cotal-ai/core`) exactly as auth-admin.smoke.ts's
+ *  own `request()` sends it - never a hand-built pre-lane body, which the v1 envelope refuses
+ *  `unsupported-version` before its id is even read. */
 async function railRequest(target: { owner: string; actor: string; lifecycleUid: string }): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply"> {
   const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...MGR, target } });
-  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
-  const nonce = randomUUID().replace(/-/g, "") + "aaaaaaaa";
+  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
   try {
-    const subject = epRequestSubject(space, {
-      route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
-      target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
-      caller: MGR, nonce,
-    });
-    const requestId = randomUUID().replace(/-/g, "");
-    let settle: (v: { ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply") => void;
-    const got = new Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply">((res) => { settle = res; });
-    const sub = nc.subscribe(epCallerReplyFilter(space, MGR), {
-      callback: (err, msg) => {
-        if (err) return;
-        const parsed = parseEpSubject(msg.subject);
-        if (!parsed || parsed.plane !== "reply" || parsed.endpoint !== AUTH_ENDPOINT || parsed.nonce !== nonce) return;
-        let body: { ok: boolean; id?: unknown; data?: Record<string, unknown>; error?: string };
-        try { body = JSON.parse(new TextDecoder().decode(msg.data)) as typeof body; } catch { return; }
-        if (body.id !== requestId) return;
-        settle(body);
-      },
-    });
-    const timer = setTimeout(() => settle("no-reply"), 15000);
     const args = { serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH, opId: managedRetirementOpId(target.lifecycleUid) };
-    nc.publish(subject, new TextEncoder().encode(JSON.stringify({ id: requestId, op: "retireLifecycle", args })));
-    const out = await got;
-    clearTimeout(timer);
-    try { sub.unsubscribe(); } catch { /* down */ }
-    return out;
+    const service = await resolveService(nc, space, AUTH_ENDPOINT, MGR, { deadlineMs: 10_000 });
+    const attributed = await invokeCommand(nc, space, service, EP_CMD_RETIRE_LIFECYCLE, args, {
+      target: { mode: "exact", owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid },
+      deadlineMs: 8_000,
+    });
+    const r = attributed.reply;
+    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(r.error ? { error: r.error.message } : {}) };
+  } catch (e) {
+    if (/timeout|no responders|permission|deadline-exceeded|unavailable/i.test((e as Error).message)) return "no-reply";
+    throw e;
   } finally {
     await nc.close().catch(() => {});
   }
