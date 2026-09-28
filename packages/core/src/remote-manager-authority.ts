@@ -596,3 +596,29 @@ export interface RemoteRunAdmissionResult {
   revision: number;
   admission: import("./run-admission.js").RunAdmission;
 }
+
+/**
+ * Closed first-attempt (and resume) driver/mediator issuance, or one served run-operator call, for
+ * a registered signerless manager. Separate from `renewRunDriver`, which only renews an activated
+ * attempt. The manager generates the nkeys and sends public ids only. The host authenticates the
+ * registration, then derives every grant coordinate from its own stores: the immutable admission
+ * (present, unrevoked, admitted on this instance), the run record's next epoch and fencing token,
+ * the holder under the registered supervisor id, and for an answer a checkpoint still waiting.
+ * Delegation to the registered trusted host; the host signs only the returned grant arguments.
+ */
+export interface RemoteRunAttemptRequest {
+  v: 1;
+  kind: "manager-run-attempt";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** Exactly one of `attempt` / `operator`. */
+  attempt?: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driverId: string; mediatorId: string };
+  operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string } };
+}

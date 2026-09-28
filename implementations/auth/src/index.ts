@@ -126,7 +126,7 @@ export {
   authConnectReaderGrants, openConnectReader, authorizeConnectCredential,
   type ConnectReader,
 } from "./connect-reader.js";
-export { admitRemoteRun, parseRemoteRunAdmissionRequest, authorizeRemoteManagerRenewal, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
+export { admitRemoteRun, authorizeRemoteRunAttempt, parseRemoteRunAttemptRequest, type RemoteRunAttemptGrant, parseRemoteRunAdmissionRequest, authorizeRemoteManagerRenewal, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
 export { parseRemoteManagerMaintenanceRequest, authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 export {
   parseRemoteRetainedAgentValidationRequest,
