@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.56.0
+
+### Patch Changes
+
+- 5cf0861: `spawn` refuses at admission a `cwd` the serving manager's host cannot resolve, naming the path, the reason and the host, so a misplaced spawn in a multi-manager space fails before anything is minted instead of at launch (#385 item 2). `cotal_spawn` documents that an unresolvable `cwd` is refused before launch.
+
 ## 0.55.0
 
 ### Minor Changes

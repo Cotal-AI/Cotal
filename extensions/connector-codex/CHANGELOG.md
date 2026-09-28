@@ -1,5 +1,17 @@
 # @cotal-ai/connector-codex
 
+## 0.56.0
+
+### Patch Changes
+
+- fdc2c35: The codex host persists the event plane's bind boundary into the log as soon as the start
+  succeeds, instead of waiting for the emitter's first read. A host that dies between a successful
+  bind and its first pump now resumes from the recorded boundary instead of taking a fresh one at
+  the file's later end, so it no longer drops what the thread wrote in between.
+- ff2851c: Compare receive keys in the codex steer filter, so an empty-id message already steered into a turn is not steered again.
+
+  `surfaced` holds receive keys (a minted one for an id-less delivery), but the steer filter tested the raw `item.id`. For a message whose wire id is the empty string that test never matched, so every pass of the steer loop re-admitted an already-steered empty-id item and injected it again into the live turn for as long as the turn stayed open. The filter now tests `item.recvKey` against the set, with a one-line comment stating that `surfaced` holds receive keys.
+
 ## 0.55.0
 
 ### Patch Changes

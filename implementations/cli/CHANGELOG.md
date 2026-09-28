@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.56.0
+
+### Patch Changes
+
+- ccf3d5f: `cotal attach` recognises the detach key when the terminal encodes it as a kitty keyboard protocol or xterm modifyOtherKeys sequence, in the session reader and in the between-sessions reader, keeping the whole-chunk match so a paste carrying the byte is still data (#598).
+- a42a5e8: A one-shot `cotal send` presents `<login>@<host>` as its display name instead of the fixed `cotal-send`, so a recipient can attribute a DM, a channel post or an ask to the shell that sent it; the wire principal is unchanged (#680).
+- 0cf1cf3: `cotal describe` accepts `--on <instance>` and pins the describe to that manager instance's rail, printing the same attributed surface, so an operator can read what one instance of a multi-instance endpoint serves (#554).
+- ac53a09: `cotal update` no longer reads a remote user mesh's manager for continuity, since that manager runs
+  under another install and its exchange's answer cannot change the local install; the mesh is named
+  and skipped, and the install proceeds. A refused remote exchange that supplies no reason now says
+  the face withheld it instead of presenting the HTTP status as the reason (#2158).
+- 4e1c8f5: `cotal status` asks the manager's service endpoint before printing its row, so a live manager process whose rail does not answer reads `not serving` instead of `running`, and the `--components` probe mints its lease-read credential with a lifecycle uid so it is no longer refused on a static mesh (#2073).
+- 8dc7c92: `doctor auth --fix` takes the mesh's one daemon-credential renewal lease before it re-signs when the broker answers, refuses with the live holder and the recovery named while a manager or another doctor holds it, and records and prints an explicit offline repair when the broker does not answer (#1063).
+- 99cad7b: A membership watch that closes after setup now reaches its caller through a second callback on `watchMembership`, instead of leaving the caller holding a stale snapshot with no signal. The dashboard broadcasts the existing membership-read-failed event and the console marks the feed unreadable, instead of both keeping the last snapshot silently (#485).
+- b2453f4: `--on` now refuses a malformed manager instance id at the flag with a message that names the identifier it wants and where `cotal ps` prints it, instead of the mint's bare grammar error; a roster principal id (`local.…`) is named as such (#423).
+- Updated dependencies [e506040]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [99cad7b]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/workspace@0.56.0
+
 ## 0.55.0
 
 ### Minor Changes
