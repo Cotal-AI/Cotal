@@ -243,8 +243,10 @@ shows those messages without clearing them.
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
 against the active provider, and an accepted selection becomes the session pin and the seat's model
-label. The connector does not require `RuntimeInfo.model` to echo that pin immediately because the
-runtime field can temporarily report the previous model after selection.
+label. The connector reports the provider route actually serving that model to presence, and
+`cotal ps --wide` and `--json` show it as `provider`. The connector does not require `RuntimeInfo.model`
+to echo that pin immediately because the runtime field can temporarily report the previous model
+after selection.
 
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means

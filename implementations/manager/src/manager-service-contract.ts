@@ -219,6 +219,8 @@ const AGENT_ROW_SCHEMA = {
     // itself a managed seat - not carried here, the manager does not hold it).
     model: { type: "string" },
     variant: { type: "string" },
+    // The connector-reported provider from presence (#785): absent when the connector reported none.
+    provider: { type: "string" },
     cwd: { type: "string" },
     pid: { type: "integer", minimum: 1 },
     spawner: { type: "string" },

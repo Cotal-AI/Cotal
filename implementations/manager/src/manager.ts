@@ -8954,6 +8954,10 @@ export class Manager {
       const health = a.userOwner
         ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid).health)
         : undefined;
+      // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
+      // when it is a non-empty string. Absent when the connector reported none — never fabricated.
+      const providerMeta = roster.get(a.name)?.card.meta?.provider;
+      const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
       return {
         name: a.name,
         // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
@@ -8979,6 +8983,7 @@ export class Manager {
         // pid is absent on runtimes that do not own a real process; a launch may pin no model).
         model: a.launch.model,
         variant: a.launch.variant,
+        ...(provider ? { provider } : {}),
         cwd: a.launch.cwd,
         pid: a.handle.pid,
         spawner: a.spawner,

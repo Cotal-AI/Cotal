@@ -33,6 +33,13 @@ export function activeModelRoute(runtime: RuntimeIdentity | undefined, model: st
   return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);
 }
 
+/** The provider actually serving `model`, or undefined when the Harness API named none. An empty
+ *  string is treated as unnamed. Shared by `describeRoute` and the presence report so the log line
+ *  and the roster card can never name different providers. */
+export function effectiveProvider(runtime: RuntimeIdentity | undefined, model: string): string | undefined {
+  return activeModelRoute(runtime, model)?.provider || runtime?.provider || undefined;
+}
+
 /**
  * One line naming the effective route for `model`.
  *
@@ -43,7 +50,7 @@ export function activeModelRoute(runtime: RuntimeIdentity | undefined, model: st
  */
 export function describeRoute(runtime: RuntimeIdentity | undefined, model: string): string {
   const matched = activeModelRoute(runtime, model);
-  const provider = matched?.provider ?? runtime?.provider;
+  const provider = effectiveProvider(runtime, model);
   if (!provider) return `model ${model} is served by an unreported provider (the Harness API named none)`;
   const via = matched?.api_method ? ` via ${matched.api_method}` : "";
   const unavailable = matched && matched.available === false ? " (route reports itself UNAVAILABLE)" : "";
