@@ -45,6 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, `readiness`, `drain`, and idempotent `close`. `runAuthService` remains the CLI entry. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
@@ -101,8 +102,16 @@ include the account public key and lifecycle UID, space, broker URL, injected st
 The initial delivery credential must belong to the assigned account. The function returns only
 after the delivery responder is bound. `close()` withdraws serving and releases only the lease
 owned by that instance. A failed start refuses locally without exiting the host process or
-stopping another account's delivery service. Auth-service is still a process runner in this cut,
-so this delivery handle alone does not make a complete pooled auth and delivery host.
+stopping another account's delivery service.
+
+`startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
+injected identity, and its data account must be the assigned account. The IdP pin and ledger live
+under the explicit `stateDir`. The context never resolves a workspace root from the working
+directory and has no local manager, so only remote manager gates can be selected. It returns after
+the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
+a lost broker connection makes that context `unavailable` and closes it without exiting the process.
+The host writes no discovery file for it. Standing-bundle and run-driver renewal are not wired yet,
+so these handles do not yet make a complete pooled auth and delivery host.
 
 ### Long-lived endpoints take a bearer function
 
