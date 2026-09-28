@@ -140,6 +140,13 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const persona = def?.persona || undefined;
 
+  // The operator's --prompt (extension.ts:216-229), held until the boot task below opens the
+  // gate. `bootPending` mirrors plugin.ts's own predicate: the text outlives a failed attempt,
+  // only `drive` clears it, and only once the submission has landed.
+  let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
+  let bootReady = false;
+  const bootPending = (): boolean => bootReady && bootPrompt !== undefined;
+
   let sessionID: string | undefined;
   let busy = false; // a turn is running → don't submit another (2.x coalesces natively submitted ones)
   let primed = false; // persona goes out as `system` on the first connector-submitted turn, once
@@ -202,11 +209,17 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     const id = await ensureSession();
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
     if (busy) return; // rechecked after the await, same reason as plugin.ts's `drive`
+    // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
+    // `:947-951` shape without the `pendingOverride` slot, which 2.x does not have).
+    const boot = bootPending() ? bootPrompt : undefined;
+    if (bootPrompt !== undefined && boot === undefined) return;
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
     const turnPeek = agent.peekPendingTurns();
-    if (override !== undefined) {
+    if (boot !== undefined) {
+      parts.push(boot);
+    } else if (override !== undefined) {
       parts.push(override);
     } else {
       const items = agent.peekInbox("automatic");
@@ -237,6 +250,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
       );
       if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       if (system) primed = true;
+      if (boot !== undefined) bootPrompt = undefined;
     } catch (e) {
       busy = false;
       abandonSurfaced();
@@ -354,6 +368,23 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     } catch (e) {
       if (!controller.signal.aborted) log(`event loop ended: ${(e as Error).message}`);
     }
+  })();
+
+  // Opens the boot floor once the session exists and the mesh link is up, then lets `drive`
+  // carry and clear the text. Orders the connector's own submissions against each other, not
+  // the host's native turns against the connector's — that window is not closed here either.
+  void (async () => {
+    if (bootPrompt === undefined) return;
+    const id = await sessionReady;
+    while (!controller.signal.aborted && !agent.connected) await new Promise((r) => setTimeout(r, 100).unref?.());
+    if (controller.signal.aborted || bootPrompt === undefined) return;
+    if (!id) {
+      log("initial prompt not submitted — this session was never created");
+      bootPrompt = undefined;
+      return;
+    }
+    bootReady = true;
+    await drive();
   })();
 
   return async () => {
