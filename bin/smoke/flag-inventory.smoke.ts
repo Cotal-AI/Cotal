@@ -130,9 +130,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
     // the identity's bind-only durables so the credential can CONSUME, not only publish (issue #306's
     // second half); the target flags name the mesh that provisioning connects to.
+    // `--expires-in` / `--expires-at` / `--identity` (2026-09, #1992): bound the credential's lifetime
+    // (TTL seconds or absolute exp, mutually exclusive), and re-mint for the nkey an existing creds
+    // file already carries. All three are refused together with `--signer`.
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string",
-      "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string",
+      "allow-publish:string", "allow-subscribe:string", "expires-at:string", "expires-in:string",
+      "force:boolean", "identity:string", "out:string", "profile:string", "provision:boolean",
+      "role:string", "server:string", "signer:boolean", "space:string",
     ],
     positionals: true,
   },
