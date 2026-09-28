@@ -89,8 +89,11 @@ async function dm(opened: Awaited<ReturnType<typeof openTransient>>, positionals
     await ep.stop();
     process.exit(1);
   }
-  await ep.unicast(peer.card.id, text);
-  console.log(c.green(`→ ${peer.card.name}`) + c.dim(`  ${text}`));
+  const { ack } = await ep.unicastAttributed(peer.card.id, text);
+  console.log(
+    c.green(`→ ${peer.card.name}`) +
+      c.dim(`  stored seq ${ack.seq}; recipient ${peer.status} at send; delivery not confirmed  ${text}`),
+  );
   await ep.stop();
 }
 

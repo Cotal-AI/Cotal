@@ -1553,6 +1553,14 @@ cotal send msg <channel> "<text>"
 cotal send ask <role> "<text>"
 ```
 
+A `send dm` prints one line naming three facts: `→ <name>  stored seq <N>; recipient <status>
+at send; delivery not confirmed  <text>`. `stored seq N` is the JetStream sequence the broker
+assigned to the publish; `recipient <status> at send` is the roster status (`idle`, `working`,
+or `offline`) resolved right before the publish, which can change the instant after; the send
+never prints `delivered`, because the sender's credential cannot read the recipient's durable
+to confirm it. Inspect what the broker actually holds for a recipient with
+[`cotal deliver pending`](#deliver).
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh, and (off-registry) which credential |
@@ -1654,6 +1662,36 @@ surface. Detached mode re-execs the current Cotal installation, writes diagnosti
 the mesh root's `.cotal/web.log`, and reports success only after the HTTP server answers. It requires
 a recorded mesh root, but can be launched from any directory once `cotal up` has recorded the mesh.
 See [Watch a mesh](watch-a-mesh.md).
+
+## deliver
+
+```bash
+cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--shard <n>] [--shards <n>] [--dev-mint]
+cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
+```
+
+With no positional, `cotal deliver` runs the delivery daemon (see
+[the delivery daemon](delivery-daemon.md)). `deliver pending <name>` never starts the daemon: it
+is an operator-only read over one recipient's DM durable, for the moment after a send when the
+question is "what does the broker actually hold for them." It resolves `<name>` against a short
+presence watch (an `offline` card still counts, since the recipient may be dead, that is what
+the verb exists to inspect); when neither a card nor the durable can be found, it prints
+`✗ not-found: no agent "<name>" and no DM durable for it in space <s>` and exits non-zero, never
+`pending 0`. On a match it prints the durable name and one fact per line: `pending`,
+`ack-pending`, `delivered`, `ack-floor`, `created`, `frontier`, and the stream's `max_age` /
+`max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
+by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
+heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
+there, not proof that nothing was lost.
+
+The verb needs the `admin` credential profile: it runs through the same static-mesh route as
+`cotal mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,
+because there is no user-mode inspection authority yet. Pass `--creds <file>` for an off-registry
+admin credential. A same-name respawn never inherits a predecessor's held DMs (the durable is
+lifecycle-keyed); an old lifecycle's durable is reachable only by the name a live read printed
+(the `<durable>` line on the first line of this verb's output). Pass that name with `--durable
+<name>` to read it directly once the lifecycle's card is gone from the roster. This skips the
+presence watch on `<name>` entirely, so `<name>` is required but only echoed in error text.
 
 ## mint
 

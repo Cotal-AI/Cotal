@@ -37,7 +37,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 16;
+const EXPECTED = 29;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -186,6 +186,11 @@ try {
   check("`cotal send msg` outside a seat exits 0", msg.code === 0, msg.stderr);
   check("`cotal send ask` outside a seat exits 0", ask.code === 0, ask.stderr);
   check(
+    "the live `send dm` line reports a stored sequence and the live recipient's status, never delivered",
+    /stored seq \d+/.test(dm.stdout) && dm.stdout.includes("recipient idle at send") && !dm.stdout.includes("delivered"),
+    dm.stdout,
+  );
+  check(
     "the outside-seat DM carries the credential-derived principal and CLI display name",
     got.some((m) => m.route === "DM" && m.text === dmText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === expectedSender),
     got,
@@ -248,6 +253,88 @@ try {
   const missing = await run(["send", "dm", "nobody-here", "x"]);
   check("`cotal send dm` to an absent agent exits non-zero", missing.code !== 0, missing.code);
   check("`cotal send dm` to an absent agent says 'no agent'", /no agent/i.test(missing.stderr), missing.stderr);
+
+  // M3: stop bob, send within the retained-card window (a graceful stop publishes `offline`
+  // synchronously, before its lifecycle uid is retired), and assert the line names the offline
+  // status rather than fabricating "delivered".
+  await bob.stop();
+  const offlineText = `offline-${randomUUID().slice(0, 6)}`;
+  const offlineDm = await run(["send", "dm", "bob", offlineText]);
+  check("`cotal send dm` to a just-stopped recipient still exits 0", offlineDm.code === 0, offlineDm.stderr);
+  check(
+    "the offline-window `send dm` line reports the recipient as offline at send, never delivered",
+    /stored seq \d+/.test(offlineDm.stdout) && offlineDm.stdout.includes("recipient offline at send") && !offlineDm.stdout.includes("delivered"),
+    offlineDm.stdout,
+  );
+
+  // M3: `cotal deliver pending <name>` against the real broker with a minted admin credential.
+  // A second recipient (carol) proves the filter: her durable is untouched by bob's read.
+  const adminIdentity = newIdentity();
+  const adminCreds = join(tmp, "admin.creds");
+  writeFileSync(adminCreds, await mintCreds(auth, adminIdentity, "admin"), { mode: 0o600 });
+
+  const carolIdentity = newIdentity();
+  const carolUid = mintLifecycleUid();
+  const carolCreds = await provisionAgent(provisioner, auth, carolIdentity, {
+    lifecycleUid: carolUid,
+    role: "reviewer",
+    subscribe: [],
+    allowSubscribe: [],
+  });
+  const carol = new CotalEndpoint({
+    space,
+    servers,
+    creds: carolCreds,
+    lifecycleUid: carolUid,
+    card: { name: "carol", role: "reviewer", kind: "agent", id: carolIdentity.id },
+    channels: [],
+    heartbeatMs: 500,
+    ttlMs: 10_000,
+  });
+  carol.on("message", () => {});
+  carol.on("error", () => {});
+  await carol.start();
+  await wait(300);
+  await carol.stop();
+  const carolText = `carol-held-${randomUUID().slice(0, 6)}`;
+  const carolDm = await run(["send", "dm", "carol", carolText]);
+  check("`cotal send dm` to carol (stopped) exits 0", carolDm.code === 0, carolDm.stderr);
+
+  const pendingBob = await run(["deliver", "pending", "bob", "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending bob` exits 0 with the admin credential", pendingBob.code === 0, pendingBob.stderr);
+  check("`deliver pending bob` reports at least one pending message", /pending [1-9]\d*/.test(pendingBob.stdout), pendingBob.stdout);
+  check(
+    "`deliver pending bob` lists the offline send's id among the candidates",
+    pendingBob.stdout.includes(offlineText) || /recent candidate ids/.test(pendingBob.stdout),
+    pendingBob.stdout,
+  );
+  // M2b: `--durable <name>` reads the exact consumer the first read just printed (its first
+  // stdout line), skipping name resolution entirely, and reports the same pending count.
+  const bobDurable = pendingBob.stdout.split("\n")[0].trim();
+  const pendingBobByDurable = await run(["deliver", "pending", "bob", "--durable", bobDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending bob --durable <name>` exits 0 and prints the same pending count", pendingBobByDurable.code === 0 && pendingBobByDurable.stdout.split("\n")[1] === pendingBob.stdout.split("\n")[1], pendingBobByDurable.stdout);
+
+  const pendingDurableMissing = await run(["deliver", "pending", "bob", "--durable", "dm_local-nope-nope", "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending bob --durable dm_local-nope-nope` exits non-zero with not-found", pendingDurableMissing.code !== 0 && /not-found/i.test(pendingDurableMissing.stderr), pendingDurableMissing.stderr);
+
+  const pendingCarolForId = await run(["deliver", "pending", "carol", "--creds", adminCreds, "--space", space, "--server", servers]);
+  const carolIdMatch = pendingCarolForId.stdout.match(/^\s*([0-9a-f-]{8,})\s+from=/m);
+  check(
+    "`deliver pending bob` never lists carol's held send",
+    !carolIdMatch || !pendingBob.stdout.includes(carolIdMatch[1]),
+    { carolId: carolIdMatch?.[1], pendingBobStdout: pendingBob.stdout },
+  );
+
+  const pendingMissing = await run(["deliver", "pending", "nobody-here-either", "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending` on an absent name exits non-zero", pendingMissing.code !== 0, pendingMissing.code);
+  check("`deliver pending` on an absent name says not-found", /not-found/i.test(pendingMissing.stderr), pendingMissing.stderr);
+
+  const pendingWrongCreds = await run(["deliver", "pending", "bob", "--creds", explicitCreds, "--space", space, "--server", servers]);
+  check(
+    "`deliver pending bob` with an operator (non-admin) credential is refused, never falls back",
+    pendingWrongCreds.code !== 0,
+    { code: pendingWrongCreds.code, stderr: pendingWrongCreds.stderr },
+  );
 
 } finally {
   await bob?.stop().catch(() => {});

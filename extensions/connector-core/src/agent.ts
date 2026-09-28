@@ -1464,7 +1464,15 @@ export class MeshAgent extends EventEmitter {
     return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
   }
 
-  async dm(target: string, text: string): Promise<{ msg: CotalMessage; peer: Presence }> {
+  async dm(
+    target: string,
+    text: string,
+  ): Promise<{
+    msg: CotalMessage;
+    peer: Presence;
+    ack: { seq: number; duplicate: boolean };
+    recipientStatusAtSend: Presence["status"];
+  }> {
     await this.requireConnected();
     // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
     // the roster may be a reconnect refill in progress, so wait once for the snapshot and
@@ -1488,8 +1496,13 @@ export class MeshAgent extends EventEmitter {
         `cannot verify peer "${target}" in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The DM was not sent.`,
       );
     }
-    const msg = await this.ep.unicast(peer.card.id, text, { contextId: this._contextId });
-    return { msg, peer };
+    // The only status we can truthfully attribute is the roster snapshot taken right before the
+    // publish: recipient state can change the instant after, and the ack never tells us either way.
+    const recipientStatusAtSend = peer.status;
+    const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, {
+      contextId: this._contextId,
+    });
+    return { msg, peer, ack, recipientStatusAtSend };
   }
 
   // ---- supervision ---------------------------------------------------------

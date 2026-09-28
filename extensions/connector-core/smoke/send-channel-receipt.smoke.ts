@@ -174,6 +174,7 @@ const proto = MeshAgent.prototype as unknown as {
         return mkMsg(opts?.channel);
       },
       unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
     });
     const msg = await agent.send("hi", "ch", ["otto"]);
     check(
@@ -196,6 +197,7 @@ const proto = MeshAgent.prototype as unknown as {
         return mkMsg();
       },
       unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
     });
     let threw = "";
     try {
@@ -224,6 +226,7 @@ const proto = MeshAgent.prototype as unknown as {
         unicast.push("called");
         return mkMsg("dm");
       },
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
     });
     let threw = "";
     try {
@@ -248,6 +251,7 @@ const proto = MeshAgent.prototype as unknown as {
       waitForPresenceSnapshot: async () => "timeout",
       multicast: async () => mkMsg(),
       unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
     });
     let threw = "";
     try {
@@ -272,9 +276,46 @@ const proto = MeshAgent.prototype as unknown as {
         unicast.push({ to, text });
         return mkMsg("dm");
       },
+      unicastAttributed: async (to: string, text: string) => {
+        unicast.push({ to, text });
+        return { msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } };
+      },
     });
-    const { peer } = await agent.dm("otto", "x");
+    const { peer, ack } = await agent.dm("otto", "x");
     check("1229:h dm to a peer present in a stale-view roster still publishes", unicast.length === 1 && peer.card.name === "otto", unicast);
+    check("1229:h dm passes through the attributed ack sequence", ack.seq === 7, ack);
+  }
+
+  // (i) M3 proof: recipientStatusAtSend reflects the roster snapshot at send for both an offline
+  //     and an idle card, the ack sequence passes through, and the cotal_dm tool text says
+  //     "stored as seq 7" and "delivery not confirmed" for both.
+  for (const status of ["offline", "idle"] as const) {
+    const peerCard = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status };
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => [peerCard],
+      presenceView: () => ({ state: "current", fresh: true }),
+      waitForPresenceSnapshot: async () => "snapshot",
+      multicast: async () => mkMsg(),
+      unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
+    });
+    const dmResult = await agent.dm("otto", "x");
+    check(
+      `1229:i dm() reports recipientStatusAtSend ${status} from the roster snapshot`,
+      dmResult.ack.seq === 7 && dmResult.recipientStatusAtSend === status,
+      dmResult,
+    );
+    const cfgDm = cfg1229;
+    const specsDm = cotalToolSpecs(cfgDm, "smoke");
+    const dmTool = specsDm.find((s) => s.name === "cotal_dm")!;
+    (agent as unknown as { dm: MeshAgentType["dm"] }).dm = async () => dmResult;
+    const dmText = await Promise.resolve(dmTool.run(agent, cfgDm, { to: "otto", text: "x" }));
+    check(
+      `1229:i cotal_dm text for a ${status} recipient says stored seq and delivery not confirmed`,
+      dmText.text.includes("stored as seq 7") && dmText.text.includes("delivery not confirmed"),
+      dmText.text,
+    );
   }
 }
 
