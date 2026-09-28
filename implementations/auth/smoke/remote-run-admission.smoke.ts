@@ -48,8 +48,8 @@ try {
 
   const liveKeys = new Set<string>(["gate-a"]);
   const source: IssuedSourceRef = { space: SPACE, bucket: "cotal_lifecycle_admit", key: "gate-a" };
-  async function issue(actor: string, publish: "run-start" | "none", sources: IssuedSourceRef[] = [source]) {
-    const ref = { space: SPACE, owner: OWNER, actor, uid: mintLifecycleUid(), generation: mintGeneration() };
+  async function issue(actor: string, publish: "run-start" | "none", sources: IssuedSourceRef[] = [source], uid = mintLifecycleUid()) {
+    const ref = { space: SPACE, owner: OWNER, actor, uid, generation: mintGeneration() };
     const allow = publish === "none" ? { mode: "none" } as const : { mode: "patterns", patterns: [`cotal.${SPACE}.ep.v1.inst.manager.*.run-start.${OWNER}.${actor}.>`] } as const;
     const prepared = await issued.stage({ version: 1, ref, sources, permissions: { publish: { allow, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } }, ...(sources.length ? {} : { expiresAt: Math.floor(Date.now() / 1000) + 600 }) });
     await issued.release(prepared, async () => {});
@@ -89,6 +89,10 @@ try {
   c("a retry naming another caller cannot alter an already written admission",
     hijack.includes("already admitted for another caller") && still.admission.caller.actor === "alice", hijack);
 
+  const aliceAgain = await issue("alice", "run-start", [source], alice.uid);
+  const regen = await outcome(admit({ runId: okRun, subject: subjectFor(aliceAgain) }));
+  c("a retry under another generation of the same actor cannot alter the written admission",
+    regen.includes("already admitted for another caller") && (await readRunAdmission(jsm, SPACE, "manager", okRun)).admission.provenance.kind === "issued", regen);
   // Forged generation: never issued.
   const forged = runId();
   const f = await outcome(admit({ runId: forged, subject: subjectFor({ ...alice, generation: mintGeneration() }) }));
