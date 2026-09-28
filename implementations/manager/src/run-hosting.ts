@@ -62,6 +62,7 @@ import {
   readRunAdmission,
   revokeRunAdmission,
   withIssuerSession,
+  epRequestSubject,
   isIssuedCaller,
   EP_UNBOUND_CALLER_AUTHORITY,
   type EpServeContext,
@@ -107,6 +108,11 @@ export interface RunHostingContext {
     runId: string; holder: string; takeoverId: string; epoch: number; fencingToken: number;
     driver: Identity; mediator: Identity;
   }) => Promise<{ driver: string; mediator: string }>;
+  /** Signerless host: the closed first-run admission (`admitRemoteRun` on the issuing host). The
+   *  manager forwards only the served v1 request subject it rebuilt from the parsed context and the
+   *  run id it minted; the host resolves the issued caller and writes the admission. Separate from
+   *  `renewRun`. Delegation to this registered host, not a proof of an arbitrary message. */
+  readonly admitRun?: (args: { runId: string; subject: string }) => Promise<RunAdmission>;
 }
 
 interface HostedRun {
@@ -215,6 +221,7 @@ export class RunHosting {
         `run-start binds a run to the caller's issued authority, and this request rode the legacy rail with none; re-mint the credential as an issuance and call on the versioned rail (SPEC 13.15, 14.8)`,
         [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }],
       );
+    if (this.ctx.admitRun) return { admission: await this.admitRemote(this.ctx.admitRun, ctx, runId), revoked: undefined };
     const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
     const resolved = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, (s) =>
       s.store.resolve(ref, s.sourceIsLive));
@@ -231,6 +238,23 @@ export class RunHosting {
     };
     await this.withAdmitter(runId, (kv) => createRunAdmission(kv, admission));
     return { admission, revoked: undefined };
+  }
+
+  /** The signerless arm of {@link admit}: the issuing host resolves and writes; this host only
+   *  checks the answer names the run, endpoint, instance and caller it asked for. */
+  private async admitRemote(admitRun: NonNullable<RunHostingContext["admitRun"]>, ctx: EpServeContext, runId: string): Promise<RunAdmission> {
+    const p = ctx.subject;
+    const subject = epRequestSubject(this.ctx.space, {
+      route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
+      endpoint: p.endpoint, command: p.command, caller: p.caller, nonce: p.nonce,
+    });
+    const admission = await admitRun({ runId, subject });
+    const c = admission.caller;
+    if (admission.runId !== runId || admission.endpoint !== this.ctx.endpoint || admission.space !== this.ctx.space ||
+        admission.instanceId !== this.ctx.instanceId || !isIssuedCaller(c) || !isIssuedCaller(p.caller) ||
+        c.owner !== p.caller.owner || c.actor !== p.caller.actor || c.uid !== p.caller.uid || c.generation !== p.caller.generation)
+      throw new EpEnvelopeError("internal", `run ${runId}: the issuing host answered an admission for other coordinates; refused`);
+    return admission;
   }
 
   /** One admission-store write over an ephemeral `run-admitter` credential pinned to this run. */

@@ -559,3 +559,40 @@ export function parseRemoteManagedAgentPrepareRetirementRequest(raw: unknown): R
     opId: o.opId,
   };
 }
+
+/**
+ * Closed first-run admission for one hosted `run-start`, asked by a registered signerless manager.
+ *
+ * This is delegation to the registered trusted host, not a cryptographic proof of an arbitrary
+ * forwarded message. The manager forwards the authenticated `ep.v1` request subject it served; the
+ * host authenticates the manager's registration (account, owner, instance, lifecycle, process
+ * epoch, current-registration proof), re-parses the subject itself, independently resolves the
+ * issued generation it names with live sources, checks that ceiling permits that exact run-start
+ * subject, and creates the immutable admission from the evidence. No ceiling, profile or caller
+ * triple is accepted from the body.
+ */
+export interface RemoteRunAdmissionRequest {
+  v: 1;
+  kind: "manager-run-admission";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** The host-minted run id and the served request subject, verbatim. */
+  run: { runId: string; subject: string };
+}
+
+/** The admission the host created (or found written by an exact retry), with its store revision. */
+export interface RemoteRunAdmissionResult {
+  v: 1;
+  kind: "manager-run-admission";
+  requestId: string;
+  runId: string;
+  revision: number;
+  admission: import("./run-admission.js").RunAdmission;
+}

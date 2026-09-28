@@ -7,7 +7,20 @@ import {
   remoteManagerActors,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
+  type RemoteRunAdmissionRequest,
+  type RemoteRunAdmissionResult,
+  type RunAdmission,
+  type IssuedStore,
+  type IssuedSourceRef,
+  EP_RAIL_V1,
+  admissionKey,
+  admissionSnapshot,
+  createRunAdmission,
+  isIssuedCaller,
+  issuedPermitsSubject,
+  parseEpSubject,
 } from "@cotal-ai/core";
+import type { KV } from "@nats-io/kv";
 import { timingSafeEqual } from "node:crypto";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 
@@ -245,4 +258,122 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
     ...(issued.nextRegistrationProof ? { nextRegistrationProof: issued.nextRegistrationProof } : {}),
     credentials,
   };
+}
+
+type ManagerGate = { state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number };
+
+function admissionError(what: string): never {
+  throw new EpEnvelopeError("bad-request", `manager run admission request ${what}`);
+}
+
+/** Closed parser for {@link RemoteRunAdmissionRequest}: unknown fields refuse, never ignored. */
+export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmissionRequest {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) admissionError("must be an object");
+  const o = raw as Record<string, unknown>;
+  const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "run"];
+  for (const k of Object.keys(o)) if (!allowed.includes(k)) admissionError(`has unknown field ${k}`);
+  if (o.v !== 1 || o.kind !== "manager-run-admission") admissionError("must be v1 manager-run-admission");
+  for (const k of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "accountPublicKey"] as const)
+    if (typeof o[k] !== "string" || (o[k] as string).length === 0) admissionError(`requires ${k}`);
+  assertLifecycleToken(o.instanceId as string, "instanceId");
+  assertLifecycleToken(o.managerLifecycleUid as string, "managerLifecycleUid");
+  if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof)) admissionError("requires a sha256 registrationProof");
+  if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) admissionError("requires a non-negative processEpoch");
+  const ids = o.identities as Record<string, unknown> | null;
+  const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"];
+  if (ids === null || typeof ids !== "object" || Object.keys(ids).sort().join(",") !== [...names].sort().join(","))
+    admissionError("requires exactly the five manager identities");
+  const identities = Object.fromEntries(names.map((n) => {
+    const v = ids[n] as { id?: unknown } | null;
+    if (v === null || typeof v !== "object" || Object.keys(v).join(",") !== "id" || typeof v.id !== "string") admissionError(`identity ${n} must be { id }`);
+    return [n, { id: v.id }];
+  })) as RemoteRunAdmissionRequest["identities"];
+  const run = o.run as Record<string, unknown> | null;
+  if (run === null || typeof run !== "object" || Object.keys(run).sort().join(",") !== "runId,subject" ||
+      typeof run.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(run.runId) || typeof run.subject !== "string")
+    admissionError("requires exactly run.runId (host-minted) and run.subject");
+  return {
+    v: 1, kind: "manager-run-admission", space: o.space as string, actor: o.actor as string, instanceId: o.instanceId as string,
+    managerLifecycleUid: o.managerLifecycleUid as string, requestId: o.requestId as string, registrationProof: o.registrationProof as string,
+    accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number, identities,
+    run: { runId: run.runId as string, subject: run.subject as string },
+  };
+}
+
+/** Authenticate the requesting registered manager: assigned space/account, open gate owned by this
+ *  owner's serve actor, current process epoch, and the current-registration proof. */
+async function authenticateRegisteredManager(
+  r: Pick<RemoteRunAdmissionRequest, "space" | "actor" | "instanceId" | "managerLifecycleUid" | "identities" | "registrationProof" | "accountPublicKey" | "processEpoch">,
+  args: { owner: string; space: string; accountPublicKey: string; proofSecret: string | Uint8Array; observeManagerGate: (instanceId: string) => Promise<ManagerGate | null> },
+  what: string,
+): Promise<void> {
+  if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
+    throw new EpEnvelopeError("permission-denied", `manager-service ${what} is bound to the host-assigned space and account`);
+  const gate = await args.observeManagerGate(r.instanceId);
+  if (!gate || gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", `manager-service ${what} has no open registration gate`);
+  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+    throw new EpEnvelopeError("permission-denied", `manager-service ${what} gate belongs to another owner`);
+  if (gate.processEpoch !== r.processEpoch)
+    throw new EpEnvelopeError("conflict", `manager-service ${what} processEpoch is stale`);
+  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
+  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
+    throw new EpEnvelopeError("permission-denied", `manager-service ${what} proof does not match the current registration`);
+}
+
+/**
+ * Host-side first-run admission for a registered signerless manager. The manager is trusted only to
+ * forward the `ep.v1` request subject it served (delegation to the registered host, not a proof of
+ * an arbitrary message). Everything else is derived here: the caller and generation come from the
+ * subject, the evidence and live sources from the issued store, the ceiling from that evidence.
+ * Every refusal happens before the create; an exact retry returns the admission already written.
+ */
+export async function admitRemoteRun(args: {
+  request: unknown;
+  owner: string;
+  space: string;
+  accountPublicKey: string;
+  proofSecret: string | Uint8Array;
+  endpoint: string;
+  observeManagerGate: (instanceId: string) => Promise<ManagerGate | null>;
+  issued: IssuedStore;
+  sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
+  admissions: KV;
+  now?: () => number;
+}): Promise<RemoteRunAdmissionResult> {
+  const r = parseRemoteRunAdmissionRequest(args.request);
+  await authenticateRegisteredManager(r, args, "run admission");
+  const parsed = parseEpSubject(r.run.subject);
+  if (!r.run.subject.startsWith(`cotal.${r.space}.`) || parsed === null || parsed.plane !== "request" || parsed.rail !== EP_RAIL_V1 ||
+      parsed.endpoint !== args.endpoint || parsed.command !== "run-start" || parsed.target !== null ||
+      (parsed.route === "inst" && parsed.instanceId !== r.instanceId) || !isIssuedCaller(parsed.caller))
+    throw new EpEnvelopeError("permission-denied", "manager run admission needs the served v1 run-start subject of this space, endpoint and instance with an issued caller");
+  const caller = parsed.caller;
+  const ref = { space: r.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+  const resolved = await args.issued.resolve(ref, args.sourceIsLive);
+  const e = resolved.evidence.ref;
+  if (e.space !== ref.space || e.owner !== ref.owner || e.actor !== ref.actor || e.uid !== ref.uid || e.generation !== ref.generation)
+    throw new EpEnvelopeError("permission-denied", "manager run admission evidence names another issued reference");
+  if (!issuedPermitsSubject(resolved.evidence.permissions.publish, r.run.subject))
+    throw new EpEnvelopeError("permission-denied", "the caller's issued ceiling does not permit this run-start subject");
+  const admission: RunAdmission = {
+    version: 1, space: r.space, endpoint: args.endpoint, runId: r.run.runId, instanceId: r.instanceId,
+    caller, ceiling: resolved.evidence.permissions,
+    provenance: { kind: "issued", ref, resolvedRevision: resolved.revision },
+    admittedAt: (args.now ?? Date.now)(),
+  };
+  try {
+    const revision = await createRunAdmission(args.admissions, admission);
+    return { v: 1, kind: "manager-run-admission", requestId: r.requestId, runId: r.run.runId, revision, admission: admissionSnapshot(admission) };
+  } catch (err) {
+    if (!(err instanceof EpEnvelopeError) || err.code !== "conflict") throw err;
+    const entry = await args.admissions.get(admissionKey(args.endpoint, r.run.runId));
+    if (entry === null) throw err;
+    const written = admissionSnapshot(JSON.parse(new TextDecoder().decode(entry.value)));
+    const p = written.provenance;
+    if (written.instanceId !== r.instanceId || p.kind !== "issued" || p.ref.owner !== ref.owner || p.ref.actor !== ref.actor ||
+        p.ref.uid !== ref.uid || p.ref.generation !== ref.generation)
+      throw new EpEnvelopeError("conflict", `run ${r.run.runId} is already admitted for another caller or instance`);
+    return { v: 1, kind: "manager-run-admission", requestId: r.requestId, runId: r.run.runId, revision: entry.revision, admission: written };
+  }
 }
