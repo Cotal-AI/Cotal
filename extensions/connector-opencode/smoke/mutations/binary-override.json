@@ -14,6 +14,32 @@
       "replace": "    if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_BIN = opts.resolvedBinaries.opencode;",
       "expectRed": "operator COTAL_OPENCODE_BIN wins over the manager boot fallback",
       "cell": "operator COTAL_OPENCODE_BIN wins over the manager boot fallback"
+    },
+    {
+      "name": "opencodeLine always returns 1, never detecting a 2.x binary",
+      "file": "extensions/connector-opencode/src/opencode-line.ts",
+      "find": "  if (major === 1 || major === 2) return major;",
+      "replace": "  if (major === 1 || major === 2) return 1;",
+      "expectRed": "opencodeLine parses 'opencode v2.0.18' as line 2",
+      "cell": "opencodeLine parses 'opencode v2.0.18' as line 2"
+    },
+    {
+      "name": "opencodeLine always returns 2, never detecting a 1.x binary",
+      "file": "extensions/connector-opencode/src/opencode-line.ts",
+      "find": "  if (major === 1 || major === 2) return major;",
+      "replace": "  if (major === 1 || major === 2) return 2;",
+      "expectRed": "opencodeLine parses '1.18.23' as line 1",
+      "cell": "opencodeLine parses '1.18.23' as line 1"
+    },
+    {
+      "name": "plugin2.ts skips the 2.x GET /api/model check, joining with an unverified model",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (!selectedModel) return;\n    await verifyServerModel2(serverUrl, serverAuth, selectedModel);",
+      "replace": "    return;",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: an unlisted model refuses before join (GET /api/model, empty list)",
+      "cell": "2.x: an unlisted model refuses before join (GET /api/model, empty list)"
     }
   ]
 }
+

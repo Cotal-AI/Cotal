@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
+import { opencodeLine } from "../src/opencode-line.js";
 import { bootPlugin } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -103,6 +104,34 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
   } finally {
     delete process.env.COTAL_OPENCODE_BIN;
   }
+
+  // The line is `serve.ts`'s own fact (detected from the running binary's `--version`), not the
+  // connector's launch spec — the spec stays binary-free.
+  const plain = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-line", events: false });
+  check(
+    "the launch spec does not set COTAL_OPENCODE_LINE (the shim detects it, not the launcher)",
+    !("COTAL_OPENCODE_LINE" in (plain.env ?? {})),
+    plain.env?.COTAL_OPENCODE_LINE,
+  );
+
+  check("opencodeLine parses 'opencode v2.0.18' as line 2", opencodeLine("opencode v2.0.18", "/bin/opencode") === 2);
+  check("opencodeLine parses '1.18.23' as line 1", opencodeLine("1.18.23", "/bin/opencode") === 1);
+
+  let threw3 = "";
+  try {
+    opencodeLine("3.0.0", "/bin/opencode");
+  } catch (e) {
+    threw3 = (e as Error).message;
+  }
+  check("opencodeLine throws on '3.0.0', naming it", threw3.includes("3.0.0"), threw3);
+
+  let threwG = "";
+  try {
+    opencodeLine("garbage", "/bin/opencode");
+  } catch (e) {
+    threwG = (e as Error).message;
+  }
+  check("opencodeLine throws on 'garbage', naming it", threwG.includes("garbage"), threwG);
 }
 
 // ── 2. the plugin: does a boot with a prompt actually drive a turn? ──────────────────────────────

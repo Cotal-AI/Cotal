@@ -567,6 +567,45 @@ try {
     await seedChannelRegistry({ servers: servers2, space: space2, file: { defaults: { replay: false }, channels: { team: { replay: false }, quiet: { replay: false } } } });
     await pub2.start();
 
+    // 2.x model check: `GET /api/model` (not 1.x's `/provider`) must refuse before join when the
+    // configured model is not in the server's list — parity with 1.x's catalog/server mismatch
+    // cell. The fake server above always answers `GET /api/model` with an empty list, so this
+    // model is never listed and the check must throw before any session is created.
+    process.env.COTAL_MODEL = "prov/absent-model";
+    process.env.COTAL_NAME = "ModelReadiness2";
+    process.env.COTAL_ID = "modelreadiness2";
+    let modelRefusal2 = "";
+    let exitCode2: number | undefined;
+    const originalExit2 = process.exit;
+    const originalStderrWriteMR = process.stderr.write;
+    process.exit = ((code?: number) => {
+      exitCode2 = code;
+    }) as typeof process.exit;
+    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const line = String(chunk);
+      if (line.includes("prov/absent-model")) modelRefusal2 = line;
+      return originalStderrWriteMR.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+    }) as typeof process.stderr.write;
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+    const ctxMR = fakeOpenCode2Context();
+    const disposeMR = await bootPlugin2(ctxMR);
+    for (let i = 0; i < 30 && exitCode2 === undefined; i++) await sleep(100);
+    process.exit = originalExit2;
+    process.stderr.write = originalStderrWriteMR;
+    check(
+      "2.x: an unlisted model refuses before join (GET /api/model, empty list)",
+      exitCode2 === 1 &&
+        !pub2.getRoster().some((p) => p.card.name === "ModelReadiness2") &&
+        modelRefusal2.includes("prov/absent-model") &&
+        modelRefusal2.includes("GET /api/model does not list it"),
+      { exitCode2, modelRefusal2 },
+    );
+    await disposeMR?.();
+    delete process.env.COTAL_MODEL;
+    process.env.COTAL_NAME = "Otto2";
+    process.env.COTAL_ID = "otto2";
+    delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+
     const ctx2 = fakeOpenCode2Context();
     originalStderrWrite2 = process.stderr.write;
     process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
