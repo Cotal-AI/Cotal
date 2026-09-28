@@ -5,4 +5,5 @@ export { assertSeatId, bootToken, processStartToken, readRecord, recordPath, sea
 export { censusCustodians, identityVerdict, reapSeat, type CustodianSighting, type SeatReapEvidence } from "./reap.js";
 export { SeatClient } from "./client.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
+export { SEAT_OOM_SCORE_ADJ, preferSeatForOomKill, type OomPreference } from "./oom.js";
 export { StartupConfirmMatcher, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";
