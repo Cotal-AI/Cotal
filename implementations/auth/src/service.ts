@@ -59,7 +59,7 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, type EpGateState } from "@cotal-ai/core";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -624,9 +624,12 @@ export async function openAuthAuthorityPlane(opts: {
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
           request: r, owner: o, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed,
           observeManagerGate,
-          // Run renewal stays unavailable until the host has an authoritative activated-run reader.
-          observeRun: async () => {
-            throw new EpEnvelopeError("unavailable", "manager-service run renewal has no authoritative activated-run observation on this host");
+          observeRun: async (runId: string) => {
+            const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
+            return await observeHostedRunAttempt(recordsKv, "manager", runId, {
+              supervisorId: r.identities.supervisor.id,
+              instanceId: r.instanceId,
+            });
           },
         }),
         issue: async ({ actors, request: r }) => {
@@ -763,6 +766,46 @@ export async function openAuthAuthorityPlane(opts: {
             const sibling = siblingOn(gate, observed);
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
+            return { credentials };
+          }
+          if (r.operation === "renewRunDriver") {
+            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const observed = await gate.observe();
+            if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
+              throw new EpEnvelopeError("conflict", "manager-service run renewal gate moved before issuance");
+
+            const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
+            const run = await observeHostedRunAttempt(recordsKv, "manager", r.run!.runId, {
+              supervisorId: r.identities.supervisor.id,
+              instanceId: r.instanceId,
+            });
+            if (!run || run.state !== "running" || run.instanceId !== r.instanceId ||
+                run.holder !== r.run!.holder || run.takeoverId !== r.run!.takeoverId ||
+                run.epoch !== r.run!.epoch || run.fencingToken !== r.run!.fencingToken)
+              throw new EpEnvelopeError("conflict", "manager-service run renewal authority moved before issuance");
+
+            const caller = runDriverCaller(r.run!.runId, owner);
+            const binding = {
+              endpoint: "manager",
+              runId: r.run!.runId,
+              takeoverId: r.run!.takeoverId,
+              instanceId: r.instanceId,
+              epoch: r.run!.epoch,
+              owner,
+            };
+            const auth = { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never;
+            const driverCreds = await mintCreds(auth, { id: r.run!.driverId, seed: newIdentity().seed }, "run-driver", {
+              principal: { owner, actor: caller.actor },
+              runDriver: binding,
+              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+            });
+            const mediatorCreds = await mintCreds(auth, { id: r.run!.mediatorId, seed: newIdentity().seed }, "run-mediator", {
+              principal: { owner, actor: caller.actor },
+              runMediator: binding,
+              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+            });
+            credentials.runDriver = { jwt: jwtFromCreds(driverCreds)!, exp: credsClaims(driverCreds).exp! };
+            credentials.runMediator = { jwt: jwtFromCreds(mediatorCreds)!, exp: credsClaims(mediatorCreds).exp! };
             return { credentials };
           }
           if (r.operation === "activate") {

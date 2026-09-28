@@ -10,8 +10,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
+import { connect } from "@nats-io/transport-node";
 import {
-  createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, remoteManagerActors, serverConfig, setupSpaceStreams,
+  createRunSpec, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, openRecordsBucket, remoteManagerActors, serverConfig, setupSpaceStreams, standaloneConnectOpts, writeRunStatus,
   type Identity, type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -104,12 +105,153 @@ try {
   const tampered = { ...request(), identities: swapped } as RemoteManagerAuthorityRequest;
   check("an unregistered nkey refuses (the proof binds the held identities)",
     /permission-denied/.test(await refusal(plane.issueManagerServiceAuthority({ owner, scope: ["supervise"], request: tampered }))));
-  const runRequest = request({
-    operation: "renewRunDriver",
-    run: { runId: `run-${"a".repeat(32)}`, holder: `host.${"b".repeat(16)}`, takeoverId: "b".repeat(16), epoch: 1, fencingToken: 1, driverId: newIdentity().id, mediatorId: newIdentity().id },
+
+  // Establish an activated run in the records bucket using a run-driver credential
+  // (labeled fixture setup: stock records setup path).
+  const runId = `run-${"d".repeat(32)}`;
+  const takeoverId = "c".repeat(16);
+  const driver = newIdentity();
+  const mediator = newIdentity();
+  const holderId = held.supervisor.id;
+  const writerCreds = await mintCreds(auth, newIdentity(), "run-driver", {
+    principal: { owner, actor: "wf_fixture" },
+    runDriver: { endpoint: "manager", runId, takeoverId, instanceId, epoch: 2, owner },
   });
-  const run = await refusal(plane.issueManagerServiceAuthority({ owner, scope: ["supervise"], request: runRequest }));
-  check("run renewal stays unavailable without an authoritative activated-run reader", /^unavailable:/.test(run), run);
+  const provNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: writerCreds, tls: false }) });
+  let statusRevision: number;
+  let recordsKv: Awaited<ReturnType<typeof openRecordsBucket>>;
+  try {
+    recordsKv = await openRecordsBucket(provNc, space);
+    await createRunSpec(recordsKv, "manager", runId, {
+      pins: { seed: "s", startedAt: Date.now(), yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" },
+      createdAt: Date.now(),
+    });
+    statusRevision = await writeRunStatus(recordsKv, "manager", runId, {
+      observedSpecRevision: 1, state: "running", holder: `${holderId}.${takeoverId}`, epoch: 2, fencingToken: 5, journalHigh: 1, at: Date.now(),
+    });
+
+    const makeRunRequest = (
+      runOver: Partial<NonNullable<RemoteManagerAuthorityRequest["run"]>> = {},
+      reqOver: Partial<RemoteManagerAuthorityRequest> = {},
+      proofEpoch = registered.processEpoch,
+    ): RemoteManagerAuthorityRequest => {
+      const baseRun = {
+        runId,
+        holder: `${holderId}.${takeoverId}`,
+        takeoverId,
+        epoch: 2,
+        fencingToken: 5,
+        driverId: driver.id,
+        mediatorId: mediator.id,
+        ...runOver,
+      };
+      const base = {
+        v: 1 as const, kind: "manager-service-authority" as const, operation: "renewRunDriver" as const,
+        space, actor: "cli", instanceId, managerLifecycleUid, requestId: `req${mintLifecycleUid()}`,
+        accountPublicKey: dataAccount.pub, processEpoch: registered.processEpoch,
+        identities: Object.fromEntries(names.map((n) => [n, { id: held[n].id }])) as RemoteManagerAuthorityRequest["identities"],
+        run: baseRun,
+        ...reqOver,
+      };
+      return {
+        ...base,
+        registrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, base as RemoteManagerAuthorityRequest, {
+          registrationRevision: registered.registrationRevision, processEpoch: proofEpoch,
+        }),
+      } as RemoteManagerAuthorityRequest;
+    };
+
+    console.log("run renewal through the plane issuer");
+    // 1. Exact-key positive renewal driving the actual service route on a real recorded activated run
+    const runMaterial = await plane.issueManagerServiceAuthority({ owner, scope: ["supervise"], request: makeRunRequest() });
+    const runIssued = Object.keys(runMaterial.credentials).sort();
+    check("run renewal issues exactly runDriver and runMediator", runIssued.join(",") === "runDriver,runMediator", runIssued);
+    const driverClaims = decodeJwt(runMaterial.credentials.runDriver!.jwt) as { sub?: string; nats?: { issuer_account?: string } };
+    const mediatorClaims = decodeJwt(runMaterial.credentials.runMediator!.jwt) as { sub?: string; nats?: { issuer_account?: string } };
+    check("runDriver is signed for the requested driver nkey under data account",
+      driverClaims.sub === driver.id && driverClaims.nats?.issuer_account === dataAccount.pub);
+    check("runMediator is signed for the requested mediator nkey under data account",
+      mediatorClaims.sub === mediator.id && mediatorClaims.nats?.issuer_account === dataAccount.pub);
+
+    // 2. Stale/foreign holder refusal
+    check("a foreign supervisor holder prefix refuses",
+      /conflict/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({ holder: `${newIdentity().id}.${takeoverId}` }),
+      }))));
+    check("a stale takeoverId in holder refuses",
+      /conflict/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({ takeoverId: "f".repeat(16), holder: `${holderId}.${"f".repeat(16)}` }),
+      }))));
+
+    // 3. Wrong instance / wrong account refusal
+    check("run renewal with a foreign account refuses",
+      /permission-denied/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({}, { accountPublicKey: createSpaceAuthPub() }),
+      }))));
+    check("run renewal for a wrong instance refuses",
+      /failed-precondition|permission-denied/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({}, { instanceId: mintLifecycleUid() }),
+      }))));
+
+    // 4. Fenced manager refusal (stale processEpoch)
+    check("fenced manager (stale processEpoch) refuses run renewal",
+      /conflict/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({}, { processEpoch: registered.processEpoch + 1 }, registered.processEpoch + 1),
+      }))));
+
+    // 5. Superseded run refusal
+    statusRevision = await writeRunStatus(recordsKv, "manager", runId, {
+      observedSpecRevision: 1, state: "running", holder: `${holderId}.${takeoverId}`, epoch: 2, fencingToken: 6, journalHigh: 1, at: Date.now(),
+    }, statusRevision);
+    check("superseded run (stale fencingToken) refuses run renewal",
+      /conflict/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({ fencingToken: 5 }),
+      }))));
+    check("unrecorded run refuses run renewal",
+      /conflict/.test(await refusal(plane.issueManagerServiceAuthority({
+        owner, scope: ["supervise"],
+        request: makeRunRequest({ runId: `run-${"f".repeat(32)}` }),
+      }))));
+
+    // 6. Sibling positive control: standing renewal still succeeds after run operations and fence
+    const standingControl = await plane.issueManagerServiceAuthority({ owner, scope: ["supervise"], request: request() });
+    check("sibling standing renewal remains healthy and serves all 5 duties",
+      Object.keys(standingControl.credentials).sort().join(",") === [...names].sort().join(","));
+
+    // 7. Sibling manager instance positive control: distinct instance B registers and renews independently
+    const instanceIdB = mintLifecycleUid();
+    const actorsB = remoteManagerActors(instanceIdB);
+    const heldB = Object.fromEntries(names.map((n) => [n, newIdentity()])) as Record<Name, Identity>;
+    const prepCredsB = await mintCreds(auth, heldB.executor, "remote-manager", {
+      principal: { owner, actor: actorsB.executor }, remoteManager: { instanceId: instanceIdB, owner, actor: actorsB.executor },
+    });
+    const registeredB = await registerRemoteManagerAuthority({
+      space, server: SERVERS, owner, instanceId: instanceIdB, serveActor: actorsB.serve, prepareCreds: prepCredsB, tlsRequired: false, evict: async () => true,
+    });
+    const baseReqB = {
+      v: 1 as const, kind: "manager-service-authority" as const, operation: "renewStandingBundle" as const,
+      space, actor: "cli", instanceId: instanceIdB, managerLifecycleUid: mintLifecycleUid(),
+      requestId: `req${mintLifecycleUid()}`, accountPublicKey: dataAccount.pub, processEpoch: registeredB.processEpoch,
+      identities: Object.fromEntries(names.map((n) => [n, { id: heldB[n].id }])) as RemoteManagerAuthorityRequest["identities"],
+    };
+    const reqB: RemoteManagerAuthorityRequest = {
+      ...baseReqB,
+      registrationProof: remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, baseReqB as RemoteManagerAuthorityRequest, {
+        registrationRevision: registeredB.registrationRevision, processEpoch: registeredB.processEpoch,
+      }),
+    };
+    const matB = await plane.issueManagerServiceAuthority({ owner, scope: ["supervise"], request: reqB });
+    check("sibling manager instance B renews independently on its own gate",
+      Object.keys(matB.credentials).sort().join(",") === [...names].sort().join(","));
+  } finally {
+    await provNc.close().catch(() => {});
+  }
 } finally {
   try { await plane?.close(); } catch { /* broker may be gone */ }
   await killAndAwaitExit(srv, "SIGKILL");
