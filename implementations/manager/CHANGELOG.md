@@ -1,5 +1,23 @@
 # @cotal-ai/manager
 
+## 0.56.0
+
+### Patch Changes
+
+- 0d7649d: A same-name spawn after a completed retirement takes the exact alias instead of a numbered suffix while the retired seat's presence record ages out.
+- 101f4ce: Every line the supervisor writes to `.cotal/manager.<key>.log` starts with the UTC time it was written, so a reaped seat can be placed in time from the log alone (#1423, ask 3).
+- 3c40736: The own-channel refusal's remedy is chosen off the three-valued mesh mode, so an open mesh is told there is nothing to grant and to read the channel bare instead of being handed a `mint --provision` command the CLI refuses there (#567).
+- 00257cf: The manager schedules its `endpoint-serve` credential renewal from the credential's own window instead of a quarter-TTL tick whose phase is set at boot, pushes the renewed credential to the live serve, goal-writer and session-ledger connections with a reconnect, and treats a closed serve connection as a fault: it re-dials with the current credential, re-mints an expired one, and after a bounded retry releases its lease and exits loud instead of holding the lease deaf (#2073).
+- 5cf0861: `spawn` refuses at admission a `cwd` the serving manager's host cannot resolve, naming the path, the reason and the host, so a misplaced spawn in a multi-manager space fails before anything is minted instead of at launch (#385 item 2). `cotal_spawn` documents that an unresolvable `cwd` is refused before launch.
+- Updated dependencies [e506040]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [99cad7b]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/workspace@0.56.0
+  - @cotal-ai/seat@0.56.0
+
 ## 0.55.0
 
 ### Minor Changes

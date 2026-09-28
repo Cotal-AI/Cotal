@@ -1,5 +1,13 @@
 # @cotal-ai/web
 
+## 0.56.0
+
+### Patch Changes
+
+- 99cad7b: A membership watch that closes after setup now reaches its caller through a second callback on `watchMembership`, instead of leaving the caller holding a stale snapshot with no signal. The dashboard broadcasts the existing membership-read-failed event and the console marks the feed unreadable, instead of both keeping the last snapshot silently (#485).
+- 03912bb: Close the connection an auth-gate refusal rides on when the request announced a body, so an unauthenticated caller cannot hold the dashboard reading an upload it refused (#2024)
+- 4f288bd: Move the two header reads that compute the announced-body fact below the auth gate, so the pre-gate prefix stays a parse and nothing else; refusal bytes and the no-body guard are unchanged (#2178)
+
 ## 0.55.0
 
 ### Patch Changes

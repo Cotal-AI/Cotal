@@ -1,5 +1,7 @@
 # @cotal-ai/connector-hermes
 
+## 0.56.0
+
 ## 0.55.0
 
 ## 0.54.0

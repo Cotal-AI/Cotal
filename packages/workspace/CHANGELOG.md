@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.56.0
+
+### Patch Changes
+
+- 8dc7c92: `doctor auth --fix` takes the mesh's one daemon-credential renewal lease before it re-signs when the broker answers, refuses with the live holder and the recovery named while a manager or another doctor holds it, and records and prints an explicit offline repair when the broker does not answer (#1063).
+- ef8889d: The raw off-registry preflight (`--creds`, or `--server` with an unregistered `--space`) re-probes at the same 8s confirm budget the registry preflight uses before refusing, so a live broker on a slow link connects instead of being reported as not running, and the timeout sentence names a budget that was spent (#709).
+- Updated dependencies [e506040]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [99cad7b]
+- Updated dependencies [1218786]
+  - @cotal-ai/core@0.56.0
+
 ## 0.55.0
 
 ### Patch Changes

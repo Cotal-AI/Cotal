@@ -1,5 +1,14 @@
 # @cotal-ai/core
 
+## 0.56.0
+
+### Patch Changes
+
+- e506040: Plane-3 durable fan-out and membership-transfer publishes omit `Nats-Msg-Id` for an `id: ""` message instead of deriving one from the empty id, so two distinct id-less posts on a durable channel both reach a member instead of the second being collapsed by the broker's duplicate window (#673). A message with a real id keeps its idempotent publish key unchanged.
+- 8dc7c92: `doctor auth --fix` takes the mesh's one daemon-credential renewal lease before it re-signs when the broker answers, refuses with the live holder and the recovery named while a manager or another doctor holds it, and records and prints an explicit offline repair when the broker does not answer (#1063).
+- 99cad7b: A membership watch that closes after setup now reaches its caller through a second callback on `watchMembership`, instead of leaving the caller holding a stale snapshot with no signal. The dashboard broadcasts the existing membership-read-failed event and the console marks the feed unreadable, instead of both keeping the last snapshot silently (#485).
+- 1218786: The broker probe gates a plaintext dial on the server's INFO greeting on a socket it owns, so a broker that completes the TCP handshake but greets after the budget no longer leaves an orphaned socket that keeps the process alive; a TLS-required or websocket dial keeps the handshake-only gate (#2156).
+
 ## 0.55.0
 
 ### Minor Changes
