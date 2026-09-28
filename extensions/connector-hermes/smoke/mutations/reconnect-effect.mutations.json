@@ -142,6 +142,15 @@
       "replace": "",
       "expectRed": "a dialer retired IN FLIGHT, past the pre-dial check, must not install its socket over the live generation's",
       "note": "The under-lock check is the correctness guard. A dialer parked past the pre-dial check and retired mid-dial is a window only this check covers; the mid-dial cell constructs exactly that, with MIDDIAL_PARK_REACHED proving the park was entered rather than skipped."
+    },
+    {
+      "name": "M13 the Python client sends a bare subscribe with no token",
+      "file": "extensions/connector-hermes/plugin/cotal/bridge_client.py",
+      "find": "                self._send({\"t\": \"subscribe\", \"token\": self._token})  # (re)subscribe after every (re)connect\n",
+      "replace": "                self._send({\"t\": \"subscribe\"})  # (re)subscribe after every (re)connect\n",
+      "expectRed": "the real Python client must present the control token on the first frame of every connect and reconnect",
+      "note": "The bridge listener authenticates the first frame of a connection with the launch's control token (issue #918). A client that drops the token from its (re)subscribe frame would be silently refused by an authenticating server, which is exactly the silent-outage shape this lane exists to close: the platform reports connected while the bridge has dropped it before the adapter ever sees a frame. This mutant restores the pre-auth subscribe shape and must redden the token cell on both the cold connect and the reconnect leg, since the mutated line is the single call site both legs share."
     }
   ]
 }
+

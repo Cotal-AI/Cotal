@@ -53,7 +53,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 63;
+const EXPECTED_CELLS = 65;
 
 if (process.platform === "win32") {
   console.log("✓ reconnect-effect smoke skipped on Windows (the Hermes connector is Unix-only)");
@@ -159,6 +159,24 @@ assert.equal(
 // above already implies it; it stays so that a future failure distinguishes "never redialled" from
 // "redialled and dropped the message".
 assert.equal(subject.PUSHED_WARM, "True", "instrument: the reconnected peer had a socket to push on");
+
+// ---- THE CONTROL TOKEN MUST RIDE THE FIRST FRAME OF EVERY CONNECT AND RECONNECT ---------------
+// The real Python client authenticates before it can be trusted: the fake bridge server records
+// the first frame of every accepted connection, and the cold connect plus the post-disconnect
+// reconnect must each open with `{"t":"subscribe","token":<the token>}`. A client that
+// authenticates once at startup and omits the token on reconnect would still deliver traffic
+// (nothing here depends on the server enforcing it), so this is asserted directly rather than
+// inferred from delivery.
+assert.equal(
+  subject.FIRST_FRAME_CONNECTIONS,
+  "2",
+  "instrument: the scenario must open exactly two connections (the cold connect and the reconnect) for this cell to grade anything",
+);
+assert.equal(
+  subject.FIRST_FRAMES_TOKENED,
+  "True",
+  "the real Python client must present the control token on the first frame of every connect and reconnect",
+);
 
 // ---- REFUSE CONTROL 1: reopen() present but its body emptied ----------------------------------
 // The exact mutation that survived the signature suite. `reopen` still exists and is still called,
