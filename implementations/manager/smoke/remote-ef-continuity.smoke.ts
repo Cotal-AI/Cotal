@@ -305,6 +305,7 @@ try {
   const probeWaiters: ((r: any) => void)[] = [];
   const serveRedials: number[] = [];
   const enrollWaiters: ((r: any) => void)[] = [];
+  const witnessWaiters: ((r: any) => void)[] = [];
   let probeBuf = "";
   managerProc.stdout?.on("data", (d) => {
     probeBuf += d.toString();
@@ -314,6 +315,8 @@ try {
       probeBuf = probeBuf.slice(i + 1);
       const m = line.match(/^PROBE_RESULT:(.*)$/);
       if (m) probeWaiters.shift()?.(JSON.parse(m[1]!));
+      const w = line.match(/^WITNESS_RESULT:(.*)$/);
+      if (w) witnessWaiters.shift()?.(JSON.parse(w[1]!));
       const e = line.match(/^ENROLL_RESULT:(.*)$/);
       if (e) enrollWaiters.shift()?.(JSON.parse(e[1]!));
     }
@@ -323,6 +326,13 @@ try {
       const t = setTimeout(() => reject(new Error("probe timed out")), 10_000);
       probeWaiters.push((r) => { clearTimeout(t); resolve(r); });
       managerProc!.stdin!.write(`PROBE ${runId}\n`);
+    });
+
+  const witnessOp = (op: "RETAIN" | "DIAL_WITNESS", runId: string) =>
+    new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("witness timed out")), 10_000);
+      witnessWaiters.push((r) => { clearTimeout(t); resolve(r); });
+      managerProc!.stdin!.write(`${op} ${runId}\n`);
     });
 
   await new Promise<void>((resolve, reject) => {
@@ -505,6 +515,7 @@ try {
   });
 
   let answeredWhileExpired = false;
+  let lastGoodWitness: { sub: string; exp: number; account: string } | undefined;
   await cell("4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt", async () => {
     const pre = await probeHeld(activeRunId);
     assert.equal(pre.held, true, "run must be held by the manager");
@@ -521,21 +532,36 @@ try {
     assert.equal(post.driver.account, auth.account.pub);
     assert.ok(typeof post.debt === "string" && post.debt.includes("issuer unavailable"), "refusal must be recorded as renewal debt on the held run");
     assert.equal(post.dialRefused, false, "last-good driver must still be accepted before its real expiry");
+    // Bind the expiry witness to THIS verified pre-expiry observation of the held last-good driver.
+    const w = await witnessOp("RETAIN", activeRunId);
+    assert.equal(w.retained, true, "the held last-good driver must be retainable as the expiry witness before expiry");
+    assert.deepEqual(w.driver, post.driver, "expiry witness must be the same held last-good driver verified above");
+    assert.ok(Math.floor(Date.now() / 1000) < post.driver.exp, "witness must be captured before the driver's real expiry");
+    lastGoodWitness = post.driver;
   });
 
   await cell("4b. Sustained refusal past the held credential's real expiry: broker refuses it and the parked run makes no progress", async () => {
     try {
-      const held = await probeHeld(activeRunId);
-      const heldExp = held.driver.exp as number;
+      // The witness is 4a's verified pre-expiry observation; a missing one fails here, never skips.
+      assert.ok(lastGoodWitness, "4b requires the verified pre-expiry last-good witness from 4a");
+      const heldExp = lastGoodWitness.exp;
       await until(() => Date.now() / 1000 > heldExp + 1, 20_000);
       const after = await probeHeld(activeRunId);
+      const dial = await witnessOp("DIAL_WITNESS", activeRunId);
       const now = Math.floor(Date.now() / 1000);
       const st = after.standing;
       const standingLive = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((k) => `${k}:${st[k]?.live}`).join(",");
-      console.log(`    evidence: heldExp=${heldExp} now=${now} heldExpAfter=${after.driver.exp} dialRefused=${after.dialRefused} driverConnClosed=${after.driverConnClosed} refused=${refusedRunRenewals} standing[${standingLive}] standingDebt=${JSON.stringify(st.debt)}`);
+      console.log(`    evidence: witnessExp=${heldExp} now=${now} slotHeld=${after.held} heldExpAfter=${after.held ? after.driver?.exp : "released"} witnessDialRefused=${dial.dialRefused} heldDialRefused=${after.held ? after.dialRefused : "n/a"} refused=${refusedRunRenewals} standing[${standingLive}] standingDebt=${JSON.stringify(st.debt)}`);
       assert.ok(now > heldExp, "observation must be after the held credential's real expiry");
-      assert.equal(after.driver.exp, heldExp, "no credential may be adopted while the issuer refuses");
-      assert.equal(after.dialRefused, true, "broker must refuse the expired held run-driver credential");
+      // Independent broker verdict on the SAME last-good credential, whether or not the slot is still held.
+      assert.deepEqual(dial.driver, lastGoodWitness, "the dialed witness must be the verified last-good driver");
+      assert.equal(dial.dialRefused, true, "broker must refuse the expired last-good run-driver credential");
+      // No adoption while the issuer refuses: either the slot is correctly released, or it still
+      // holds exactly the expired last-good driver (never a newer one).
+      if (after.held) {
+        assert.deepEqual(after.driver, lastGoodWitness, "no credential may be adopted while the issuer refuses");
+        assert.equal(after.dialRefused, true, "broker must refuse the expired held run-driver credential");
+      }
 
       // Attempt real progress through the original parked run while its driver is expired.
       const ans = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);

@@ -252,6 +252,8 @@ process.stdin.on("data", (chunk: string) => {
     stdinBuf = stdinBuf.slice(i + 1);
     const m = line.match(/^PROBE (\S+)$/);
     if (m) void probe(m[1]!);
+    const rw = line.match(/^(RETAIN|DIAL_WITNESS) (\S+)$/);
+    if (rw) void witness(rw[1] as "RETAIN" | "DIAL_WITNESS", rw[2]!);
     const ep = line.match(/^ENROLL_PROBE(?: (stock|host|host-forged|host-intruder))?$/);
     if (ep) void enrollProbe((ep[1] ?? "stock") as "stock" | "host" | "host-forged" | "host-intruder");
   }
@@ -298,6 +300,32 @@ async function probe(runId: string) {
       }
     : { runId, held: false, standing: standingMeta(), executorDialRefused };
   console.log(`PROBE_RESULT:${JSON.stringify(out)}`);
+}
+// FIXTURE-ONLY expiry witness: RETAIN snapshots the run's ACTUAL held driver credential at a
+// verified pre-expiry moment, inside this process only (it never leaves it). DIAL_WITNESS later
+// presents that same credential to the broker and reports only metadata and the broker's verdict,
+// so refusal after expiry is observable even once the manager has correctly released the slot.
+const witnesses = new Map<string, string>();
+async function witness(op: "RETAIN" | "DIAL_WITNESS", runId: string) {
+  const meta = (creds: string) => { const c = credsClaims(creds); return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account }; };
+  if (op === "RETAIN") {
+    const creds = (manager as any).runHosting?.runs?.get(runId)?.creds;
+    if (typeof creds === "string") witnesses.set(runId, creds);
+    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, retained: typeof creds === "string", driver: typeof creds === "string" ? meta(creds) : null })}`);
+    return;
+  }
+  const creds = witnesses.get(runId);
+  let dialRefused: boolean | null = null;
+  if (creds) {
+    try {
+      const nc = await connect({ servers, reconnect: false, authenticator: credsAuthenticator(new TextEncoder().encode(creds)) });
+      await nc.close();
+      dialRefused = false;
+    } catch {
+      dialRefused = true;
+    }
+  }
+  console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, retained: !!creds, driver: creds ? meta(creds) : null, dialRefused })}`);
 }
 /** Standing duty metadata from the manager's ACTUAL held fields (fixture-only; public data only). */
 function standingMeta() {
