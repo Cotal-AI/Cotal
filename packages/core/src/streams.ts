@@ -767,20 +767,20 @@ export interface DeprovisionResourceAccounting {
   examined: number;
   /** Uniquely attributable removals; null when a consumer disappeared without a native winner token. */
   deleted: number | null;
-  /** Number of candidate resources verified to be already absent prior to this teardown. */
+  /** Resources already absent at this attempt's first native observation of each resource. */
   absent: number;
   /** Number of resources that could not be deleted (broker errors). */
   refused: number;
   /** Native consumer DELETE success replies, not uniquely attributable removals. */
   acknowledged: number;
-  /** Consumers observed live before and absent after this attempt, regardless of which caller removed them. */
+  /** Live resources observed gone without attributing removal to this call. */
   disappeared: number;
   /** Durable consumer accounting. */
   consumers: { examined: number; deleted: number | null; absent: number; refused: number; acknowledged: number; disappeared: number };
-  /** Read-ACL entry accounting. */
-  acls: { examined: number; deleted: number; absent: number; refused: number };
-  /** Durable membership entry accounting. */
-  members: { examined: number; deleted: number; absent: number; refused: number };
+  /** Read-ACL entry accounting; disappeared means a competing purge won the native CAS. */
+  acls: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+  /** Durable membership entry accounting; disappeared means a competing purge won the native CAS. */
+  members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
 }
 
 /** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
@@ -821,8 +821,8 @@ export async function deprovisionAgent(opts: {
     acknowledged: 0,
     disappeared: 0,
     consumers: { examined: 0, deleted: 0, absent: 0, refused: 0, acknowledged: 0, disappeared: 0 },
-    acls: { examined: 0, deleted: 0, absent: 0, refused: 0 },
-    members: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+    acls: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
+    members: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
   };
 
   try {
@@ -845,6 +845,9 @@ export async function deprovisionAgent(opts: {
       if (aclRes.outcome === "deleted") {
         accounting.acls.deleted++;
         if (accounting.deleted !== null) accounting.deleted++;
+      } else if (aclRes.outcome === "disappeared") {
+        accounting.acls.disappeared++;
+        accounting.disappeared++;
       } else {
         accounting.acls.absent++;
         accounting.absent++;
@@ -908,6 +911,9 @@ export async function deprovisionAgent(opts: {
               if (mRes.outcome === "deleted") {
                 accounting.members.deleted++;
                 if (accounting.deleted !== null) accounting.deleted++;
+              } else if (mRes.outcome === "disappeared") {
+                accounting.members.disappeared++;
+                accounting.disappeared++;
               } else {
                 accounting.members.absent++;
                 accounting.absent++;
@@ -950,7 +956,7 @@ async function purgeKvKeyWithAccounting(
   kv: KV,
   bucket: string,
   key: string,
-): Promise<{ outcome: "deleted" | "absent"; status: "won" | "raced-loss" | "already-tombstoned" | "missing" }> {
+): Promise<{ outcome: "deleted" | "absent" | "disappeared"; status: "won" | "raced-loss" | "already-tombstoned" | "missing" }> {
   const stream = `KV_${bucket}`;
   const subject = `$KV.${bucket}.${key}`;
   const observe = async (): Promise<{ live: boolean; missing: boolean; seq?: number }> => {
@@ -974,7 +980,7 @@ async function purgeKvKeyWithAccounting(
     if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
       const after = await observe();
       if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
-      return { outcome: "absent", status: "raced-loss" };
+      return { outcome: before.live ? "disappeared" : "absent", status: "raced-loss" };
     }
     throw err;
   }

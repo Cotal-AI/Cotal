@@ -8714,8 +8714,8 @@ export class Manager {
           acknowledged: 0,
           disappeared: 0,
           consumers: { examined: 0, deleted: 0, absent: 0, refused: 0, acknowledged: 0, disappeared: 0 },
-          acls: { examined: 0, deleted: 0, absent: 0, refused: 0 },
-          members: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+          acls: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
+          members: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
         };
         for (const row of terminalRows) {
           if (this.staticReconcileStopping) break;
@@ -8755,10 +8755,12 @@ export class Manager {
             sweepDeprovision.acls.deleted += acc.acls.deleted;
             sweepDeprovision.acls.absent += acc.acls.absent;
             sweepDeprovision.acls.refused += acc.acls.refused;
+            sweepDeprovision.acls.disappeared += acc.acls.disappeared;
             sweepDeprovision.members.examined += acc.members.examined;
             sweepDeprovision.members.deleted += acc.members.deleted;
             sweepDeprovision.members.absent += acc.members.absent;
             sweepDeprovision.members.refused += acc.members.refused;
+            sweepDeprovision.members.disappeared += acc.members.disappeared;
           }
           if (succeeded) sweep.succeeded++;
           else sweep.failed++;

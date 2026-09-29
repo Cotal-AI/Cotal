@@ -475,6 +475,51 @@ try {
       check("AUDIT: CAS loss to a live PUT refuses instead of claiming complete absence", failure instanceof DeprovisionError && failure.accounting.acls.refused === 1, outcome);
       check("AUDIT: CAS-losing cleanup still has live consumers", await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid)) && await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid)));
     }
+    // A competing native purge after our live pre-read proves disappearance, not prior absence.
+    for (const resource of ["acls", "members"] as const) {
+      const target = newIdentity(), uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const { aclKey, memberKey } = await import("../src/subjects.js");
+      const { openMembersRegistry, commitMember } = await import("../src/members.js");
+      const owner = localPrincipal(target.id);
+      const memberChannels = resource === "members" ? ["general"] : [];
+      const kv = resource === "acls" ? await openAclRegistry(insp, space) : await openMembersRegistry(insp, space);
+      const key = resource === "acls" ? aclKey(owner, uid) : memberKey("general", owner, uid);
+      if (resource === "members") await commitMember(kv, {
+        channel: "general", owner, lifecycleUid: uid, state: "durable-active", joinCursor: 0,
+        activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now(),
+      });
+      const before = await kv.get(key);
+      if (!before || before.operation !== "PUT") throw new Error("live KV race premise missing");
+      const proto = Object.getPrototypeOf(kv);
+      const nativePurge = proto.purge;
+      const jsm = await jetstreamManager(insp);
+      const bucket = resource === "acls" ? aclBucket(space) : membersBucket(space);
+      let interleaved = false, competingRevision = 0;
+      proto.purge = async function (k: string, options: unknown) {
+        if (k === key && !interleaved) {
+          interleaved = true;
+          await nativePurge.call(kv, key);
+          const tombstone = await jsm.direct.getMessage(`KV_${bucket}`, { last_by_subj: `$KV.${bucket}.${key}` });
+          if (!tombstone || tombstone.header?.get("KV-Operation") !== "PURGE") throw new Error("competing native purge did not leave a tombstone");
+          competingRevision = tombstone.seq;
+        }
+        return nativePurge.call(this, k, options);
+      };
+      let outcome: any;
+      try {
+        const creds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid, memberChannels } });
+        outcome = await deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, memberChannels, creds });
+      } finally { proto.purge = nativePurge; }
+      const after = await kv.get(key);
+      check(`RACE: competing ${resource} purge advanced the native revision`, competingRevision > before.revision && after?.operation !== "PUT", { competingRevision, before: before.revision });
+      check(`RACE: ${resource} CAS loser reports disappearance rather than prior absence`,
+        outcome[resource].deleted === 0 && outcome[resource].absent === 0 && outcome[resource].disappeared === 1 && outcome[resource].refused === 0 && outcome.disappeared === 3, outcome);
+      const repeatCreds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid, memberChannels } });
+      const repeat = await deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, memberChannels, creds: repeatCreds });
+      check(`RACE: repeated ${resource} cleanup reports prior absence without another disappearance`,
+        repeat.deleted === 0 && repeat.disappeared === 0 && repeat[resource].absent === 1, repeat);
+    }
     // Native interrupted-cleanup residue: the ACL is tombstoned while its two consumers remain.
     for (let trial = 0; trial < 4; trial++) {
       const target = newIdentity(), uid = mintLifecycleUid();
