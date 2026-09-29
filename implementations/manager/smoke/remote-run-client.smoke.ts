@@ -41,9 +41,10 @@ const refused = (candidate: RemoteRunAttemptResult, pattern: RegExp) =>
   assert.throws(() => remoteRunAttemptCredentials(candidate, request, owner, { driver, mediator }), pattern);
 
 let count = 0;
+let failures = 0;
 const check = (name: string, test: () => void) => {
   try { test(); count++; console.log(`  ✓ ${name}`); }
-  catch (error) { console.error(`  ✗ FAIL: ${name}`); throw error; }
+  catch (error) { failures++; console.error(`  ✗ FAIL: ${name}: ${(error as Error).message}`); }
 };
 const admissionRequest = remoteRunAdmissionRequest(state, proof, auth.account.pub, 3, { runId, subject: "subject-from-served-context" });
 const admissionUid = mintLifecycleUid();
@@ -127,4 +128,5 @@ try {
   await killAndAwaitExit(broker);
   release();
 }
-console.log(`${count} remote run client checks passed`);
+console.log(`remote run client checks passed: ${count}, failed: ${failures}`);
+if (failures) process.exitCode = 1;
