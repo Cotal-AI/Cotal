@@ -718,7 +718,8 @@ try {
     { added: addedCtrl, reply: rCtrl });
   // F) INCOMPLETE INVENTORY: the sibling retires while the daemon's inventory verb is refused
   // (fault injected on the manager's own rail for this one op). Its launch-channel row is removed;
-  // its row on a channel outside the launch policy stays RETAINED and the teardown says so.
+  // its row on a channel outside the launch policy stays RETAINED, the teardown reports incomplete,
+  // the name remains HELD (never freed with unpurged residue), and a same-name spawn is refused.
   const sib = addedCtrl[0];
   const sibUid = sib ? (manager as unknown as { agents: Map<string, { lifecycleUid: string }> }).agents.get(sib)?.lifecycleUid : undefined;
   const sibKey = sib ? principalKey(OWNER, sib).key : "";
@@ -736,45 +737,75 @@ try {
   for (const n of addedCtrl) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
   for (let i = 0; i < 100 && sib && (await sibRow("general")); i++) await wait(100);
   console.error = realErr;
-  epRail.requestDeliveryAdmin = realAdmin;
   check("INCOMPLETE: with the inventory refused, the sibling's launch-channel row is still removed", !!sibUid && !(await sibRow("general")), { sib, sibUid });
   check("INCOMPLETE: its row outside the launch policy stays RETAINED", !!sibUid && await sibRow("unnamed"));
   check("INCOMPLETE: the teardown reports the inventory as incomplete and the rows as RETAINED",
     errLines.some((l) => l.includes(`membership inventory incomplete`) && l.includes("RETAINED") && l.includes(sibUid ?? "?")), errLines.filter((l) => /inventory/.test(l)));
 
-  // ---------- G. OFFLINE VERSUS ACTIVE DISTINCTION ----------
-  console.log("G) offline versus active distinction: only terminal predecessor reaped, offline active retained");
-  // Distinguish the terminal/reaped predecessor from a merely offline or inactive agent:
+  // The sibling alias stays HELD in retiring while inventory is incomplete:
+  const heldSibling = (manager as unknown as { retiring: Map<string, unknown> }).retiring;
+  check("INCOMPLETE: the sibling alias stays held in retiring while inventory is incomplete", !!sib && heldSibling.has(sib));
+
+  // A spawn attempting to reuse the alias while inventory was incomplete is refused with reserved pending retirement:
+  const spawnWhileHeld = sib ? await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false }) : undefined;
+  check("INCOMPLETE: a same-name spawn while inventory is incomplete is refused with reserved pending retirement",
+    spawnWhileHeld?.ok === false && /reserved pending retirement/i.test(spawnWhileHeld?.error ?? "") && /membership inventory incomplete/i.test(spawnWhileHeld?.error ?? ""),
+    spawnWhileHeld);
+  check("INCOMPLETE: predecessor memberKey row is still RETAINED while alias remains held", !!sib && await sibRow("unnamed"));
+
+  // Wait for the in-flight failed deprovision to settle before restoring rail:
+  const mDeprov = manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> };
+  for (let i = 0; i < 100 && sib && sibUid && mDeprov.deprovisioningFlight.has(JSON.stringify([sib, sibUid])); i++) await wait(50);
+
+  // Restore the delivery admin rail and retry to complete exact cleanup:
+  epRail.requestDeliveryAdmin = realAdmin;
+  // Re-attempting spawn re-drives deprovision under restored inventory:
+  const redriveSpawn = sib ? await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false }) : undefined;
+  for (let i = 0; i < 100 && sib && (heldSibling.has(sib) || (await sibRow("unnamed"))); i++) await wait(100);
+  check("RETRY: restored inventory allows re-driven teardown to purge the retained row (0 residue)", !!sib && !(await sibRow("unnamed")));
+  check("RETRY: the sibling hold clears only after complete purge", !!sib && !heldSibling.has(sib));
+
+  // Safe respawn obtains exact alias after complete cleanup:
+  const respawnSibling = sib ? await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false }) : undefined;
+  const respawnData = respawnSibling?.data as { name?: string } | undefined;
+  check("RETRY: valid respawn obtains exact alias after complete cleanup", respawnSibling?.ok === true && respawnData?.name === sib, respawnSibling);
+  if (respawnSibling?.ok === true && respawnData?.name) await mAny.opStop({ name: respawnData.name, graceful: false }, mAny.ep.ref().id, true);
+  check("RETRY: foreign principal row is RETAINED", await foreignRow());
+  check("RETRY: successor row for AGENT is RETAINED", await memberRow("general", succUid));
+
+  // ---------- G. ACTIVE AGENT RETENTION VERSUS TERMINAL PREDECESSOR ----------
+  console.log("G) active agent retention: terminal predecessor reaped, active replacement retained");
+  // Distinguish the terminal/reaped predecessor from a valid active agent:
   // The predecessor was terminalized and reaped: its durable consumers, ACL rows, and 3 member rows are gone.
-  // The replacement agent (succUid) is live on the mesh; even if offline or inactive, absence never reaps it.
+  // The replacement agent (succUid) is live on the mesh; absence or inactivity never reaps it.
   const succKey = principal.key;
   await delivery!.durableJoinFor(succKey, "unnamed", succUid);
   await delivery!.durableJoinFor(succKey, "team.api", succUid);
   const succMembersBefore = (await memberRowsFor()).filter((k: string) => k.endsWith(succUid));
-  check("OFFLINE: replacement holds complete active memberships (general, team.api, unnamed)",
+  check("ACTIVE: replacement holds complete active memberships (general, team.api, unnamed)",
     succMembersBefore.length === 3, succMembersBefore);
 
   // Witness that the reaped predecessor is fully gone while the active agent's rows are intact:
   const predMembersRemaining = (await memberRowsFor()).filter((k: string) => k.endsWith(predUid));
-  check("OFFLINE: terminal reaped predecessor has zero member rows remaining",
+  check("ACTIVE: terminal reaped predecessor has zero member rows remaining",
     predMembersRemaining.length === 0, predMembersRemaining);
-  check("OFFLINE: active agent's dm_ and dlv_ durables remain intact",
+  check("ACTIVE: active agent's dm_ and dlv_ durables remain intact",
     (await footprint()).dm.length > 0 && (await footprint()).dlv.length > 0);
-  check("OFFLINE: active agent's stream ACL rows remain intact",
+  check("ACTIVE: active agent's stream ACL rows remain intact",
     (await footprint()).acl.length > 0);
 
-  // Probe spawn while alias is active/offline: does NOT reap or steal the alias
+  // Probe spawn while alias is active: does NOT reap or steal the alias
   const rProbeOff = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   const probeData = rProbeOff.data as { name?: string } | undefined;
-  check("OFFLINE: a spawn does not reap or steal the active alias (refused or auto-numbered)",
+  check("ACTIVE: a spawn does not reap or steal the active alias (refused or auto-numbered)",
     listNames().includes(AGENT) && !(rProbeOff.ok === true && probeData?.name === AGENT), rProbeOff);
   if (rProbeOff.ok === true && probeData?.name) {
     await mAny.opStop({ name: probeData.name, graceful: false }, mAny.ep.ref().id, true);
   }
 
-  // ---------- H. STARTUP / STATIC RECONCILIATION ----------
-  console.log("H) startup/static reconciliation: orphan terminal vs adopted-live agent");
-  // Test the actual shipped static reconciliation path:
+  // ---------- H. STATIC RECONCILIATION METHOD & 8344 GUARD ----------
+  console.log("H) static reconciliation: adopted-live guard and inventory purge without launch spec");
+  // Test the static reconciliation methods and exact inventory purge:
   // 1. Line 8344: An adopted live agent's static lifecycle row is REFUSED for terminalization
   //    (planStaticSlotResume returns "none", disposition="refused", "backed by an adopted live managed agent").
   //    Its durable memberships and slot remain active and RETAINED.
@@ -884,7 +915,7 @@ try {
     check("RECONCILE: orphan principal is recorded in retiredPrincipals", mStatic.retiredPrincipals.has(orphanPrincipal.key));
 
     const orphanMembersAfter = await orphanRowsFor();
-    check("RECONCILE MEMBERS: startup reconciliation purged all orphan rows via daemon inventory with no launch metadata (3 of 3, no residue)",
+    check("RECONCILE MEMBERS: static sweep purged all orphan rows via daemon inventory with no launch metadata (3 of 3, no residue)",
       orphanMembersBefore.filter((k: string) => k.endsWith(orphanUid)).length === 3 && orphanMembersAfter.filter((k: string) => k.endsWith(orphanUid)).length === 0,
       { orphanMembersBefore, orphanMembersAfter });
     check("RECONCILE MEMBERS: foreign principal row is RETAINED",
