@@ -457,9 +457,12 @@ try {
   const foreign = principalKey(OWNER, "bystander"), foreignUid = predUid.split("").reverse().join("");
   await delivery!.durableJoinFor(foreign.key, "general", foreignUid);
   const foreignRow = () => inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", foreign.key, foreignUid)) !== undefined);
+  // A SAME-principal row under another lifecycle uid (a stale/other generation of this alias).
+  await delivery!.durableJoinFor(principal.key, "side", foreignUid);
+  const otherGenRow = () => memberRow("side", foreignUid);
   const membersBefore = await memberRowsFor();
   check("MEMBERS: the delivery daemon committed the predecessor's durable rows (general + unnamed)",
-    jGeneral.generation === 1 && jUnnamed.generation === 1 && membersBefore.length === 3 && await foreignRow(), { jGeneral, jUnnamed, membersBefore });
+    jGeneral.generation === 1 && jUnnamed.generation === 1 && membersBefore.filter((k: string) => k.endsWith(predUid)).length === 3 && await foreignRow() && await otherGenRow(), { jGeneral, jUnnamed, membersBefore });
 
   // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
   console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
@@ -556,8 +559,9 @@ try {
   const membersRetired = await memberRowsFor();
   check("MEMBERS: the retirement removed the predecessor's launch-channel row (general)", !(await memberRow("general", predUid)), membersRetired);
   check("MEMBERS: the daemon inventory removed the unnamed and wildcard-covered rows too (3 of 3, no residue)",
-    membersBefore.length === 3 && membersRetired.length === 0, { membersBefore, membersRetired });
+    membersBefore.filter((k: string) => k.endsWith(predUid)).length === 3 && membersRetired.filter((k: string) => k.endsWith(predUid)).length === 0, { membersBefore, membersRetired });
   check("MEMBERS: a foreign principal's row is RETAINED", await foreignRow());
+  check("MEMBERS: the same principal's other-lifecycle row is RETAINED", await otherGenRow() && membersRetired.length === 1, membersRetired);
 
   // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
   console.log("D) same-alias respawn after the predecessor retired");
