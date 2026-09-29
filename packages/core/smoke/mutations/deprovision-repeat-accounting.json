@@ -15,8 +15,8 @@
     {
       "name": "claim absent KV entry as deleted on repeated deprovision",
       "file": "packages/core/src/streams.ts",
-      "find": "return { outcome: \"absent\", status: isMissing ? \"missing\" : \"already-tombstoned\" };",
-      "replace": "return { outcome: \"deleted\", status: \"won\" };",
+      "find": "if (before.missing) return { outcome: \"absent\", status: \"missing\" };",
+      "replace": "if (before.missing) return { outcome: \"deleted\", status: \"won\" };",
       "expectRed": "AUDIT: repeated cleanup reports zero total deletions after verified absence",
       "cell": "AUDIT: repeated cleanup reports zero total deletions after verified absence",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

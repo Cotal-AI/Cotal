@@ -172,8 +172,8 @@ try {
     console.error("  ! second deprovision threw:", (e as Error).message);
   }
   check("second deprovisionAgent is a no-op (idempotent)", !threw);
-  check("ACCOUNTING: first deprovision deleted live consumers", a1.consumers.deleted === 2 && a1.consumers.absent === 0, a1);
-  check("ACCOUNTING: first deprovision deleted live resources", a1.deleted === 3 && a1.absent === 0 && a1.refused === 0 && a1.acls.deleted === 1 && a1.acls.absent === 0, a1);
+  check("ACCOUNTING: native first consumer disappearances are not unique deletion claims", a1.consumers.deleted === null && a1.consumers.disappeared === 2 && a1.consumers.acknowledged === 2 && a1.consumers.absent === 0, a1);
+  check("ACCOUNTING: first ACL CAS is uniquely attributable", a1.deleted === null && a1.absent === 0 && a1.refused === 0 && a1.acls.deleted === 1 && a1.acls.absent === 0, a1);
   check("ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers", a2?.consumers?.deleted === 0 && a2?.consumers?.absent === 2, a2);
   check("AUDIT: repeated cleanup reports zero total deletions after verified absence", a2?.deleted === 0 && a2?.acls?.absent === 1, a2);
   check("ACCOUNTING: repeated deprovision reports all absent and 0 refused", a2?.deleted === 0 && a2?.absent === 3 && a2?.refused === 0 && a2?.examined === 3, a2);
@@ -218,6 +218,20 @@ try {
   check("successor dm durable SURVIVES the replayed teardown", await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id, uidB)));
   check("successor dlv durable SURVIVES the replayed teardown", await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, agent.id, uidB)));
   check("successor read-ACL row SURVIVES the replayed teardown", await aclPresent(provCreds, provId.id, localPrincipal(agent.id), uidB));
+  {
+    const dnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dpvCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const djsm = await jetstreamManager(dnc);
+      let successorInfoDenied = false;
+      try { await djsm.consumers.info(DM, dmDurable(DEV_OWNER, agent.id, uidB)); }
+      catch { successorInfoDenied = true; }
+      check("SECURITY: exact INFO grant denies successor consumer", successorInfoDenied && await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id, uidB)));
+      let foreignInfoDenied = false;
+      try { await djsm.consumers.info(DM, dmDurable(DEV_OWNER, newIdentity().id, uidA)); }
+      catch { foreignInfoDenied = true; }
+      check("SECURITY: exact INFO grant denies foreign consumer", foreignInfoDenied);
+    } finally { await dnc.close(); }
+  }
 
   // A CONFUSED/HOSTILE holder of A's teardown cred aiming it AT B's names: the cred's exact-name
   // grants are broker-DENIED on B's names, so the attempt fails (denied pub = JS-API timeout or a
@@ -430,6 +444,48 @@ try {
   });
   await auditProv.start();
   try {
+    // Inject only scheduling: another real publisher advances this key after the shipped Direct Get.
+    // The production CAS and its result handling still execute against the native broker.
+    {
+      const target = newIdentity(), uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const { aclKey } = await import("../src/subjects.js");
+      const acl = await openAclRegistry(insp, space);
+      const key = aclKey(localPrincipal(target.id), uid);
+      const before = await acl.get(key);
+      if (!before || before.operation !== "PUT") throw new Error("audit ACL premise missing");
+      const proto = Object.getPrototypeOf(acl);
+      const nativePurge = proto.purge;
+      let interleaved = false;
+      proto.purge = async function (k: string, options: unknown) {
+        if (k === key && !interleaved) {
+          interleaved = true;
+          await acl.put(key, before.value);
+        }
+        return nativePurge.call(this, k, options);
+      };
+      let outcome: any, failure: unknown;
+      try {
+        const creds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid } });
+        outcome = await deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds });
+      } catch (e) { failure = e; }
+      finally { proto.purge = nativePurge; }
+      const after = await acl.get(key);
+      check("AUDIT: genuine competing PUT advanced the native ACL revision", interleaved && after?.operation === "PUT" && after.revision > before.revision);
+      check("AUDIT: CAS loss to a live PUT refuses instead of claiming complete absence", failure instanceof DeprovisionError && failure.accounting.acls.refused === 1, outcome);
+      check("AUDIT: CAS-losing cleanup still has live consumers", await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid)) && await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid)));
+    }
+    // Native interrupted-cleanup residue: the ACL is tombstoned while its two consumers remain.
+    for (let trial = 0; trial < 4; trial++) {
+      const target = newIdentity(), uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const { aclKey } = await import("../src/subjects.js");
+      await (await openAclRegistry(insp, space)).purge(aclKey(localPrincipal(target.id), uid));
+      check(`AUDIT: residual trial ${trial} starts with two live consumers`, await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid)) && await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid)));
+      const creds = await Promise.all([0, 1].map(() => mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid } })));
+      const outcomes = await Promise.all(creds.map(creds => deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds })));
+      check(`AUDIT: residual trial ${trial} does not invent unique consumer removals`, outcomes.every((r) => r.deleted === null || r.deleted === 0) && outcomes.some((r) => r.consumers.disappeared > 0) && !(await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid))) && !(await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid))), outcomes);
+    }
     for (let trial = 0; trial < 8; trial++) {
       const target = newIdentity();
       const uid = mintLifecycleUid();
@@ -440,8 +496,7 @@ try {
       const outcomes = await Promise.all(creds.map((credential) => deprovisionAgent({
         servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds: credential,
       })));
-      const deleted = outcomes.reduce((sum, result) => sum + result.deleted, 0);
-      check(`AUDIT: concurrent cleanup ${trial} accounts for three physical resources once`, deleted === 3, outcomes);
+      check(`AUDIT: concurrent cleanup ${trial} preserves CAS and native consumer uncertainty`, outcomes.reduce((sum, result) => sum + result.acls.deleted, 0) === 1 && outcomes.every((r) => r.deleted === null || r.deleted === 0), outcomes);
       check(`AUDIT: concurrent cleanup ${trial} leaves target absent`,
         !(await aclPresent(provCreds, provId.id, localPrincipal(target.id), uid)));
     }

@@ -8573,7 +8573,9 @@ export class Manager {
           deleted: 0,
           absent: 0,
           refused: 0,
-          consumers: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+          acknowledged: 0,
+          disappeared: 0,
+          consumers: { examined: 0, deleted: 0, absent: 0, refused: 0, acknowledged: 0, disappeared: 0 },
           acls: { examined: 0, deleted: 0, absent: 0, refused: 0 },
           members: { examined: 0, deleted: 0, absent: 0, refused: 0 },
         };
@@ -8600,13 +8602,17 @@ export class Manager {
           const acc = (this as { lastDeprovisionResources?: DeprovisionResourceAccounting }).lastDeprovisionResources;
           if (acc) {
             sweepDeprovision.examined += acc.examined;
-            sweepDeprovision.deleted += acc.deleted;
+            sweepDeprovision.deleted = sweepDeprovision.deleted === null || acc.deleted === null ? null : sweepDeprovision.deleted + acc.deleted;
             sweepDeprovision.absent += acc.absent;
             sweepDeprovision.refused += acc.refused;
+            sweepDeprovision.acknowledged += acc.acknowledged;
+            sweepDeprovision.disappeared += acc.disappeared;
             sweepDeprovision.consumers.examined += acc.consumers.examined;
-            sweepDeprovision.consumers.deleted += acc.consumers.deleted;
+            sweepDeprovision.consumers.deleted = sweepDeprovision.consumers.deleted === null || acc.consumers.deleted === null ? null : sweepDeprovision.consumers.deleted + acc.consumers.deleted;
             sweepDeprovision.consumers.absent += acc.consumers.absent;
             sweepDeprovision.consumers.refused += acc.consumers.refused;
+            sweepDeprovision.consumers.acknowledged += acc.consumers.acknowledged;
+            sweepDeprovision.consumers.disappeared += acc.consumers.disappeared;
             sweepDeprovision.acls.examined += acc.acls.examined;
             sweepDeprovision.acls.deleted += acc.acls.deleted;
             sweepDeprovision.acls.absent += acc.acls.absent;

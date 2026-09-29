@@ -997,12 +997,21 @@ try {
       orphanMembersAfter.filter((k: string) => k.endsWith(orphanSuccUid)).length === 1, orphanMembersAfter);
     check("RECONCILE MEMBERS: adopted live agent row remains RETAINED after sweep",
       await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
-    const sweepRes = (manager as unknown as { staticReconcileLastSweepResources?: { slots: { examined: number; preservedAdopted: number; terminalized: number } } }).staticReconcileLastSweepResources;
+    const sweepRes = (manager as unknown as { staticReconcileLastSweepResources?: { slots: { examined: number; preservedAdopted: number; terminalized: number }; deprovision?: import("@cotal-ai/core").DeprovisionResourceAccounting } }).staticReconcileLastSweepResources;
     check("RECONCILE ACCOUNTING: sweep recorded examined, foreign and adopted slots",
       sweepRes?.slots !== undefined &&
       sweepRes.slots.examined >= 2 &&
       sweepRes.slots.preservedAdopted >= 1 &&
       sweepRes.slots.terminalized >= 1,
+      sweepRes);
+    check("RECONCILE ACCOUNTING: Manager preserves native consumer evidence and exact KV counts",
+      sweepRes?.deprovision?.examined === 6 &&
+      sweepRes.deprovision.consumers.absent === 2 &&
+      sweepRes.deprovision.consumers.acknowledged === 0 &&
+      sweepRes.deprovision.consumers.disappeared === 0 &&
+      sweepRes.deprovision.deleted === 3 &&
+      sweepRes.deprovision.acls.absent === 1 &&
+      sweepRes.deprovision.members.deleted === 3,
       sweepRes);
 
     // Clean up mock live agent from manager.agents

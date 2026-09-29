@@ -765,14 +765,18 @@ export async function clearChannel(opts: {
 export interface DeprovisionResourceAccounting {
   /** Total count of distinct candidate resources examined across consumers, ACL and members. */
   examined: number;
-  /** Number of live resources conclusively deleted by this teardown attempt. */
-  deleted: number;
+  /** Uniquely attributable removals; null when a consumer disappeared without a native winner token. */
+  deleted: number | null;
   /** Number of candidate resources verified to be already absent prior to this teardown. */
   absent: number;
   /** Number of resources that could not be deleted (broker errors). */
   refused: number;
+  /** Native consumer DELETE success replies, not uniquely attributable removals. */
+  acknowledged: number;
+  /** Consumers observed live before and absent after this attempt, regardless of which caller removed them. */
+  disappeared: number;
   /** Durable consumer accounting. */
-  consumers: { examined: number; deleted: number; absent: number; refused: number };
+  consumers: { examined: number; deleted: number | null; absent: number; refused: number; acknowledged: number; disappeared: number };
   /** Read-ACL entry accounting. */
   acls: { examined: number; deleted: number; absent: number; refused: number };
   /** Durable membership entry accounting. */
@@ -814,7 +818,9 @@ export async function deprovisionAgent(opts: {
     deleted: 0,
     absent: 0,
     refused: 0,
-    consumers: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+    acknowledged: 0,
+    disappeared: 0,
+    consumers: { examined: 0, deleted: 0, absent: 0, refused: 0, acknowledged: 0, disappeared: 0 },
     acls: { examined: 0, deleted: 0, absent: 0, refused: 0 },
     members: { examined: 0, deleted: 0, absent: 0, refused: 0 },
   };
@@ -827,18 +833,18 @@ export async function deprovisionAgent(opts: {
     const jsm = await jetstreamManager(nc);
     const errors: Error[] = [];
 
-    // 1. Read-ACL entry (fenced via CAS sequence - stock lifecycle barrier)
+    // 1. Read-ACL entry. This CAS fences only this key's transition, not the other resources.
     accounting.acls.examined++;
     accounting.examined++;
-    let aclStatus: "won" | "raced-loss" | "already-tombstoned" | "missing" = "already-tombstoned";
+    let aclSafe = false;
     try {
       const aclsKv = await openAclRegistry(nc, opts.space);
       const aclKeyStr = aclKey(principalKey(t.owner, t.actor).key, t.lifecycleUid);
       const aclRes = await purgeKvKeyWithAccounting(jsm, aclsKv, aclBucket(opts.space), aclKeyStr);
-      aclStatus = aclRes.status;
+      aclSafe = true;
       if (aclRes.outcome === "deleted") {
         accounting.acls.deleted++;
-        accounting.deleted++;
+        if (accounting.deleted !== null) accounting.deleted++;
       } else {
         accounting.acls.absent++;
         accounting.absent++;
@@ -852,35 +858,29 @@ export async function deprovisionAgent(opts: {
     // 2. Consumers (dm + dlv)
     accounting.consumers.examined += 2;
     accounting.examined += 2;
-    if (aclStatus === "raced-loss") {
-      // Another concurrent teardown won the lifecycle CAS at this exact instant and is
-      // actively removing the consumers. Count as absent without interfering with the winner.
-      accounting.consumers.absent += 2;
-      accounting.absent += 2;
-    } else {
+    if (!aclSafe) {
+      // The key may still be live. Do not erase its consumers or invent absence.
+      accounting.consumers.refused += 2;
+      accounting.refused += 2;
+    } else for (const [stream, name] of [
+      [dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid)],
+      [dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid)],
+    ]) {
       try {
-        const dmOutcome = await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
-        if (dmOutcome === "deleted") {
-          accounting.consumers.deleted++;
-          accounting.deleted++;
-        } else {
+        const outcome = await deleteConsumerIdempotent(jsm, stream, name, () => {
+          accounting.consumers.acknowledged++;
+          accounting.acknowledged++;
+        });
+        if (outcome === "absent") {
           accounting.consumers.absent++;
           accounting.absent++;
-        }
-      } catch (e) {
-        accounting.consumers.refused++;
-        accounting.refused++;
-        errors.push(e as Error);
-      }
-
-      try {
-        const dlvOutcome = await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
-        if (dlvOutcome === "deleted") {
-          accounting.consumers.deleted++;
-          accounting.deleted++;
+        } else if (outcome === "disappeared") {
+          accounting.consumers.disappeared++;
+          accounting.disappeared++;
+          accounting.consumers.deleted = null;
+          accounting.deleted = null;
         } else {
-          accounting.consumers.absent++;
-          accounting.absent++;
+          throw new Error(`${stream}/${name} remains live after acknowledged DELETE`);
         }
       } catch (e) {
         accounting.consumers.refused++;
@@ -891,11 +891,11 @@ export async function deprovisionAgent(opts: {
 
     // 3. Member rows
     if (t.memberChannels.length > 0) {
-      if (aclStatus === "raced-loss") {
+      if (!aclSafe) {
         accounting.members.examined += t.memberChannels.length;
         accounting.examined += t.memberChannels.length;
-        accounting.members.absent += t.memberChannels.length;
-        accounting.absent += t.memberChannels.length;
+        accounting.members.refused += t.memberChannels.length;
+        accounting.refused += t.memberChannels.length;
       } else {
         try {
           const membersKv = await openMembersRegistry(nc, opts.space);
@@ -907,7 +907,7 @@ export async function deprovisionAgent(opts: {
               const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);
               if (mRes.outcome === "deleted") {
                 accounting.members.deleted++;
-                accounting.deleted++;
+                if (accounting.deleted !== null) accounting.deleted++;
               } else {
                 accounting.members.absent++;
                 accounting.absent++;
@@ -944,68 +944,66 @@ export async function deprovisionAgent(opts: {
   }
 }
 
-/** Purge one exact KV key with revision fencing (CAS), checking beforehand via Direct Get whether it was live or absent/tombstoned. */
+/** Purge one exact KV key with native revision fencing. A lost CAS never proves absence. */
 async function purgeKvKeyWithAccounting(
   jsm: JetStreamManager,
   kv: KV,
   bucket: string,
   key: string,
 ): Promise<{ outcome: "deleted" | "absent"; status: "won" | "raced-loss" | "already-tombstoned" | "missing" }> {
-  let wasLive = false;
-  let isMissing = false;
-  let seq: number | undefined;
   const stream = `KV_${bucket}`;
   const subject = `$KV.${bucket}.${key}`;
-  try {
-    const msg = await jsm.direct.getMessage(stream, { last_by_subj: subject });
-    const op = msg?.header?.get("KV-Operation");
-    if (msg === null) {
-      isMissing = true;
-    } else if (op !== "PURGE" && op !== "DEL") {
-      wasLive = true;
-      seq = msg.seq;
+  const observe = async (): Promise<{ live: boolean; missing: boolean; seq?: number }> => {
+    try {
+      const msg = await jsm.direct.getMessage(stream, { last_by_subj: subject });
+      if (msg === null) return { live: false, missing: true };
+      const op = msg.header?.get("KV-Operation");
+      return { live: op !== "PURGE" && op !== "DEL", missing: false, seq: msg.seq };
+    } catch (e) {
+      if ([404, 10037].includes((e as { code?: number }).code ?? -1)) return { live: false, missing: true };
+      throw e;
     }
+  };
+  const before = await observe();
+  if (before.missing) return { outcome: "absent", status: "missing" };
+  try {
+    await kv.purge(key, { previousSeq: before.seq });
+    return before.live ? { outcome: "deleted", status: "won" } : { outcome: "absent", status: "already-tombstoned" };
   } catch (err: unknown) {
     const m = (err as Error)?.message ?? "";
-    if (m.includes("10037") || m.includes("no message found") || m.includes("404")) {
-      isMissing = true;
-    } else {
-      throw err;
-    }
-  }
-
-  if (!wasLive) {
-    if (!isMissing) {
-      await kv.purge(key);
-    }
-    return { outcome: "absent", status: isMissing ? "missing" : "already-tombstoned" };
-  }
-
-  try {
-    await kv.purge(key, seq !== undefined ? { previousSeq: seq } : undefined);
-    return { outcome: "deleted", status: "won" };
-  } catch (err: unknown) {
-    const m = (err as Error)?.message ?? "";
-    if (m.includes("10071") || m.includes("wrong last sequence")) {
+    if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
+      const after = await observe();
+      if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
       return { outcome: "absent", status: "raced-loss" };
     }
     throw err;
   }
 }
 
-/** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays
- *  idempotent — but re-throwing anything else (e.g. a permissions violation) so a mis-scoped cred fails
- *  loud rather than silently leaving the durable behind. Returns whether a live consumer was deleted. */
-async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string): Promise<"deleted" | "absent"> {
+/** Observe the exact consumer before and after a native DELETE. The boolean is an acknowledgment,
+ * not a unique-removal token; two simultaneous callers can both receive true. */
+async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string, onAcknowledged: () => void): Promise<"disappeared" | "absent" | "still-live"> {
+  const present = async (): Promise<boolean> => {
+    try {
+      await jsm.consumers.info(stream, name);
+      return true;
+    } catch (e) {
+      if ((e as { code?: number }).code === 10014) return false;
+      throw e;
+    }
+  };
+  if (!(await present())) return "absent";
+  let acknowledged: boolean;
   try {
-    await jsm.consumers.delete(stream, name);
-    return "deleted";
+    acknowledged = await jsm.consumers.delete(stream, name);
   } catch (e) {
-    // Swallow ONLY "already gone" — a 404 code (the real NATS JS-API signal) or a codeless
-    // consumer/stream-not-found message. Anything else (a permissions violation, a broker error) is
-    // re-thrown so a mis-scoped cred fails loud. The message match is deliberately narrow (not a bare
-    // `/not found/i`) so an unrelated "…not found" error can't be mistaken for the idempotent case.
-    if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;
-    return "absent";
+    // An overlapping deletion can return not-found after our pre-read. Native post-state settles
+    // disappearance, but cannot attribute that deletion or an acknowledgment to this caller.
+    if ((e as { code?: number }).code !== 10014) throw e;
+    if (!(await present())) return "disappeared";
+    throw e;
   }
+  if (!acknowledged) throw new Error(`native DELETE did not acknowledge ${stream}/${name}`);
+  onAcknowledged();
+  return (await present()) ? "still-live" : "disappeared";
 }
