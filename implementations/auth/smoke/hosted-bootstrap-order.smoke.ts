@@ -11,7 +11,7 @@ import {
   connzRequestSubject, credsClaims, ensureAuthorityStores, identityFromCreds, leaseKey, probeConnect, MEMBERSHIP_INBOX_PREFIX,
   mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, openDeliveryRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, putSpaceAuth, remintDaemonCreds, type HostedServiceHandle } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, putSpaceAuth, remintDaemonCreds, type HostedServiceHandle } from "@cotal-ai/workspace";
 import { startDeliveryService } from "../../delivery/src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openAuthLedgerScannerCandidate } from "../src/ledger-scanner.js";
@@ -131,6 +131,8 @@ try {
   // delivery cred for its existing nkey through the same injected store, gated by a real broker
   // preflight. The root is a path that does not exist, so no cwd or workspace store can serve.
   const expiredCred = await a.store.get(key);
+  const memKey = membershipRwCredsKey(a.space, { injected: true });
+  const initialMembershipCred = await a.store.get(memKey);
   // The renewal owner's signer lives in the same injected store (stock putSpaceAuth), the store the
   // manager passes remintDaemonCreds as its secretStore. A store with no signer cannot renew.
   check("an injected store without the space signer renews nothing and preserves the last-good cred",
@@ -148,6 +150,15 @@ try {
     (credsClaims(renewedCred!).exp ?? 0) > Date.now() / 1000);
   check("the renewed delivery cred keeps its existing nkey",
     identityFromCreds(renewedCred!).id === identityFromCreds(expiredCred!).id);
+  const renewedMembership = await a.store.get(memKey);
+  check("stock remint renews the membership-rw cred separately through the injected store after broker preflight",
+    reminted.find((r) => r.file === MEMBERSHIP_RW_CREDS_KIND)?.ok === true &&
+    renewedMembership !== undefined && renewedMembership !== initialMembershipCred &&
+    (credsClaims(renewedMembership!).exp ?? 0) > Date.now() / 1000);
+  check("the renewed membership-rw cred keeps its existing nkey",
+    identityFromCreds(renewedMembership!).id === identityFromCreds(initialMembershipCred!).id);
+  check("the renewed membership-rw cred authenticates to the real broker",
+    (await probeConnect(fx.servers, { creds: renewedMembership! })).ok);
   check("trusted remint consulted no workspace root", !existsSync(join(fx.dir, "no-such-root")));
 
   // The same injected SecretStore object and identity now serves the reminted candidate
