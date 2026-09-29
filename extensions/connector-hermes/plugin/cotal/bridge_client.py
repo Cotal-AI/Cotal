@@ -187,9 +187,14 @@ class BridgeClient:
             except OSError:
                 self._sock = None
 
-    def delivered(self, msg_id: str) -> None:
-        """Ack a message on the stream — call only once it has been surfaced into a turn."""
-        self._send({"t": "delivered", "id": msg_id})
+    def delivered(self, recv_key: str) -> None:
+        """Ack a message on the stream — call only once it has been surfaced into a turn.
+
+        The bridge matches the per-delivery receive key (``recvKey``), never the wire id: an
+        id-less message has wire id "", and a frame keyed any other way is silently ignored,
+        which leaves the bridge holding its in-flight slot until the next restart (#2237).
+        """
+        self._send({"t": "delivered", "recvKey": recv_key})
 
     def reply(self, target: dict, text: str) -> None:
         """Route a turn's reply back to its mesh origin (channel broadcast or DM to the sender)."""
