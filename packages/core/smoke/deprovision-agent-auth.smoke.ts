@@ -49,6 +49,10 @@ import {
   taskDurable,
   DEV_OWNER,
   principalKey,
+  aclBucket,
+  aclKey,
+  membersBucket,
+  memberKey,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
