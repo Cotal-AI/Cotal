@@ -226,7 +226,8 @@ process.stdin.on("data", (chunk: string) => {
     stdinBuf = stdinBuf.slice(i + 1);
     const m = line.match(/^PROBE (\S+)$/);
     if (m) void probe(m[1]!);
-    if (line === "ENROLL_PROBE") void enrollProbe();
+    const ep = line.match(/^ENROLL_PROBE(?: (stock|host|host-forged|host-intruder))?$/);
+    if (ep) void enrollProbe((ep[1] ?? "stock") as "stock" | "host" | "host-forged" | "host-intruder");
   }
 });
 async function probe(runId: string) {
@@ -299,12 +300,14 @@ process.on("SIGTERM", async () => {
 
 // FIXTURE-ONLY: send one real managed-agent enrollment request (token DIGEST only) through the
 // same public authority route the manager's callbacks use, and report status/error text only.
-async function enrollProbe() {
+async function enrollProbe(mode: "stock" | "host" | "host-forged" | "host-intruder") {
   const { proof, epoch } = runBase();
-  const request = remoteManagedAgentEnrollmentRequest(mgrIdentity, "cli", proof, epoch, {
-    actor: "sdk-fixture", tokenHash: "0".repeat(64), allowSubscribe: [">"],
+  const request = remoteManagedAgentEnrollmentRequest(mgrIdentity, mode === "host-intruder" ? "intruder" : "cli", proof, epoch, {
+    actor: "sdk_fixture", tokenHash: "0".repeat(64), allowSubscribe: [">"],
   });
-  const resp = await fetch(httpUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: bearerToken, request }) });
+  if (mode === "host-forged") request.registrationProof = `sha256:${"f".repeat(64)}`;
+  const url = mode === "stock" ? httpUrl : httpUrl.replace("/manager-service-authority", "/fixture-host/manager-service-authority");
+  const resp = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: bearerToken, request }) });
   const json = (await resp.json().catch(() => ({}))) as { error?: unknown };
-  console.log(`ENROLL_RESULT:${JSON.stringify({ status: resp.status, error: String(json.error ?? "").slice(0, 200) })}`);
+  console.log(`ENROLL_RESULT:${JSON.stringify({ mode, status: resp.status, error: String(json.error ?? "").slice(0, 200) })}`);
 }

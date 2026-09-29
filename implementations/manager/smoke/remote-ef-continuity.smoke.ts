@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 const authRequire = createRequire(new URL("../../auth/package.json", import.meta.url));
-const { SignJWT } = authRequire("jose") as { SignJWT: any };
+const { SignJWT, jwtVerify } = authRequire("jose") as { SignJWT: any; jwtVerify: any };
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
@@ -57,6 +57,7 @@ import {
   handleManagerServiceAuthority,
   deriveOwnerForIdpSubject,
   grantActor,
+  ledgerAuthorizeGrant,
 } from "../../auth/src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -204,7 +205,32 @@ try {
     return res;
   };
 
+  // LABELLED TRUSTED FIXTURE HOST (not stock, not a production SandboxProvider): intercepts ONLY
+  // managed-agent enrollment on its own path, the host-platform interception stock requires. It
+  // authenticates the caller from the IdP token, derives scope from the ledger row (never from the
+  // body) and asks the REAL plane's verifyManagedAgentEnrollment, the same decision the stock
+  // loopback verify-enrollment door makes. Material issuance is the next step (see gap note).
+  const fixtureHostEnrollments: any[] = [];
+  const fixtureHostEnroll = async (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
+    const send = (code: number, body: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    try {
+      const body = JSON.parse(raw) as { idpToken: string; request: any };
+      if (body.request?.kind !== "manager-managed-agent-enrollment") return send(400, { error: "fixture host intercepts managed-agent enrollment only" });
+      const { payload } = await jwtVerify(body.idpToken, idpPair.publicKey, { issuer: IDP_ISS, audience: "cotal-services" });
+      const callerOwner = deriveOwnerForIdpSubject(OWNER_SECRET, IDP_ISS, payload.sub);
+      const scope = ledgerAuthorizeGrant(authDir)(callerOwner, body.request.actor).scope ?? [];
+      const verified = await plane.verifyManagedAgentEnrollment({ owner: callerOwner, scope, request: body.request });
+      fixtureHostEnrollments.push({ owner: callerOwner, actor: verified.target.actor, instanceId: verified.instanceId, serveEpoch: verified.serveEpoch });
+      return send(501, { error: "fixture host verified enrollment; material issuance needs a callout sentinel and agent-bearer /exchange (next step)" });
+    } catch (e) {
+      return send(403, { error: (e as Error).message });
+    }
+  };
+
   httpServer = createServer((req, res) => {
+    if (req.url === "/fixture-host/manager-service-authority") return void fixtureHostEnroll(req, res);
     void handleManagerServiceAuthority(req, res, {
       space: SPACE,
       dir: authDir,
@@ -588,14 +614,33 @@ try {
   // GAP REPRODUCTION (not a pass for accepted-goal): the stock authority route refuses managed-agent
   // enrollment and requires host-platform interception; a pooled spawn goal cannot be accepted
   // through stock callbacks. Recorded, not counted.
-  {
-    const r = await new Promise<any>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("enroll probe timed out")), 10_000);
-      enrollWaiters.push((x) => { clearTimeout(t); resolve(x); });
-      managerProc!.stdin!.write("ENROLL_PROBE\n");
-    }).catch((e) => ({ status: -1, error: (e as Error).message }));
-    console.log(`  ? GAP (accepted-goal): stock managed-agent enrollment via authority route -> status=${r.status} error=${r.error}`);
-  }
+  const enrollProbe = (mode: string) => new Promise<any>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("enroll probe timed out")), 10_000);
+    enrollWaiters.push((x) => { clearTimeout(t); resolve(x); });
+    managerProc!.stdin!.write(`ENROLL_PROBE ${mode}\n`);
+  });
+  await cell("8a. Stock authority route still refuses managed-agent enrollment (403, host interception required)", async () => {
+    const r = await enrollProbe("stock");
+    console.log(`    evidence: stock status=${r.status} error=${r.error}`);
+    assert.equal(r.status, 403);
+    assert.match(r.error, /host platform interception/);
+  });
+  await cell("8b. Fixture host interception: real plane verifies the manager's own enrollment; forged proof and unledgered caller actor are refused", async () => {
+    const before = fixtureHostEnrollments.length;
+    const ok = await enrollProbe("host");
+    const forged = await enrollProbe("host-forged");
+    const intruder = await enrollProbe("host-intruder");
+    console.log(`    evidence: host status=${ok.status} verified=${fixtureHostEnrollments.length - before} rec=${JSON.stringify(fixtureHostEnrollments.at(-1))}`);
+    console.log(`    evidence: forged status=${forged.status} error=${forged.error.slice(0, 120)} | intruder status=${intruder.status} error=${intruder.error.slice(0, 120)}`);
+    assert.equal(fixtureHostEnrollments.length - before, 1, "exactly the genuine enrollment must be verified");
+    assert.equal(fixtureHostEnrollments.at(-1).instanceId, managerInstanceId);
+    assert.equal(fixtureHostEnrollments.at(-1).owner, owner);
+    assert.equal(fixtureHostEnrollments.at(-1).actor, "sdk_fixture");
+    assert.equal(forged.status, 403);
+    assert.match(forged.error, /proof does not match/);
+    assert.equal(intruder.status, 403);
+  });
+  console.log("  ? GAP (accepted-goal, next exact call): enrollment MATERIAL needs a callout sentinel credential and an agent-bearer /exchange URL; this fixture broker runs static operator trust with no auth callout, so the fixture host cannot issue material without moving onto the real startAuthService daemon");
 
   await cell("7. Broker control: fail-closed verification after real broker credential expiration", async () => {
     const expiredDriverIdentity = newIdentity();
