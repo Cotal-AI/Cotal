@@ -55,4 +55,6 @@ def format_injection(msg: dict) -> str:
     sender = attribution_safe(msg.get("fromName") or "peer")
     role = msg.get("fromRole")
     who = f"{sender} / {attribution_safe(role)}" if role else sender
-    return f"[{kind} from {who}] {body_safe(msg.get('text'))}"
+    # A backfilled item pre-dates this session; say so the way connector-core's fmtItem does (#2205).
+    history = "(history) " if msg.get("historical") is True else ""
+    return f"[{kind} from {who}] {history}{body_safe(msg.get('text'))}"
