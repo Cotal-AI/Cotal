@@ -20,6 +20,8 @@ import { resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "../src/pins.
 import { validate } from "../src/grammar.js";
 import { LangErrors } from "../src/errors.js";
 import type { EffectContext, ObserveRequest } from "../src/effects.js";
+import { runInWorker } from "../src/engine/worker.js";
+import { transform } from "../src/transform/index.js";
 
 let pass = 0;
 /**
@@ -725,6 +727,43 @@ log("state", r.state);
     "EXTERNAL CONTROL: the same world, flipped the same way, polled by an ORDINARY effect: the resume re-observes NOTHING and replays the recorded \"pending\"",
     ctlWorld.looks - ctlBefore === 0 && ctlSaw === "pending",
     { reObservations: ctlWorld.looks - ctlBefore, saw: ctlSaw },
+  );
+});
+
+// ---- 11) the bridge forwards `observe`: a hosted run is a bridged run ------------------------------
+//
+// A manager hosts every run on the compiled engine through the worker bridge, and the bridge only
+// forwards the handler methods it lists. Cells 1-10 run on the walker, and the differential suite
+// runs the engine in process; neither crosses the bridge, so a `waitUntil` that the bridge cannot
+// forward passed every suite and failed on the first hosted run (L4000 "observe is not a function").
+// This cell crosses it: remove "observe" from METHODS in engine/bridge.ts and it goes red.
+await section(async () => {
+  const SRC = `
+const a = await spawn("analyst");
+const seen = await waitUntil(() => ask(a, { name: "look", schema: { phase: "string" } }),
+  { name: "t", every: "1h", deadline: "1d", terminal: (o) => o.phase !== "warming" });
+log(seen.phase);
+`;
+  const handler = new SimHandler({ asks: { look: [{ phase: "warming" }, { phase: "hot" }] } });
+  const rows: JournalEntry[] = [];
+  const logs: unknown[][] = [];
+  const done = await runInWorker(
+    { source: SRC, module: transform(SRC).module, runId: "wait-until-bridged", handler: "bridged" },
+    {
+      entry: new URL("../dist/engine/worker-entry.js", import.meta.url),
+      bridge: { handler, store: { append: async (e: JournalEntry) => void rows.push(e) } },
+      onLog: (l) => logs.push([...l.values]),
+    },
+  ).done;
+  ok(
+    "a waitUntil run completes through the bridged handler route, which is what a manager hosts",
+    done.ok === true,
+    JSON.stringify(done).slice(0, 300),
+  );
+  ok(
+    "and it observed through the bridge: the second scripted answer reached the program",
+    JSON.stringify(logs) === '[["hot"]]',
+    logs,
   );
 });
 
