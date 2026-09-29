@@ -253,9 +253,29 @@ async function probe(runId: string) {
         debt: run.renewalDebt?.reason ?? null,
         driverConnClosed: run.nc ? run.nc.isClosed() : null,
         dialRefused,
+        standing: standingMeta(),
       }
-    : { runId, held: false };
+    : { runId, held: false, standing: standingMeta() };
   console.log(`PROBE_RESULT:${JSON.stringify(out)}`);
+}
+/** Standing duty metadata from the manager's ACTUAL held fields (fixture-only; public data only). */
+function standingMeta() {
+  const m = manager as any;
+  const held: Record<string, unknown> = {
+    supervisor: m.remoteSupervisorCreds,
+    executor: m.remoteExecutorCreds,
+    serve: m.serviceServe?.creds,
+    goalWriter: m.goalWriterCreds,
+    sessionLedger: m.sessionLedgerCreds,
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null };
+  for (const [k, v] of Object.entries(held)) {
+    if (typeof v !== "string") { out[k] = null; continue; }
+    const c = credsClaims(v);
+    out[k] = { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account, live: typeof c.exp === "number" && c.exp > now };
+  }
+  return out;
 }
 
 process.on("SIGTERM", async () => {

@@ -150,6 +150,10 @@ try {
   });
 
   let refuseHttpRenewals = false;
+  // Matched controls: "run" refuses only renewRunDriver (standing stays healthy); "all" refuses both.
+  const REFUSE_SCOPE = (process.env.EF_REFUSE_SCOPE ?? "all") as "run" | "all";
+  if (REFUSE_SCOPE !== "run" && REFUSE_SCOPE !== "all") throw new Error(`EF_REFUSE_SCOPE must be run|all`);
+  console.log(`  refusal scope: ${REFUSE_SCOPE}`);
   let renewalCallCount = 0;
   let refusedRunRenewals = 0;
   const reachedAfterClear: Record<string, number> = {};
@@ -172,7 +176,7 @@ try {
 
   const origMgrAuthority = plane.issueManagerServiceAuthority;
   const wrappedMgrAuthority: typeof plane.issueManagerServiceAuthority = async (args) => {
-    if (refuseHttpRenewals && (args.request.operation === "renewStandingBundle" || args.request.operation === "renewRunDriver")) {
+    if (refuseHttpRenewals && (args.request.operation === "renewRunDriver" || (REFUSE_SCOPE === "all" && args.request.operation === "renewStandingBundle"))) {
       renewalCallCount++;
       if (args.request.operation === "renewRunDriver") refusedRunRenewals++;
       throw new Error("temporary rehearsal refusal: issuer unavailable");
@@ -446,7 +450,9 @@ try {
       await until(() => Date.now() / 1000 > heldExp + 1, 20_000);
       const after = await probeHeld(activeRunId);
       const now = Math.floor(Date.now() / 1000);
-      console.log(`    evidence: heldExp=${heldExp} now=${now} heldExpAfter=${after.driver.exp} dialRefused=${after.dialRefused} driverConnClosed=${after.driverConnClosed} refused=${refusedRunRenewals}`);
+      const st = after.standing;
+      const standingLive = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((k) => `${k}:${st[k]?.live}`).join(",");
+      console.log(`    evidence: heldExp=${heldExp} now=${now} heldExpAfter=${after.driver.exp} dialRefused=${after.dialRefused} driverConnClosed=${after.driverConnClosed} refused=${refusedRunRenewals} standing[${standingLive}] standingDebt=${JSON.stringify(st.debt)}`);
       assert.ok(now > heldExp, "observation must be after the held credential's real expiry");
       assert.equal(after.driver.exp, heldExp, "no credential may be adopted while the issuer refuses");
       assert.equal(after.dialRefused, true, "broker must refuse the expired held run-driver credential");
@@ -464,68 +470,59 @@ try {
     }
   });
 
-  // OPEN (observed blocker, not a pass): after refusal is sustained past the real held expiry, the
-  // manager releases the run slot and its standing duties have expired too; clearing the refusal
-  // yields renewStandingBundle calls but no renewRunDriver and no run-answer responder. Post-expiry
-  // recovery is recorded here as evidence, excluded from the pass count, and remains owed.
-  const openCell = async (name: string, fn: () => Promise<void>) => {
-    try { await fn(); console.log(`  ? OPEN (unexpectedly green, re-review): ${name}`); }
-    catch (e) { console.log(`  ? OPEN (observed blocker): ${name}: ${(e as Error).message.slice(0, 200)}`); }
-  };
-  await openCell("5. Post-expiry recovery: issuer resumes and the held run re-adopts under the same nkeys", async () => {
-    const origDriverClaims = jwtPayload(lastAttemptResult.credentials.driver.jwt);
-    const origMediatorClaims = jwtPayload(lastAttemptResult.credentials.mediator.jwt);
-    const before = successfulRunRenewals;
-
-    // A fresh SUCCESSFUL renewRunDriver issuance (refused attempts are not counted here).
-    for (const k of Object.keys(reachedAfterClear)) delete reachedAfterClear[k];
-    await until(() => successfulRunRenewals > before, 15_000);
-    const snap = await probeHeld(activeRunId).catch((e) => ({ probeError: (e as Error).message }));
-    console.log(`    evidence: after-clear issuer calls=${JSON.stringify(reachedAfterClear)} held=${JSON.stringify({ held: (snap as any).held, exp: (snap as any).driver?.exp, debt: (snap as any).debt, dialRefused: (snap as any).dialRefused, probeError: (snap as any).probeError })}`);
-    assert.ok(successfulRunRenewals > before, "no successful renewRunDriver issuance after refusal cleared");
-    assert.ok(lastRunRenewalMaterial?.credentials?.runDriver?.jwt, "renewal material lacks runDriver");
-    assert.ok(lastRunRenewalMaterial?.credentials?.runMediator?.jwt, "renewal material lacks runMediator");
-    const renewedDriverClaims = jwtPayload(lastRunRenewalMaterial.credentials.runDriver.jwt);
-    const renewedMediatorClaims = jwtPayload(lastRunRenewalMaterial.credentials.runMediator.jwt);
-    assert.equal(renewedDriverClaims.sub, origDriverClaims.sub, "driver public nkey must be preserved across renewal");
-    assert.equal(renewedMediatorClaims.sub, origMediatorClaims.sub, "mediator public nkey must be preserved across renewal");
-    assert.equal(renewedDriverClaims.nats?.issuer_account, auth.account.pub, "account must be preserved across renewal");
-    assert.equal(renewedMediatorClaims.nats?.issuer_account, auth.account.pub, "account must be preserved across renewal");
-    assert.ok(renewedDriverClaims.exp > origDriverClaims.exp, "driver credential expiration must advance on renewal");
-    assert.ok(renewedMediatorClaims.exp > origMediatorClaims.exp, "mediator credential expiration must advance on renewal");
+  // Post-expiry recovery through the SHIPPED contract. A drive whose driver expired is released
+  // (fail closed); the supported way back is stock `cotal run resume <runId>` on the same run id,
+  // under its original admission, never an auto-revival by `run answer`.
+  let resumed = false;
+  await cell("5. Post-expiry recovery: standing duties re-adopted (actual held objects, same nkeys/account), then stock `run resume` retakes the same run", async () => {
+    const heldBefore = await probeHeld(activeRunId);
+    console.log(`    evidence: after-clear slotHeld=${heldBefore.held} standingDebt=${JSON.stringify(heldBefore.standing.debt)}`);
+    const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+    const liveAll = await until(async () => {
+      const p = await probeHeld(activeRunId);
+      return names.every((k) => p.standing[k]?.live) && p.standing.debt === null;
+    }, 20_000);
+    const p = await probeHeld(activeRunId);
     const now = Math.floor(Date.now() / 1000);
-    console.log(`    evidence: origExp=${origDriverClaims.exp} renewedExp=${renewedDriverClaims.exp} now=${now} subStable=true successfulRunRenewals=${successfulRunRenewals} operatorIssuances=${operatorIssuances}`);
-    assert.ok(now > origDriverClaims.exp, "observation must be after the original duty credential expiry");
-
-    // Adoption: the ACTUAL held pair now carries the renewed exp under the same nkeys, debt cleared.
-    const adopted = await until(async () => {
-      const h = await probeHeld(activeRunId);
-      return h.held && h.driver.exp > origDriverClaims.exp && h.debt === null && h.dialRefused === false;
-    }, 15_000);
-    const h = await probeHeld(activeRunId);
-    console.log(`    evidence: adopted=${adopted} heldExp=${h.driver?.exp} debt=${JSON.stringify(h.debt)} dialRefused=${h.dialRefused}`);
-    assert.ok(adopted, "held run did not adopt a renewed pair after refusal cleared");
-    assert.equal(h.driver.sub, origDriverClaims.sub, "held driver nkey changed");
-    assert.equal(h.mediator.sub, origMediatorClaims.sub, "held mediator nkey changed");
-
-    const postRes = await runCli(["journal", activeRunId]);
-    assert.equal(postRes.code, 0, "CLI journal command failed after credential renewal adoption");
-  });
-
-  await openCell("6. Post-expiry recovery: parked run completes after re-adoption", async () => {
-    if (!answeredWhileExpired) {
-      const res = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
-      assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
+    console.log(`    evidence: standing ${names.map((k) => `${k}{sub=${p.standing[k]?.sub?.slice(0, 6)} exp=${p.standing[k]?.exp} live=${p.standing[k]?.live}}`).join(" ")} now=${now} debt=${JSON.stringify(p.standing.debt)}`);
+    assert.ok(liveAll, "standing duties were not re-adopted after the issuer resumed");
+    for (const k of names) {
+      assert.equal(p.standing[k].sub, heldBefore.standing[k].sub, `${k} public nkey changed across re-adoption`);
+      assert.equal(p.standing[k].account, auth.account.pub, `${k} account changed across re-adoption`);
     }
 
+    const recBefore = await readRunRecord(recordsKv, "manager", activeRunId);
+    const r = await runCli(["resume", activeRunId]);
+    console.log(`    evidence: run resume exit=${r.code} out=${r.stdout.trim().slice(0, 120)} err=${r.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
+    assert.equal(r.code, 0, "stock run resume failed after the issuer resumed");
+    resumed = true;
+    const retaken = await until(async () => (await probeHeld(activeRunId)).held === true, 15_000);
+    assert.ok(retaken, "resumed run is not held by the manager");
+    const h = await probeHeld(activeRunId);
+    const recAfter = await readRunRecord(recordsKv, "manager", activeRunId);
+    console.log(`    evidence: resumed epoch ${recBefore?.status?.value.epoch}->${recAfter?.status?.value.epoch} holder ${recBefore?.status?.value.holder?.slice(-12)}->${recAfter?.status?.value.holder?.slice(-12)} driverExp=${h.driver?.exp} dialRefused=${h.dialRefused}`);
+    assert.equal(h.dialRefused, false, "resumed driver must be broker-accepted");
+    assert.ok(h.driver.exp > now - 1, "resumed driver credential must be fresh");
+    assert.ok((recAfter?.status?.value.epoch ?? 0) > (recBefore?.status?.value.epoch ?? 0), "resume must fence with a new epoch");
+    const j = await runCli(["journal", activeRunId]);
+    assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"), "resumed run must keep its native journal");
+  });
+
+  await cell("6. Resumed run (same run id) completes; the checkpoint answer is recorded once (before or after resume)", async () => {
+    assert.ok(resumed, "run was not resumed");
+    // An operator answer recorded while the driver was expired settles the checkpoint durably but
+    // must not have advanced the run (4b); only the resumed drive may consume it.
+    if (!answeredWhileExpired) {
+      const res = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
+      console.log(`    evidence: answer exit=${res.code} err=${res.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
+      assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
+    } else console.log("    evidence: answer was recorded while expired; resumed drive consumes it");
     const completed = await until(async () => {
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
       return rec?.status?.value.state === "completed";
     }, 15_000);
-
     assert.ok(completed, "workflow did not complete after checkpoint answer");
   });
-
   await cell("7. Broker control: fail-closed verification after real broker credential expiration", async () => {
     const expiredDriverIdentity = newIdentity();
     // Mint 5-second credential
