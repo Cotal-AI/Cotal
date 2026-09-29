@@ -17,8 +17,8 @@
       "file": "packages/core/src/streams.ts",
       "find": "if (before.missing) return { outcome: \"absent\", status: \"missing\" };",
       "replace": "if (before.missing) return { outcome: \"deleted\", status: \"won\" };",
-      "expectRed": "AUDIT: repeated cleanup reports zero total deletions after verified absence",
-      "cell": "AUDIT: repeated cleanup reports zero total deletions after verified absence",
+      "expectRed": "MISSING ACCOUNTING: non-existent candidate resources report zero deleted and all absent",
+      "cell": "MISSING ACCOUNTING: non-existent candidate resources report zero deleted and all absent",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
