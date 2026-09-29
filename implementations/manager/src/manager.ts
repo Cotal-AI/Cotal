@@ -22,6 +22,7 @@ import {
   spawnEnvAllow,
   deprovisionAgent,
   isConcreteChannel,
+  deprovisionTargetPrincipal,
   firstFreeName,
   spawnNameError,
   idFromCreds,
@@ -4055,18 +4056,40 @@ export class Manager {
     // against a same-name successor's footprint (its names embed a different uid).
     // Durable membership rows are lifecycle-keyed per concrete channel. The launch's concrete read
     // channels name every row this lifecycle could hold on them; wildcard-covered rows stay retained.
-    const memberChannels = (a.launch?.allowSubscribe ?? []).filter(isConcreteChannel);
+    const memberChannels = new Set((a.launch?.allowSubscribe ?? []).filter(isConcreteChannel));
+    // Complete the set from the delivery daemon's lifecycle-exact inventory, which covers rows on
+    // wildcard-granted channels and teardowns that carry no launch spec. An inventory that cannot be
+    // read leaves those rows RETAINED and says so; it never widens the delete beyond exact keys.
+    const inventory = await this.lifecycleMembershipInventory(a);
+    for (const ch of inventory.channels) memberChannels.add(ch);
+    if (!inventory.complete)
+      console.error(`deprovision ${a.name} (${a.id}): membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
     const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", {
-      deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid, memberChannels },
+      deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid, memberChannels: [...memberChannels] },
     });
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
     await withTimeout(
-      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, memberChannels, creds }),
+      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, memberChannels: [...memberChannels], creds }),
       DEPROVISION_TIMEOUT_MS,
       `deprovision ${a.name} (${a.id}): broker teardown timed out`,
     );
+  }
+
+  /** The retiring lifecycle's durable membership channels, read from the delivery daemon's
+   *  `lifecycleMemberships` admin verb (read-only, lifecycle-exact). Incomplete on any refusal. */
+  private async lifecycleMembershipInventory(a: { id: string; lifecycleUid: string }): Promise<{ complete: boolean; channels: string[]; reason?: string }> {
+    const t = deprovisionTargetPrincipal({ principal: a.id, lifecycleUid: a.lifecycleUid });
+    try {
+      const r = await this.ep.requestDeliveryAdmin("lifecycleMemberships", { principal: principalKey(t.owner, t.actor).key, lifecycleUid: t.lifecycleUid }, 5_000);
+      const data = r.data as { complete?: unknown; channels?: unknown } | undefined;
+      if (!r.ok || data?.complete !== true || !Array.isArray(data.channels) || !data.channels.every((c) => typeof c === "string" && isConcreteChannel(c)))
+        return { complete: false, channels: [], reason: r.ok ? "malformed inventory reply" : (r.error ?? "refused") };
+      return { complete: true, channels: data.channels as string[] };
+    } catch (e) {
+      return { complete: false, channels: [], reason: (e as Error).message };
+    }
   }
 
   /** Reap a parent's children on its exit (P4b). Every descendant remains managed until the runtime's

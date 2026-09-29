@@ -443,8 +443,8 @@ try {
     fp1.row && fp1.dm.length > 0 && fp1.dlv.length > 0 && fp1.acl.length > 0, fp1);
   const hash1 = rowHash(OWNER);
   // Durable membership rows written by the REAL delivery daemon's privileged join primitive: one on
-  // the launch's concrete read channel ("general") and one on a channel the launch does not name
-  // ("unnamed", the shape of a row covered only by a wildcard policy). Both are this lifecycle's.
+  // the launch's concrete read channel ("general"), one on a channel the launch does not name, and
+  // one on a dotted channel only a wildcard could grant. All three are this lifecycle's.
   const predUid = (manager as unknown as { agents: Map<string, { lifecycleUid: string }> }).agents.get(AGENT)!.lifecycleUid;
   const memberRow = (ch: string, uid: string) =>
     inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), ch, principal.key, uid)) !== undefined);
@@ -452,9 +452,14 @@ try {
     inspect(async (_j, nc) => (await listMembers(await openMembersRegistry(nc, SPACE), { owner: principal.key })).map((r: { channel: string; lifecycleUid: string }) => `${r.channel}/${r.lifecycleUid}`).sort());
   const jGeneral = await delivery!.durableJoinFor(principal.key, "general", predUid);
   const jUnnamed = await delivery!.durableJoinFor(principal.key, "unnamed", predUid);
+  // A row on a dotted channel reached only through a wildcard grant, and a FOREIGN principal's row.
+  await delivery!.durableJoinFor(principal.key, "team.api", predUid);
+  const foreign = principalKey(OWNER, "bystander"), foreignUid = predUid.split("").reverse().join("");
+  await delivery!.durableJoinFor(foreign.key, "general", foreignUid);
+  const foreignRow = () => inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", foreign.key, foreignUid)) !== undefined);
   const membersBefore = await memberRowsFor();
   check("MEMBERS: the delivery daemon committed the predecessor's durable rows (general + unnamed)",
-    jGeneral.generation === 1 && jUnnamed.generation === 1 && membersBefore.length === 2, { jGeneral, jUnnamed, membersBefore });
+    jGeneral.generation === 1 && jUnnamed.generation === 1 && membersBefore.length === 3 && await foreignRow(), { jGeneral, jUnnamed, membersBefore });
 
   // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
   console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
@@ -479,7 +484,7 @@ try {
   mAny.deprovisionBroker = (a: DeprovArg): Promise<void> => {
     if (a.name === AGENT && !gatedRun) {
       predArg = a;
-      gatedRun = (async () => { await gate; await origBroker(a); })();
+      gatedRun = (async () => { await gate; throw new Error("injected first-teardown broker failure"); })();
       brokerCalls.push({ name: a.name, gated: true, done: gatedRun });
       return gatedRun;
     }
@@ -534,6 +539,13 @@ try {
   // frees the alias.
   releaseGate();
   await gatedRun!.catch(() => {});
+  // RETRY: the first broker teardown failed, so the lifecycle is still held and nothing was purged.
+  check("MEMBERS: a failed first teardown leaves every predecessor row RETAINED (incomplete, not removed)",
+    (await memberRowsFor()).length === membersBefore.length, await memberRowsFor());
+  // A same-name spawn against the hold re-drives the teardown from the HOLD's record (no live agent).
+  const redrive: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
+  check("the held alias refuses the spawn and re-drives the retired lifecycle's teardown", redrive.ok === false && /reserved pending retirement/i.test(redrive.error ?? ""), redrive);
+  for (let i = 0; i < 100 && (await memberRow("general", predUid) || (await footprint()).dm.length > 0); i++) await wait(100);
   // Witness (leak direction): the predecessor's broker footprint must be fully retired before the
   // alias is handed to a replacement, the retire-before-free half of the contract. The deletes are
   // lifecycle-uid-pinned rather than name-keyed, so this asserts the PREDECESSOR's own footprint is
@@ -543,8 +555,9 @@ try {
     fpRetired.dm.length === 0 && fpRetired.dlv.length === 0 && fpRetired.acl.length === 0, fpRetired);
   const membersRetired = await memberRowsFor();
   check("MEMBERS: the retirement removed the predecessor's launch-channel row (general)", !(await memberRow("general", predUid)), membersRetired);
-  check("MEMBERS: exactly one row removed; the unnamed-channel row stays an explicit RETAINED residue",
-    membersBefore.length - membersRetired.length === 1 && membersRetired.length === 1 && membersRetired[0] === `unnamed/${predUid}`, { membersBefore, membersRetired });
+  check("MEMBERS: the daemon inventory removed the unnamed and wildcard-covered rows too (3 of 3, no residue)",
+    membersBefore.length === 3 && membersRetired.length === 0, { membersBefore, membersRetired });
+  check("MEMBERS: a foreign principal's row is RETAINED", await foreignRow());
 
   // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
   console.log("D) same-alias respawn after the predecessor retired");
@@ -649,7 +662,7 @@ try {
     { successor: fpS.dlv, post: fpPost.dlv });
   check("MEMBERS: the replacement's general row survives the replayed retired cleanup", await memberRow("general", succUid));
   check("MEMBERS: the replayed retired cleanup is idempotent (predecessor residue unchanged)",
-    JSON.stringify((await memberRowsFor()).filter((k: string) => k.endsWith(predUid))) === JSON.stringify([`unnamed/${predUid}`]));
+    (await memberRowsFor()).filter((k: string) => k.endsWith(predUid)).length === 0 && await foreignRow());
   check("BARRIER: the replacement's read-ACL rows survive the replayed cleanup", survives(fpS.acl, fpPost.acl),
     { successor: fpS.acl, post: fpPost.acl });
   // No retired-lifecycle resource may REAPPEAR either (a resurrecting cleanup would be its own
