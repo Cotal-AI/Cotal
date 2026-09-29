@@ -180,6 +180,7 @@ try {
         },
       };
     }
+    if (req.op === "lifecycleMemberships") return { ok: true, data: { complete: true, channels: [] } };
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     return {
@@ -654,7 +655,8 @@ try {
     const holderId = newIdentity();
     const CARD = (id: string) => principalKey("local", id).key;
     const evict = async (req: { op: string; args?: unknown }): Promise<ControlReply> => {
-      if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
+      if (req.op === "lifecycleMemberships") return { ok: true, data: { complete: true, channels: [] } };
+    if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
       const principal = String((req.args as { principal?: unknown })?.principal ?? "");
       return {
         ok: true,
