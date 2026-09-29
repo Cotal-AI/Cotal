@@ -54,6 +54,8 @@ Requirements:
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
   one that ships with the package is new enough; if you already have `nats-server` on your
   PATH, Cotal uses that instead, so make sure it is 2.12+.
+  For the presence bucket, `cotal up` recommends 2.14.5 or newer, and names the broker when
+  it is older.
 
 To uninstall: `rm -rf ~/.local/share/cotal ~/.local/bin/cotal` removes what the installer wrote,
 `rm -rf ~/.cotal` removes your meshes, agents and credentials, and the `# cotal` block it added
