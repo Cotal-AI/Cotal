@@ -336,28 +336,37 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
       const nc = renewalOwner.serviceServe.nc;
       const events = nc.status()[Symbol.asyncIterator]();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let phase = "settle previous credential push";
       try {
         if (nc.isClosed()) throw new Error("recovered service connection is closed");
-        await nc.flush();
-        const reconnected = (async () => {
-          let requested = false;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("service reconnect was not observed")), 7_000);
+        });
+        const reconnected = async (requireForce: boolean) => {
+          let requested = !requireForce;
           for (;;) {
             const event = await events.next();
             if (event.done) throw new Error("service status ended before reconnect");
             if (event.value.type === "forceReconnect") requested = true;
             if (requested && event.value.type === "reconnect") return;
           }
-        })();
-        await Promise.all([
-          renewStanding(true),
-          Promise.race([reconnected, new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("service reconnect was not observed")), 7_000);
-          })]),
-        ]);
-        await nc.flush();
+        };
+        // The admitted renewal promise can settle before nats.js finishes its transport reconnect.
+        // A flush interrupted by that existing push is not evidence that recovery itself failed.
+        try { await Promise.race([nc.flush(), deadline]); }
+        catch (e) {
+          if (nc.isClosed()) throw e;
+          console.error("fixture recovery: awaiting previous renewal reconnect");
+          await Promise.race([reconnected(false), deadline]);
+          await Promise.race([nc.flush(), deadline]);
+        }
+        phase = "renew held family";
+        await Promise.all([renewStanding(true), Promise.race([reconnected(true), deadline])]);
+        phase = "flush renewed subscriptions";
+        await Promise.race([nc.flush(), deadline]);
         if (nc !== renewalOwner.serviceServe.nc || nc.isClosed()) throw new Error("service connection changed at recovery boundary");
         prepared = true;
-      } catch (e) { error = (e as Error).message; }
+      } catch (e) { error = `${phase}: ${(e as Error).message}`; }
       finally { clearTimeout(timer); void events.return?.(); }
     }
     console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseRunRenewals, inFlight: renewalFlights.size, prepared, error })}`);

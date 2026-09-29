@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartToken, reapSeat } from "../src/index.js";
 
-if (process.platform !== "linux") throw new Error("group identity proof requires Linux process identities");
+if (process.platform !== "linux") {
+  const root = mkdtempSync(join(tmpdir(), "seat-group-unsupported-"));
+  try {
+    await assert.rejects(reapSeat(root, "f".repeat(32)), {
+      message: `custody transport unsupported on ${process.platform}`,
+    }, "unsupported reaping must refuse before touching custody");
+    assert.deepEqual(readdirSync(root), [], "unsupported reaping must leave the root untouched");
+    console.log(`SEAT GROUP IDENTITY on ${process.platform}: 2 platform-refusal checks, 0 native Linux group checks`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  process.exit(0);
+}
 const root = mkdtempSync(join(tmpdir(), "seat-group-identity-"));
 const pidFile = join(root, "descendant.pid");
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

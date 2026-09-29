@@ -40,7 +40,7 @@ import {
   standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
-import { teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { processStartToken } from "@cotal-ai/seat";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 
@@ -122,7 +122,7 @@ mkdirSync(cacheHome, { recursive: true, mode: 0o700 });
 mkdirSync(seatRoot, { recursive: true, mode: 0o700 });
 mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
 const brokerStore = mkdtempSync("/tmp/s-b-");
-const conf = join(root, "server.conf");
+const conf = join(root, `${SMOKE_BROKER_TOKEN}server.conf`);
 
 // Scrub ambient COTAL_* and routing from process.env before configuring fixture
 for (const k of Object.keys(process.env)) {
