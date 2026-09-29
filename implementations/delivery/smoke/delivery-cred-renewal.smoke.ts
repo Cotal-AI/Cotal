@@ -153,6 +153,7 @@ try {
   // Phase 1 — explicit adoption: re-sign BOTH files for their existing nkeys, then reloadCreds.
   const credB = await mintCreds(auth, identityFromCreds(credA), "delivery", { expiresInSeconds: TTL });
   writeFileSync(credsPath, credB, { mode: 0o600 });
+  const credBSignedAt = Date.now();
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw"), { mode: 0o600 }); // matrix default TTL
   const adopted = await adminReq(sup, "reloadCreds");
   check("explicit reloadCreds replies ok (auditable adoption)", adopted.ok === true, JSON.stringify(adopted));
@@ -174,8 +175,18 @@ try {
 
   // Phase 3 — the passive backstop stays loud: cred B's 75% re-read (at ~15s after phase 1's
   // re-sign) finds the file unchanged AND stale and the daemon logs the exact repair on its own.
-  const staleLoud = await until(() => output.includes("still holds the previous cred") && output.includes("delivery endpoint"), TTL * 1000);
+  // Either stale wording counts: the daemon's creds-source read and the core endpoint's own
+  // refresh describe the same condition in different words, and either can log first. The wait
+  // is bounded from cred B's re-sign, half way between its 75% re-read and its expiry, so a late
+  // re-read reads as timing here instead of as "no responders" from an expired connection two
+  // requests later.
+  const staleLine = (text: string): boolean => /^! delivery endpoint: .*still holds the previous (cred|generation)\b/m.test(text);
+  check("the phase-3 stale predicate accepts either wording on one captured line and refuses an unrelated one", staleLine("! delivery endpoint: the delivery creds source still holds the previous cred") && staleLine("! delivery endpoint: creds refresh failed (the creds source still holds the previous generation past its renewal point)") && !staleLine("! delivery endpoint: adopted the successor of the previous generation"));
+  const phase3BudgetMs = Math.round(TTL * 1000 * 0.875);
+  const staleLoud = await until(() => staleLine(output), Math.max(0, credBSignedAt + phase3BudgetMs - Date.now()));
+  console.log(`  DIAGNOSTIC phase3 firstStaleAtMs=${Date.now() - credBSignedAt} budgetMs=${phase3BudgetMs} (from the cred B re-sign)`);
   check("75% backstop re-read is LOUD on an unchanged stale file (no explicit reload sent)", staleLoud, output.slice(-500));
+  if (!staleLoud) throw new Error(`phase 3: no stale line within ${phase3BudgetMs} ms of the cred B re-sign; the phase-3 request would land after cred B's expiry`);
   // …and an EXPLICIT reload in that stale state is an honest structured refusal, never a fake ok.
   const refused = await adminReq(sup, "reloadCreds");
   check("explicit reload on an unchanged STALE file replies ok:false naming the condition", refused.ok === false && (refused.error ?? "").includes("still holds the previous cred"), JSON.stringify(refused));

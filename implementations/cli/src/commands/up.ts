@@ -108,7 +108,7 @@ import {
   readBrokerPolicy,
   writeBrokerPolicy,
   removeIdentityPin,
-  writeIdentityPin,
+  writePidPair,
   localProcessPath,
   MANAGER_PIDFILE,
   assertManagerCanSpare,
@@ -1193,8 +1193,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, natsArgs, { stdio: "inherit" });
   let activationFinished = !resumeAttempt;
-  if (child.pid) writeFileSync(cotalPath("nats.pid"), String(child.pid));
-  writeIdentityPin(cotalPath("nats.pid"), child.pid ?? 0); // #969: pin pid to process start
+  if (!child.pid) throw new Error("nats-server spawned with no pid");
+  writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
   if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   if (restored) try {
     bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt, startupLock);
@@ -2432,8 +2432,8 @@ export async function startMeshDetached(
   const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   if (opts.boundListener) {
-    writeFileSync(cotalPath("nats.pid"), String(child.pid));
-  writeIdentityPin(cotalPath("nats.pid"), child.pid ?? 0); // #969: pin pid to process start
+    if (!child.pid) throw new Error("nats-server spawned with no pid");
+    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
     if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
     try {
       opts.boundListener.onSpawn(child.pid ?? 0, listenerStartedAt);
@@ -2469,8 +2469,10 @@ export async function startMeshDetached(
         `! nats-server ${brokerVer} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
       ),
     );
-  if (!opts.boundListener) writeFileSync(cotalPath("nats.pid"), String(child.pid));
-  writeIdentityPin(cotalPath("nats.pid"), child.pid ?? 0); // #969: pin pid to process start
+  if (!opts.boundListener) {
+    if (!child.pid) throw new Error("nats-server spawned with no pid");
+    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+  }
   if (opts.boundListener) await opts.boundListener.verify();
   // POST-START MUST NOT LEAVE AN ORPHAN LISTENER.
   //
