@@ -45,6 +45,7 @@ import {
 } from "@cotal-ai/core";
 import { agentCredsDir, agentCredsKey, agentSecretFilePaths, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
+import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -66,6 +67,8 @@ writeFileSync(
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 (mgr as unknown as { auth: unknown }).auth = auth;
+(mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
+  async (principal) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true });
 
 // A settable synthetic roster: the manager reports its own managed agents as joined (so a spawn
 // resolves "started"), PLUS whatever extra presence rows the test injects to model live/offline
@@ -82,6 +85,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   on: () => {},
   off: () => {},
   waitForPresenceSnapshot: () => snapshotGate,
+  requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
   getRoster: (): Presence[] => [
     ...[...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map(
       (a): Presence => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name, role: "worker", kind: "agent", description: "", tags: [] }, status: "idle", lifecycleUid: a.lifecycleUid, ts: 0 }),

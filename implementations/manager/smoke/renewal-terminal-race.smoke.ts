@@ -25,6 +25,7 @@ import {
 } from "../src/static-lifecycle.js";
 import { Manager } from "../src/manager.js";
 import { bootBroker } from "./_boot-broker.js";
+import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
 
 const SCENARIOS = [
   { name: "racer_despawn", renewal: "direct", terminal: "despawn" },
@@ -189,6 +190,7 @@ const handles = new Map<string, ControlledHandle>();
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
   ref: () => ({ id: "smoke-mgr" }), on: () => {}, off: () => {},
   waitForPresenceSnapshot: () => Promise.resolve(), getRoster: (): Presence[] => [],
+  requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
 };
 registry.register({ kind: "connector", name: "smoke-race", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) } as Connector);
 
@@ -254,6 +256,14 @@ async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTr
 try {
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   await mgr.start();
+  const origRequestDeliveryAdmin = mgr.ep.requestDeliveryAdmin.bind(mgr.ep);
+  (mgr as unknown as { ep: { requestDeliveryAdmin: (op: string, args?: unknown, t?: number) => Promise<ControlReply> } }).ep.requestDeliveryAdmin =
+    async (op: string, args?: unknown, t?: number) => {
+      if (op === "lifecycleMemberships") {
+        return requestDeliveryAdminZeroMemberships(op, args);
+      }
+      return origRequestDeliveryAdmin(op, args as Record<string, unknown>, t);
+    };
   (mgr as unknown as { awaitReadiness(): Promise<{ ok: true }> }).awaitReadiness = async () => ({ ok: true });
 
   for (const scenario of SCENARIOS) {
