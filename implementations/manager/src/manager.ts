@@ -1686,10 +1686,10 @@ export class Manager {
     // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
     // The serve surface is already live by here, so the family itself holds the gate: `runHost()`
     // refuses `run-start`/`run-resume` as `unavailable` until the host exists and `RunHosting`
-    // refuses them until its reconcile has returned. A user-auth mesh stands no host up at all
-    // (`runHost()` names why); a remote-authority manager holds no signer to mint with.
+    // refuses them until its reconcile has returned. A remote user-auth manager uses its four
+    // registered issuer callbacks instead of holding a signer; a local user mesh stands none up.
     const remoteRuns = this.remoteAuthority?.runHosting;
-    if (this.remoteAuthority && remoteRuns && !this.userMode) {
+    if (this.remoteAuthority && remoteRuns) {
       this.runHosting = new RunHosting({
         space: this.space,
         servers: this.servers,
@@ -3165,9 +3165,8 @@ export class Manager {
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
    *  Both are least-privilege reductions, never widenings. */
   /** The run host, or one of three refusals. A remote-authority manager holds no space signer, so
-   *  it cannot mint the per-run driver credential SPEC 14.6 requires, and hosting on any other
-   *  identity would be the fallback this tree does not take: `unimplemented`, for good. A
-   *  user-auth mesh is `unimplemented` too, for a different reason it names: a hosted run's seats
+   *  it cannot mint the per-run driver credential SPEC 14.6 requires without all four closed
+   *  host callbacks. A local user-auth mesh is `unimplemented`: a hosted run's seats
    *  are spawned, turned and despawned by a caller derived from the run id under the static
    *  owner, which the user-mode spawn door refuses (no `u_` owner), so a program would fail at
    *  its first seat; no path to `--local` is offered there since a user bearer holds no run rows
@@ -3178,7 +3177,7 @@ export class Manager {
     if (this.runHosting) return this.runHosting;
     if (this.remoteAuthority && !this.remoteAuthority.runHosting)
       throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: its issuing host supplied no closed run callbacks, and a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
-    if (this.userMode)
+    if (this.userMode && !this.remoteAuthority?.runHosting)
       throw new EpEnvelopeError("unimplemented", `user-auth space "${this.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
     throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
   }

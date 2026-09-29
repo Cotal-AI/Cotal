@@ -205,9 +205,11 @@ mints the run's own credential from the folder's trust material, so it runs from
 project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
-it the same way it checks a hosted admission. A user-auth mesh runs no programs yet, hosted or
-local: the manager refuses the family by name, since a hosted run's seats would be spawned under
-the static owner, which a user mesh refuses, and a user bearer holds no run rows. An open mesh
+it the same way it checks a hosted admission. A registered remote user-auth manager can host a
+run through its issuing host. The host resolves the versioned caller against live issuance,
+admits the run, and signs only the run's fixed driver, mediator and one-shot operator credentials
+for manager-held nkeys. Renewal checks the activated attempt; the manager holds no signer.
+Local user-auth runs remain unavailable because a user bearer holds no run rows. An open mesh
 hosts none either, since it issues no caller authority to admit a run under.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an

@@ -38,7 +38,7 @@ import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunAdmission, remoteRunAdmissionRequest, remoteRunAttemptCredentials, remoteRunAttemptRequest, remoteRunRenewalCredentials } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -228,6 +228,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager goal-index scan protocol`);
       if (!provider.authorizeRemoteManagerAdmin)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager admin authorization protocol`);
+      if (!provider.requestRemoteRunAdmission || !provider.requestRemoteRunAttempt)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement both closed hosted-run admission and issuance calls`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
@@ -287,6 +289,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           request: renewalRequest,
         }),
       });
+      const runCall = { store: workspaceSecretStore(findCotalRoot()), dir: join(findCotalRoot(), ".cotal", "auth", space) };
+      const runBase = () => ({ proof: retainedRegistrationProof, account: standing.accountPublicKey, epoch: registered.processEpoch });
       remoteAuthority = {
         ...standing,
         owner: material.owner,
@@ -307,6 +311,42 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         serveCreds: materialCredential(activate, "serve", state.identities.serve),
         goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
         sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
+        runHosting: {
+          admitRun: async (run) => {
+            const { proof, account, epoch } = runBase();
+            const request = remoteRunAdmissionRequest(state, proof, account, epoch, { runId: run.runId, subject: run.subject });
+            const result = await provider.requestRemoteRunAdmission!({ ...runCall, request });
+            return remoteRunAdmission(result, request);
+          },
+          issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator }) => {
+            const base = runBase();
+            const request = remoteRunAttemptRequest(state, base.proof, base.account, base.epoch,
+              { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id } });
+            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
+            const pair = remoteRunAttemptCredentials(result, request, material.owner, { driver, mediator });
+            if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
+            return pair;
+          },
+          issueOperator: async ({ identity, takeoverId, runId, answers }) => {
+            const { proof, account, epoch } = runBase();
+            const request = remoteRunAttemptRequest(state, proof, account, epoch,
+              { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}) } });
+            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
+            const credential = remoteRunAttemptCredentials(result, request, material.owner, { operator: identity });
+            if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
+            return credential.operator;
+          },
+          renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
+            const base = runBase();
+            const request = {
+              ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", base.proof),
+              accountPublicKey: base.account, processEpoch: base.epoch,
+              run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
+            };
+            const result = await provider.managerServiceAuthority!({ ...runCall, request });
+            return remoteRunRenewalCredentials(result, request, material.owner, driver, mediator);
+          },
+        },
         serveGrant: registered.serveGrant,
         agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
