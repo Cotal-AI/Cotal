@@ -16,7 +16,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -89,7 +89,10 @@ const auth = await createSpaceAuth(space);
 const hostRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}efgoal-host-`));
 const hostHome = mkdtempSync(join(tmpdir(), "efgoal-hosthome-"));
 const partRoot = mkdtempSync(join(tmpdir(), "efgoal-part-"));
-const partHome = mkdtempSync(join(tmpdir(), "efgoal-parthome-"));
+// A seat socket path lives under HOME/.cotal/seats and must fit the 108-byte Unix limit; an
+// explicit short root (EF_SHORT_HOME_ROOT) keeps it within the lane scratch.
+const partHome = process.env.EF_PART_HOME ?? mkdtempSync(join(tmpdir(), "p"));
+if (process.env.EF_PART_HOME && readdirSync(partHome).length !== 0) throw new Error("EF_PART_HOME must be an existing EMPTY directory");
 const jsStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}efgoal-js-`));
 mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
 saveSpaceAuth(authDir(hostRoot), auth);
