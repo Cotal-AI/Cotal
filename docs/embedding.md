@@ -324,7 +324,7 @@ the host call converge on one barrier.
 | `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
 | `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
 
-Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential. Pass `memberChannels` to both to also purge the retired lifecycle's durable membership rows on those concrete channels. The manager fills that list from the launch's concrete read channels and the delivery daemon's read-only `lifecycleMemberships` admin verb. When that verb cannot answer, rows on other channels stay retained, the teardown logs the inventory as incomplete, and retirement remains held pending retry rather than releasing the alias.
+Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential.
 
 A host that resumes retained managed actors also implements
 `remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
