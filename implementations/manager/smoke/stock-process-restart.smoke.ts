@@ -96,12 +96,29 @@ const servers = `nats://127.0.0.1:${port}`;
 const root = mkdtempSync("/tmp/s-r-");
 const home = mkdtempSync("/tmp/s-h-");
 const xdg = mkdtempSync("/tmp/s-x-");
+const stateHome = join(xdg, "state");
+const cacheHome = join(xdg, "cache");
+const seatRoot = join(root, "seats");
+const tmpDir = join(root, "tmp");
+mkdirSync(stateHome, { recursive: true, mode: 0o700 });
+mkdirSync(cacheHome, { recursive: true, mode: 0o700 });
+mkdirSync(seatRoot, { recursive: true, mode: 0o700 });
+mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
 const brokerStore = mkdtempSync("/tmp/s-b-");
 const conf = join(root, "server.conf");
+
+// Scrub ambient COTAL_* and routing from process.env before configuring fixture
+for (const k of Object.keys(process.env)) {
+  if (k.startsWith("COTAL_") && k !== "COTAL_DEFAULT_PERSONA") delete process.env[k];
+}
 
 process.env.COTAL_HOME = root;
 process.env.HOME = home;
 process.env.XDG_CONFIG_HOME = xdg;
+process.env.XDG_STATE_HOME = stateHome;
+process.env.XDG_CACHE_HOME = cacheHome;
+process.env.COTAL_SEAT_ROOT = seatRoot;
+process.env.TMPDIR = tmpDir;
 saveSpaceAuth(authDir(root), auth);
 saveSpaceAuth(authDir(home), auth);
 recordMesh({ space, server: servers, root, mode: "auth", ts: new Date().toISOString() });
@@ -230,15 +247,19 @@ allowPublish: [general]
 Scripted worker persona.
 `);
 
-// Environment for daemon processes (scrubbed of any provider keys/secrets)
+// Environment for daemon processes (scrubbed of any ambient routing and provider keys/secrets)
 const daemonEnv: NodeJS.ProcessEnv = {};
 for (const [k, v] of Object.entries(process.env)) {
-  if (/KEY|SECRET|TOKEN|AUTH/i.test(k) && !k.startsWith("COTAL_")) continue;
+  if (k.startsWith("COTAL_") || k.startsWith("XDG_") || /KEY|SECRET|TOKEN|AUTH/i.test(k) || k === "HOME" || k === "TMPDIR") continue;
   daemonEnv[k] = v;
 }
 daemonEnv.HOME = home;
 daemonEnv.COTAL_HOME = root;
 daemonEnv.XDG_CONFIG_HOME = xdg;
+daemonEnv.XDG_STATE_HOME = stateHome;
+daemonEnv.XDG_CACHE_HOME = cacheHome;
+daemonEnv.COTAL_SEAT_ROOT = seatRoot;
+daemonEnv.TMPDIR = tmpDir;
 daemonEnv.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 // Track spawned daemon processes
@@ -285,10 +306,10 @@ const memberRowsFor = (): Promise<string[]> => inspect(async (_j, nc) => {
   return rows;
 });
 
+let currentWorkerKey = principalKey("local", "worker").key;
 const memberRow = (ch: string, uid: string) => inspect(async (_j, nc) => {
   const kv = await openMembersRegistry(nc, space);
-  const targetKey = principalKey("local", "worker").key;
-  return (await readMember(kv, ch, targetKey, uid)) !== undefined;
+  return (await readMember(kv, ch, currentWorkerKey, uid)) !== undefined;
 });
 
 try {
@@ -324,6 +345,9 @@ try {
   check("PRODUCT-WRITTEN: manager wrote durable slot state to records KV", slotEntry !== null && slotEntry.value.length > 0, { recordKeys });
   const slotData = slotEntry ? JSON.parse(new TextDecoder().decode(slotEntry.value)) : undefined;
   const workerUid = slotData?.lifecycleUid;
+  const workerActor = slotData?.actor;
+  const workerKey = principalKey("local", workerActor).key;
+  currentWorkerKey = workerKey;
   check("SPAWN: manager assigned product-written lifecycleUid in durable slot", !!workerUid, slotData);
 
   // Populate dynamic membership through real delivery daemon
@@ -333,9 +357,8 @@ try {
     channels: [], consume: false, registerPresence: false, watchPresence: false,
   });
   await dlvEndpoint.start();
-  const workerKey = principalKey("local", "worker").key;
-  await dlvEndpoint.durableJoinFor(workerKey, "unnamed", workerUid!);
   await dlvEndpoint.durableJoinFor(workerKey, "general", workerUid!);
+  await dlvEndpoint.durableJoinFor(workerKey, "unnamed", workerUid!);
   await dlvEndpoint.stop();
 
   check("MEMBERS: real daemon wrote general membership", await memberRow("general", workerUid!));
@@ -383,9 +406,9 @@ try {
   const stopCli = runCli(["stop", "--name", "worker", "--space", space, "--server", servers]);
   check("DESPAWN: public cotal stop accepted", stopCli.code === 0, { out: stopCli.out, err: stopCli.err });
 
-  // Wait for deprovision attempt (delivery-admin request times out at 5s, then launch channels are purged):
-  const generalPurged = await until(async () => !(await memberRow("general", workerUid!)), 15_000);
-  check("INCOMPLETE: launch channel general row removed", generalPurged);
+  // While delivery is down, eviction is unavailable, so fail-closed sequencing retains launch channels:
+  await wait(500);
+  check("INCOMPLETE: launch channel general row RETAINED while delivery eviction is unavailable", await memberRow("general", workerUid!));
   check("INCOMPLETE: out-of-launch unnamed row RETAINED while delivery is down", await memberRow("unnamed", workerUid!));
 
   // Same-name spawn while delivery is down is refused with reserved pending retirement:
@@ -414,9 +437,8 @@ try {
   check("GEN 2: manager reached ready state after restart", mgr2Up, managerGen2.output().slice(-500));
 
   // Manager Gen 2 startup reconciliation re-drives the exact terminal against Delivery Gen 2:
-  const unnamedPurged = await until(async () => !(await memberRow("unnamed", workerUid!)), 20_000);
-  console.log("MGR2_OUTPUT:", managerGen2.output());
-  check("RETRY: restored delivery allows re-driven teardown to purge retained row (0 residue)", unnamedPurged);
+  const purged = await until(async () => !(await memberRow("general", workerUid!)) && !(await memberRow("unnamed", workerUid!)), 20_000);
+  check("RETRY: restored delivery allows re-driven teardown to purge retained rows (0 residue)", purged);
 
   // Fresh spawn succeeds and obtains exact alias after complete cleanup:
   const respawnCli = runCli(["spawn", "worker", "--name", "worker", "--space", space, "--server", servers, "--agent", "scripted-sdk", "--detach", "--no-events"]);
@@ -439,6 +461,10 @@ try {
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
   rmSync(xdg, { recursive: true, force: true });
+  rmSync(stateHome, { recursive: true, force: true });
+  rmSync(cacheHome, { recursive: true, force: true });
+  rmSync(seatRoot, { recursive: true, force: true });
+  rmSync(tmpDir, { recursive: true, force: true });
   rmSync(brokerStore, { recursive: true, force: true });
 }
 
@@ -447,3 +473,4 @@ if (fail) {
   process.exit(1);
 }
 console.log(`STOCK PROCESS RESTART OK (${pass} checks)`);
+process.exit(0);
