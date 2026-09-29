@@ -1,5 +1,6 @@
 /* Resident CotalEndpoint heartbeat against an owned broker and a byte-dropping TCP proxy.
- * No host firewall, package patch or second authenticated health connection. */
+ * No host firewall, package patch or second authenticated health connection. This grades the
+ * transport event, not delivery's shutdown; the wrapper that decides shutdown is a separate seam. */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect as connectSocket, type AddressInfo, type Socket } from "node:net";
@@ -100,7 +101,7 @@ try {
   const death = edges.find((edge) => !edge.connected && edge.at >= started)?.at;
   check("silent byte blackhole actually dropped native PINGs", dropped >= 2, `dropped=${dropped}`);
   check("resident endpoint detects silent loss within 15-second window", died && death !== undefined && death - started < 15_000, `elapsed=${Date.now()-started} edges=${JSON.stringify(edges)}`);
-  check("transport detection precedes service shutdown and only native reconnects after loss", accepted > before && accepted <= before + 2, `accepted=${accepted} before=${before}`);
+  check("post-loss connections are only native reconnects, not healthy health dials", accepted > before && accepted <= before + 2, `accepted=${accepted} before=${before}`);
   hold = false;
   // A reconnect begun during the blackhole is waiting for an INFO greeting that was dropped.
   // Reset only this fixture's sockets, then let nats.js retry against the restored route.
