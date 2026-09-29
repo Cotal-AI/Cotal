@@ -431,7 +431,7 @@ try {
     assert.ok(refusedRunRenewals > 0, "manager never attempted renewRunDriver while refusal was active");
     await wait(300);
     const post = await probeHeld(activeRunId);
-    console.log(`    evidence: pre driver sub=${pre.driver.sub.slice(0, 8)}.. exp=${pre.driver.exp}; post exp=${post.driver.exp} mediatorExp=${post.mediator.exp} refused=${refusedRunRenewals} debt=${JSON.stringify(post.debt)}`);
+    console.log(`    evidence: pre driver sub=${pre.driver.sub.slice(0, 8)}.. exp=${pre.driver.exp}; post exp=${post.driver?.exp} mediatorExp=${post.mediator?.exp} refused=${refusedRunRenewals} debt=${JSON.stringify(post.debt)}`);
     assert.deepEqual(post.driver, pre.driver, "held driver must stay the last-good credential after refusal");
     assert.deepEqual(post.mediator, pre.mediator, "held mediator must stay the last-good credential after refusal");
     assert.equal(post.driver.account, auth.account.pub);
