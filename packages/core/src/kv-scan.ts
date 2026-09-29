@@ -225,8 +225,6 @@ export async function liveKvEntries(
     // Delete ONLY this scan's own consumer in finally. If rotation occurred, delete the rotated consumer too.
     // TTL (inactive_threshold) remains the crash/deletion-failure backstop.
     const targetName = (oc as unknown as { name?: string }).name ?? activeConsumerName;
-    await oc.info(false).catch(() => {});
-    await oc.delete().catch(() => { /* deletion failure: TTL is the backstop */ });
     if (targetName && initialName && targetName !== initialName) {
       for (let i = 0; i < 20; i++) {
         let deleted = false;
@@ -238,6 +236,8 @@ export async function liveKvEntries(
         if (deleted) break;
         await new Promise((r) => setTimeout(r, 20));
       }
+    } else {
+      await oc.delete().catch(() => { /* deletion failure: TTL is the backstop */ });
     }
   }
   if (opts?.signal?.aborted) {
