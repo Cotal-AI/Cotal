@@ -109,7 +109,9 @@ function startProbe(mode: "subject" | "neutered-reopen" | "deleted-call"): Probe
     settled = true;
     clearTimeout(budgetTimer);
     clearTimeout(killTimer);
-    settle({ error, status, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+    // A capture error is never a pass, even when the child then exited 0 (graceful TERM after an
+    // overflow): a null status makes the original status assertion fail, as spawnSync's did.
+    settle({ error, status: error ? null : status, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
   };
   // The first termination request sends TERM and arms the KILL from THAT moment.
   const terminate = (cause: NodeJS.ErrnoException): void => {
@@ -141,7 +143,7 @@ function startProbe(mode: "subject" | "neutered-reopen" | "deleted-call"): Probe
   for (const stream of [child.stdout, child.stderr]) stream.on("error", (e) => terminate(e as NodeJS.ErrnoException));
   child.on("error", (e) => {
     error ??= e as NodeJS.ErrnoException;
-    // No pid means it never started, so no close will follow.
+    // close normally follows a failed spawn too; settling here as well means a missing one cannot hang.
     if (child.pid === undefined) finish(null);
   });
   child.on("close", (code) => finish(code));
