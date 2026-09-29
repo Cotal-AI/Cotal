@@ -3884,7 +3884,14 @@ export class Manager {
         console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
       }
     }
-    await this.deprovisionBroker(a);
+    try {
+      await this.deprovisionBroker(a);
+    } catch (e) {
+      const h = this.retiring.get(a.name);
+      if (h && h.lifecycleUid === a.lifecycleUid)
+        h.lastError = (e as Error).message;
+      throw e;
+    }
     // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
     // the auth endpoint rail. The rail re-checks the SERVE-ISSUANCE GATE at serve time (not the
     // space-manager lease - that check was replaced in 02794b2f) and refuses unless the registration
@@ -4075,6 +4082,8 @@ export class Manager {
       DEPROVISION_TIMEOUT_MS,
       `deprovision ${a.name} (${a.id}): broker teardown timed out`,
     );
+    if (!inventory.complete)
+      throw new Error(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
   }
 
   /** The retiring lifecycle's durable membership channels, read from the delivery daemon's
