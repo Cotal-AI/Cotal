@@ -566,6 +566,8 @@ async function runStartedDelivery(
     Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
   );
   let stopHandler: ((code: number, cause?: string) => void) | undefined;
+  let hostedStartupFailure: Error | undefined;
+  let stopHosted: ((cause: string) => void) | undefined;
   const health = new DeliveryTransportHealth(
     (reason) => {
       console.error(
@@ -575,7 +577,14 @@ async function runStartedDelivery(
             ? "✗ delivery: broker connection unavailable past backstop (broker unreachable), exiting (coupled to the broker)"
             : "✗ delivery: broker connection unavailable (broker unreachable), exiting (coupled to the broker)",
       );
-      if (stopHandler !== undefined) stopHandler(1, reason === "credential-expired" ? "credential expired without renewal" : `broker connection unavailable (${reason})`);
+      const cause = reason === "credential-expired" ? "credential expired without renewal" : `broker connection unavailable (${reason})`;
+      if (hosted !== undefined) {
+        hostedStartupFailure ??= new Error(`delivery context stopped during startup: ${cause}`);
+        if (stopHosted !== undefined) stopHosted(cause);
+        else void ep.stop(); // before lease acquisition, no context-owned lease can be released
+        return;
+      }
+      if (stopHandler !== undefined) stopHandler(1, cause);
       else earlyStop(1);
     },
     () => console.error("! delivery: credential expired, awaiting proved renewal"),
@@ -734,6 +743,14 @@ async function runStartedDelivery(
     return closePromise;
   };
   publishReleaser(close);
+  stopHosted = (cause) => {
+    unavailable = `delivery context stopped (code 1): ${cause}`;
+    void close();
+  };
+  if (hostedStartupFailure !== undefined) {
+    await close();
+    throw hostedStartupFailure;
+  }
   // A START-UP FAILURE AFTER THE ACQUIRE MUST ALSO GIVE THE SHARD BACK. Between this point and the
   // handler swap far below, a throw would otherwise propagate out of `runDelivery` with the row
   // still claiming the shard, stranding it for the bucket TTL exactly as an unhandled signal did -
@@ -811,6 +828,10 @@ async function runStartedDelivery(
     if (hosted !== undefined) throw error;
     /* CLI: the renew loop's CAS failure will exit us if the lease was lost. */
   }
+  if (hostedStartupFailure !== undefined) {
+    await close();
+    throw hostedStartupFailure;
+  }
   console.log(`✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
@@ -831,6 +852,13 @@ async function runStartedDelivery(
   } catch (e) {
     membershipDown = (e as Error).message;
     console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
+  }
+
+  // A store read can finish after a startup health fault closed the endpoint. Dispose the feed
+  // it just returned before rejecting; it did not exist when the original close ran.
+  if (hostedStartupFailure !== undefined) {
+    try { await membership?.stop(); } finally { await close(); }
+    throw hostedStartupFailure;
   }
 
   // The TIMER WRITER (SPEC 13.2): the pump that turns workflow `.schedule` requests into armed
@@ -1140,6 +1168,11 @@ async function runStartedDelivery(
      }
    })().catch((e) => console.error(`! delivery: the lease watch trigger faulted (${(e as Error).message}); the renew interval remains the arbiter`));
  });
+  if (hosted !== undefined && stopping) {
+    stopLeaseWatch?.();
+    await close();
+    throw hostedStartupFailure ?? new Error(unavailable ?? "delivery context stopped during startup");
+  }
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
 
   //

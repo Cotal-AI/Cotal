@@ -1,14 +1,14 @@
 {
-  "suite": ["implementations/delivery/smoke/delivery-native-health-lifetime.smoke.ts"],
-  "guard": "broker-proved post-expiry adoption clears delivery health, and closed contexts cannot reconnect membership clients",
+  "suite": ["implementations/delivery/smoke/delivery-native-health-lifetime.smoke.ts", "implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts"],
+  "guard": "proved adoption clears expired health; closed membership clients stay closed; hosted startup faults preserve sibling processes",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build && pnpm exec tsx implementations/delivery/smoke/delivery-native-health-lifetime.smoke.ts",
   "proveWith": "pnpm mutation-proof --config implementations/delivery/smoke/mutations/embedded-expiry-close.json",
   "mutations": [
     {
       "name": "omit both broker-proved delivery adoption health callbacks",
       "file": "implementations/delivery/src/delivery.ts",
-      "find": "health.adopted();",
-      "replace": "/* mutation: omit adoption health notification */",
+      "find": "health.adopted()",
+      "replace": "void 0",
       "allowMultiple": true,
       "expectRed": "Error: post-expiry proved adoption survives the original health backstop",
       "cell": "post-expiry proved adoption survives the original health backstop",
@@ -22,6 +22,16 @@
       "expectRed": "Error: closed delivery contexts leave no connected or reconnecting broker clients",
       "cell": "closed delivery contexts leave no connected or reconnecting broker clients",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build && pnpm exec tsx implementations/delivery/smoke/delivery-native-health-lifetime.smoke.ts"
+    },
+    {
+      "name": "hosted startup health fault reaches the CLI process exit",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "      if (hosted !== undefined) {\n        hostedStartupFailure ??=",
+      "replace": "      if (false) {\n        hostedStartupFailure ??=",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build && pnpm exec tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted startup fault leaves the sibling process alive",
+      "cell": "hosted startup fault leaves the sibling process alive",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build && pnpm exec tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts"
     }
   ]
 }

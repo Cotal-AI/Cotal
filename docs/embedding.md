@@ -121,6 +121,8 @@ owned by that instance. It closes both membership connections even when a discon
 fails, so they cannot reconnect after closure. Credential-expiry health state clears after
 successful broker-verified adoption through the existing `reloadCreds` rail. A failed start
 refuses locally without exiting the host process or stopping another account's delivery service.
+If a health fault occurs during an asynchronous store read, startup rejects when the read returns
+and closes any resources created by that late completion.
 
 `startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
