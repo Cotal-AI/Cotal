@@ -1,0 +1,38 @@
+{
+  "suite": [
+    "implementations/cli/smoke/auth-pidfile.smoke.ts"
+  ],
+  "guard": "a start the re-exec guard refuses leaves the auth-service pid records as it found them: no slot naming the launcher, and no pre-hex record reclaimed",
+  "command": "pnpm smoke:auth-pidfile",
+  "completionMarker": "AUTH-PIDFILE SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/reexec-refusal-auth-slot.json",
+  "why": [
+    "#1629 put a refusal in `selfArgv()`, and `startAuthServiceDetached` called it after the pid work.",
+    "`claimAuthPidSlot` publishes the slot already holding the launcher's own pid, so a refused start",
+    "left a record that reads alive: a retry in the same process skipped the start and went to the",
+    "provider's readiness wait, and teardown signalled whichever process held the launcher's pid. The",
+    "dead pre-hex record was reclaimed before the refusal as well.",
+    "",
+    "Each ordering has its own mutant. The first restores the order #1641 shipped, with the argv built",
+    "inside the `try` after the claim. The second moves only the reclaim back above the guard, which",
+    "the slot cells cannot see."
+  ],
+  "mutations": [
+    {
+      "name": "the pid slot is claimed before the entry is validated, as #1641 shipped it",
+      "file": "implementations/cli/src/lib/auth-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadLegacyPid(space);\n  const slot = claimAuthPidSlot(space);\n  if (slot === undefined) return 0;\n  if (\"livePid\" in slot) return slot.livePid;\n  try {\n    const fd = openSync(LOG_PATH(space), \"a\");\n",
+      "replace": "  reclaimDeadLegacyPid(space);\n  const slot = claimAuthPidSlot(space);\n  if (slot === undefined) return 0;\n  if (\"livePid\" in slot) return slot.livePid;\n  try {\n    const [node, ...self] = selfArgv();\n    const fd = openSync(LOG_PATH(space), \"a\");\n",
+      "cell": "the refused start published no pid slot",
+      "expectRed": "the refused start published no pid slot"
+    },
+    {
+      "name": "the dead pre-hex record is reclaimed before the entry is validated",
+      "file": "implementations/cli/src/lib/auth-proc.ts",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadLegacyPid(space);\n",
+      "replace": "  reclaimDeadLegacyPid(space);\n  const [node, ...self] = selfArgv();\n",
+      "cell": "the refused start left the dead pre-hex record where it was",
+      "expectRed": "the refused start left the dead pre-hex record where it was"
+    }
+  ]
+}
