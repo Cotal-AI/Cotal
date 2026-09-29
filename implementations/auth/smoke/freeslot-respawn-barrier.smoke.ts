@@ -219,6 +219,8 @@ const CHILD = [
   "const ep=new m.CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer:bearer,sentinelCreds:sentinel,lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{name:process.env.COTAL_NAME,owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,kind:'agent'}});",
   "ep.on('error',()=>{});await ep.start();",
   "if(process.env.FSB_READY)fs.writeFileSync(process.env.FSB_READY,'1');",
+  "process.on('SIGUSR1',async()=>{try{await ep.setStatus('offline');if(process.env.FSB_OFFLINE)fs.writeFileSync(process.env.FSB_OFFLINE,'1');}catch(e){}});",
+  "process.on('SIGUSR2',async()=>{try{await ep.stop();if(process.env.FSB_DISCONNECTED)fs.writeFileSync(process.env.FSB_DISCONNECTED,'1');}catch(e){}});",
   "setInterval(()=>{},1000);",
   "}).catch((e)=>{console.error(e&&e.message||String(e));process.exit(1);});",
 ].join("\n");
@@ -241,6 +243,8 @@ const e2eCon: Connector = {
       // its lifecycle against its dm_ durable before presence, SPEC 13.1 fail-before-presence).
       ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
       FSB_READY: join(root, "child-connected"),
+      FSB_OFFLINE: join(root, "child-offline"),
+      FSB_DISCONNECTED: join(root, "child-disconnected"),
     },
   }),
 };
@@ -491,7 +495,7 @@ try {
   type DeprovArg = { id: string; name: string };
   type DeprovBroker = (a: DeprovArg) => Promise<void>;
   type Handle = import("@cotal-ai/core").AgentHandle;
-  const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; ep: { ref: () => { id: string } }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
+  const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; ep: { ref: () => { id: string }; getRoster: () => Array<{ card: { name: string }; status?: string }> }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
   const origBroker: DeprovBroker = mAny.deprovisionBroker.bind(manager);
   let releaseGate!: () => void;
   const gate = new Promise<void>((r) => { releaseGate = r; });
@@ -773,35 +777,68 @@ try {
   check("RETRY: foreign principal row is RETAINED", await foreignRow());
   check("RETRY: successor row for AGENT is RETAINED", await memberRow("general", succUid));
 
-  // ---------- G. ACTIVE AGENT RETENTION VERSUS TERMINAL PREDECESSOR ----------
-  console.log("G) active agent retention: terminal predecessor reaped, active replacement retained");
-  // Distinguish the terminal/reaped predecessor from a valid active agent:
+  // ---------- G. GENUINELY OFFLINE & DISCONNECTED AGENT RETENTION ----------
+  console.log("G) offline & disconnected retention: terminal predecessor reaped, offline agent retained");
+  // Distinguish the terminal/reaped predecessor from a genuinely offline or disconnected agent:
   // The predecessor was terminalized and reaped: its durable consumers, ACL rows, and 3 member rows are gone.
-  // The replacement agent (succUid) is live on the mesh; absence or inactivity never reaps it.
+  // The replacement agent (succUid) is live on the mesh; presence offline or transport disconnect never reaps it.
   const succKey = principal.key;
   await delivery!.durableJoinFor(succKey, "unnamed", succUid);
   await delivery!.durableJoinFor(succKey, "team.api", succUid);
   const succMembersBefore = (await memberRowsFor()).filter((k: string) => k.endsWith(succUid));
-  check("ACTIVE: replacement holds complete active memberships (general, team.api, unnamed)",
+  check("OFFLINE: replacement holds complete active memberships before going offline",
     succMembersBefore.length === 3, succMembersBefore);
 
   // Witness that the reaped predecessor is fully gone while the active agent's rows are intact:
   const predMembersRemaining = (await memberRowsFor()).filter((k: string) => k.endsWith(predUid));
-  check("ACTIVE: terminal reaped predecessor has zero member rows remaining",
+  check("OFFLINE: terminal reaped predecessor has zero member rows remaining",
     predMembersRemaining.length === 0, predMembersRemaining);
-  check("ACTIVE: active agent's dm_ and dlv_ durables remain intact",
+
+  // 1. Signal child to set presence to "offline" while process keeps running:
+  if (newHandle?.pid) {
+    process.kill(newHandle.pid, "SIGUSR1");
+    for (let i = 0; i < 100 && !existsSync(join(root, "child-offline")); i++) await wait(50);
+  }
+  for (let i = 0; i < 100 && mAny.ep.getRoster().find((p) => p.card.name === AGENT)?.status !== "offline"; i++) await wait(50);
+  const offlinePresence = mAny.ep.getRoster().find((p) => p.card.name === AGENT);
+  check("OFFLINE: agent published presence status offline on the mesh roster",
+    offlinePresence?.status === "offline", offlinePresence);
+  check("OFFLINE: agent is not reaped on presence offline (process remains running)",
+    newHandle?.status() === "running");
+  check("OFFLINE: all 3 durable membership rows are RETAINED while offline",
+    (await memberRowsFor()).filter((k: string) => k.endsWith(succUid)).length === 3);
+  check("OFFLINE: dm_ and dlv_ durables remain intact while offline",
     (await footprint()).dm.length > 0 && (await footprint()).dlv.length > 0);
-  check("ACTIVE: active agent's stream ACL rows remain intact",
+  check("OFFLINE: stream ACL rows remain intact while offline",
     (await footprint()).acl.length > 0);
 
-  // Probe spawn while alias is active: does NOT reap or steal the alias
+  // Hard-pinned spawn attempting to reuse the alias while agent is offline is refused:
+  const rSteal = await manager.startAgent({ name: AGENT, identity: AGENT, agent: "e2e", owner: OWNER, events: false });
+  check("OFFLINE: hard-pinned spawn cannot steal alias of offline agent (refused at accept)",
+    rSteal.ok === false && /hard-pinned.*already held/i.test(rSteal.error ?? ""), rSteal);
+
+  // Unpinned spawn numbers to a suffix rather than stealing the offline alias:
   const rProbeOff = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   const probeData = rProbeOff.data as { name?: string } | undefined;
-  check("ACTIVE: a spawn does not reap or steal the active alias (refused or auto-numbered)",
-    listNames().includes(AGENT) && !(rProbeOff.ok === true && probeData?.name === AGENT), rProbeOff);
+  check("OFFLINE: unpinned spawn numbers to suffix rather than stealing the offline alias",
+    listNames().includes(AGENT) && rProbeOff.ok === true && probeData?.name !== AGENT, rProbeOff);
   if (rProbeOff.ok === true && probeData?.name) {
     await mAny.opStop({ name: probeData.name, graceful: false }, mAny.ep.ref().id, true);
   }
+
+  // 2. Signal child to stop its endpoint (transport disconnect) while process remains running:
+  if (newHandle?.pid) {
+    process.kill(newHandle.pid, "SIGUSR2");
+    for (let i = 0; i < 100 && !existsSync(join(root, "child-disconnected")); i++) await wait(50);
+  }
+  check("DISCONNECTED: agent transport disconnected while process remains running",
+    newHandle?.status() === "running");
+  check("DISCONNECTED: durable membership rows are RETAINED after transport disconnect",
+    (await memberRowsFor()).filter((k: string) => k.endsWith(succUid)).length === 3);
+  check("DISCONNECTED: dm_ and dlv_ durables remain intact after transport disconnect",
+    (await footprint()).dm.length > 0 && (await footprint()).dlv.length > 0);
+  check("DISCONNECTED: stream ACL rows remain intact after transport disconnect",
+    (await footprint()).acl.length > 0);
 
   // ---------- H. STATIC RECONCILIATION METHOD & 8344 GUARD ----------
   console.log("H) static reconciliation: adopted-live guard and inventory purge without launch spec");
