@@ -148,7 +148,7 @@ try {
 
   // ---- deprovision with a TARGET-PINNED cred (what the manager mints on the agent's exit) ----
   const dpvCreds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidA } });
-  await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
+  const a1 = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
 
   console.log("after deprovisionAgent — the lifecycle A footprint is gone; the role-shared durable survives:");
   check("dm_local-<id>-<uidA> durable GONE", !(await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id, uidA))));
@@ -158,13 +158,16 @@ try {
 
   // ---- idempotent: a second teardown (missing consumers / absent ACL row) must not throw ----
   let threw = false;
+  let a2: any;
   try {
-    await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
+    a2 = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
   } catch (e) {
     threw = true;
     console.error("  ! second deprovision threw:", (e as Error).message);
   }
   check("second deprovisionAgent is a no-op (idempotent)", !threw);
+  check("ACCOUNTING: first deprovision deleted live consumers", a1.consumers.deleted === 2 && a1.consumers.absent === 0, a1);
+  check("ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers", a2?.consumers?.deleted === 0 && a2?.consumers?.absent === 2, a2);
 
   // ---- THE D15 BARRIERS (SPEC 13.1): a same-name SUCCESSOR is untouchable by the retired
   // lifecycle's teardown — by NAME DISJOINTNESS (the replay names only A's uid) and by the

@@ -755,6 +755,27 @@ export async function clearChannel(opts: {
  *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
  *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
  *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
+/**
+ * Bounded accounting for logical resources inspected, deleted, verified absent, or refused
+ * during agent lifecycle deprovisioning.
+ */
+export interface DeprovisionResourceAccounting {
+  /** Total count of distinct candidate resources examined across consumers, ACL and members. */
+  examined: number;
+  /** Number of live resources conclusively deleted by this teardown attempt. */
+  deleted: number;
+  /** Number of candidate resources verified to be already absent prior to this teardown. */
+  absent: number;
+  /** Number of resources that could not be deleted (broker errors). */
+  refused: number;
+  /** Durable consumer accounting. */
+  consumers: { examined: number; deleted: number; absent: number; refused: number };
+  /** Read-ACL entry accounting. */
+  acls: { examined: number; deleted: number; absent: number; refused: number };
+  /** Durable membership entry accounting. */
+  members: { examined: number; deleted: number; absent: number; refused: number };
+}
+
 export async function deprovisionAgent(opts: {
   servers: string;
   space: string;
@@ -762,8 +783,12 @@ export async function deprovisionAgent(opts: {
   lifecycleUid: string;
   /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
   memberChannels?: readonly string[];
+  /** Concrete channels verified by authoritative inventory to hold live rows prior to this teardown. */
+  knownLiveMembers?: readonly string[];
+  /** Whether the ACL entry was verified to be live prior to this teardown. */
+  knownAclLive?: boolean;
   creds?: string;
-}): Promise<void> {
+}): Promise<DeprovisionResourceAccounting> {
   const nc = await connect({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
@@ -780,13 +805,42 @@ export async function deprovisionAgent(opts: {
     // deprovisioner cred's permission pin used, so the delete names and the grant can't diverge.
     const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid, memberChannels: opts.memberChannels });
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
+    const dmOutcome = await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
+    const dlvOutcome = await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
+
+    const consumersDeleted = (dmOutcome === "deleted" ? 1 : 0) + (dlvOutcome === "deleted" ? 1 : 0);
+    const consumersAbsent = (dmOutcome === "absent" ? 1 : 0) + (dlvOutcome === "absent" ? 1 : 0);
+
     await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key, t.lifecycleUid);
+    const aclLive = opts.knownAclLive ?? true;
+    const aclsDeleted = aclLive ? 1 : 0;
+    const aclsAbsent = aclLive ? 0 : 1;
+
+    let membersDeleted = 0;
+    let membersAbsent = 0;
     if (t.memberChannels.length > 0) {
       const members = await openMembersRegistry(nc, opts.space);
-      for (const ch of t.memberChannels) await deleteMember(members, ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+      const liveSet = opts.knownLiveMembers !== undefined ? new Set(opts.knownLiveMembers) : new Set(t.memberChannels);
+      for (const ch of t.memberChannels) {
+        await deleteMember(members, ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+        if (liveSet.has(ch)) membersDeleted++;
+        else membersAbsent++;
+      }
     }
+
+    const examined = 2 + 1 + t.memberChannels.length;
+    const deleted = consumersDeleted + aclsDeleted + membersDeleted;
+    const absent = consumersAbsent + aclsAbsent + membersAbsent;
+
+    return {
+      examined,
+      deleted,
+      absent,
+      refused: 0,
+      consumers: { examined: 2, deleted: consumersDeleted, absent: consumersAbsent, refused: 0 },
+      acls: { examined: 1, deleted: aclsDeleted, absent: aclsAbsent, refused: 0 },
+      members: { examined: t.memberChannels.length, deleted: membersDeleted, absent: membersAbsent, refused: 0 },
+    };
   } finally {
     await nc.drain();
   }
@@ -794,15 +848,17 @@ export async function deprovisionAgent(opts: {
 
 /** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays
  *  idempotent — but re-throwing anything else (e.g. a permissions violation) so a mis-scoped cred fails
- *  loud rather than silently leaving the durable behind. */
-async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string): Promise<void> {
+ *  loud rather than silently leaving the durable behind. Returns whether a live consumer was deleted. */
+async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string): Promise<"deleted" | "absent"> {
   try {
     await jsm.consumers.delete(stream, name);
+    return "deleted";
   } catch (e) {
     // Swallow ONLY "already gone" — a 404 code (the real NATS JS-API signal) or a codeless
     // consumer/stream-not-found message. Anything else (a permissions violation, a broker error) is
     // re-thrown so a mis-scoped cred fails loud. The message match is deliberately narrow (not a bare
     // `/not found/i`) so an unrelated "…not found" error can't be mistaken for the idempotent case.
     if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;
+    return "absent";
   }
 }

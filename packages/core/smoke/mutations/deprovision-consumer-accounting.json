@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "packages/core/smoke/deprovision-agent-auth.smoke.ts"
+  ],
+  "guard": "deprovisionAgent truthfully distinguishes live consumer deletions from idempotent absent no-ops",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/core exec tsx smoke/deprovision-agent-auth.smoke.ts",
+  "completionMarker": "DEPROVISION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/deprovision-consumer-accounting.json",
+  "why": [
+    "deleteConsumerIdempotent must classify a 404 not-found consumer as absent rather than deleted.",
+    "Mutating the 404 handler to return 'deleted' claims duplicate deletions on repeat deprovision.",
+    "The suite must catch this on the named cell asserting repeated deprovision reports 0 deleted consumers."
+  ],
+  "mutations": [
+    {
+      "name": "claim 404 not-found consumer as deleted on repeat deprovision",
+      "file": "packages/core/src/streams.ts",
+      "find": "if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;\n    return \"absent\";",
+      "replace": "if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;\n    return \"deleted\";",
+      "expectRed": "ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers",
+      "cell": "ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

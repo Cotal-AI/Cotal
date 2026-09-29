@@ -4078,7 +4078,16 @@ export class Manager {
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
     await withTimeout(
-      deprovisionAgent({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, memberChannels: [...memberChannels], creds }),
+      deprovisionAgent({
+        servers: this.servers ?? DEFAULT_SERVER,
+        space: this.space,
+        targetId: a.id,
+        lifecycleUid: a.lifecycleUid,
+        memberChannels: [...memberChannels],
+        knownLiveMembers: inventory.complete ? inventory.channels : undefined,
+        knownAclLive: !this.confirmedRetiredPredecessors.has(a.name),
+        creds,
+      }),
       DEPROVISION_TIMEOUT_MS,
       `deprovision ${a.name} (${a.id}): broker teardown timed out`,
     );
@@ -8486,6 +8495,10 @@ export class Manager {
       } finally {
         await nc.drain().catch(() => nc.close());
       }
+      let retiredSlots = 0;
+      let preservedForeign = 0;
+      let preservedAdopted = 0;
+      let deferredSlots = 0;
       const terminalRows: StaticManagedSlotRow[] = [];
       for (const row of slotRows) {
         if (row.phase === "retired") {
@@ -8493,6 +8506,7 @@ export class Manager {
           // regardless of which instance owned it, so a sibling-retired incarnation's copied credential
           // is refused at this control surface too. Ownership gates only the DESTRUCTIVE sweep below.
           this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
+          retiredSlots++;
           continue;
         }
         // 3b-2 RECONCILE OWNERSHIP (multi-manager-per-space): a manager adjudicates ONLY the non-retired
@@ -8501,17 +8515,26 @@ export class Manager {
         // hazard, now cross-instance). A legacy row (pre-3b-2, no owner recorded) predates multi-manager,
         // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
         // sibling row is reclaimed only by an explicit operator CAS takeover (ruling 1), never here.
-        if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) continue;
+        if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) {
+          preservedForeign++;
+          continue;
+        }
         // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
         // at the SAME uid is never an orphan (empty at boot; exactly the adopted set at the
         // post-adoption sweep — the fix for the F3 resume hole).
         const live = this.agents.get(row.alias);
         const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
+        if (adopted) {
+          preservedAdopted++;
+        }
         // Boot sweep with a resume PENDING: an active slot may yet be adopted (the resume path runs
         // AFTER this boot sweep), so DEFER it — the post-adoption sweep terminalizes any the resume
         // did not claim. provisioning/terminalizing NEVER defer (they are crashed operations, never
         // an agent to adopt). At `postAdoption` (or a non-resume boot) nothing defers.
-        if (!postAdoption && row.phase === "active" && !adopted && this.resumeRequired) continue;
+        if (!postAdoption && row.phase === "active" && !adopted && this.resumeRequired) {
+          deferredSlots++;
+          continue;
+        }
         if (planStaticSlotResume(row, adopted) !== "none") terminalRows.push(row);
       }
       try {
@@ -8542,6 +8565,17 @@ export class Manager {
           this.reconcilingAliases.delete(row.alias);
         }
         sweep.completedAt = new Date().toISOString();
+        sweep.resources = {
+          slots: {
+            examined: slotRows.length,
+            retired: retiredSlots,
+            preservedForeign,
+            preservedAdopted,
+            deferred: deferredSlots,
+            terminalized: sweep.succeeded,
+            failed: sweep.failed,
+          },
+        };
         for (const row of terminalRows) {
           const key = this.staticReconcileKey(row);
           const item = this.staticReconcileItems.get(key);

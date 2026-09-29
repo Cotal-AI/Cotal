@@ -153,6 +153,17 @@ export interface ManagerStaticReconciliationSweep {
   attempted: number;
   succeeded: number;
   failed: number;
+  resources?: {
+    slots: {
+      examined: number;
+      retired: number;
+      preservedForeign: number;
+      preservedAdopted: number;
+      deferred: number;
+      terminalized: number;
+      failed: number;
+    };
+  };
 }
 
 export interface ManagerStaticReconciliationFailure {

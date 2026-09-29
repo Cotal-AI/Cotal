@@ -992,6 +992,13 @@ try {
       orphanMembersAfter.filter((k: string) => k.endsWith(orphanSuccUid)).length === 1, orphanMembersAfter);
     check("RECONCILE MEMBERS: adopted live agent row remains RETAINED after sweep",
       await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
+    const sweep = (manager as unknown as { staticReconcileLastSweep?: import("../../manager/dist/index.js").ManagerStaticReconciliationSweep }).staticReconcileLastSweep;
+    check("RECONCILE ACCOUNTING: sweep recorded examined, foreign and adopted slots",
+      sweep?.resources?.slots !== undefined &&
+      sweep.resources.slots.examined >= 2 &&
+      sweep.resources.slots.preservedAdopted >= 1 &&
+      sweep.resources.slots.terminalized >= 1,
+      sweep?.resources);
 
     // Clean up mock live agent from manager.agents
     (manager as unknown as { agents: Map<string, unknown> }).agents.delete(liveAlias);
