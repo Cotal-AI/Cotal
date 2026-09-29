@@ -558,16 +558,23 @@ try {
   });
 
   await cell("2. Workflow executes goal (spawn-as-action) and timer, parking at checkpoint", async () => {
+    let terminalState: string | undefined;
     const ok = await until(async () => {
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
-      if (rec?.status?.value.state !== "running") return false;
+      if (rec?.status?.value.state && rec.status.value.state !== "running") {
+        terminalState = rec.status.value.state;
+        return true;
+      }
       const st = await invokeCommand(cliNc, SPACE, service, "run-status", { runId: activeRunId }, { deadlineMs: 15_000 });
       if (!st.reply.ok) {
         return false;
       }
       const view = st.reply.data as RunStatusView;
       return view.journal.some((r) => r.kind === "step" && r.state === "pending" && r.step === "/checkpoint:review#0");
-    }, 30_000);
+    }, 15_000);
+    if (terminalState) {
+      assert.fail(`run failed before parking at checkpoint: terminal state "${terminalState}"`);
+    }
     assert.ok(ok, "run did not park at waiting checkpoint");
   });
 
