@@ -4796,6 +4796,22 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: (e as Error).message };
       }
     }
+    if (req.op === "lifecycleMemberships") {
+      // The terminal teardown's membership INVENTORY: a complete, read-only, lifecycle-exact listing
+      // of one principal's durable membership rows (tombstones included) from the trusted daemon that
+      // owns the members bucket. The caller deletes only the exact keys it gets back, through its
+      // target-pinned deprovisioner grant; this verb deletes nothing and returns no other lifecycle.
+      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+      const uid = typeof req.args?.lifecycleUid === "string" ? req.args.lifecycleUid : "";
+      if (!parsePrincipalKey(principal)) return { ok: false, error: "lifecycleMemberships: a principal (owner.actor dot-form) is required" };
+      try { assertLifecycleToken(uid); } catch (e) { return { ok: false, error: `lifecycleMemberships: ${(e as Error).message}` }; }
+      try {
+        const rows = await listMembers(await this.membersRegistry(), { owner: principal });
+        return { ok: true, data: { complete: true, channels: [...new Set(rows.filter((r) => r.lifecycleUid === uid).map((r) => r.channel))].sort() } };
+      } catch (e) {
+        return { ok: false, error: `lifecycleMemberships: the inventory read did not complete (${(e as Error).message})` };
+      }
+    }
     if (req.op === "principalLiveness") {
       // The freeze-holder liveness probe (#391): the READ-ONLY half of `evictPrincipal`. A repair
       // that must REFUSE while the holder is alive cannot use eviction as its own precheck — that
