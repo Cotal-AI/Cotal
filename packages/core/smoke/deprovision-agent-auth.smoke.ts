@@ -344,6 +344,20 @@ try {
     try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidF, memberChannels: ["general"], creds: dpvE }); }
     catch { staleOutcome = "threw"; }
     check("MEMBERS: the retired cred aimed at the successor's row is broker-DENIED", staleOutcome === "threw" && (await has("general", who, uidF)), { staleOutcome });
+    // Isolate the member-row grant: purge the successor's row DIRECTLY with the retired cred, so no
+    // earlier dm_/dlv_ denial can mask a widened `$KV.<members>.>` grant.
+    {
+      const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(dpvE)), maxReconnectAttempts: 0 });
+      let directOutcome = "completed";
+      try {
+        const dkv = await openMembersRegistry(dnc, space);
+        const { deleteMember } = await import("../src/members.js");
+        await deleteMember(dkv, "general", who, uidF);
+        await dnc.flush();
+      } catch { directOutcome = "threw"; }
+      await dnc.close().catch(() => {});
+      check("MEMBERS: a direct purge of the successor's row with the retired cred is broker-DENIED", directOutcome === "threw" && (await has("general", who, uidF)), { directOutcome });
+    }
     let wildcardRefused = false;
     try { await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["team.>"] } }); }
     catch { wildcardRefused = true; }
