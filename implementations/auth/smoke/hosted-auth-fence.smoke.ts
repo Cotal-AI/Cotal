@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { connzRequestSubject, epAuthBucket, MEMBERSHIP_INBOX_PREFIX, mintConnectionEvictorCreds, mintMembershipObserverCreds, newIdentity, serverKickSubject } from "@cotal-ai/core";
+import { connzRequestSubject, epAuthBucket, MEMBERSHIP_INBOX_PREFIX, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverKickSubject, setupSpaceStreams } from "@cotal-ai/core";
 import { startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { parsePlaneClaimRow, PLANE_CLAIM_KEY, scannerDeathCopy } from "../src/plane-claim.js";
@@ -67,6 +67,10 @@ async function kickNamed(acct: HostedAuthAccount, name: string): Promise<number>
 
 try {
   const [a, b] = fx.accounts;
+  // Each fixture account is a provisioned space (as a hosted platform provisions it before starting
+  // auth, and as hosted-bootstrap-order does): the per-space streams the auth plane publishes into.
+  for (const acct of fx.accounts)
+    await setupSpaceStreams({ servers: fx.servers, space: acct.space, creds: await mintCreds(acct.auth, newIdentity(), "provisioner") });
   const inputs = fx.accounts.map((acct, i) => ({
     context: { accountPublicKey: acct.accountPublicKey, lifecycleUid: `life-${i}` },
     space: acct.space, servers: fx.servers, store: acct.store, storeIdentity: acct.store.identity, stateDir: acct.stateDir,
