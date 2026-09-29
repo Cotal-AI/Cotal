@@ -108,6 +108,12 @@ through the existing scoped host operation so deregistration can finish without 
 | `CotalEndpoint`, subjects, message types | the wire client and shapes. |
 | `ParsedArgs` *(type)* | the shape the daemon runners take (see below). |
 
+For a Linux Unix-socket adapter, `peerCredentials(socket)` from `@cotal-ai/seat` returns
+kernel-observed peer `pid`, `uid` and `gid`. Compare these against the host's authorization
+policy; request-supplied identity and process liveness do not replace that policy or a
+lifecycle fence. The helper starts no custodian and refuses unsupported platforms or a
+missing native helper.
+
 The runners take a CLI-shaped `ParsedArgs`, not a typed options object, so a host fabricates one:
 
 ```ts
