@@ -283,17 +283,20 @@ try {
     await h.waitForExit();
     check("natural exit: waitForExit resolves and status is exited", h.status() === "exited");
     h.close();
-    const recordGone = join(root, rec.id, "record.json");
+    const recordFile = join(root, rec.id, "record.json");
+    const exited = await until(() => {
+      const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
+      return custodianGone && !existsSync(rec.socket) && existsSync(recordFile);
+    }, 5_000);
+    const reaped = exited ? await reapSeat(root, rec.id) : undefined;
     check(
       "natural exit: custodian process, socket, and record converge without fixture kill",
-      await until(() => {
-        const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
-        return custodianGone && !existsSync(rec.socket) && !existsSync(recordGone);
-      }, 5_000),
+      Boolean(exited && reaped?.outcome === "reaped" && !existsSync(recordFile)),
       {
         custodian: state(rec.custodianPid),
         socket: existsSync(rec.socket),
-        record: existsSync(recordGone),
+        record: existsSync(recordFile),
+        reaped: reaped?.outcome,
       },
     );
     handles.push(h);
@@ -395,7 +398,10 @@ await h.waitForExit();
       await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 20_000),
       state(rec.custodianPid),
     );
-    check("its socket and record are gone with it", !existsSync(rec.socket) && !existsSync(join(root, rec.id, "record.json")), rec.socket);
+    const unadoptedRecord = join(root, rec.id, "record.json");
+    const unadoptedSettled = !existsSync(rec.socket) && existsSync(unadoptedRecord);
+    const unadoptedReaped = unadoptedSettled ? await reapSeat(root, rec.id) : undefined;
+    check("its socket and record are gone with it", Boolean(unadoptedSettled && unadoptedReaped?.outcome === "reaped" && !existsSync(unadoptedRecord)), rec.socket);
   }
 
   {
