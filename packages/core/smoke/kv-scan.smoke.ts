@@ -569,7 +569,7 @@ try {
     const stream = "KV_abort_empty_cleanup";
     const jsm = await jetstreamManager(nc);
     await jsm.consumers.add(stream, { durable_name: "unrelated_sentinel", ack_policy: "none", filter_subject: "$KV.abort_empty_cleanup.>" });
-    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ delete: () => Promise<unknown> }> } } }).js;
+    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ delete: () => Promise<unknown>; info: () => Promise<unknown> }> } } }).js;
     const getPushConsumer = js.consumers.getPushConsumer.bind(js.consumers);
     try {
       for (const shape of ["filtered-control", "filtered", "options", "explicit-undefined"] as const) {
@@ -607,6 +607,29 @@ try {
         const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
         check(`empty cleanup ${shape}: only unrelated sentinel remains`, names.length === 1 && names[0] === "unrelated_sentinel", names);
       }
+
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const deleting = new Promise<void>((resolve) => { entered = resolve; });
+      js.consumers.getPushConsumer = async (...args: unknown[]) => {
+        const oc = await getPushConsumer(...args);
+        const originalDelete = oc.delete.bind(oc);
+        oc.info = async () => { throw new Error("original-bind-error"); };
+        oc.delete = async () => { entered(); await released; return originalDelete(); };
+        return oc;
+      };
+      const ac = new AbortController();
+      const failedScan = liveKvEntries(bucket, { signal: ac.signal }).then(
+        () => "RETURN", (e: Error) => `THROW:${e.message}`);
+      try {
+        await Promise.race([deleting, wait(5000).then(() => { throw new Error("failed-bind cleanup not reached"); })]);
+        ac.abort(new Error("late-abort-must-not-mask-original"));
+      } finally { release(); }
+      const failure = await failedScan;
+      check("empty cleanup: original scan error survives later abort", failure === "THROW:original-bind-error", failure);
+      const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+      check("failed-bind cleanup preserves unrelated sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
     } finally { js.consumers.getPushConsumer = getPushConsumer; }
 
     // The explicit-undefined shape must honor an already-aborted signal BEFORE creating a consumer.
