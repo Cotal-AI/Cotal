@@ -140,13 +140,18 @@ const watchdogFiredDuring = async (yieldEvery: number): Promise<boolean> => {
       stepBudget: 40_000,
       onLog: (l) => logs.push(l.values[0]),
     });
-    const verdict = await Promise.race([
-      raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
-      new Promise<string>((r) => {
-        setTimeout(() => r("HUNG"), 8_000);
-      }),
-    ]);
-    return { verdict, logs };
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const verdict = await Promise.race([
+        raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
+        new Promise<string>((r) => {
+          watchdog = setTimeout(() => r("HUNG"), 8_000);
+        }),
+      ]);
+      return { verdict, logs };
+    } finally {
+      clearTimeout(watchdog);
+    }
   };
 
   // (b) the spinner CANNOT win: equal clocks (neither arm awaits an effect), and it is declared second.
