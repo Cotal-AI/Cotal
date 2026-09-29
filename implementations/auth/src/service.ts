@@ -209,7 +209,7 @@ export interface AuthAuthorityPlane {
     owner: string;
     scope: string[];
     request: unknown;
-  }) => Promise<unknown>;
+  }) => Promise<import("@cotal-ai/core").RemoteRunAttemptResult>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -1072,8 +1072,15 @@ export async function openAuthAuthorityPlane(opts: {
           instanceId: req.instanceId,
           managerLifecycleUid: req.managerLifecycleUid,
           requestId: req.requestId,
-          driver: { jwt: jwtFromCreds(driverCreds)!, exp: credsClaims(driverCreds).exp! },
-          mediator: { jwt: jwtFromCreds(mediatorCreds)!, exp: credsClaims(mediatorCreds).exp! },
+          registrationProof: req.registrationProof,
+          accountPublicKey: req.accountPublicKey,
+          processEpoch: req.processEpoch,
+          identities: req.identities,
+          attempt: req.attempt,
+          credentials: {
+            driver: { jwt: jwtFromCreds(driverCreds)!, exp: credsClaims(driverCreds).exp! },
+            mediator: { jwt: jwtFromCreds(mediatorCreds)!, exp: credsClaims(mediatorCreds).exp! },
+          },
         };
       }
       const operatorCreds = await mintCreds(hostAuth, { id: grant.operator.id, seed: newIdentity().seed }, "run-operator", {
@@ -1090,9 +1097,16 @@ export async function openAuthAuthorityPlane(opts: {
         instanceId: req.instanceId,
         managerLifecycleUid: req.managerLifecycleUid,
         requestId: req.requestId,
-        operator: {
-          jwt: jwtFromCreds(operatorCreds)!,
-          exp: credsClaims(operatorCreds).exp!,
+        registrationProof: req.registrationProof,
+        accountPublicKey: req.accountPublicKey,
+        processEpoch: req.processEpoch,
+        identities: req.identities,
+        operator: req.operator,
+        credentials: {
+          operator: {
+            jwt: jwtFromCreds(operatorCreds)!,
+            exp: credsClaims(operatorCreds).exp!,
+          },
         },
       };
     },

@@ -25,7 +25,9 @@ import {
   credsFromJwt, ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket,
   epgateKey, mintCheckpoint, mintGeneration, mintLifecycleUid, newIdentity, openRecordsBucket,
   readRunAdmission, remoteManagerActors, revokeRunAdmission, standaloneConnectOpts, writeRunStatus,
+  type RemoteRunAttemptResult, type RemoteRunAttemptRequest,
 } from "@cotal-ai/core";
+import { remoteRunAttemptCredentials } from "../../manager/src/remote-authority.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { deriveOwnerForIdpSubject, grantActor, openAuthAuthorityPlane, handleManagerServiceAuthority } from "../src/index.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
@@ -185,21 +187,26 @@ try {
     },
   };
   const firstRes = await postHttp(attemptReq);
-  const firstBody = firstRes.body as {
-    v?: number; kind?: string; driver?: { jwt?: string; exp?: number }; mediator?: { jwt?: string; exp?: number };
-  };
+  const firstBody = firstRes.body as unknown as RemoteRunAttemptResult;
   const closedKeys = Object.keys(firstBody).sort().join(",");
-  c("first attempt returns HTTP 200 with closed response schema and NO seeds",
+  const credsKeys = Object.keys(firstBody.credentials ?? {}).sort().join(",");
+  let clientParsedAttempt: { driver: string; mediator: string } | undefined;
+  try {
+    clientParsedAttempt = remoteRunAttemptCredentials(firstBody, attemptReq, httpOwner, { driver: driverIdentity, mediator: mediatorIdentity }) as { driver: string; mediator: string };
+  } catch (e) {
+    clientParsedAttempt = undefined;
+  }
+  c("first attempt returns HTTP 200 with closed RemoteRunAttemptResult schema and NO seeds",
     firstRes.status === 200 && firstBody.v === 1 && firstBody.kind === "manager-run-attempt" &&
-    typeof firstBody.driver?.jwt === "string" && typeof firstBody.driver?.exp === "number" &&
-    typeof firstBody.mediator?.jwt === "string" && typeof firstBody.mediator?.exp === "number" &&
-    closedKeys === "actor,driver,instanceId,kind,managerLifecycleUid,mediator,owner,requestId,space,v" &&
+    closedKeys === "accountPublicKey,actor,attempt,credentials,identities,instanceId,kind,managerLifecycleUid,owner,processEpoch,registrationProof,requestId,space,v" &&
+    credsKeys === "driver,mediator" &&
+    clientParsedAttempt !== undefined &&
     !JSON.stringify(firstBody).includes("seed"), firstBody);
 
   // 3. Issued driver credential authenticates to broker
   let driverConnected = false;
   try {
-    const driverCreds = credsFromJwt(firstBody.driver!.jwt!, driverIdentity);
+    const driverCreds = clientParsedAttempt!.driver;
     const driverNc = await connect({ servers, ...standaloneConnectOpts({ creds: driverCreds, tls: false }) });
     driverConnected = !driverNc.isClosed();
     await driverNc.close();
@@ -211,7 +218,7 @@ try {
   // 4. Issued mediator credential authenticates to broker
   let mediatorConnected = false;
   try {
-    const mediatorCreds = credsFromJwt(firstBody.mediator!.jwt!, mediatorIdentity);
+    const mediatorCreds = clientParsedAttempt!.mediator;
     const mediatorNc = await connect({ servers, ...standaloneConnectOpts({ creds: mediatorCreds, tls: false }) });
     mediatorConnected = !mediatorNc.isClosed();
     await mediatorNc.close();
@@ -229,17 +236,27 @@ try {
     observedSpecRevision: 1, state: "running", holder: `${identities.supervisor.id}.${"t".repeat(16)}`,
     epoch: 1, fencingToken: 1, journalHigh: 1, at: Date.now(),
   });
-  const resumeRes = await postHttp({
+  const resumeDriver = newIdentity();
+  const resumeMediator = newIdentity();
+  const resumeReq: RemoteRunAttemptRequest = {
     ...baseReq,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
     attempt: {
       runId: first, takeoverId: "t".repeat(16), epoch: 2, fencingToken: 2,
-      driverId: newIdentity().id, mediatorId: newIdentity().id,
+      driverId: resumeDriver.id, mediatorId: resumeMediator.id,
     },
-  });
+  };
+  const resumeRes = await postHttp(resumeReq);
+  const resumeBody = resumeRes.body as unknown as RemoteRunAttemptResult;
+  let resumeParsed: { driver: string; mediator: string } | undefined;
+  try {
+    resumeParsed = remoteRunAttemptCredentials(resumeBody, resumeReq, httpOwner, { driver: resumeDriver, mediator: resumeMediator }) as { driver: string; mediator: string };
+  } catch {
+    resumeParsed = undefined;
+  }
   c("resume attempt with next recorded epoch/fencing token succeeds (HTTP 200)",
-    resumeRes.status === 200 && (resumeRes.body as { v?: number }).v === 1, resumeRes);
+    resumeRes.status === 200 && resumeBody.v === 1 && resumeParsed !== undefined, resumeRes);
 
   // 6. Stale or jumped attempt coordinates on activated run refuse (403/409 conflict)
   const staleRes = await postHttp({
@@ -290,18 +307,26 @@ try {
 
   // 8. Read operator issuance returns closed response with JWT and NO seeds, authenticating to broker
   const opIdentity = newIdentity();
-  const opRes = await postHttp({
+  const opReq: RemoteRunAttemptRequest = {
     ...baseReq,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
     operator: { id: opIdentity.id, takeoverId: "o".repeat(16), runId: first },
-  });
-  const opBody = opRes.body as { v?: number; kind?: string; operator?: { jwt?: string; exp?: number } };
+  };
+  const opRes = await postHttp(opReq);
+  const opBody = opRes.body as unknown as RemoteRunAttemptResult;
+  const opClosedKeys = Object.keys(opBody).sort().join(",");
+  const opCredsKeys = Object.keys(opBody.credentials ?? {}).sort().join(",");
+  let opParsed: { operator: string } | undefined;
+  try {
+    opParsed = remoteRunAttemptCredentials(opBody, opReq, httpOwner, { operator: opIdentity }) as { operator: string };
+  } catch {
+    opParsed = undefined;
+  }
   let opConnected = false;
-  if (opRes.status === 200 && typeof opBody.operator?.jwt === "string") {
+  if (opRes.status === 200 && opParsed !== undefined) {
     try {
-      const opCreds = credsFromJwt(opBody.operator.jwt, opIdentity);
-      const opNc = await connect({ servers, ...standaloneConnectOpts({ creds: opCreds, tls: false }) });
+      const opNc = await connect({ servers, ...standaloneConnectOpts({ creds: opParsed.operator, tls: false }) });
       opConnected = !opNc.isClosed();
       await opNc.close();
     } catch {
@@ -309,7 +334,9 @@ try {
     }
   }
   c("read operator returns closed response with JWT and authenticates to broker",
-    opRes.status === 200 && opBody.v === 1 && typeof opBody.operator?.jwt === "string" &&
+    opRes.status === 200 && opBody.v === 1 && opParsed !== undefined &&
+    opClosedKeys === "accountPublicKey,actor,credentials,identities,instanceId,kind,managerLifecycleUid,operator,owner,processEpoch,registrationProof,requestId,space,v" &&
+    opCredsKeys === "operator" &&
     !JSON.stringify(opBody).includes("seed") && opConnected, opRes);
 
   // 9. Answer operator for waiting checkpoint returns closed response with JWT, authenticating to broker
@@ -323,18 +350,26 @@ try {
     now: Date.now(),
   });
   const ansIdentity = newIdentity();
-  const ansRes = await postHttp({
+  const ansReq: RemoteRunAttemptRequest = {
     ...baseReq,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
     operator: { id: ansIdentity.id, takeoverId: "a".repeat(16), answers: { token: cpToken } },
-  });
-  const ansBody = ansRes.body as { v?: number; operator?: { jwt?: string; exp?: number } };
+  };
+  const ansRes = await postHttp(ansReq);
+  const ansBody = ansRes.body as unknown as RemoteRunAttemptResult;
+  const ansClosedKeys = Object.keys(ansBody).sort().join(",");
+  const ansCredsKeys = Object.keys(ansBody.credentials ?? {}).sort().join(",");
+  let ansParsed: { operator: string } | undefined;
+  try {
+    ansParsed = remoteRunAttemptCredentials(ansBody, ansReq, httpOwner, { operator: ansIdentity }) as { operator: string };
+  } catch {
+    ansParsed = undefined;
+  }
   let ansConnected = false;
-  if (ansRes.status === 200 && typeof ansBody.operator?.jwt === "string") {
+  if (ansRes.status === 200 && ansParsed !== undefined) {
     try {
-      const ansCreds = credsFromJwt(ansBody.operator.jwt, ansIdentity);
-      const ansNc = await connect({ servers, ...standaloneConnectOpts({ creds: ansCreds, tls: false }) });
+      const ansNc = await connect({ servers, ...standaloneConnectOpts({ creds: ansParsed.operator, tls: false }) });
       ansConnected = !ansNc.isClosed();
       await ansNc.close();
     } catch {
@@ -342,7 +377,9 @@ try {
     }
   }
   c("answer operator for waiting checkpoint returns JWT and authenticates to broker",
-    ansRes.status === 200 && ansBody.v === 1 && typeof ansBody.operator?.jwt === "string" &&
+    ansRes.status === 200 && ansBody.v === 1 && ansParsed !== undefined &&
+    ansClosedKeys === "accountPublicKey,actor,credentials,identities,instanceId,kind,managerLifecycleUid,operator,owner,processEpoch,registrationProof,requestId,space,v" &&
+    ansCredsKeys === "operator" &&
     !JSON.stringify(ansBody).includes("seed") && ansConnected, ansRes);
 
   // 10. Answer operator for non-waiting checkpoint refuses
