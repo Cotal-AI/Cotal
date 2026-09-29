@@ -5,7 +5,7 @@
   "grades": "suite",
   "guard": "an explicit cotal up refresh chooses the requested same-root space record rather than the first same-server registry record",
   "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/up-refresh-identity.json",
   "mutations": [
     {
@@ -15,6 +15,46 @@
       "replace": "    const held = meshes.find((m) => m.server === server);",
       "expectRed": "explicit refresh selects omega-root even with same-server records",
       "cell": "explicit refresh selects omega-root even with same-server records",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the recorded-store substitution dropped (values[\"store-dir\"] untouched)",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "            values[\"store-dir\"] = heldForRepair.storeDir;\n",
+      "replace": "",
+      "expectRed": "(4) the log's last Store Directory: line names store-a/jetstream",
+      "cell": "(4) the log's last Store Directory: line names store-a/jetstream",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the refusal condition forced false",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir) {",
+      "replace": "            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir && process.env.FX121_NEVER_SET !== undefined) {",
+      "expectRed": "(5) a disagreeing --store-dir repair refuses",
+      "cell": "(5) a disagreeing --store-dir repair refuses",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the intended-stop gate removed from the exit handler (unconditional removeMesh)",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (stopping) {",
+      "replace": "    if (true) {",
+      "expectRed": "the record survives the crash",
+      "cell": "the record survives the crash",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the crash arm's exit line removed",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "      if (activationFinished) process.exit(code ?? 1);\n",
+      "replace": "",
+      "expectRed": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
+      "cell": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
       "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
       "afterRestore": "pnpm build"
     }
