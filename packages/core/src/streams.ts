@@ -45,6 +45,7 @@ import {
 import { idFromCreds } from "./identity.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
+import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
@@ -752,6 +753,8 @@ export async function deprovisionAgent(opts: {
   space: string;
   targetId: string;
   lifecycleUid: string;
+  /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
+  memberChannels?: readonly string[];
   creds?: string;
 }): Promise<void> {
   const nc = await connect({
@@ -768,11 +771,15 @@ export async function deprovisionAgent(opts: {
     // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
     // local owner, PLUS the exact lifecycle uid being torn down — the SAME resolution the
     // deprovisioner cred's permission pin used, so the delete names and the grant can't diverge.
-    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid });
+    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid, memberChannels: opts.memberChannels });
     const jsm = await jetstreamManager(nc);
     await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
     await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
     await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key, t.lifecycleUid);
+    if (t.memberChannels.length > 0) {
+      const members = await openMembersRegistry(nc, opts.space);
+      for (const ch of t.memberChannels) await deleteMember(members, ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+    }
   } finally {
     await nc.drain();
   }
