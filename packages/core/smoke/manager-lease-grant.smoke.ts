@@ -171,11 +171,11 @@ try {
       (await jsm.streams.info(`KV_${membersBucket(space)}`)).state.consumer_count === 0);
     let denied = false;
     try { await liveKvEntries(await new Kvm(scoped).open(managerBucket(space))); }
-    catch (e) { denied = /authorization|permission|timeout/i.test(String(e)); }
+    catch (e) { denied = /authorization|permission/i.test(String(e)); }
     check("scoped delivery credential cannot scan out-of-scope manager sentinel", denied);
     let deleteDenied = false;
     try { await scoped.request(`$JS.API.CONSUMER.DELETE.KV_${managerBucket(space)}.sentinel`, undefined, { timeout: 500 }); }
-    catch (e) { deleteDenied = /authorization|permission|timeout/i.test(String(e)); }
+    catch (e) { deleteDenied = /authorization|permission/i.test(String(e)); }
     check("scoped delivery credential cannot delete out-of-scope manager consumer", deleteDenied);
     const manager = await new Kvm(supervisor).open(managerBucket(space));
     check("out-of-scope manager sentinel remains intact", (await manager.get(managerLeaseKey("liveone"))) !== null);
