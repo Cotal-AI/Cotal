@@ -1077,7 +1077,7 @@ export async function openAuthAuthorityPlane(opts: {
         };
       }
       const operatorCreds = await mintCreds(hostAuth, { id: grant.operator.id, seed: newIdentity().seed }, "run-operator", {
-        principal: { owner, actor: `operator.${grant.operator.id}` },
+        principal: { owner, actor: req.actor },
         runOperator: grant.operator.runOperator,
         expiresInSeconds: 60,
       });
