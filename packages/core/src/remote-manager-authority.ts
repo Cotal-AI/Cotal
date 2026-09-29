@@ -622,3 +622,23 @@ export interface RemoteRunAttemptRequest {
   attempt?: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driverId: string; mediatorId: string };
   operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string } };
 }
+
+/** The host returns only signed JWTs for the nkeys held by the registered manager. The
+ * discriminator and complete request echo bind a pair or a single operator to one call. */
+export interface RemoteRunAttemptResult {
+  v: 1;
+  kind: "manager-run-attempt";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  attempt?: RemoteRunAttemptRequest["attempt"];
+  operator?: RemoteRunAttemptRequest["operator"];
+  credentials: { driver: RemoteManagerCredential; mediator: RemoteManagerCredential } | { operator: RemoteManagerCredential };
+}
