@@ -67,6 +67,8 @@ With `renewStandingBundle` configured, the manager renews all five standing cred
 It checks every returned credential for the held nkey and assigned account, test-connects each one,
 and adopts them only if the serve epoch has not moved. A refused or failed candidate leaves the
 current credentials in place and records the refusal as cleanup debt until a later renewal succeeds.
+On shutdown, after the standing context is drained, an expired maintenance executor is renewed
+through the existing scoped host operation so deregistration can finish without restarting duties.
 
 **Provisioning and minting** (all `@cotal-ai/core`)
 

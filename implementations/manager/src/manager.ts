@@ -2082,7 +2082,7 @@ export class Manager {
     }
   }
 
-  /** A signerless manager cannot renew one duty in isolation. The issuer stages the closed
+  /** An active signerless manager renews its standing duties together. The issuer stages the closed
    * credential family first; broker preflight proves every JWT and existing caller-held nkey
    * before any mutable holder changes. A failed candidate leaves all current creds intact. */
   private async renewRemoteStandingBundle(force = false): Promise<void> {
@@ -6381,8 +6381,12 @@ export class Manager {
    *  This is NEVER the manager's standing seed/supervisor connection. */
   private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy"))
-      await (this.remoteAuthority.renewStandingBundle ? this.renewRemoteStandingBundle(true) : this.renewRemoteExecutor(true));
+    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy")) {
+      // Shutdown has drained and discarded the standing serve context. Renew only its scoped
+      // maintenance executor through the existing host operation; never resurrect standing duties.
+      if (this.leaseStopping) await this.renewRemoteExecutor(true);
+      else await (this.remoteAuthority.renewStandingBundle ? this.renewRemoteStandingBundle(true) : this.renewRemoteExecutor(true));
+    }
     const creds = this.remoteExecutorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },

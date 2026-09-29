@@ -20,8 +20,8 @@
     {
       "name": "clean stop reuses the stale remote executor",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== \"healthy\"))\n      await (this.remoteAuthority.renewStandingBundle ? this.renewRemoteStandingBundle(true) : this.renewRemoteExecutor(true));",
-      "replace": "",
+      "find": "      if (this.leaseStopping) await this.renewRemoteExecutor(true);",
+      "replace": "      if (this.leaseStopping) await this.renewRemoteStandingBundle(true);",
       "expectRed": "stock clean stop refreshes the executor and deregisters after its retained credential expires",
       "cell": "stock clean stop refreshes the executor and deregisters after its retained credential expires",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
