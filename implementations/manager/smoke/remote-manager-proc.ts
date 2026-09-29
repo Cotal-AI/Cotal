@@ -1,6 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
+  credsClaims,
   mintLifecycleUid,
   remoteManagerActors,
   remoteManagerRegistrationProof,
@@ -209,6 +211,52 @@ const manager = new Manager({
 
 await manager.start();
 console.log(`MANAGER_READY:${mgrIdentity.instanceId}`);
+
+// FIXTURE-ONLY observation seam: on a `PROBE <runId>` stdin line, report bounded non-secret
+// metadata (public nkey, exp, debt reason, connection state, a live broker dial verdict) read from
+// the run-hosting's ACTUAL held objects. Never emits a JWT or seed. Not a product API.
+let stdinBuf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk: string) => {
+  stdinBuf += chunk;
+  let i: number;
+  while ((i = stdinBuf.indexOf("\n")) >= 0) {
+    const line = stdinBuf.slice(0, i).trim();
+    stdinBuf = stdinBuf.slice(i + 1);
+    const m = line.match(/^PROBE (\S+)$/);
+    if (m) void probe(m[1]!);
+  }
+});
+async function probe(runId: string) {
+  const run = (manager as any).runHosting?.runs?.get(runId);
+  const meta = (creds: unknown) => {
+    if (typeof creds !== "string") return null;
+    const c = credsClaims(creds);
+    return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account };
+  };
+  let dialRefused: boolean | null = null;
+  if (typeof run?.creds === "string") {
+    try {
+      const nc = await connect({ servers, reconnect: false, authenticator: credsAuthenticator(new TextEncoder().encode(run.creds)) });
+      await nc.close();
+      dialRefused = false;
+    } catch {
+      dialRefused = true;
+    }
+  }
+  const out = run
+    ? {
+        runId,
+        held: true,
+        driver: meta(run.creds),
+        mediator: meta(run.mediatorCreds),
+        debt: run.renewalDebt?.reason ?? null,
+        driverConnClosed: run.nc ? run.nc.isClosed() : null,
+        dialRefused,
+      }
+    : { runId, held: false };
+  console.log(`PROBE_RESULT:${JSON.stringify(out)}`);
+}
 
 process.on("SIGTERM", async () => {
   await manager.stop().catch(() => {});

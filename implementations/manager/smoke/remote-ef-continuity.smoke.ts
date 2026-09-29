@@ -151,6 +151,7 @@ try {
 
   let refuseHttpRenewals = false;
   let renewalCallCount = 0;
+  let refusedRunRenewals = 0;
   let lastAttemptResult: any;
   let lastRunRenewalMaterial: any;
   let lastStandingRenewalMaterial: any;
@@ -172,9 +173,17 @@ try {
   const wrappedMgrAuthority: typeof plane.issueManagerServiceAuthority = async (args) => {
     if (refuseHttpRenewals && (args.request.operation === "renewStandingBundle" || args.request.operation === "renewRunDriver")) {
       renewalCallCount++;
+      if (args.request.operation === "renewRunDriver") refusedRunRenewals++;
       throw new Error("temporary rehearsal refusal: issuer unavailable");
     }
-    const res = await origMgrAuthority(args);
+    let res: any;
+    try {
+      res = await origMgrAuthority(args);
+    } catch (e) {
+      if (args.request.operation === "renewStandingBundle" || args.request.operation === "renewRunDriver")
+        console.log(`    issuer: ${args.request.operation} refused by real authority: ${(e as Error).message.slice(0, 160)}`);
+      throw e;
+    }
     if (args.request.operation === "renewRunDriver") {
       lastRunRenewalMaterial = res;
       successfulRunRenewals++;
@@ -256,8 +265,28 @@ try {
   managerProc = spawn(
     process.execPath,
     ["--import", tsxLoader, managerProcScript, SPACE, SERVERS, wsDir, httpUrl, owner, managerBearerToken],
-    { cwd: wsDir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
+    { cwd: wsDir, env: childEnv, stdio: ["pipe", "pipe", "pipe"] },
   );
+
+  // Fixture-only probe of the child's ACTUAL held run credentials (non-secret metadata only).
+  const probeWaiters: ((r: any) => void)[] = [];
+  let probeBuf = "";
+  managerProc.stdout?.on("data", (d) => {
+    probeBuf += d.toString();
+    let i: number;
+    while ((i = probeBuf.indexOf("\n")) >= 0) {
+      const line = probeBuf.slice(0, i);
+      probeBuf = probeBuf.slice(i + 1);
+      const m = line.match(/^PROBE_RESULT:(.*)$/);
+      if (m) probeWaiters.shift()?.(JSON.parse(m[1]!));
+    }
+  });
+  const probeHeld = (runId: string) =>
+    new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("probe timed out")), 10_000);
+      probeWaiters.push((r) => { clearTimeout(t); resolve(r); });
+      managerProc!.stdin!.write(`PROBE ${runId}\n`);
+    });
 
   await new Promise<void>((resolve, reject) => {
     managerProc!.stdout?.on("data", (d) => {
@@ -271,6 +300,7 @@ try {
     let stderrOutput = "";
     managerProc!.stderr?.on("data", (d) => {
       stderrOutput += d.toString();
+      for (const l of d.toString().split("\n")) if (/renewal|refus|expired|Authorization/i.test(l)) console.log(`    mgr: ${l.slice(0, 220)}`);
     });
     managerProc!.on("exit", (code) => {
       if (!managerInstanceId) reject(new Error(`manager process exited with code ${code} before ready:\n${stderrOutput}`));
@@ -387,31 +417,51 @@ try {
     assert.ok(foreignRejected, "foreign account credential unexpectedly accepted by broker");
   });
 
-  await cell("4. Last-good credentials are preserved when HTTP renewal is refused", async () => {
+  let answeredWhileExpired = false;
+  await cell("4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt", async () => {
+    const pre = await probeHeld(activeRunId);
+    assert.equal(pre.held, true, "run must be held by the manager");
+    assert.equal(pre.debt, null, "no renewal debt before refusal");
     refuseHttpRenewals = true;
-    renewalCallCount = 0;
+    refusedRunRenewals = 0;
+    await until(() => refusedRunRenewals > 0, 15_000);
+    assert.ok(refusedRunRenewals > 0, "manager never attempted renewRunDriver while refusal was active");
+    await wait(300);
+    const post = await probeHeld(activeRunId);
+    console.log(`    evidence: pre driver sub=${pre.driver.sub.slice(0, 8)}.. exp=${pre.driver.exp}; post exp=${post.driver.exp} mediatorExp=${post.mediator.exp} refused=${refusedRunRenewals} debt=${JSON.stringify(post.debt)}`);
+    assert.deepEqual(post.driver, pre.driver, "held driver must stay the last-good credential after refusal");
+    assert.deepEqual(post.mediator, pre.mediator, "held mediator must stay the last-good credential after refusal");
+    assert.equal(post.driver.account, auth.account.pub);
+    assert.ok(typeof post.debt === "string" && post.debt.includes("issuer unavailable"), "refusal must be recorded as renewal debt on the held run");
+    assert.equal(post.dialRefused, false, "last-good driver must still be accepted before its real expiry");
+  });
 
+  await cell("4b. Sustained refusal past the held credential's real expiry: broker refuses it and the parked run makes no progress", async () => {
     try {
-      // Wait until credentials reach near-expiry and renewal is attempted & refused
-      await until(async () => {
-        return renewalCallCount > 0;
-      }, 15_000);
+      const held = await probeHeld(activeRunId);
+      const heldExp = held.driver.exp as number;
+      await until(() => Date.now() / 1000 > heldExp + 1, 20_000);
+      const after = await probeHeld(activeRunId);
+      const now = Math.floor(Date.now() / 1000);
+      console.log(`    evidence: heldExp=${heldExp} now=${now} heldExpAfter=${after.driver.exp} dialRefused=${after.dialRefused} driverConnClosed=${after.driverConnClosed} refused=${refusedRunRenewals}`);
+      assert.ok(now > heldExp, "observation must be after the held credential's real expiry");
+      assert.equal(after.driver.exp, heldExp, "no credential may be adopted while the issuer refuses");
+      assert.equal(after.dialRefused, true, "broker must refuse the expired held run-driver credential");
 
-      assert.ok(renewalCallCount > 0, "renewal was not attempted");
+      // Attempt real progress through the original parked run while its driver is expired.
+      const ans = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
+      answeredWhileExpired = ans.code === 0;
+      console.log(`    evidence: answerWhileExpired exit=${ans.code}`);
+      await wait(6_000);
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
-      assert.equal(rec?.status?.value.state, "running", "run state corrupted after refused renewal");
-      assert.equal(rec?.status?.value.epoch, 1, "run epoch corrupted after refused renewal");
-
-      // Verify that while renewals are refused, the workflow continues to be readable and valid
-      const res = await runCli(["journal", activeRunId]);
-      assert.ok(res.stdout.includes("/checkpoint:review#0"), "workflow journal lost during refused renewal");
+      assert.notEqual(rec?.status?.value.state, "completed", "parked run progressed to completion with an expired driver");
+      assert.equal(rec?.status?.value.state, "running");
     } finally {
-      // Clear refusal
       refuseHttpRenewals = false;
     }
   });
 
-  await cell("5. Renewal succeeds through real HTTP authority and preserves held public nkeys", async () => {
+  await cell("5. Successful-renewal control after refusal: issued pair keeps nkeys/account and is adopted by the held run", async () => {
     const origDriverClaims = jwtPayload(lastAttemptResult.credentials.driver.jwt);
     const origMediatorClaims = jwtPayload(lastAttemptResult.credentials.mediator.jwt);
     const before = successfulRunRenewals;
@@ -433,17 +483,26 @@ try {
     console.log(`    evidence: origExp=${origDriverClaims.exp} renewedExp=${renewedDriverClaims.exp} now=${now} subStable=true successfulRunRenewals=${successfulRunRenewals} operatorIssuances=${operatorIssuances}`);
     assert.ok(now > origDriverClaims.exp, "observation must be after the original duty credential expiry");
 
-    const rec = await readRunRecord(recordsKv, "manager", activeRunId);
-    assert.equal(rec?.status?.value.state, "running");
+    // Adoption: the ACTUAL held pair now carries the renewed exp under the same nkeys, debt cleared.
+    const adopted = await until(async () => {
+      const h = await probeHeld(activeRunId);
+      return h.held && h.driver.exp > origDriverClaims.exp && h.debt === null && h.dialRefused === false;
+    }, 15_000);
+    const h = await probeHeld(activeRunId);
+    console.log(`    evidence: adopted=${adopted} heldExp=${h.driver?.exp} debt=${JSON.stringify(h.debt)} dialRefused=${h.dialRefused}`);
+    assert.ok(adopted, "held run did not adopt a renewed pair after refusal cleared");
+    assert.equal(h.driver.sub, origDriverClaims.sub, "held driver nkey changed");
+    assert.equal(h.mediator.sub, origMediatorClaims.sub, "held mediator nkey changed");
 
-    // Real post-adoption operation: CLI can still query the manager and inspect the running workflow
     const postRes = await runCli(["journal", activeRunId]);
     assert.equal(postRes.code, 0, "CLI journal command failed after credential renewal adoption");
   });
 
-  await cell("6. Checkpoint is resolved via stock run-answer with real operator token", async () => {
-    const res = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
-    assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
+  await cell("6. Parked run completes after re-adoption (checkpoint answered via stock run-answer)", async () => {
+    if (!answeredWhileExpired) {
+      const res = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
+      assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
+    }
 
     const completed = await until(async () => {
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
