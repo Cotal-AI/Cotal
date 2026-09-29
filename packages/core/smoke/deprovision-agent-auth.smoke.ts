@@ -35,6 +35,8 @@ import {
   setupSpaceStreams,
   provisionAgent,
   deprovisionAgent,
+  DeprovisionError,
+  standaloneConnectOpts,
   openAclRegistry,
   readAcl,
   mintLifecycleUid,
@@ -47,6 +49,10 @@ import {
   taskDurable,
   DEV_OWNER,
   principalKey,
+  aclBucket,
+  aclKey,
+  membersBucket,
+  memberKey,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -148,7 +154,7 @@ try {
 
   // ---- deprovision with a TARGET-PINNED cred (what the manager mints on the agent's exit) ----
   const dpvCreds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidA } });
-  await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
+  const a1 = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
 
   console.log("after deprovisionAgent — the lifecycle A footprint is gone; the role-shared durable survives:");
   check("dm_local-<id>-<uidA> durable GONE", !(await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id, uidA))));
@@ -158,13 +164,19 @@ try {
 
   // ---- idempotent: a second teardown (missing consumers / absent ACL row) must not throw ----
   let threw = false;
+  let a2: any;
   try {
-    await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
+    a2 = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidA, creds: dpvCreds });
   } catch (e) {
     threw = true;
     console.error("  ! second deprovision threw:", (e as Error).message);
   }
   check("second deprovisionAgent is a no-op (idempotent)", !threw);
+  check("ACCOUNTING: native first consumer disappearances are not unique deletion claims", a1.consumers.deleted === null && a1.consumers.disappeared === 2 && a1.consumers.acknowledged === 2 && a1.consumers.absent === 0, a1);
+  check("ACCOUNTING: first ACL CAS is uniquely attributable", a1.deleted === null && a1.absent === 0 && a1.refused === 0 && a1.acls.deleted === 1 && a1.acls.absent === 0, a1);
+  check("ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers", a2?.consumers?.deleted === 0 && a2?.consumers?.absent === 2, a2);
+  check("AUDIT: repeated cleanup reports zero total deletions after verified absence", a2?.deleted === 0 && a2?.acls?.absent === 1, a2);
+  check("ACCOUNTING: repeated deprovision reports all absent and 0 refused", a2?.deleted === 0 && a2?.absent === 3 && a2?.refused === 0 && a2?.examined === 3, a2);
 
   // ---- THE D15 BARRIERS (SPEC 13.1): a same-name SUCCESSOR is untouchable by the retired
   // lifecycle's teardown — by NAME DISJOINTNESS (the replay names only A's uid) and by the
@@ -206,6 +218,20 @@ try {
   check("successor dm durable SURVIVES the replayed teardown", await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id, uidB)));
   check("successor dlv durable SURVIVES the replayed teardown", await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, agent.id, uidB)));
   check("successor read-ACL row SURVIVES the replayed teardown", await aclPresent(provCreds, provId.id, localPrincipal(agent.id), uidB));
+  {
+    const dnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dpvCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const djsm = await jetstreamManager(dnc);
+      let successorInfoDenied = false;
+      try { await djsm.consumers.info(DM, dmDurable(DEV_OWNER, agent.id, uidB)); }
+      catch { successorInfoDenied = true; }
+      check("SECURITY: exact INFO grant denies successor consumer", successorInfoDenied && await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, agent.id, uidB)));
+      let foreignInfoDenied = false;
+      try { await djsm.consumers.info(DM, dmDurable(DEV_OWNER, newIdentity().id, uidA)); }
+      catch { foreignInfoDenied = true; }
+      check("SECURITY: exact INFO grant denies foreign consumer", foreignInfoDenied);
+    } finally { await dnc.close(); }
+  }
 
   // A CONFUSED/HOSTILE holder of A's teardown cred aiming it AT B's names: the cred's exact-name
   // grants are broker-DENIED on B's names, so the attempt fails (denied pub = JS-API timeout or a
@@ -329,7 +355,8 @@ try {
     const has = async (ch: string, owner: string, uid: string) => (await readMember(mkv, ch, owner, uid)) !== undefined;
     const before = (await listMembers(mkv)).length;
     const dpvE = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"] } });
-    await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE });
+    const firstMemberAccounting = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE });
+    check("MEMBERS ACCOUNTING: first deprovision deleted live member rows", firstMemberAccounting.members.deleted === 2 && firstMemberAccounting.members.absent === 0, firstMemberAccounting);
     check("MEMBERS: the retired lifecycle's named-channel rows are GONE", !(await has("general", who, uidE)) && !(await has("ops", who, uidE)));
     check("MEMBERS: an unnamed channel's row is RETAINED", await has("other", who, uidE));
     check("MEMBERS: the same-alias successor's row is RETAINED", await has("general", who, uidF));
@@ -337,9 +364,34 @@ try {
     const after = (await listMembers(mkv)).length;
     check("MEMBERS: exactly two rows removed (bounded, no prefix sweep)", before - after === 2, { before, after });
     let retryThrew: unknown;
-    try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE }); }
+    let repeatAccounting: Awaited<ReturnType<typeof deprovisionAgent>> | undefined;
+    try { repeatAccounting = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE }); }
     catch (e) { retryThrew = e; }
     check("MEMBERS: a retried teardown is an idempotent no-op", retryThrew === undefined && (await listMembers(mkv)).length === after, retryThrew);
+    check("AUDIT: repeated member cleanup reports zero member deletions", repeatAccounting?.members.deleted === 0 && repeatAccounting?.members.absent === 2, repeatAccounting);
+    check("MEMBERS ACCOUNTING: repeated member cleanup reports all absent and 0 deleted", repeatAccounting?.deleted === 0 && repeatAccounting?.absent === 5 && repeatAccounting?.refused === 0, repeatAccounting);
+
+    // MISSING: non-existent candidate resources report zero deleted and all absent
+    const uidMissing = mintLifecycleUid();
+    const dpvMissing = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidMissing, memberChannels: ["general"] } });
+    const aMissing = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidMissing, memberChannels: ["general"], creds: dpvMissing });
+    check("MISSING ACCOUNTING: non-existent candidate resources report zero deleted and all absent",
+      aMissing.deleted === 0 && aMissing.absent === 4 && aMissing.examined === 4 && aMissing.refused === 0 &&
+      aMissing.acls.absent === 1 && aMissing.members.absent === 1 && aMissing.consumers.absent === 2, aMissing);
+
+    // PARTIAL REFUSED: ungranted resource fails with DeprovisionError carrying partial accounting
+    let partialThrew: unknown;
+    try {
+      await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "unauthorized_ch"], creds: dpvE });
+    } catch (e) {
+      partialThrew = e;
+    }
+    const isDeprovError = partialThrew instanceof DeprovisionError;
+    const partialAccounting = isDeprovError ? (partialThrew as DeprovisionError).accounting : undefined;
+    check("PARTIAL REFUSED: ungranted resource fails with DeprovisionError carrying partial accounting",
+      isDeprovError && partialAccounting?.refused === 1 && partialAccounting?.members?.refused === 1 &&
+      partialAccounting?.acls?.absent === 1 && partialAccounting?.consumers?.absent === 2 && partialAccounting?.examined === 5,
+      partialAccounting);
     let staleOutcome = "completed";
     try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidF, memberChannels: ["general"], creds: dpvE }); }
     catch { staleOutcome = "threw"; }
@@ -347,7 +399,7 @@ try {
     // Isolate the member-row grant: purge the successor's row DIRECTLY with the retired cred, so no
     // earlier dm_/dlv_ denial can mask a widened `$KV.<members>.>` grant.
     {
-      const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(dpvE)), maxReconnectAttempts: 0 });
+      const dnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dpvE, tls: false }), maxReconnectAttempts: 0 });
       let directOutcome = "completed";
       try {
         const dkv = await openMembersRegistry(dnc, space);
@@ -355,14 +407,145 @@ try {
         await deleteMember(dkv, "general", who, uidF);
         await dnc.flush();
       } catch { directOutcome = "threw"; }
-      await dnc.close().catch(() => {});
       check("MEMBERS: a direct purge of the successor's row with the retired cred is broker-DENIED", directOutcome === "threw" && (await has("general", who, uidF)), { directOutcome });
+
+      // Explicit native denial of exact Direct Get permissions on successor and foreign keys
+      const djsm = await jetstreamManager(dnc);
+      let dgSuccAcl = "allowed";
+      try {
+        await djsm.direct.getMessage(`KV_${aclBucket(space)}`, { last_by_subj: `$KV.${aclBucket(space)}.${aclKey(who, uidF)}` });
+      } catch { dgSuccAcl = "denied"; }
+      check("SECURITY: Direct Get on successor ACL key with retired cred is broker-DENIED", dgSuccAcl === "denied");
+
+      let dgSuccMember = "allowed";
+      try {
+        await djsm.direct.getMessage(`KV_${membersBucket(space)}`, { last_by_subj: `$KV.${membersBucket(space)}.${memberKey("general", who, uidF)}` });
+      } catch { dgSuccMember = "denied"; }
+      check("SECURITY: Direct Get on successor member key with retired cred is broker-DENIED", dgSuccMember === "denied");
+
+      let dgForeignMember = "allowed";
+      try {
+        await djsm.direct.getMessage(`KV_${membersBucket(space)}`, { last_by_subj: `$KV.${membersBucket(space)}.${memberKey("general", peer, uidE)}` });
+      } catch { dgForeignMember = "denied"; }
+      check("SECURITY: Direct Get on foreign member key with retired cred is broker-DENIED", dgForeignMember === "denied");
+
+      await dnc.close().catch(() => {});
     }
     let wildcardRefused = false;
     try { await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["team.>"] } }); }
     catch { wildcardRefused = true; }
     check("MEMBERS: a wildcard member channel is refused at mint (no prefix-wide grant)", wildcardRefused);
   }
+  // Coordinator audit: concurrent callers use the shipped teardown and real target-pinned grants.
+  const auditProv = new CotalEndpoint({
+    space, servers: SERVERS, creds: provCreds,
+    card: { id: provId.id, name: "audit-prov", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  await auditProv.start();
+  try {
+    // Inject only scheduling: another real publisher advances this key after the shipped Direct Get.
+    // The production CAS and its result handling still execute against the native broker.
+    {
+      const target = newIdentity(), uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const { aclKey } = await import("../src/subjects.js");
+      const acl = await openAclRegistry(insp, space);
+      const key = aclKey(localPrincipal(target.id), uid);
+      const before = await acl.get(key);
+      if (!before || before.operation !== "PUT") throw new Error("audit ACL premise missing");
+      const proto = Object.getPrototypeOf(acl);
+      const nativePurge = proto.purge;
+      let interleaved = false;
+      proto.purge = async function (k: string, options: unknown) {
+        if (k === key && !interleaved) {
+          interleaved = true;
+          await acl.put(key, before.value);
+        }
+        return nativePurge.call(this, k, options);
+      };
+      let outcome: any, failure: unknown;
+      try {
+        const creds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid } });
+        outcome = await deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds });
+      } catch (e) { failure = e; }
+      finally { proto.purge = nativePurge; }
+      const after = await acl.get(key);
+      check("AUDIT: genuine competing PUT advanced the native ACL revision", interleaved && after?.operation === "PUT" && after.revision > before.revision);
+      check("AUDIT: CAS loss to a live PUT refuses instead of claiming complete absence", failure instanceof DeprovisionError && failure.accounting.acls.refused === 1, outcome);
+      check("AUDIT: CAS-losing cleanup still has live consumers", await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid)) && await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid)));
+    }
+    // A competing native purge after our live pre-read proves disappearance, not prior absence.
+    for (const resource of ["acls", "members"] as const) {
+      const target = newIdentity(), uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const { aclKey, memberKey } = await import("../src/subjects.js");
+      const { openMembersRegistry, commitMember } = await import("../src/members.js");
+      const owner = localPrincipal(target.id);
+      const memberChannels = resource === "members" ? ["general"] : [];
+      const kv = resource === "acls" ? await openAclRegistry(insp, space) : await openMembersRegistry(insp, space);
+      const key = resource === "acls" ? aclKey(owner, uid) : memberKey("general", owner, uid);
+      if (resource === "members") await commitMember(kv, {
+        channel: "general", owner, lifecycleUid: uid, state: "durable-active", joinCursor: 0,
+        activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now(),
+      });
+      const before = await kv.get(key);
+      if (!before || before.operation !== "PUT") throw new Error("live KV race premise missing");
+      const proto = Object.getPrototypeOf(kv);
+      const nativePurge = proto.purge;
+      const jsm = await jetstreamManager(insp);
+      const bucket = resource === "acls" ? aclBucket(space) : membersBucket(space);
+      let interleaved = false, competingRevision = 0;
+      proto.purge = async function (k: string, options: unknown) {
+        if (k === key && !interleaved) {
+          interleaved = true;
+          await nativePurge.call(kv, key);
+          const tombstone = await jsm.direct.getMessage(`KV_${bucket}`, { last_by_subj: `$KV.${bucket}.${key}` });
+          if (!tombstone || tombstone.header?.get("KV-Operation") !== "PURGE") throw new Error("competing native purge did not leave a tombstone");
+          competingRevision = tombstone.seq;
+        }
+        return nativePurge.call(this, k, options);
+      };
+      let outcome: any;
+      try {
+        const creds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid, memberChannels } });
+        outcome = await deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, memberChannels, creds });
+      } finally { proto.purge = nativePurge; }
+      const after = await kv.get(key);
+      check(`RACE: competing ${resource} purge advanced the native revision`, competingRevision > before.revision && after?.operation !== "PUT", { competingRevision, before: before.revision });
+      check(`RACE: ${resource} CAS loser reports disappearance rather than prior absence`,
+        outcome[resource].deleted === 0 && outcome[resource].absent === 0 && outcome[resource].disappeared === 1 && outcome[resource].refused === 0 && outcome.disappeared === 3, outcome);
+      const repeatCreds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid, memberChannels } });
+      const repeat = await deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, memberChannels, creds: repeatCreds });
+      check(`RACE: repeated ${resource} cleanup reports prior absence without another disappearance`,
+        repeat.deleted === 0 && repeat.disappeared === 0 && repeat[resource].absent === 1, repeat);
+    }
+    // Native interrupted-cleanup residue: the ACL is tombstoned while its two consumers remain.
+    for (let trial = 0; trial < 4; trial++) {
+      const target = newIdentity(), uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const { aclKey } = await import("../src/subjects.js");
+      await (await openAclRegistry(insp, space)).purge(aclKey(localPrincipal(target.id), uid));
+      check(`AUDIT: residual trial ${trial} starts with two live consumers`, await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid)) && await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid)));
+      const creds = await Promise.all([0, 1].map(() => mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target.id, lifecycleUid: uid } })));
+      const outcomes = await Promise.all(creds.map(creds => deprovisionAgent({ servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds })));
+      check(`AUDIT: residual trial ${trial} does not invent unique consumer removals`, outcomes.every((r) => r.deleted === null || r.deleted === 0) && outcomes.some((r) => r.consumers.disappeared > 0) && !(await consumerExists(provCreds, provId.id, DM, dmDurable(DEV_OWNER, target.id, uid))) && !(await consumerExists(provCreds, provId.id, DLV, dlvDurable(DEV_OWNER, target.id, uid))), outcomes);
+    }
+    for (let trial = 0; trial < 8; trial++) {
+      const target = newIdentity();
+      const uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const creds = await Promise.all([0, 1].map(() => mintCreds(auth, newIdentity(), "deprovisioner", {
+        deprovisionTarget: { principal: target.id, lifecycleUid: uid },
+      })));
+      const outcomes = await Promise.all(creds.map((credential) => deprovisionAgent({
+        servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds: credential,
+      })));
+      check(`AUDIT: concurrent cleanup ${trial} preserves CAS and native consumer uncertainty`, outcomes.reduce((sum, result) => sum + result.acls.deleted, 0) === 1 && outcomes.every((r) => r.deleted === null || r.deleted === 0), outcomes);
+      check(`AUDIT: concurrent cleanup ${trial} leaves target absent`,
+        !(await aclPresent(provCreds, provId.id, localPrincipal(target.id), uid)));
+    }
+  } finally { await auditProv.stop(); }
   await insp.drain().catch(() => {});
 
   console.log(`\nDEPROVISION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

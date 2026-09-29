@@ -698,6 +698,11 @@ try {
   await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });
   mAny.deprovisionBroker = origBroker;
 
+  const replayRes = (manager as unknown as { lastDeprovisionResources?: import("@cotal-ai/core").DeprovisionResourceAccounting }).lastDeprovisionResources;
+  check("REPLAY ACCOUNTING: replayed predecessor teardown reports zero deletions",
+    replayRes !== undefined && replayRes.deleted === 0 && replayRes.absent >= 3,
+    replayRes);
+
   const fpPost = await footprint();
   const survives = (succ: string[], post: string[]): boolean => succ.length > 0 && succ.every((n) => post.includes(n));
   check("BARRIER: the replacement's dm_ durables survive the replayed cleanup", survives(fpS.dm, fpPost.dm),
@@ -992,6 +997,60 @@ try {
       orphanMembersAfter.filter((k: string) => k.endsWith(orphanSuccUid)).length === 1, orphanMembersAfter);
     check("RECONCILE MEMBERS: adopted live agent row remains RETAINED after sweep",
       await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
+    const sweepRes = (manager as unknown as { staticReconcileLastSweepResources?: { slots: { examined: number; preservedAdopted: number; terminalized: number }; deprovision?: import("@cotal-ai/core").DeprovisionResourceAccounting } }).staticReconcileLastSweepResources;
+    check("RECONCILE ACCOUNTING: sweep recorded examined, foreign and adopted slots",
+      sweepRes?.slots !== undefined &&
+      sweepRes.slots.examined >= 2 &&
+      sweepRes.slots.preservedAdopted >= 1 &&
+      sweepRes.slots.terminalized >= 1,
+      sweepRes);
+    check("RECONCILE ACCOUNTING: Manager preserves native consumer evidence and exact KV counts",
+      sweepRes?.deprovision?.examined === 6 &&
+      sweepRes.deprovision.consumers.absent === 2 &&
+      sweepRes.deprovision.consumers.acknowledged === 0 &&
+      sweepRes.deprovision.consumers.disappeared === 0 &&
+      sweepRes.deprovision.deleted === 3 &&
+      sweepRes.deprovision.acls.absent === 1 &&
+      sweepRes.deprovision.members.deleted === 3,
+      sweepRes);
+
+    // A second real orphan lets competing native purges win after the teardown's pre-reads.
+    const racedAlias = "static_raced", racedActor = newIdentity().id, racedUid = mintLifecycleUid();
+    const racedPrincipal = principalKey(DEV_OWNER, racedActor);
+    await activateStaticLifecycle(staticTransport, {
+      owner: DEV_OWNER, alias: racedAlias, actor: racedActor, lifecycleUid: racedUid,
+      managerInstance: mInstanceId, ownerInstanceId: mInstanceId,
+    });
+    const racedSlot = await readStaticSlot(staticTransport, DEV_OWNER, racedAlias);
+    await casStaticSlot(staticTransport, { ...racedSlot!.row, phase: "active" }, racedSlot!.revision);
+    await delivery!.durableJoinFor(racedPrincipal.key, "general", racedUid);
+    const racedKeys = new Set<string>();
+    await inspect(async (_j, nc) => {
+      const { commitAcl, aclKey } = await import("@cotal-ai/core");
+      const acls = await openAclRegistry(nc, SPACE), members = await openMembersRegistry(nc, SPACE);
+      await commitAcl(acls, racedPrincipal.key, racedUid, ["general"]);
+      const targets = new Map([[aclKey(racedPrincipal.key, racedUid), acls], [memberKey("general", racedPrincipal.key, racedUid), members]]);
+      const proto = Object.getPrototypeOf(acls), nativePurge = proto.purge;
+      proto.purge = async function (key: string, options: unknown) {
+        const kv = targets.get(key);
+        if (kv && !racedKeys.has(key)) {
+          const before = await kv.get(key);
+          if (before?.operation !== "PUT") throw new Error("Manager CAS race requires a live row");
+          racedKeys.add(key);
+          await nativePurge.call(kv, key);
+        }
+        return nativePurge.call(this, key, options);
+      };
+      try { await mStatic.reconcileStaticLifecycles(true); }
+      finally { proto.purge = nativePurge; }
+    });
+    const racedResources = (manager as unknown as { staticReconcileLastSweepResources?: { deprovision?: import("@cotal-ai/core").DeprovisionResourceAccounting } }).staticReconcileLastSweepResources?.deprovision;
+    check("RECONCILE RACE: real ACL and member competing purges ran before retirement completed",
+      racedKeys.size === 2 && (await readStaticSlot(staticTransport, DEV_OWNER, racedAlias))?.row.phase === "retired");
+    check("RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",
+      racedResources?.examined === 4 && racedResources.deleted === 0 && racedResources.absent === 2 && racedResources.disappeared === 2 &&
+      racedResources.acls.disappeared === 1 && racedResources.acls.absent === 0 &&
+      racedResources.members.disappeared === 1 && racedResources.members.absent === 0, racedResources);
 
     // Clean up mock live agent from manager.agents
     (manager as unknown as { agents: Map<string, unknown> }).agents.delete(liveAlias);

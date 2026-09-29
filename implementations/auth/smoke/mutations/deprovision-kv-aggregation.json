@@ -1,0 +1,27 @@
+{
+  "suite": ["implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts"],
+  "guard": "The real Manager sweep preserves ACL and member disappearance evidence from native teardown",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:freeslot-barrier:live",
+  "completionMarker": "FREESLOT RESPAWN BARRIER",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/deprovision-kv-aggregation.json",
+  "mutations": [
+    {
+      "name": "discard ACL disappearance in Manager sweep aggregation",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "sweepDeprovision.acls.disappeared += acc.acls.disappeared;",
+      "replace": "sweepDeprovision.acls.disappeared += 0;",
+      "expectRed": "RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",
+      "cell": "RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:freeslot-barrier:live"
+    },
+    {
+      "name": "discard member disappearance in Manager sweep aggregation",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "sweepDeprovision.members.disappeared += acc.members.disappeared;",
+      "replace": "sweepDeprovision.members.disappeared += 0;",
+      "expectRed": "RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",
+      "cell": "RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:freeslot-barrier:live"
+    }
+  ]
+}

@@ -29,6 +29,7 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  aclKey,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -40,8 +41,10 @@ import {
   readerDurable,
   DEV_OWNER,
   principalKey,
+  memberKey,
   deprovisionTargetPrincipal,
 } from "./subjects.js";
+import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
@@ -755,6 +758,41 @@ export async function clearChannel(opts: {
  *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
  *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
  *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
+/**
+ * Bounded accounting for logical resources inspected, deleted, verified absent, or refused
+ * during agent lifecycle deprovisioning.
+ */
+export interface DeprovisionResourceAccounting {
+  /** Total count of distinct candidate resources examined across consumers, ACL and members. */
+  examined: number;
+  /** Uniquely attributable removals; null when a consumer disappeared without a native winner token. */
+  deleted: number | null;
+  /** Resources already absent at this attempt's first native observation of each resource. */
+  absent: number;
+  /** Number of resources that could not be deleted (broker errors). */
+  refused: number;
+  /** Native consumer DELETE success replies, not uniquely attributable removals. */
+  acknowledged: number;
+  /** Live resources observed gone without attributing removal to this call. */
+  disappeared: number;
+  /** Durable consumer accounting. */
+  consumers: { examined: number; deleted: number | null; absent: number; refused: number; acknowledged: number; disappeared: number };
+  /** Read-ACL entry accounting; disappeared means a competing purge won the native CAS. */
+  acls: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+  /** Durable membership entry accounting; disappeared means a competing purge won the native CAS. */
+  members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+}
+
+/** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
+export class DeprovisionError extends Error {
+  public readonly accounting: DeprovisionResourceAccounting;
+  constructor(message: string, accounting: DeprovisionResourceAccounting, cause?: unknown) {
+    super(message, cause !== undefined ? { cause } : undefined);
+    this.name = "DeprovisionError";
+    this.accounting = accounting;
+  }
+}
+
 export async function deprovisionAgent(opts: {
   servers: string;
   space: string;
@@ -763,7 +801,7 @@ export async function deprovisionAgent(opts: {
   /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
   memberChannels?: readonly string[];
   creds?: string;
-}): Promise<void> {
+}): Promise<DeprovisionResourceAccounting> {
   const nc = await connect({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
@@ -774,35 +812,204 @@ export async function deprovisionAgent(opts: {
     maxReconnectAttempts: 0,
     timeout: 5_000,
   });
+
+  const accounting: DeprovisionResourceAccounting = {
+    examined: 0,
+    deleted: 0,
+    absent: 0,
+    refused: 0,
+    acknowledged: 0,
+    disappeared: 0,
+    consumers: { examined: 0, deleted: 0, absent: 0, refused: 0, acknowledged: 0, disappeared: 0 },
+    acls: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
+    members: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
+  };
+
   try {
     // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
     // local owner, PLUS the exact lifecycle uid being torn down — the SAME resolution the
     // deprovisioner cred's permission pin used, so the delete names and the grant can't diverge.
     const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid, memberChannels: opts.memberChannels });
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
-    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key, t.lifecycleUid);
-    if (t.memberChannels.length > 0) {
-      const members = await openMembersRegistry(nc, opts.space);
-      for (const ch of t.memberChannels) await deleteMember(members, ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+    const errors: Error[] = [];
+
+    // 1. Read-ACL entry. This CAS fences only this key's transition, not the other resources.
+    accounting.acls.examined++;
+    accounting.examined++;
+    let aclSafe = false;
+    try {
+      const aclsKv = await openAclRegistry(nc, opts.space);
+      const aclKeyStr = aclKey(principalKey(t.owner, t.actor).key, t.lifecycleUid);
+      const aclRes = await purgeKvKeyWithAccounting(jsm, aclsKv, aclBucket(opts.space), aclKeyStr);
+      aclSafe = true;
+      if (aclRes.outcome === "deleted") {
+        accounting.acls.deleted++;
+        if (accounting.deleted !== null) accounting.deleted++;
+      } else if (aclRes.outcome === "disappeared") {
+        accounting.acls.disappeared++;
+        accounting.disappeared++;
+      } else {
+        accounting.acls.absent++;
+        accounting.absent++;
+      }
+    } catch (e) {
+      accounting.acls.refused++;
+      accounting.refused++;
+      errors.push(e as Error);
     }
+
+    // 2. Consumers (dm + dlv)
+    accounting.consumers.examined += 2;
+    accounting.examined += 2;
+    if (!aclSafe) {
+      // The key may still be live. Do not erase its consumers or invent absence.
+      accounting.consumers.refused += 2;
+      accounting.refused += 2;
+    } else for (const [stream, name] of [
+      [dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid)],
+      [dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid)],
+    ]) {
+      try {
+        const outcome = await deleteConsumerIdempotent(jsm, stream, name, () => {
+          accounting.consumers.acknowledged++;
+          accounting.acknowledged++;
+        });
+        if (outcome === "absent") {
+          accounting.consumers.absent++;
+          accounting.absent++;
+        } else if (outcome === "disappeared") {
+          accounting.consumers.disappeared++;
+          accounting.disappeared++;
+          accounting.consumers.deleted = null;
+          accounting.deleted = null;
+        } else {
+          throw new Error(`${stream}/${name} remains live after acknowledged DELETE`);
+        }
+      } catch (e) {
+        accounting.consumers.refused++;
+        accounting.refused++;
+        errors.push(e as Error);
+      }
+    }
+
+    // 3. Member rows
+    if (t.memberChannels.length > 0) {
+      if (!aclSafe) {
+        accounting.members.examined += t.memberChannels.length;
+        accounting.examined += t.memberChannels.length;
+        accounting.members.refused += t.memberChannels.length;
+        accounting.refused += t.memberChannels.length;
+      } else {
+        try {
+          const membersKv = await openMembersRegistry(nc, opts.space);
+          for (const ch of t.memberChannels) {
+            accounting.members.examined++;
+            accounting.examined++;
+            try {
+              const mKeyStr = memberKey(ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+              const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);
+              if (mRes.outcome === "deleted") {
+                accounting.members.deleted++;
+                if (accounting.deleted !== null) accounting.deleted++;
+              } else if (mRes.outcome === "disappeared") {
+                accounting.members.disappeared++;
+                accounting.disappeared++;
+              } else {
+                accounting.members.absent++;
+                accounting.absent++;
+              }
+            } catch (e) {
+              accounting.members.refused++;
+              accounting.refused++;
+              errors.push(e as Error);
+            }
+          }
+        } catch (e) {
+          for (let i = accounting.members.examined; i < t.memberChannels.length; i++) {
+            accounting.members.examined++;
+            accounting.examined++;
+            accounting.members.refused++;
+            accounting.refused++;
+          }
+          errors.push(e as Error);
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new DeprovisionError(
+        `deprovision refused on ${errors.length} resource(s): ${errors.map((e) => e.message).join("; ")}`,
+        accounting,
+        errors[0],
+      );
+    }
+
+    return accounting;
   } finally {
     await nc.drain();
   }
 }
 
-/** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays
- *  idempotent — but re-throwing anything else (e.g. a permissions violation) so a mis-scoped cred fails
- *  loud rather than silently leaving the durable behind. */
-async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string): Promise<void> {
+/** Purge one exact KV key with native revision fencing. A lost CAS never proves absence. */
+async function purgeKvKeyWithAccounting(
+  jsm: JetStreamManager,
+  kv: KV,
+  bucket: string,
+  key: string,
+): Promise<{ outcome: "deleted" | "absent" | "disappeared"; status: "won" | "raced-loss" | "already-tombstoned" | "missing" }> {
+  const stream = `KV_${bucket}`;
+  const subject = `$KV.${bucket}.${key}`;
+  const observe = async (): Promise<{ live: boolean; missing: boolean; seq?: number }> => {
+    try {
+      const msg = await jsm.direct.getMessage(stream, { last_by_subj: subject });
+      if (msg === null) return { live: false, missing: true };
+      const op = msg.header?.get("KV-Operation");
+      return { live: op !== "PURGE" && op !== "DEL", missing: false, seq: msg.seq };
+    } catch (e) {
+      if ([404, 10037].includes((e as { code?: number }).code ?? -1)) return { live: false, missing: true };
+      throw e;
+    }
+  };
+  const before = await observe();
+  if (before.missing) return { outcome: "absent", status: "missing" };
   try {
-    await jsm.consumers.delete(stream, name);
-  } catch (e) {
-    // Swallow ONLY "already gone" — a 404 code (the real NATS JS-API signal) or a codeless
-    // consumer/stream-not-found message. Anything else (a permissions violation, a broker error) is
-    // re-thrown so a mis-scoped cred fails loud. The message match is deliberately narrow (not a bare
-    // `/not found/i`) so an unrelated "…not found" error can't be mistaken for the idempotent case.
-    if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;
+    await kv.purge(key, { previousSeq: before.seq });
+    return before.live ? { outcome: "deleted", status: "won" } : { outcome: "absent", status: "already-tombstoned" };
+  } catch (err: unknown) {
+    const m = (err as Error)?.message ?? "";
+    if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
+      const after = await observe();
+      if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
+      return { outcome: before.live ? "disappeared" : "absent", status: "raced-loss" };
+    }
+    throw err;
   }
+}
+
+/** Observe the exact consumer before and after a native DELETE. The boolean is an acknowledgment,
+ * not a unique-removal token; two simultaneous callers can both receive true. */
+async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string, onAcknowledged: () => void): Promise<"disappeared" | "absent" | "still-live"> {
+  const present = async (): Promise<boolean> => {
+    try {
+      await jsm.consumers.info(stream, name);
+      return true;
+    } catch (e) {
+      if ((e as { code?: number }).code === 10014) return false;
+      throw e;
+    }
+  };
+  if (!(await present())) return "absent";
+  let acknowledged: boolean;
+  try {
+    acknowledged = await jsm.consumers.delete(stream, name);
+  } catch (e) {
+    // An overlapping deletion can return not-found after our pre-read. Native post-state settles
+    // disappearance, but cannot attribute that deletion or an acknowledgment to this caller.
+    if ((e as { code?: number }).code !== 10014) throw e;
+    if (!(await present())) return "disappeared";
+    throw e;
+  }
+  if (!acknowledged) throw new Error(`native DELETE did not acknowledge ${stream}/${name}`);
+  onAcknowledged();
+  return (await present()) ? "still-live" : "disappeared";
 }
