@@ -125,7 +125,7 @@
       "replace": "    const oomPref = { applied: true, value: 500 } as const;",
       "expectRed": "the in-process pty runtime applies the seat preference to its child",
       "cell": "the in-process pty runtime applies the seat preference to its child",
-      "note": "Skipping the call leaves the child's oom_score_adj at the kernel default 0, which the cell reads directly from /proc; no afterRestore needed, manager source runs through tsx."
+      "note": "Skipping the call leaves the child at the 600 the test process raised itself to before the spawn, which the cell reads directly from /proc; no afterRestore needed, manager source runs through tsx."
     }
   ]
 }

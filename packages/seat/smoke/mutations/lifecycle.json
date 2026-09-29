@@ -148,7 +148,7 @@
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "oom: the custodial child carries the seat preference",
       "cell": "oom: the custodial child carries the seat preference",
-      "note": "Skipping the write leaves oom_score_adj at the kernel default 0, so the read-back mismatches the target and the helper reports applied:false; the child cell reddens."
+      "note": "Skipping the write leaves the child at the 600 the launcher raised itself to before the launch, so the read-back mismatches the target, the helper reports applied:false and the child cell reddens on every host, including a runner whose processes start at 500."
     },
     {
       "name": "the preference is written to the custodian instead of the child",
@@ -158,7 +158,7 @@
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "oom: the custodian keeps the launcher's inherited oom_score_adj",
       "cell": "oom: the custodian keeps the launcher's inherited oom_score_adj",
-      "note": "The write lands on the custodian's own pid instead of the child's; the child then also reads 0, but the custodian cell is the one that distinguishes the wrong target from a skipped write. On a runner whose inherited value is already 500 this mutant is indistinguishable from the fix, so the proof must run where processes start below 500."
+      "note": "The write lands on the custodian's own pid instead of the child's; the child then also reads 0, but the custodian cell is the one that distinguishes the wrong target from a skipped write. The launcher sits at 600 before the launch, so a custodian that receives the write reads 500 against the launcher's 600 and the custodian cell reddens on every host."
     }
   ]
 }

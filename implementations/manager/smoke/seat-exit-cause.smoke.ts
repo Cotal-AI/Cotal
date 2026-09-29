@@ -259,6 +259,9 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
 
   let killed!: AgentHandle;
   if (process.platform === "linux") {
+    // The test process raises its own oom_score_adj above the seat value before launching: the pty child inherits 600, so only the helper's write can make the child read 500. On a hosted runner whose processes already start at 500 an inherited value would otherwise pass the child cell with the write skipped (the CI reproof at 19312d774 let both oom mutants survive).
+    writeFileSync("/proc/self/oom_score_adj", "600");
+    check("the test process sits above the seat value, so inheritance cannot pass the child cell", readFileSync("/proc/self/oom_score_adj", "utf8").trim() === "600");
     killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp");
     check("the in-process pty runtime applies the seat preference to its child", readFileSync(`/proc/${killed.pid}/oom_score_adj`, "utf8").trim() === "500");
   } else {
