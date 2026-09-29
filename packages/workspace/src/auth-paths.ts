@@ -540,7 +540,7 @@ export function retireManagerInstanceIdentity(
   const captured = `${path}.retiring.${randomUUID()}`;
   try { renameSync(path, captured); } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
-    throw e;
+    throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: capture failed`, { cause: e });
   }
   let held: ManagerInstanceIdentity | undefined;
   try { held = readManagerInstanceRecord(captured, space); } catch { held = undefined; }

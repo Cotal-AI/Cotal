@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +87,20 @@ try {
   check("a retry after removal reports absent, not removed", retire("alpha", successor).outcome === "absent");
   check("a space never provisioned reports absent", retire("gamma", ident("g")).outcome === "absent");
   check("the other space's identity is untouched", JSON.stringify(loadManagerInstanceIdentity(root, "beta")) === JSON.stringify(sibling));
+
+  // A non-ENOENT rename failure is uncertain, not an absent/removed retirement.
+  let renameFailure: unknown;
+  try {
+    retireManagerInstanceIdentity(root, "beta", sibling, { onBeforeRename: () => chmodSync(authDir(root), 0o500) });
+  } catch (error) {
+    renameFailure = error;
+  } finally {
+    chmodSync(authDir(root), 0o700);
+  }
+  check("a non-ENOENT rename error refuses by name", renameFailure instanceof Error &&
+    renameFailure.message.startsWith("manager-instance-identity-retire-refused") &&
+    ((renameFailure as NodeJS.ErrnoException).cause as NodeJS.ErrnoException | undefined)?.code === "EACCES");
+  check("the record survives a denied rename", JSON.stringify(loadManagerInstanceIdentity(root, "beta")) === JSON.stringify(sibling));
 
   // ── Concurrent race & link-back collision proof (competing writers with real 0600 files) ──
   const raceSpace = "concurrent";

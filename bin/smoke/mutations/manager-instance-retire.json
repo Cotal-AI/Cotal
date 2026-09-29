@@ -35,6 +35,14 @@
       "replace": "if (current === undefined) return { outcome: \"removed\" };",
       "cell": "a retry after removal reports absent, not removed",
       "expectRed": "a retry after removal reports absent, not removed"
+    },
+    {
+      "name": "a denied capture escapes without the named retirement refusal",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "    throw new Error(`manager-instance-identity-retire-refused: space \"${space}\" at ${path}: capture failed`, { cause: e });",
+      "replace": "    throw e;",
+      "cell": "a non-ENOENT rename error refuses by name",
+      "expectRed": "a non-ENOENT rename error refuses by name"
     }
   ]
 }
