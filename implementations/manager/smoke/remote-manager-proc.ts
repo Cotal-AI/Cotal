@@ -237,6 +237,23 @@ if (POOLED) {
 const manager = new Manager(managerOpts(POOLED ? "ef-fixture-host" : "pty", POOLED));
 
 await manager.start();
+// Fixture-only refusal boundary: stop new renewal entries and drain admitted calls before
+// sampling the last-good pair. The real renewal implementation still performs every call.
+const hostedRuns = (manager as unknown as { runHosting: { renew(): Promise<void> } }).runHosting;
+const renewRuns = hostedRuns.renew.bind(hostedRuns);
+const renewalFlights = new Set<Promise<void>>();
+let pauseRunRenewals = false;
+const renewalOwner = manager as any;
+const renewStanding = renewalOwner.renewRemoteStandingBundle.bind(manager);
+function trackedRenewal(renew: () => Promise<void>): Promise<void> {
+  if (pauseRunRenewals) return Promise.resolve();
+  const flight = renew();
+  renewalFlights.add(flight);
+  void flight.then(() => renewalFlights.delete(flight), () => renewalFlights.delete(flight));
+  return flight;
+}
+hostedRuns.renew = () => trackedRenewal(renewRuns);
+renewalOwner.renewRemoteStandingBundle = (force = false) => trackedRenewal(() => renewStanding(force));
 console.log(`MANAGER_READY:${mgrIdentity.instanceId}:${registered.processEpoch}`);
 
 // FIXTURE-ONLY observation seam: on a `PROBE <runId>` stdin line, report bounded non-secret
@@ -252,8 +269,8 @@ process.stdin.on("data", (chunk: string) => {
     stdinBuf = stdinBuf.slice(i + 1);
     const m = line.match(/^PROBE (\S+)$/);
     if (m) void probe(m[1]!);
-    const rw = line.match(/^(RETAIN|DIAL_WITNESS) (\S+)$/);
-    if (rw) void witness(rw[1] as "RETAIN" | "DIAL_WITNESS", rw[2]!);
+    const rw = line.match(/^(RETAIN|DIAL_WITNESS|PAUSE_RENEWALS|RESUME_RENEWALS|PREPARE_RECOVERY) (\S+)$/);
+    if (rw) void witness(rw[1] as "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUME_RENEWALS" | "PREPARE_RECOVERY", rw[2]!);
     const ep = line.match(/^ENROLL_PROBE(?: (stock|host|host-forged|host-intruder))?$/);
     if (ep) void enrollProbe((ep[1] ?? "stock") as "stock" | "host" | "host-forged" | "host-intruder");
   }
@@ -306,7 +323,46 @@ async function probe(runId: string) {
 // presents that same credential to the broker and reports only metadata and the broker's verdict,
 // so refusal after expiry is observable even once the manager has correctly released the slot.
 const witnesses = new Map<string, string>();
-async function witness(op: "RETAIN" | "DIAL_WITNESS", runId: string) {
+async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUME_RENEWALS" | "PREPARE_RECOVERY", runId: string) {
+  if (op === "PAUSE_RENEWALS" || op === "RESUME_RENEWALS" || op === "PREPARE_RECOVERY") {
+    pauseRunRenewals = op !== "RESUME_RENEWALS";
+    if (pauseRunRenewals) await Promise.allSettled([...renewalFlights]);
+    let prepared = false;
+    let error: string | undefined;
+    if (op === "PREPARE_RECOVERY") {
+      // Autonomous recovery is asserted before this command. Keep the following CLI call from
+      // racing the next short-TTL refresh: renew through the real host, observe the native reconnect,
+      // then flush the restored subscription. No credential or broker response is fabricated.
+      const nc = renewalOwner.serviceServe.nc;
+      const events = nc.status()[Symbol.asyncIterator]();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (nc.isClosed()) throw new Error("recovered service connection is closed");
+        await nc.flush();
+        const reconnected = (async () => {
+          let requested = false;
+          for (;;) {
+            const event = await events.next();
+            if (event.done) throw new Error("service status ended before reconnect");
+            if (event.value.type === "forceReconnect") requested = true;
+            if (requested && event.value.type === "reconnect") return;
+          }
+        })();
+        await Promise.all([
+          renewStanding(true),
+          Promise.race([reconnected, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("service reconnect was not observed")), 7_000);
+          })]),
+        ]);
+        await nc.flush();
+        if (nc !== renewalOwner.serviceServe.nc || nc.isClosed()) throw new Error("service connection changed at recovery boundary");
+        prepared = true;
+      } catch (e) { error = (e as Error).message; }
+      finally { clearTimeout(timer); void events.return?.(); }
+    }
+    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseRunRenewals, inFlight: renewalFlights.size, prepared, error })}`);
+    return;
+  }
   const meta = (creds: string) => { const c = credsClaims(creds); return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account }; };
   if (op === "RETAIN") {
     const creds = (manager as any).runHosting?.runs?.get(runId)?.creds;

@@ -328,7 +328,7 @@ try {
       managerProc!.stdin!.write(`PROBE ${runId}\n`);
     });
 
-  const witnessOp = (op: "RETAIN" | "DIAL_WITNESS", runId: string) =>
+  const witnessOp = (op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUME_RENEWALS" | "PREPARE_RECOVERY", runId: string) =>
     new Promise<any>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("witness timed out")), 10_000);
       witnessWaiters.push((r) => { clearTimeout(t); resolve(r); });
@@ -517,11 +517,22 @@ try {
   let answeredWhileExpired = false;
   let lastGoodWitness: { sub: string; exp: number; account: string } | undefined;
   await cell("4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt", async () => {
-    const pre = await probeHeld(activeRunId);
-    assert.equal(pre.held, true, "run must be held by the manager");
-    assert.equal(pre.debt, null, "no renewal debt before refusal");
-    refuseHttpRenewals = true;
-    refusedRunRenewals = 0;
+    // A successful request admitted before refusal may still be adopting its pair. Drain those
+    // real calls before taking the witness, then deny issuance before resuming the scheduler.
+    let pre: Awaited<ReturnType<typeof probeHeld>>;
+    try {
+      const boundary = await witnessOp("PAUSE_RENEWALS", activeRunId);
+      assert.equal(boundary.paused, true, "renewal sampling boundary must pause new calls");
+      assert.equal(boundary.inFlight, 0, "renewal sampling boundary must drain admitted calls");
+      pre = await probeHeld(activeRunId);
+      assert.equal(pre.held, true, "run must be held by the manager");
+      assert.equal(pre.debt, null, "no renewal debt before refusal");
+      refuseHttpRenewals = true;
+      refusedRunRenewals = 0;
+    } finally {
+      const resumed = await witnessOp("RESUME_RENEWALS", activeRunId);
+      assert.equal(resumed.paused, false, "real renewal scheduling must resume for the refusal test");
+    }
     await until(() => refusedRunRenewals > 0, 15_000);
     assert.ok(refusedRunRenewals > 0, "manager never attempted renewRunDriver while refusal was active");
     await wait(300);
@@ -606,7 +617,16 @@ try {
       assert.ok(redialed, "service endpoint was not re-dialed after standing re-adoption");
     }
     const recBefore = await readRunRecord(recordsKv, "manager", activeRunId);
-    const r = await runCli(["resume", activeRunId]);
+    let r: Awaited<ReturnType<typeof runCli>>;
+    try {
+      const boundary = await witnessOp("PREPARE_RECOVERY", activeRunId);
+      assert.equal(boundary.prepared, true, boundary.error ?? "service reconnect and subscription flush must finish before the recovery call");
+      assert.equal(boundary.inFlight, 0, "no renewal may race the recovery call");
+      r = await runCli(["resume", activeRunId]);
+    } finally {
+      const renewal = await witnessOp("RESUME_RENEWALS", activeRunId);
+      assert.equal(renewal.paused, false, "normal renewal scheduling must resume after the recovery call");
+    }
     console.log(`    evidence: run resume exit=${r.code} out=${r.stdout.trim().slice(0, 120)} err=${r.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
     assert.equal(r.code, 0, "stock run resume failed after the issuer resumed");
     resumed = true;
