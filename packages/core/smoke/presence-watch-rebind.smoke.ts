@@ -49,6 +49,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { createServer } from "node:net";
 import { CotalEndpoint, PresenceWriteStuckError, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
@@ -254,6 +255,37 @@ try {
       internal.presenceWriteFailure());
     internal.kv = liveKv;
     await ep.stop();
+  }
+
+  // --- BROKER FLOOR: a below-floor INFO is refused at bind, before any control-surface resource. ---
+  {
+    const floorPort = await pickFreePort();
+    const server = createServer((socket) => {
+      socket.write(
+        'INFO {"server_id":"floor-probe","version":"2.11.9","max_payload":1048576,"proto":1,"headers":true}\r\n',
+      );
+      socket.on("data", (data) => {
+        if (/PING/.test(String(data))) socket.write("PONG\r\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(floorPort, "127.0.0.1", resolve));
+    const floorEp = new CotalEndpoint({
+      space, servers: `nats://127.0.0.1:${floorPort}`,
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+      card: { name: "floor-probe", kind: "endpoint", role: "manager" },
+    });
+    floorEp.on("error", () => {});
+    let floorRejected: Error | undefined;
+    try {
+      await floorEp.start();
+    } catch (e) {
+      floorRejected = e as Error;
+    }
+    ok("4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",
+      floorRejected !== undefined && /below the required floor 2\.12/.test(floorRejected.message), floorRejected?.message);
+    ok("4.10 the refused bind closed its connection (the endpoint holds no nc)",
+      (floorEp as unknown as { nc?: unknown }).nc === undefined);
+    server.close();
   }
 
   // --- THE INCIDENT: the presence stream is deleted and recreated under a live connection. ---

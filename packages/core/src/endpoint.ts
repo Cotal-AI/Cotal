@@ -17,6 +17,7 @@ import {
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
+import { requireBrokerFloor } from "./broker-floor.js";
 import { inspectCredHealth } from "./provision.js";
 import {
   parseSecretStoreIdentity,
@@ -1336,6 +1337,9 @@ export class CotalEndpoint extends EventEmitter {
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
       ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
+    // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
+    // fresh connection, including the reconnects the library performs on its own here.
+    requireBrokerFloor(this.nc);
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();
     this.js = jetstream(this.nc);

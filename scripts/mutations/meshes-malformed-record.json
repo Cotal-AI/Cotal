@@ -5,7 +5,7 @@
   "grades": "suite",
   "guard": "loadMeshes refuses a registry record this build cannot use, naming the file, instead of handing the renderer a record that crashes it",
   "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/meshes-malformed-record.json",
   "why": [
     "A parseable record missing server/mode reached listMeshes, whose width() helper pads m.server",
@@ -47,6 +47,16 @@
       "replace": "",
       "expectRed": "a record with a mode this build does not know refuses naming the file",
       "cell": "a record with a mode this build does not know refuses naming the file",
+      "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the storeDir isAbsolute check is removed",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "  if (entry.storeDir !== undefined && (typeof entry.storeDir !== \"string\" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))\n    throw new Error(`${file} is not a usable mesh record: storeDir \"${entry.storeDir}\" is not a non-empty absolute path - restore the record or remove it`);",
+      "replace": "",
+      "expectRed": "a record with a relative storeDir refuses naming the file and storeDir",
+      "cell": "a record with a relative storeDir refuses naming the file and storeDir",
       "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
       "afterRestore": "pnpm build"
     }
