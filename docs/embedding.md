@@ -280,7 +280,7 @@ the host call converge on one barrier.
 | `retired` at this uid | `200 { retired: true, lifecycleUid, alreadyRetired: true }` |
 | `active`/`retiring` at this uid | the barrier runs, then `200 { retired: true, lifecycleUid }` |
 
-Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential.
+Deprovisioning durables stays with `deprovisionAgent` and a `deprovisioner` credential. Pass `memberChannels` to both to also purge the retired lifecycle's durable membership rows on those concrete channels.
 
 A host that resumes retained managed actors also implements
 `remoteAuthority.validateRetainedAgent`. The participant sends back the actor token and sentinel it
