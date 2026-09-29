@@ -16,7 +16,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -91,8 +91,19 @@ const hostHome = mkdtempSync(join(tmpdir(), "efgoal-hosthome-"));
 const partRoot = mkdtempSync(join(tmpdir(), "efgoal-part-"));
 // A seat socket path lives under HOME/.cotal/seats and must fit the 108-byte Unix limit; an
 // explicit short root (EF_SHORT_HOME_ROOT) keeps it within the lane scratch.
-const partHome = process.env.EF_PART_HOME ?? mkdtempSync(join(tmpdir(), "p"));
-if (process.env.EF_PART_HOME && readdirSync(partHome).length !== 0) throw new Error("EF_PART_HOME must be an existing EMPTY directory");
+// EF_SHORT_ROOT: an existing short directory. Each run claims a fresh one-letter home in it (mkdir
+// fails if taken) and removes it at teardown, so repeated runs never share state.
+const partHome = (() => {
+  // The root itself is the one-letter slot: EF_SHORT_ROOT names a PARENT, and the home is
+  // <parent>/<letter>, claimed by an exclusive mkdir. Keep the parent path short (a seat socket
+  // path must stay within the 108-byte Unix limit).
+  const base = process.env.EF_SHORT_ROOT ?? tmpdir();
+  for (const c of "abcdefghijklmnopqrstuvwxyz") {
+    const home = `${base}${c}`;
+    try { mkdirSync(home); return home; } catch { /* taken */ }
+  }
+  throw new Error(`no free one-letter home at ${base}?`);
+})();
 const jsStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}efgoal-js-`));
 mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
 saveSpaceAuth(authDir(hostRoot), auth);
@@ -333,6 +344,7 @@ registry.register({
   idpServer?.close();
   if (broker) await killAndAwaitExit(broker).catch(() => {});
   releaseBroker?.();
+  rmSync(partHome, { recursive: true, force: true });
 }
 console.log(`\nremote-ef-accepted-goal: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
