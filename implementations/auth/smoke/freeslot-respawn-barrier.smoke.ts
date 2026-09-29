@@ -140,8 +140,14 @@ const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   principalKey, registry, dmStream, dlvStream, openAclRegistry, openMembersRegistry, readMember, listMembers,
   CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
-  createEndpointStreams,
+  createEndpointStreams, DEV_OWNER, recordsBucket, epAuthBucket, mintLifecycleUid,
 } = await import("@cotal-ai/core");
+const {
+  activateStaticLifecycle,
+  readStaticSlot,
+  casStaticSlot,
+  staticLifecycleTransport,
+} = await import("../../manager/dist/static-lifecycle.js");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
@@ -735,6 +741,165 @@ try {
   check("INCOMPLETE: its row outside the launch policy stays RETAINED", !!sibUid && await sibRow("unnamed"));
   check("INCOMPLETE: the teardown reports the inventory as incomplete and the rows as RETAINED",
     errLines.some((l) => l.includes(`membership inventory incomplete`) && l.includes("RETAINED") && l.includes(sibUid ?? "?")), errLines.filter((l) => /inventory/.test(l)));
+
+  // ---------- G. OFFLINE VERSUS ACTIVE DISTINCTION ----------
+  console.log("G) offline versus active distinction: only terminal predecessor reaped, offline active retained");
+  // Distinguish the terminal/reaped predecessor from a merely offline or inactive agent:
+  // The predecessor was terminalized and reaped: its durable consumers, ACL rows, and 3 member rows are gone.
+  // The replacement agent (succUid) is live on the mesh; even if offline or inactive, absence never reaps it.
+  const succKey = principal.key;
+  await delivery!.durableJoinFor(succKey, "unnamed", succUid);
+  await delivery!.durableJoinFor(succKey, "team.api", succUid);
+  const succMembersBefore = (await memberRowsFor()).filter((k: string) => k.endsWith(succUid));
+  check("OFFLINE: replacement holds complete active memberships (general, team.api, unnamed)",
+    succMembersBefore.length === 3, succMembersBefore);
+
+  // Witness that the reaped predecessor is fully gone while the active agent's rows are intact:
+  const predMembersRemaining = (await memberRowsFor()).filter((k: string) => k.endsWith(predUid));
+  check("OFFLINE: terminal reaped predecessor has zero member rows remaining",
+    predMembersRemaining.length === 0, predMembersRemaining);
+  check("OFFLINE: active agent's dm_ and dlv_ durables remain intact",
+    (await footprint()).dm.length > 0 && (await footprint()).dlv.length > 0);
+  check("OFFLINE: active agent's stream ACL rows remain intact",
+    (await footprint()).acl.length > 0);
+
+  // Probe spawn while alias is active/offline: does NOT reap or steal the alias
+  const rProbeOff = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
+  const probeData = rProbeOff.data as { name?: string } | undefined;
+  check("OFFLINE: a spawn does not reap or steal the active alias (refused or auto-numbered)",
+    listNames().includes(AGENT) && !(rProbeOff.ok === true && probeData?.name === AGENT), rProbeOff);
+  if (rProbeOff.ok === true && probeData?.name) {
+    await mAny.opStop({ name: probeData.name, graceful: false }, mAny.ep.ref().id, true);
+  }
+
+  // ---------- H. STARTUP / STATIC RECONCILIATION ----------
+  console.log("H) startup/static reconciliation: orphan terminal vs adopted-live agent");
+  // Test the actual shipped static reconciliation path:
+  // 1. Line 8344: An adopted live agent's static lifecycle row is REFUSED for terminalization
+  //    (planStaticSlotResume returns "none", disposition="refused", "backed by an adopted live managed agent").
+  //    Its durable memberships and slot remain active and RETAINED.
+  // 2. An unadopted orphan static slot (phase "active", not adopted by any live agent):
+  //    Reconciled to terminal via driveStaticRetirement. With NO launch metadata (a.launch is undefined),
+  //    deprovisionBroker queries the delivery daemon's exact inventory and purges all orphan member rows.
+  // 3. Unrelated foreign principal rows and same-principal successor rows remain RETAINED.
+
+  const staticNc = await connect({ servers: SERVER, authenticator: credsAuthenticator(inspCreds), maxReconnectAttempts: 0 });
+  try {
+    const staticKvm = new Kvm(staticNc);
+    const recordsKv = await staticKvm.open(recordsBucket(SPACE));
+    const authKv = await staticKvm.open(epAuthBucket(SPACE));
+    const staticTransport = staticLifecycleTransport(recordsKv, authKv);
+    const mInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
+
+    // 1. Setup adopted live static agent:
+    const liveAlias = "static_live";
+    const liveActor = newIdentity().id;
+    const liveUid = mintLifecycleUid();
+    const livePrincipal = principalKey(DEV_OWNER, liveActor);
+
+    // Register in manager.agents as an adopted live agent:
+    (manager as unknown as { agents: Map<string, unknown> }).agents.set(liveAlias, {
+      id: liveActor,
+      name: liveAlias,
+      lifecycleUid: liveUid,
+      role: "worker",
+      userOwner: false,
+      handle: { status: () => "running", stop: () => {} },
+    });
+
+    await activateStaticLifecycle(staticTransport, {
+      owner: DEV_OWNER, alias: liveAlias, actor: liveActor, lifecycleUid: liveUid,
+      managerInstance: mInstanceId, ownerInstanceId: mInstanceId,
+    });
+    const liveSlotBefore = await readStaticSlot(staticTransport, DEV_OWNER, liveAlias);
+    await casStaticSlot(staticTransport, { ...liveSlotBefore!.row, phase: "active" }, liveSlotBefore!.revision);
+    await delivery!.durableJoinFor(livePrincipal.key, "general", liveUid);
+
+    // 2. Setup unadopted orphan static slot (3 channels: general, team.api, unnamed):
+    const orphanAlias = "static_orphan";
+    const orphanActor = newIdentity().id;
+    const orphanUid = mintLifecycleUid();
+    const orphanPrincipal = principalKey(DEV_OWNER, orphanActor);
+
+    // Ensure orphan is NOT adopted:
+    (manager as unknown as { agents: Map<string, unknown> }).agents.delete(orphanAlias);
+
+    await activateStaticLifecycle(staticTransport, {
+      owner: DEV_OWNER, alias: orphanAlias, actor: orphanActor, lifecycleUid: orphanUid,
+      managerInstance: mInstanceId, ownerInstanceId: mInstanceId,
+    });
+    const orphanSlotBefore = await readStaticSlot(staticTransport, DEV_OWNER, orphanAlias);
+    await casStaticSlot(staticTransport, { ...orphanSlotBefore!.row, phase: "active" }, orphanSlotBefore!.revision);
+
+    await delivery!.durableJoinFor(orphanPrincipal.key, "general", orphanUid);
+    await delivery!.durableJoinFor(orphanPrincipal.key, "team.api", orphanUid);
+    await delivery!.durableJoinFor(orphanPrincipal.key, "unnamed", orphanUid);
+
+    // Unrelated foreign principal and successor rows:
+    const orphanForeign = principalKey(DEV_OWNER, "bystander_static");
+    const orphanForeignUid = mintLifecycleUid();
+    await delivery!.durableJoinFor(orphanForeign.key, "general", orphanForeignUid);
+
+    const orphanSuccUid = mintLifecycleUid();
+    await delivery!.durableJoinFor(orphanPrincipal.key, "general", orphanSuccUid);
+
+    const orphanRowsFor = () =>
+      inspect(async (_j, nc) => (await listMembers(await openMembersRegistry(nc, SPACE), { owner: orphanPrincipal.key })).map((r: { channel: string; lifecycleUid: string }) => `${r.channel}/${r.lifecycleUid}`).sort());
+    const orphanMembersBefore = await orphanRowsFor();
+
+    // 3. Drive reconciliation retry on the adopted live item (verifying the line 8344 guard):
+    type StaticReconcileItem = {
+      owner: string; alias: string; actor: string; lifecycleUid: string; phase: string;
+      attempts: number; maxAttempts: number; disposition: string; remedy?: string; lastError?: string;
+    };
+    const mStatic = manager as unknown as {
+      staticReconcileKey: (row: { owner: string; alias: string; actor: string; lifecycleUid: string }) => string;
+      staticReconcileItems: Map<string, StaticReconcileItem>;
+      driveStaticReconcileRetry: (key: string, item: StaticReconcileItem) => Promise<void>;
+      reconcileStaticLifecycles: (postAdoption?: boolean) => Promise<void>;
+      retiredPrincipals: Set<string>;
+    };
+
+    const liveSlotFresh = await readStaticSlot(staticTransport, DEV_OWNER, liveAlias);
+    const liveKey = mStatic.staticReconcileKey(liveSlotFresh!.row);
+    const liveItem: StaticReconcileItem = {
+      owner: DEV_OWNER, alias: liveAlias, actor: liveActor, lifecycleUid: liveUid,
+      phase: "active", attempts: 0, maxAttempts: 5, disposition: "retrying",
+    };
+    mStatic.staticReconcileItems.set(liveKey, liveItem);
+    await mStatic.driveStaticReconcileRetry(liveKey, liveItem);
+
+    check("RECONCILE 8344: static reconciliation refuses to terminalize an adopted live managed agent",
+      liveItem.disposition === "refused" && /adopted live managed agent/.test(liveItem.lastError ?? ""), liveItem);
+    check("RECONCILE: adopted live agent's durable slot remains active (not terminalized)",
+      (await readStaticSlot(staticTransport, DEV_OWNER, liveAlias))?.row.phase === "active");
+    check("RECONCILE: adopted live agent's durable membership row is RETAINED",
+      await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
+
+    // 4. Drive startup/static reconciliation sweep: reconciles unadopted orphan to terminal
+    await mStatic.reconcileStaticLifecycles(true);
+
+    const orphanSlotAfter = await readStaticSlot(staticTransport, DEV_OWNER, orphanAlias);
+    check("RECONCILE: unadopted orphan static slot is retired", orphanSlotAfter?.row.phase === "retired", orphanSlotAfter);
+    check("RECONCILE: orphan principal is recorded in retiredPrincipals", mStatic.retiredPrincipals.has(orphanPrincipal.key));
+
+    const orphanMembersAfter = await orphanRowsFor();
+    check("RECONCILE MEMBERS: startup reconciliation purged all orphan rows via daemon inventory with no launch metadata (3 of 3, no residue)",
+      orphanMembersBefore.filter((k: string) => k.endsWith(orphanUid)).length === 3 && orphanMembersAfter.filter((k: string) => k.endsWith(orphanUid)).length === 0,
+      { orphanMembersBefore, orphanMembersAfter });
+    check("RECONCILE MEMBERS: foreign principal row is RETAINED",
+      await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", orphanForeign.key, orphanForeignUid)) !== undefined));
+    check("RECONCILE MEMBERS: successor row for same principal is RETAINED",
+      orphanMembersAfter.filter((k: string) => k.endsWith(orphanSuccUid)).length === 1, orphanMembersAfter);
+    check("RECONCILE MEMBERS: adopted live agent row remains RETAINED after sweep",
+      await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
+
+    // Clean up mock live agent from manager.agents
+    (manager as unknown as { agents: Map<string, unknown> }).agents.delete(liveAlias);
+  } finally {
+    (manager as unknown as { agents: Map<string, unknown> }).agents.delete("static_live");
+    await staticNc.drain().catch(() => {});
+  }
 
   console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
 
