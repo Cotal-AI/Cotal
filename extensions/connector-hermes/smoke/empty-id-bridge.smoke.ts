@@ -145,7 +145,7 @@ try {
   agent.items.push(emptyIdDelivery("first empty-id body"));
   agent.emitIncoming(); // the real MeshAgent fires "incoming" per buffered arrival
   const first = await waitFrame((f) => f.t === "incoming");
-  const firstMsg = first.msg as { id?: string; recvKey?: string };
+  const firstMsg = first.msg as { id?: string; recvKey?: string; historical?: boolean };
   assert.equal(firstMsg.id, "", "the empty wire id rides the wire item");
   assert.strictEqual(firstMsg.historical, false, "the wire item carries the historical flag, so the sidecar can frame a backfill (#2205)");
   assert.ok(typeof firstMsg.recvKey === "string" && firstMsg.recvKey !== "", "the wire item carries a minted receive key");
