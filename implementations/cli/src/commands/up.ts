@@ -1303,6 +1303,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
       // stop and left the unit sitting dead.
+      if (activationFinished) process.exit(code ?? 1);
     }
   });
 
