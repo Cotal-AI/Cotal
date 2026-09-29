@@ -159,6 +159,7 @@ try {
   let refusedRunRenewals = 0;
   const reachedAfterClear: Record<string, number> = {};
   let lastAttemptResult: any;
+  let firstRunIssuanceWindow: { start: number; end: number } | undefined;
   let lastRunRenewalMaterial: any;
   let lastStandingRenewalMaterial: any;
 
@@ -166,12 +167,17 @@ try {
   let successfulRunRenewals = 0;
   const origIssueRunAttempt = plane.issueManagerRunAttempt;
   const wrappedIssueRunAttempt: typeof plane.issueManagerRunAttempt = async (args) => {
+    const started = Math.floor(Date.now() / 1000);
     const res = await origIssueRunAttempt(args);
     // Keep only the FIRST driver/mediator pair: later operator issuances (journal/answer) reuse this
     // route and must not overwrite the run's original duty credentials.
     const creds = (res as any).credentials;
-    if (creds?.driver && creds?.mediator) lastAttemptResult ??= res;
-    else operatorIssuances++;
+    if (creds?.driver && creds?.mediator) {
+      if (!lastAttemptResult) {
+        lastAttemptResult = res;
+        firstRunIssuanceWindow = { start: started, end: Math.floor(Date.now() / 1000) };
+      }
+    } else operatorIssuances++;
     return res;
   };
 
@@ -489,7 +495,14 @@ try {
     assert.equal(driverClaims.iss, auth.account.signingPub, "driver must be signed by the issuer's account signing key");
     assert.match(driverClaims.sub, /^U[A-Z2-7]{55}$/, "driver must hold a public user nkey");
     assert.match(mediatorClaims.sub, /^U[A-Z2-7]{55}$/, "mediator must hold a public user nkey");
-    assert.equal(driverClaims.exp - driverClaims.iat, REHEARSAL_STANDING_TTL, "driver lifetime must be the trusted-host rehearsal lifetime");
+    // Expiry is captured before asynchronous signing; the JWT library stamps iat later.
+    // Bind both expiries to the observed issuance window rather than assuming one clock tick.
+    assert.ok(firstRunIssuanceWindow, "first run issuance timing must be captured");
+    for (const claims of [driverClaims, mediatorClaims]) {
+      assert.ok(claims.exp >= firstRunIssuanceWindow.start + REHEARSAL_STANDING_TTL &&
+        claims.exp <= firstRunIssuanceWindow.end + REHEARSAL_STANDING_TTL,
+      "run credential expiry must match the trusted-host rehearsal lifetime and issuance window");
+    }
     console.log(`    evidence: driver role=${driverClaims.nats?.tags ?? driverClaims.name} mediator role=${mediatorClaims.nats?.tags ?? mediatorClaims.name} callerOwnerMatchesIdp=${activeAdmission.admission.caller.owner === owner}`);
     assert.notEqual(driverClaims.sub, mediatorClaims.sub, "driver and mediator must have distinct public nkeys");
 
