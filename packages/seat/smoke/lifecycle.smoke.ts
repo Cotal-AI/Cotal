@@ -283,17 +283,20 @@ try {
     await h.waitForExit();
     check("natural exit: waitForExit resolves and status is exited", h.status() === "exited");
     h.close();
-    const recordGone = join(root, rec.id, "record.json");
+    const recordFile = join(root, rec.id, "record.json");
+    const exited = await until(() => {
+      const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
+      return custodianGone && !existsSync(rec.socket) && existsSync(recordFile);
+    }, 5_000);
+    const reaped = exited ? await reapSeat(root, rec.id) : undefined;
     check(
       "natural exit: custodian process, socket, and record converge without fixture kill",
-      await until(() => {
-        const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
-        return custodianGone && !existsSync(rec.socket) && !existsSync(recordGone);
-      }, 5_000),
+      Boolean(exited && reaped?.outcome === "reaped" && !existsSync(recordFile)),
       {
         custodian: state(rec.custodianPid),
         socket: existsSync(rec.socket),
-        record: existsSync(recordGone),
+        record: existsSync(recordFile),
+        reaped: reaped?.outcome,
       },
     );
     handles.push(h);
@@ -395,7 +398,10 @@ await h.waitForExit();
       await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 20_000),
       state(rec.custodianPid),
     );
-    check("its socket and record are gone with it", !existsSync(rec.socket) && !existsSync(join(root, rec.id, "record.json")), rec.socket);
+    const unadoptedRecord = join(root, rec.id, "record.json");
+    const unadoptedSettled = !existsSync(rec.socket) && existsSync(unadoptedRecord);
+    const unadoptedReaped = unadoptedSettled ? await reapSeat(root, rec.id) : undefined;
+    check("its socket and record are gone with it", Boolean(unadoptedSettled && unadoptedReaped?.outcome === "reaped" && !existsSync(unadoptedRecord)), rec.socket);
   }
 
   {
@@ -434,6 +440,46 @@ await h.waitForExit();
     // Whatever the cells above found, this seat must not outlive the suite.
     try { process.kill(-rec.childPid, "SIGKILL"); } catch { /* already gone */ }
     try { process.kill(rec.custodianPid, "SIGKILL"); } catch { /* already gone */ }
+  }
+
+  {
+    // A dead leader cannot conceal a live descendant: grandchild survives leader exit,
+    // reapSeat finds the surviving process group and cleans it up.
+    const rec = launchSeat({
+      root,
+      name: "dead-leader-grandchild",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "const c = require('child_process').spawn(process.execPath, ['-e', 'process.on(\"SIGHUP\", ()=>{}); setInterval(()=>{},1000)'], { stdio: 'ignore' }); c.on('spawn', () => { setTimeout(() => process.exit(0), 100); });"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    // Wait for leader to exit naturally
+    await until(() => state(rec.childPid) === "gone" || state(rec.childPid) === "Z", 5_000);
+    // Wait for custodian to settle and exit
+    await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 5_000);
+    // Verify grandchild is still running in the leader's process group
+    const membersBefore = readdirSync("/proc").filter((e) => /^\d+$/.test(e)).filter((e) => {
+      try {
+        const stat = readFileSync(`/proc/${e}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2] === String(rec.childPid);
+      } catch {
+        return false;
+      }
+    });
+    check("instrument: grandchild lives after leader exit", membersBefore.length >= 1, membersBefore);
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check(
+      "reapSeat cleans up surviving grandchild under dead leader",
+      !(evidence instanceof Error) && evidence.outcome === "reaped",
+      evidence instanceof Error ? evidence.message : evidence,
+    );
+    const membersAfter = membersBefore.filter((e) => state(Number(e)) !== "gone");
+    check("dead leader's grandchild is gone after reapSeat", membersAfter.length === 0, membersAfter);
+    for (const m of membersBefore) {
+      try { process.kill(Number(m), "SIGKILL"); } catch {}
+    }
   }
 
   {
