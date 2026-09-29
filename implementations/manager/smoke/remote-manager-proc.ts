@@ -35,7 +35,7 @@ import {
 // (process.argv[1]); delegate that one subcommand to the stock CLI composition root.
 if (process.argv[2] === "agent-bearer") {
   await import(new URL("../../../bin/run.ts", import.meta.url).href);
-  await new Promise(() => {});
+  process.exit(process.exitCode ?? 0);
 }
 const POOLED = process.env.EF_POOLED_RUNTIME === "1";
 if (POOLED) await registerPooledFixture();
