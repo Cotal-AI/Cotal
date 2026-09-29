@@ -8,8 +8,10 @@
  *    loss within bounded 15s window while sibling context remains ready and serving.
  * 4. Successful and failed credential adoption via delivery-admin rail and injected SecretStore.
  * 5. Context isolation: sibling context remains serving when one context closes or faults.
- * 6. Broker restart: resident connection recovers without exit when broker restarts promptly.
- * 7. Sustained broker loss: daemon exits within bounded window when broker is gone.
+ * 6. Post-expiry recovery: public broker-verified adoption clears the original health backstop.
+ * 7. Broker restart: a raw resident transport reconnects (not a daemon-restart claim).
+ * 8. Sustained broker loss: the embedded context becomes unavailable within a bounded window.
+ * 9. Owned connections, contexts, proxy, broker and state close before reporting success.
  */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -95,6 +97,7 @@ const proxyPort = await new Promise<number>((resolve, reject) => {
   proxy.listen(0, "127.0.0.1", () => resolve((proxy.address() as AddressInfo).port));
 });
 
+let checksCompleted = false;
 const handles: HostedServiceHandle[] = [];
 const endpoints: CotalEndpoint[] = [];
 const callers: NatsConnection[] = [];
@@ -120,7 +123,7 @@ try {
     const store = new MemoryStore({ kind: "injected", coordinate: `mem:${space}` });
     stores.push(store);
     const composition = { injected: true as const };
-    await store.put(deliveryCredsKey(space, composition), await mintCreds(auths[i], deliveryIdentities[i], "delivery", { expiresInSeconds: 60 }));
+    await store.put(deliveryCredsKey(space, composition), await mintCreds(auths[i], deliveryIdentities[i], "delivery", { expiresInSeconds: 120 }));
     await store.put(membershipRwCredsKey(space, composition), await mintCreds(auths[i], newIdentity(), "membership-rw"));
     await store.put(membershipObserverCredsKey(space, composition), await mintMembershipObserverCreds(auths[i], newIdentity()));
   }
@@ -255,11 +258,68 @@ try {
   check("sibling space B remains ready after space A closes", (await second.readiness()).state === "ready");
   check("space B control rail still answers after space A closes", (await ask[1]()) === "answered");
 
+  // Recover through the public adoption rail AFTER a real credential expiry. A socket reconnect
+  // alone must not clear the health backstop; the broker-verified adoption callbacks do that.
+  const expiryWindowMs = 15_000;
+  const expiryBackstopMs = 18_000;
+  process.env.COTAL_DELIVERY_BROKER_GONE_MS = String(expiryWindowMs);
+  process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS = String(expiryBackstopMs);
+  const expiredCred = await mintCreds(auths[0], deliveryIdentities[0], "delivery", { expiresInSeconds: 8 });
+  await stores[0].put(deliveryCredsKey(spaces[0], { injected: true }), expiredCred);
+  let expiredAt = 0;
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    if (args.some((v) => String(v).includes("! delivery: credential expired, awaiting proved renewal"))) {
+      expiredAt ||= Date.now();
+    }
+    originalError(...args);
+  };
+  try {
+    const expiryContext = await startDeliveryService({
+      ...inputs[0], context: { accountPublicKey: accounts[0].account.pub, lifecycleUid: "life-expiry" },
+      servers, stateDir: join(brokerDir, "state-expiry"),
+    });
+    handles.push(expiryContext);
+    check("assembled delivery observes its actual credential-expiry event", await until(async () => expiredAt > 0, 12_000));
+    // Expiry closes an existing connection at exp, while a new broker handshake can briefly
+    // accept that JWT at the seconds boundary. Observe real refusal instead of assuming equality.
+    const oldRefused = await until(async () => {
+      try {
+        const old = await connect({ servers, reconnect: false, timeout: 2000, authenticator: credsAuthenticator(new TextEncoder().encode(expiredCred)) });
+        await old.close();
+        return false;
+      } catch (error) {
+        if (!/expired|authorization|authentication/i.test((error as Error).message)) throw error;
+        return true;
+      }
+    }, 5000);
+    check("broker refuses the expired delivery generation", oldRefused);
+    const recoveredCred = await mintCreds(auths[0], deliveryIdentities[0], "delivery", { expiresInSeconds: 120 });
+    const positive = await connect({ servers, reconnect: false, timeout: 2000, authenticator: credsAuthenticator(new TextEncoder().encode(recoveredCred)) });
+    const newGenerationConnected = !positive.isClosed();
+    await positive.close();
+    check("broker accepts the new delivery generation after old expiry", newGenerationConnected);
+    await stores[0].put(deliveryCredsKey(spaces[0], { injected: true }), recoveredCred);
+    const recovered = await adminReq("reloadCreds");
+    check("public reloadCreds proves adoption after credential expiry", recovered.ok === true);
+    await until(async () => Date.now() > expiredAt + expiryBackstopMs + 1200, expiryBackstopMs + 3000);
+    check("post-expiry proved adoption survives the original health backstop",
+      Date.now() > expiredAt + expiryBackstopMs && (await expiryContext.readiness()).state === "ready");
+    check("post-expiry adopted delivery serves its actual control rail", (await ask[0]()) === "answered");
+    check("sibling stays ready and serving across another context's expiry and adoption",
+      (await second.readiness()).state === "ready" && (await ask[1]()) === "answered");
+    await expiryContext.close();
+  } finally {
+    console.error = originalError;
+    delete process.env.COTAL_DELIVERY_BROKER_GONE_MS;
+    delete process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS;
+  }
+
   await sup.stop();
   for (const c of callers) await c.close();
   callers.length = 0;
 
-  // ── 6. Standalone daemon broker kill & prompt restart ───────────────────────
+  // ── Raw resident transport broker kill & prompt restart (not the daemon) ────
   await second.close();
 
   const restartAuth = auths[1];
@@ -318,14 +378,45 @@ try {
   const cause = ((await lossContext.readiness()) as { cause?: string }).cause;
   check("unavailable cause names stopped context", /stopped \(code 1\)/i.test(String(cause)), `cause=${cause}`);
 
-  console.log(`delivery native health lifetime: ${passed} passed, 0 failed`);
-  process.exit(0);
+  assert.equal(passed, 32, "all native health and post-expiry checks ran");
+  checksCompleted = true;
 } finally {
   delete process.env.COTAL_DELIVERY_BROKER_GONE_MS;
   delete process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS;
+  const cleanupErrors: unknown[] = [];
+  for (const handle of handles) await handle.close().catch((e) => cleanupErrors.push(e));
+  for (const endpoint of endpoints) await endpoint.stop().catch((e) => cleanupErrors.push(e));
+  for (const caller of callers) await caller.close().catch((e) => cleanupErrors.push(e));
   for (const s of liveSockets) s.destroy();
   await new Promise<void>((resolve) => proxy.close(() => resolve()));
-  await killAndAwaitExit(nats, "SIGKILL");
-  release();
-  rmSync(brokerDir, { recursive: true, force: true });
+  try {
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "native health fixture cleanup failed; broker directory retained");
+    if (checksCompleted) {
+      // A closed context must not retain a reconnecting socket. Bring back the SAME native broker
+      // after every owned caller/context closed; HTTP monitoring creates no NATS connections.
+      nats = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
+      release = teardownOnSignal(nats, brokerDir);
+      assert.ok(await until(async () => {
+        try { return (await fetch(`http://127.0.0.1:${monitorPort}/varz`)).ok; } catch { return false; }
+      }, 5000), "teardown-audit broker starts");
+      const before = await totalConnections();
+      await wait(4500);
+      const stats = await (await fetch(`http://127.0.0.1:${monitorPort}/varz`)).json() as { connections: number; total_connections: number };
+      if (stats.connections !== 0 || stats.total_connections !== before) {
+        const census = await (await fetch(`http://127.0.0.1:${monitorPort}/connz?auth=1`)).json() as { connections: { name?: string; account?: string; authorized_user?: string }[] };
+        console.log("remaining native connection identities", JSON.stringify(census.connections.map(({ name, account, authorized_user }) => ({ name, account, authorized_user }))));
+      }
+      check("closed delivery contexts leave no connected or reconnecting broker clients",
+        stats.connections === 0 && stats.total_connections === before,
+        `active=${stats.connections} totalBefore=${before} totalAfter=${stats.total_connections}`);
+    }
+  } finally {
+    await killAndAwaitExit(nats, "SIGKILL");
+    release();
+    if (!cleanupErrors.length) rmSync(brokerDir, { recursive: true, force: true });
+  }
 }
+check("fixture closes its proxy and broker and removes its owned state before success",
+  !proxy.listening && (nats.exitCode !== null || nats.signalCode !== null) && !existsSync(brokerDir));
+assert.equal(passed, 34, "native health fixture includes broker-censused teardown");
+console.log(`delivery native health lifetime: ${passed} passed, 0 failed`);
