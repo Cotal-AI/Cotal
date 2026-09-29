@@ -32,6 +32,15 @@
       "expectRed": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
       "cell": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "omits abort check before expected === 0 empty return",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "    if (opts?.signal?.aborted) {\n      throw opts.signal.reason ?? new Error(\"scan aborted\");\n    }\n\n    if (expected === 0) return [];",
+      "replace": "    if (expected === 0) return [];\n\n    if (opts?.signal?.aborted) {\n      throw opts.signal.reason ?? new Error(\"scan aborted\");\n    }",
+      "expectRed": "aborted during empty scan throws instead of returning empty array",
+      "cell": "aborted during empty scan throws instead of returning empty array",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

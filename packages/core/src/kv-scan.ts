@@ -171,11 +171,12 @@ export async function liveKvEntries(
     initialName = initialInfo.name;
     activeConsumerName = initialInfo.name;
     expected = initialInfo.num_pending;
-    if (expected === 0) return [];
 
     if (opts?.signal?.aborted) {
       throw opts.signal.reason ?? new Error("scan aborted");
     }
+
+    if (expected === 0) return [];
 
     // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
     // what makes concurrent rewrites and drifted `history` settings both correct.

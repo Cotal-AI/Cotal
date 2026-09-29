@@ -512,6 +512,19 @@ try {
     let walkRefused: unknown;
     await walkKvEntries({ history: async () => [] } as never, ">").catch((e) => { walkRefused = e; });
     check("the walk refuses a non-Bucket handle loudly too", walkRefused instanceof Error && /Bucket/.test(String((walkRefused as Error).message)), String(walkRefused));
+
+    // Verify scan with signal aborted during bind throws even if expected count is 0
+    const abortEmptyKv = await kvm.create("abort_empty", { history: 1 });
+    const ac = new AbortController();
+    const scanPromise = liveKvEntries(abortEmptyKv, { signal: ac.signal });
+    ac.abort(new Error("aborted-during-empty-scan"));
+    let abortThrown = false;
+    try {
+      await scanPromise;
+    } catch (e: any) {
+      if (e?.message === "aborted-during-empty-scan") abortThrown = true;
+    }
+    check("aborted during empty scan throws instead of returning empty array", abortThrown);
   }
 
   await nc.close();
