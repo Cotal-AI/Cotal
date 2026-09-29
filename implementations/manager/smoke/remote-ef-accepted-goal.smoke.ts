@@ -335,16 +335,22 @@ registry.register({
     const wsDir = join(partRoot, "pooled-ws");
     mkdirSync(join(wsDir, ".cotal", "agents"), { recursive: true });
     writeFileSync(join(wsDir, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
-    const mproc = spawn(process.execPath, ["--import", tsxLoader, join(import.meta.dirname, "remote-manager-proc.ts"), space, servers, wsDir, `${proxyUrl}/manager-service-authority`, owner, mgrJwt], {
-      cwd: partRoot, stdio: ["pipe", "pipe", "pipe"],
-      env: { ...childEnv(partHome), EF_POOLED_RUNTIME: "1", EF_EXEC_HOST_URL: execHostUrl,
-        EF_CHILD_CMD: JSON.stringify([process.execPath, "--import", tsxLoader, import.meta.filename, "agent-child"]) },
-    });
-    kids.push(mproc);
-    let mOut = "";
-    mproc.stdout?.on("data", (d) => { mOut += d.toString(); });
-    mproc.stderr?.on("data", (d) => { mOut += d.toString(); });
-    for (let i = 0; i < 600 && mproc.exitCode === null && !/MANAGER_READY/.test(mOut); i++) await sleep(200);
+    const startPooled = async () => {
+      const p = spawn(process.execPath, ["--import", tsxLoader, join(import.meta.dirname, "remote-manager-proc.ts"), space, servers, wsDir, `${proxyUrl}/manager-service-authority`, owner, mgrJwt], {
+        cwd: partRoot, stdio: ["pipe", "pipe", "pipe"],
+        env: { ...childEnv(partHome), EF_POOLED_RUNTIME: "1", EF_EXEC_HOST_URL: execHostUrl,
+          EF_CHILD_CMD: JSON.stringify([process.execPath, "--import", tsxLoader, import.meta.filename, "agent-child"]) },
+      });
+      kids.push(p);
+      const box = { p, out: "" };
+      p.stdout?.on("data", (d) => { box.out += d.toString(); });
+      p.stderr?.on("data", (d) => { box.out += d.toString(); });
+      for (let i = 0; i < 600 && p.exitCode === null && !/MANAGER_READY/.test(box.out); i++) await sleep(200);
+      return box;
+    };
+    const first = await startPooled();
+    const mproc = first.p;
+    const mOut = first.out;
     const refused = mOut.match(/POOLED_PTY_REFUSED:(.*)/)?.[1] ?? "";
     ok("pooled construction with the local PTY runtime is still refused", /pooled/.test(refused), refused || mOut.slice(-400));
     ok("library-constructed pooled Manager starts on the non-custodial fixture runtime", /MANAGER_READY/.test(mOut), mOut.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").slice(-800));
@@ -361,6 +367,33 @@ registry.register({
     // Wrong identity: a launch whose lifecycle was never enrolled is refused by the execution host.
     const forged = await fetch(`${execHostUrl}/spawn`, { method: "POST", body: JSON.stringify({ name: "sdkfixture", cwd: partRoot, spec: { command: process.execPath, args: ["-e", "0"], env: { COTAL_ACTOR: "sdkfixture", COTAL_OWNER: owner, COTAL_LIFECYCLE_UID: mintLifecycleUid() } } }) });
     ok("wrong-identity launch (unenrolled lifecycle) is refused by the execution host and runs nothing", forged.status === 403 && execLaunches.filter((x) => x.status === 200).length === 1, execLaunches);
+
+    // ---- successor fencing through the supported lifecycle ----
+    // Predecessor's exact authorized enrollment (nonsecret: identity, epoch, proof digest, token digest).
+    const predReq = authorizedRequests.at(-1) as any;
+    const predReady = first.out.match(/MANAGER_READY:(\w+):(\d+)/);
+    mproc.kill("SIGTERM");
+    await new Promise<void>((r) => mproc.exitCode !== null ? r() : mproc.once("exit", () => r()));
+    const second = await startPooled();
+    const succReady = second.out.match(/MANAGER_READY:(\w+):(\d+)/);
+    console.log(`    evidence: predecessor instance=${predReady?.[1]} epoch=${predReady?.[2]} exit=${mproc.exitCode ?? mproc.signalCode}; successor instance=${succReady?.[1]} epoch=${succReady?.[2]}; predecessor request serveEpoch=${predReq?.serveEpoch} instance=${predReq?.instanceId}`);
+    if (!succReady) console.log(`    successor output: ${second.out.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").slice(-1200)}`);
+    ok("supported successor: same control instance re-registers under a newer serve epoch", !!predReady && !!succReady && succReady[1] === predReady[1] && Number(succReady[2]) > Number(predReady[2]) && predReq?.serveEpoch === Number(predReady[2]), { predReady: predReady?.slice(1), succReady: succReady?.slice(1) });
+    // Stale predecessor material replayed by the SAME authenticated owner at the stock door.
+    const staleBefore = intercepted.length;
+    const stale = await fetch(`${proxyUrl}/manager-service-authority`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: mgrJwt, request: predReq }) });
+    const staleRec = intercepted.slice(staleBefore);
+    console.log(`    evidence: predecessor replay status=${stale.status} recorded=${JSON.stringify(staleRec)}`);
+    ok("stock door refuses the predecessor's stale registration material and grants nothing", stale.status >= 400 && staleRec.length === 1 && staleRec[0]!.status !== 200 && /stale|does not match current host registration/.test(staleRec[0]!.reason ?? ""), staleRec);
+    // The current successor is admitted through the real accepted-goal route.
+    writeFileSync(join(wsDir, ".cotal", "agents", "sdkfixture2.md"), "---\nname: sdkfixture2\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
+    const succBefore = intercepted.length;
+    const sp2 = await cli(["spawn", "sdkfixture2", "--detach", "--space", space], partRoot, partHome, 120_000);
+    const succRec = intercepted.slice(succBefore);
+    const succReq = authorizedRequests.at(-1) as any;
+    for (let i = 0; i < 50 && !sdkResults.some((r) => r.actor === "sdkfixture2"); i++) await sleep(200);
+    console.log(`    evidence: successor spawn exit=${sp2.code} recorded=${JSON.stringify(succRec)} serveEpoch=${succReq?.serveEpoch} sdkResults=${JSON.stringify(sdkResults)} out=${sp2.out.replace(/\s+/g, " ").slice(0, 300)}`);
+    ok("current successor is admitted: door-authorized enrollment at the new epoch, host-owned SDK child reports", sp2.code === 0 && succRec.some((x) => x.status === 200 && x.actor === "sdkfixture2") && succReq?.serveEpoch === Number(succReady?.[2]) && sdkResults.some((r) => r.actor === "sdkfixture2"), { code: sp2.code, succRec });
     console.log("  ? LABEL: pooled via LIBRARY construction (cotal supervise has no pooled flag); fixture runtime + execution host are test-only, not a production SandboxProvider");
     execHost.close();
   } else {

@@ -237,7 +237,7 @@ if (POOLED) {
 const manager = new Manager(managerOpts(POOLED ? "ef-fixture-host" : "pty", POOLED));
 
 await manager.start();
-console.log(`MANAGER_READY:${mgrIdentity.instanceId}`);
+console.log(`MANAGER_READY:${mgrIdentity.instanceId}:${registered.processEpoch}`);
 
 // FIXTURE-ONLY observation seam: on a `PROBE <runId>` stdin line, report bounded non-secret
 // metadata (public nkey, exp, debt reason, connection state, a live broker dial verdict) read from
