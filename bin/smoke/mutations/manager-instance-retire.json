@@ -1,0 +1,40 @@
+{
+  "suite": ["packages/workspace/smoke/manager-instance-retire.smoke.ts"],
+  "guard": "conditional manager identity retirement keeps changed generations and only reports removal for the full expected identity",
+  "command": "pnpm smoke:manager-instance-retire",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-instance-retire.json",
+  "mutations": [
+    {
+      "name": "serve seed is ignored when comparing generations",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "a.serveIdentity.id === b.serveIdentity.id && a.serveIdentity.seed === b.serveIdentity.seed",
+      "replace": "a.serveIdentity.id === b.serveIdentity.id",
+      "cell": "a successor with the same instanceId and nkey but another seed refuses",
+      "expectRed": "a successor with the same instanceId and nkey but another seed refuses"
+    },
+    {
+      "name": "captured successor is deleted without the second comparison",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "if (held === undefined || !sameManagerInstanceIdentity(held, expected)) {",
+      "replace": "if (false) {",
+      "cell": "a record changed by a competing writer before rename is put back and refuses",
+      "expectRed": "a record changed by a competing writer before rename is put back and refuses"
+    },
+    {
+      "name": "link-back overwrites a competing successor instead of refusing the occupied path",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "try { linkSync(captured, path); unlinkSync(captured); } catch {",
+      "replace": "try { renameSync(captured, path); } catch {",
+      "cell": "link-back collision preserves both generations and refuses naming captured path",
+      "expectRed": "link-back collision preserves both generations and refuses naming captured path"
+    },
+    {
+      "name": "a missing record claims that this call removed it",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "if (current === undefined) return { outcome: \"absent\" };",
+      "replace": "if (current === undefined) return { outcome: \"removed\" };",
+      "cell": "a space never provisioned reports absent",
+      "expectRed": "a space never provisioned reports absent"
+    }
+  ]
+}
