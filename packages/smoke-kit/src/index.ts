@@ -22,6 +22,7 @@ export {
   type SmokeCommandOptions,
   type SmokeSandboxAnchor,
 } from "./sandbox-guard.js";
+export { checkSelection, defaultJobs, runFiles, type FileResult, type RunFilesOptions } from "./run-files.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
 export { SEAT_MAX_SOCKET_PATH, SEAT_SOCKET_OVERHEAD, makeSeatRoot, rootFits } from "./seat-root.js";
 export {
