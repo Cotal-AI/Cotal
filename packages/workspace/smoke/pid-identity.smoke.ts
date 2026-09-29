@@ -262,9 +262,12 @@ try {
     const oldTarget = spawnTarget();
     strays.push(oldTarget.child);
     await wait(150);
-    writePidPair(gPath, oldTarget.pid!);
+    let g0Ok = true;
+    try {
+      writePidPair(gPath, oldTarget.pid!);
+    } catch { g0Ok = false; }
     check("G0 a first publish with no injection leaves a complete, matching record",
-      verifyIdentityPin(gPath).kind === "match" && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid);
+      g0Ok && verifyIdentityPin(gPath).kind === "match" && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid);
 
     const newTarget = spawnTarget();
     strays.push(newTarget.child);
@@ -296,9 +299,12 @@ try {
       g3Threw && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid && verifyIdentityPin(gPath).kind === "legacy",
       { pidfile: readFileSync(gPath, "utf8"), verdict: verifyIdentityPin(gPath).kind });
 
-    writePidPair(gPath, newTarget.pid!);
+    let g4Ok = true;
+    try {
+      writePidPair(gPath, newTarget.pid!);
+    } catch { g4Ok = false; }
     check("G4 a full publish leaves the NEW complete record, matching",
-      verifyIdentityPin(gPath).kind === "match" && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid);
+      g4Ok && verifyIdentityPin(gPath).kind === "match" && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid);
     reap(oldTarget.child);
     reap(newTarget.child);
 
