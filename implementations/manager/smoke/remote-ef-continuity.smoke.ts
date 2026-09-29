@@ -277,6 +277,7 @@ try {
 
   // Fixture-only probe of the child's ACTUAL held run credentials (non-secret metadata only).
   const probeWaiters: ((r: any) => void)[] = [];
+  const serveRedials: number[] = [];
   let probeBuf = "";
   managerProc.stdout?.on("data", (d) => {
     probeBuf += d.toString();
@@ -307,7 +308,10 @@ try {
     let stderrOutput = "";
     managerProc!.stderr?.on("data", (d) => {
       stderrOutput += d.toString();
-      for (const l of d.toString().split("\n")) if (/renewal|refus|expired|Authorization/i.test(l)) console.log(`    mgr: ${l.slice(0, 220)}`);
+      for (const l of d.toString().split("\n")) {
+        if (/renewal|refus|expired|Authorization|re-dialed|could not be restored/i.test(l)) console.log(`    mgr: ${l.slice(0, 220)}`);
+        if (/manager service endpoint re-dialed/.test(l)) serveRedials.push(Date.now());
+      }
     });
     managerProc!.on("exit", (code) => {
       if (!managerInstanceId) reject(new Error(`manager process exited with code ${code} before ready:\n${stderrOutput}`));
@@ -491,6 +495,14 @@ try {
       assert.equal(p.standing[k].account, auth.account.pub, `${k} account changed across re-adoption`);
     }
 
+    // If the service connection closed during the refusal, its bounded re-dial (1s/5s/30s) must
+    // restore it before any control command can be answered. Record when it did.
+    const clearedAt = Date.now();
+    if (REFUSE_SCOPE === "all") {
+      const redialed = await until(() => serveRedials.some((t) => t >= clearedAt - 60_000), 45_000);
+      console.log(`    evidence: serve re-dial after clear=${redialed} at +${serveRedials.length ? Math.round((serveRedials.at(-1)! - clearedAt) / 1000) : "none"}s redials=${serveRedials.length}`);
+      assert.ok(redialed, "service endpoint was not re-dialed after standing re-adoption");
+    }
     const recBefore = await readRunRecord(recordsKv, "manager", activeRunId);
     const r = await runCli(["resume", activeRunId]);
     console.log(`    evidence: run resume exit=${r.code} out=${r.stdout.trim().slice(0, 120)} err=${r.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
