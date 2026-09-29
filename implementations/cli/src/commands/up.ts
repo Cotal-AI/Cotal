@@ -34,6 +34,8 @@ import {
   setupSpaceStreams,
   reconcileSpaceTtls,
   standaloneConnectOpts,
+  requireBrokerFloor,
+  parseServerVersion,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
   mkSecretDir,
@@ -969,6 +971,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           // a same-root caller holds the space's signing material either way.
           reconcileCreds = await mintCreds(spaceAuth, newIdentity(), "provisioner");
         }
+        const v = await brokerVersion(server, reconcileCreds);
+        if (belowPresenceSafeBroker(v))
+          console.error(
+            c.yellow(
+              `! nats-server ${v} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+            ),
+          );
         for (const r of await reconcileSpaceTtls({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(`  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
       } catch (e) {
@@ -1316,6 +1325,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     markPendingResumeDegraded(resumeAttempt ?? "", reason, startupLock);
     throw new Error(reason);
   }
+  const v = await brokerVersion(server, setup?.creds);
+  if (belowPresenceSafeBroker(v))
+    console.error(
+      c.yellow(
+        `! nats-server ${v} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+      ),
+    );
   if (restored) await provePreparedRestoreListener(restored);
   // Listener ready — commit the transport decision (S5: not before start).
   commitTransportPolicy(meshRoot, transport);
@@ -2439,6 +2455,20 @@ export async function startMeshDetached(
     if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
     throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
   }
+  let brokerVer: string;
+  try {
+    brokerVer = await brokerVersion(server, setup?.creds);
+  } catch (e) {
+    child.kill("SIGTERM");
+    if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
+    throw e;
+  }
+  if (belowPresenceSafeBroker(brokerVer))
+    console.error(
+      c.yellow(
+        `! nats-server ${brokerVer} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+      ),
+    );
   if (!opts.boundListener) {
     if (!child.pid) throw new Error("nats-server spawned with no pid");
     writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
@@ -2737,6 +2767,29 @@ async function waitReady(server: string, creds?: string): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
+}
+
+// SPEC §13.12: reads the connected broker's version, and refuses loud below the 2.12 floor
+// before any pidfile or provisioning touches it (the same gate `requireBrokerFloor` enforces
+// on every other control-surface connection).
+async function brokerVersion(server: string, creds?: string): Promise<string> {
+  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
+  try {
+    requireBrokerFloor(nc);
+    return nc.info?.version ?? "";
+  } finally {
+    await nc.drain();
+  }
+}
+
+// #1356: the presence bucket's file-backed latch is fixed in nats-server 2.14.5. Below that,
+// `cotal up` warns (never refuses: 2.14.0 meets the SPEC §13.12 floor and is the bundled broker).
+function belowPresenceSafeBroker(version: string): boolean {
+  const p = parseServerVersion(version);
+  if (!p) return false;
+  if (p.major !== 2) return p.major < 2;
+  if (p.minor !== 14) return p.minor < 14;
+  return p.patch < 5;
 }
 
 /** Wildcard binds mean "every interface", so they are NOT an address a client can be told to dial:
