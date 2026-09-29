@@ -132,7 +132,7 @@ try {
     assert.deepEqual(request.identities, base.identities);
     // Requests in the first 3s are authenticated as a foreign owner, so the real authorizer refuses
     // each handler's first attempt. Later requests carry the registered owner.
-    if (calls === 1) refuseUntil = Date.now() + 3_000;
+    if (calls === 1) refuseUntil = Date.now() + 6_000;
     const caller = Date.now() < refuseUntil ? `u_${"f".repeat(26)}` : owner;
     let material: RemoteManagerAuthorityMaterial;
     try {
