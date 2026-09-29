@@ -461,6 +461,14 @@ try {
   await delivery!.durableJoinFor(principal.key, "side", foreignUid);
   const otherGenRow = () => memberRow("side", foreignUid);
   const membersBefore = await memberRowsFor();
+  // The inventory verb itself, over the manager's own supervisor rail: exactly this lifecycle's
+  // channels (never the other-lifecycle "side" row), and a malformed lifecycle is refused.
+  const epAdmin = (manager as unknown as { ep: { requestDeliveryAdmin: (op: string, args: Record<string, unknown>, t?: number) => Promise<ControlReply> } }).ep;
+  const inv = await epAdmin.requestDeliveryAdmin("lifecycleMemberships", { principal: principal.key, lifecycleUid: predUid });
+  check("INVENTORY: the daemon lists exactly the retiring lifecycle's channels (complete, lifecycle-exact)",
+    inv.ok === true && JSON.stringify(inv.data) === JSON.stringify({ complete: true, channels: ["general", "team.api", "unnamed"] }), inv);
+  const invBad = await epAdmin.requestDeliveryAdmin("lifecycleMemberships", { principal: principal.key, lifecycleUid: "NOT A UID" });
+  check("INVENTORY: a malformed lifecycle is refused (no listing)", invBad.ok === false && invBad.data === undefined, invBad);
   check("MEMBERS: the delivery daemon committed the predecessor's durable rows (general + unnamed)",
     jGeneral.generation === 1 && jUnnamed.generation === 1 && membersBefore.filter((k: string) => k.endsWith(predUid)).length === 3 && await foreignRow() && await otherGenRow(), { jGeneral, jUnnamed, membersBefore });
 
