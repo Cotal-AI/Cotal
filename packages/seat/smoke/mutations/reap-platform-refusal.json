@@ -1,0 +1,17 @@
+{
+  "suite": ["packages/seat/smoke/reap-group-identity.smoke.ts"],
+  "guard": "Unsupported platforms refuse reaping before reading or changing custody",
+  "command": "node --import tsx --input-type=module -e \"await import('./packages/seat/src/index.ts'); Object.defineProperty(process, 'platform', {value:'win32'}); console.log('SIMULATED win32 API refusal; not native Windows group evidence'); await import('./packages/seat/smoke/reap-group-identity.smoke.ts');\"",
+  "progressPattern": "^SEAT GROUP IDENTITY on win32: 2 platform-refusal checks",
+  "minTicks": 1,
+  "proveWith": "pnpm mutation-proof --config packages/seat/smoke/mutations/reap-platform-refusal.json",
+  "why": ["The platform selector is simulated on Linux, but the test calls the shipped reapSeat implementation. This is refusal-contract evidence, not a native Windows or Linux process-group result."],
+  "mutations": [{
+    "name": "let unsupported reaping proceed into custody lookup",
+    "file": "packages/seat/src/reap.ts",
+    "find": "export async function reapSeat(root: string, id: string, opts: { graceMs?: number; pinnedRecord?: SeatRecord } = {}): Promise<SeatReapEvidence> {\n  if (process.platform !== \"linux\") throw unsupportedTransport();",
+    "replace": "export async function reapSeat(root: string, id: string, opts: { graceMs?: number; pinnedRecord?: SeatRecord } = {}): Promise<SeatReapEvidence> {",
+    "expectRed": "unsupported reaping must refuse before touching custody",
+    "cell": "unsupported reaping must refuse before touching custody"
+  }]
+}

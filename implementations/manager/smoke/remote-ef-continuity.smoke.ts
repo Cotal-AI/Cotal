@@ -603,6 +603,17 @@ try {
   // Post-expiry recovery through the SHIPPED contract. A drive whose driver expired is released
   // (fail closed); the supported way back is stock `cotal run resume <runId>` on the same run id,
   // under its original admission, never an auto-revival by `run answer`.
+  const runRecoveredCli = async (args: string[]) => {
+    try {
+      const boundary = await witnessOp("PREPARE_RECOVERY", activeRunId);
+      assert.equal(boundary.prepared, true, boundary.error ?? "service reconnect and subscription flush must finish before the recovery call");
+      assert.equal(boundary.inFlight, 0, "no renewal may race the recovery call");
+      return await runCli(args);
+    } finally {
+      const renewal = await witnessOp("RESUME_RENEWALS", activeRunId);
+      assert.equal(renewal.paused, false, "normal renewal scheduling must resume after the recovery call");
+    }
+  };
   let resumed = false;
   await cell("5. Post-expiry recovery: standing duties re-adopted (actual held objects, same nkeys/account), then stock `run resume` retakes the same run", async () => {
     const heldBefore = await probeHeld(activeRunId);
@@ -630,16 +641,7 @@ try {
       assert.ok(redialed, "service endpoint was not re-dialed after standing re-adoption");
     }
     const recBefore = await readRunRecord(recordsKv, "manager", activeRunId);
-    let r: Awaited<ReturnType<typeof runCli>>;
-    try {
-      const boundary = await witnessOp("PREPARE_RECOVERY", activeRunId);
-      assert.equal(boundary.prepared, true, boundary.error ?? "service reconnect and subscription flush must finish before the recovery call");
-      assert.equal(boundary.inFlight, 0, "no renewal may race the recovery call");
-      r = await runCli(["resume", activeRunId]);
-    } finally {
-      const renewal = await witnessOp("RESUME_RENEWALS", activeRunId);
-      assert.equal(renewal.paused, false, "normal renewal scheduling must resume after the recovery call");
-    }
+    const r = await runRecoveredCli(["resume", activeRunId]);
     console.log(`    evidence: run resume exit=${r.code} out=${r.stdout.trim().slice(0, 120)} err=${r.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
     assert.equal(r.code, 0, "stock run resume failed after the issuer resumed");
     resumed = true;
@@ -651,7 +653,7 @@ try {
     assert.equal(h.dialRefused, false, "resumed driver must be broker-accepted");
     assert.ok(h.driver.exp > now - 1, "resumed driver credential must be fresh");
     assert.ok((recAfter?.status?.value.epoch ?? 0) > (recBefore?.status?.value.epoch ?? 0), "resume must fence with a new epoch");
-    const j = await runCli(["journal", activeRunId]);
+    const j = await runRecoveredCli(["journal", activeRunId]);
     assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"), "resumed run must keep its native journal");
   });
 
@@ -660,7 +662,7 @@ try {
     // An operator answer recorded while the driver was expired settles the checkpoint durably but
     // must not have advanced the run (4b); only the resumed drive may consume it.
     if (!answeredWhileExpired) {
-      const res = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
+      const res = await runRecoveredCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
       console.log(`    evidence: answer exit=${res.code} err=${res.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
       assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
     } else console.log("    evidence: answer was recorded while expired; resumed drive consumes it");
