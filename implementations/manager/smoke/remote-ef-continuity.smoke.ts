@@ -34,6 +34,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   createEndpointStreams,
   createSpaceAuth,
+  credsClaims,
   ensureAdmissionStore,
   ensureAuthorityStores,
   ensureIssuedStores,
@@ -91,6 +92,10 @@ async function cell(name: string, fn: () => Promise<void> | void) {
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Decode a raw user JWT payload (metadata only; never printed whole). */
+function jwtPayload(jwt: string): any {
+  return JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
+}
 async function until(pred: () => boolean | Promise<boolean>, ms: number) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -146,16 +151,41 @@ try {
 
   let refuseHttpRenewals = false;
   let renewalCallCount = 0;
+  let lastAttemptResult: any;
+  let lastRunRenewalMaterial: any;
+  let lastStandingRenewalMaterial: any;
+
+  let operatorIssuances = 0;
+  let successfulRunRenewals = 0;
+  const origIssueRunAttempt = plane.issueManagerRunAttempt;
+  const wrappedIssueRunAttempt: typeof plane.issueManagerRunAttempt = async (args) => {
+    const res = await origIssueRunAttempt(args);
+    // Keep only the FIRST driver/mediator pair: later operator issuances (journal/answer) reuse this
+    // route and must not overwrite the run's original duty credentials.
+    const creds = (res as any).credentials;
+    if (creds?.driver && creds?.mediator) lastAttemptResult ??= res;
+    else operatorIssuances++;
+    return res;
+  };
+
   const origMgrAuthority = plane.issueManagerServiceAuthority;
   const wrappedMgrAuthority: typeof plane.issueManagerServiceAuthority = async (args) => {
     if (refuseHttpRenewals && (args.request.operation === "renewStandingBundle" || args.request.operation === "renewRunDriver")) {
       renewalCallCount++;
       throw new Error("temporary rehearsal refusal: issuer unavailable");
     }
+    const res = await origMgrAuthority(args);
+    if (args.request.operation === "renewRunDriver") {
+      lastRunRenewalMaterial = res;
+      successfulRunRenewals++;
+    }
+    if (args.request.operation === "renewStandingBundle") {
+      lastStandingRenewalMaterial = res;
+    }
     if (args.request.operation === "renewStandingBundle" || args.request.operation === "renewRunDriver") {
       renewalCallCount++;
     }
-    return origMgrAuthority(args);
+    return res;
   };
 
   httpServer = createServer((req, res) => {
@@ -173,7 +203,7 @@ try {
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
-      issueManagerRunAttempt: plane.issueManagerRunAttempt,
+      issueManagerRunAttempt: wrappedIssueRunAttempt,
     } as any, {
       requireCapability: false,
       refuseViews: false,
@@ -253,8 +283,10 @@ try {
   saveSpaceAuth(workspaceAuthDir(cliDir), auth);
   recordMesh({ space: SPACE, server: SERVERS, root: cliDir, mode: "auth", ts: new Date().toISOString() });
 
+  // The timer (12s) outlasts the rehearsal duty lifetime (10s): the run's original driver/mediator
+  // JWTs expire while the native timer is pending, so resuming it needs adopted renewed credentials.
   const program = `
-    await sleep("100ms");
+    await sleep("12s");
     const cp = await checkpoint("review", "Proceed with deployment?");
     log("step_finished", cp.status);
   `;
@@ -275,6 +307,7 @@ try {
     });
 
   let activeRunId = "";
+  let activeAdmission: any;
 
   await cell("1. Fresh first run is admitted via HTTP route and starts on signerless manager", async () => {
     assert.equal(existsSync(join(wsDir, "idp-key.pem")), false, "IdP private key must not exist in manager root");
@@ -292,6 +325,7 @@ try {
     const admJsm = await jetstreamManager(admNc);
     const adm = await readRunAdmission(admJsm, SPACE, "manager", activeRunId);
     await admNc.close();
+    activeAdmission = adm;
     assert.equal(adm.admission.runId, activeRunId);
     assert.equal(adm.admission.instanceId, managerInstanceId);
     assert.equal(adm.admission.provenance.kind, "issued");
@@ -302,15 +336,55 @@ try {
     const ok = await until(async () => {
       const res = await runCli(["journal", activeRunId]);
       return res.stdout.includes("/checkpoint:review#0") && res.stdout.includes("Proceed with deployment?");
-    }, 15_000);
+    }, 40_000);
     assert.ok(ok, "run did not park at waiting checkpoint");
+    const orig = jwtPayload(lastAttemptResult.credentials.driver.jwt);
+    const parkedAt = Math.floor(Date.now() / 1000);
+    console.log(`    evidence: original driver exp=${orig.exp} parkedAt=${parkedAt} crossed=${parkedAt > orig.exp} runRenewals=${successfulRunRenewals}`);
+    assert.ok(parkedAt > orig.exp, "native timer did not span the original run-driver expiry");
+    assert.ok(successfulRunRenewals > 0, "timer resumed across expiry without any successful run renewal");
   });
 
   await cell("3. Identity, account, and role bindings are strictly checked", async () => {
+    assert.ok(activeAdmission, "admission record must be captured");
+    assert.equal(activeAdmission.admission.space, SPACE);
+    assert.equal(activeAdmission.admission.endpoint, "manager");
+    assert.equal(activeAdmission.admission.instanceId, managerInstanceId);
+    assert.equal(activeAdmission.admission.provenance.kind, "issued");
+
+    assert.ok(lastAttemptResult?.credentials?.driver?.jwt, "driver credential must be issued via HTTP attempt route");
+    assert.ok(lastAttemptResult?.credentials?.mediator?.jwt, "mediator credential must be issued via HTTP attempt route");
+    const driverClaims = jwtPayload(lastAttemptResult.credentials.driver.jwt);
+    const mediatorClaims = jwtPayload(lastAttemptResult.credentials.mediator.jwt);
+    // Account is nats.issuer_account (iss is the account SIGNING key).
+    assert.equal(driverClaims.nats?.issuer_account, auth.account.pub, "driver must bind the space data account");
+    assert.equal(mediatorClaims.nats?.issuer_account, auth.account.pub, "mediator must bind the space data account");
+    assert.equal(driverClaims.iss, auth.account.signingPub, "driver must be signed by the issuer's account signing key");
+    assert.match(driverClaims.sub, /^U[A-Z2-7]{55}$/, "driver must hold a public user nkey");
+    assert.match(mediatorClaims.sub, /^U[A-Z2-7]{55}$/, "mediator must hold a public user nkey");
+    assert.equal(driverClaims.exp - driverClaims.iat, REHEARSAL_STANDING_TTL, "driver lifetime must be the trusted-host rehearsal lifetime");
+    console.log(`    evidence: driver role=${driverClaims.nats?.tags ?? driverClaims.name} mediator role=${mediatorClaims.nats?.tags ?? mediatorClaims.name} callerOwnerMatchesIdp=${activeAdmission.admission.caller.owner === owner}`);
+    assert.notEqual(driverClaims.sub, mediatorClaims.sub, "driver and mediator must have distinct public nkeys");
+
     const rec = await readRunRecord(recordsKv, "manager", activeRunId);
     assert.equal(rec?.status?.value.epoch, 1);
     assert.equal(rec?.status?.value.state, "running");
     assert.ok(rec?.status?.value.holder?.startsWith(managerInstanceId) || rec?.status?.value.holder?.startsWith("U"));
+
+    // Negative control: credential signed by a foreign account is refused by the space broker
+    const foreignAuth = await createSpaceAuth("foreign-space");
+    const foreignCreds = await mintCreds(foreignAuth, newIdentity(), "run-driver", {
+      principal: { owner, actor: "wf_test" },
+      runDriver: { endpoint: "manager", runId: activeRunId, takeoverId: "t1", instanceId: managerInstanceId, epoch: 1 },
+    });
+    let foreignRejected = false;
+    try {
+      const fnc = await connect({ servers: SERVERS, reconnect: false, authenticator: credsAuthenticator(new TextEncoder().encode(foreignCreds)) });
+      await fnc.close();
+    } catch {
+      foreignRejected = true;
+    }
+    assert.ok(foreignRejected, "foreign account credential unexpectedly accepted by broker");
   });
 
   await cell("4. Last-good credentials are preserved when HTTP renewal is refused", async () => {
@@ -326,6 +400,11 @@ try {
       assert.ok(renewalCallCount > 0, "renewal was not attempted");
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
       assert.equal(rec?.status?.value.state, "running", "run state corrupted after refused renewal");
+      assert.equal(rec?.status?.value.epoch, 1, "run epoch corrupted after refused renewal");
+
+      // Verify that while renewals are refused, the workflow continues to be readable and valid
+      const res = await runCli(["journal", activeRunId]);
+      assert.ok(res.stdout.includes("/checkpoint:review#0"), "workflow journal lost during refused renewal");
     } finally {
       // Clear refusal
       refuseHttpRenewals = false;
@@ -333,16 +412,33 @@ try {
   });
 
   await cell("5. Renewal succeeds through real HTTP authority and preserves held public nkeys", async () => {
-    renewalCallCount = 0;
+    const origDriverClaims = jwtPayload(lastAttemptResult.credentials.driver.jwt);
+    const origMediatorClaims = jwtPayload(lastAttemptResult.credentials.mediator.jwt);
+    const before = successfulRunRenewals;
 
-    // Wait until credentials reach near-expiry and are renewed
-    await until(async () => {
-      return renewalCallCount > 0;
-    }, 15_000);
+    // A fresh SUCCESSFUL renewRunDriver issuance (refused attempts are not counted here).
+    await until(() => successfulRunRenewals > before, 15_000);
+    assert.ok(successfulRunRenewals > before, "no successful renewRunDriver issuance after refusal cleared");
+    assert.ok(lastRunRenewalMaterial?.credentials?.runDriver?.jwt, "renewal material lacks runDriver");
+    assert.ok(lastRunRenewalMaterial?.credentials?.runMediator?.jwt, "renewal material lacks runMediator");
+    const renewedDriverClaims = jwtPayload(lastRunRenewalMaterial.credentials.runDriver.jwt);
+    const renewedMediatorClaims = jwtPayload(lastRunRenewalMaterial.credentials.runMediator.jwt);
+    assert.equal(renewedDriverClaims.sub, origDriverClaims.sub, "driver public nkey must be preserved across renewal");
+    assert.equal(renewedMediatorClaims.sub, origMediatorClaims.sub, "mediator public nkey must be preserved across renewal");
+    assert.equal(renewedDriverClaims.nats?.issuer_account, auth.account.pub, "account must be preserved across renewal");
+    assert.equal(renewedMediatorClaims.nats?.issuer_account, auth.account.pub, "account must be preserved across renewal");
+    assert.ok(renewedDriverClaims.exp > origDriverClaims.exp, "driver credential expiration must advance on renewal");
+    assert.ok(renewedMediatorClaims.exp > origMediatorClaims.exp, "mediator credential expiration must advance on renewal");
+    const now = Math.floor(Date.now() / 1000);
+    console.log(`    evidence: origExp=${origDriverClaims.exp} renewedExp=${renewedDriverClaims.exp} now=${now} subStable=true successfulRunRenewals=${successfulRunRenewals} operatorIssuances=${operatorIssuances}`);
+    assert.ok(now > origDriverClaims.exp, "observation must be after the original duty credential expiry");
 
-    assert.ok(renewalCallCount > 0, "renewal did not succeed via HTTP route");
     const rec = await readRunRecord(recordsKv, "manager", activeRunId);
     assert.equal(rec?.status?.value.state, "running");
+
+    // Real post-adoption operation: CLI can still query the manager and inspect the running workflow
+    const postRes = await runCli(["journal", activeRunId]);
+    assert.equal(postRes.code, 0, "CLI journal command failed after credential renewal adoption");
   });
 
   await cell("6. Checkpoint is resolved via stock run-answer with real operator token", async () => {
@@ -357,7 +453,7 @@ try {
     assert.ok(completed, "workflow did not complete after checkpoint answer");
   });
 
-  await cell("7. Fail-closed verification after real broker credential expiration", async () => {
+  await cell("7. Broker control: fail-closed verification after real broker credential expiration", async () => {
     const expiredDriverIdentity = newIdentity();
     // Mint 5-second credential
     const shortCreds = await mintCreds(auth, expiredDriverIdentity, "run-driver", {
