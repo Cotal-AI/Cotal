@@ -373,6 +373,24 @@ try {
     assert.ok(adm.admission.provenance.ref.generation);
   });
 
+  await cell("1b. Standing duties are re-adopted before their ORIGINAL expiry (actual held objects, same nkeys/account)", async () => {
+    const start = (await probeHeld(activeRunId)).standing;
+    const names = ["supervisor", "serve", "goalWriter", "sessionLedger"] as const;
+    const origExp = Math.min(...names.map((k) => start[k].exp as number));
+    // Poll only until just before the earliest original expiry: adoption must beat it.
+    const adopted = await until(async () => {
+      const p = (await probeHeld(activeRunId)).standing;
+      return names.every((k) => p[k]?.exp > start[k].exp);
+    }, Math.max(1_000, origExp * 1000 - Date.now() - 500));
+    const p = (await probeHeld(activeRunId)).standing;
+    console.log(`    evidence: standing re-adoption before exp=${origExp}: ${names.map((k) => `${k} ${start[k].exp}->${p[k]?.exp}`).join(" ")} adopted=${adopted}`);
+    assert.ok(adopted, "standing duty not re-adopted before its original expiry");
+    for (const k of names) {
+      assert.equal(p[k].sub, start[k].sub, `${k} public nkey changed across re-adoption`);
+      assert.equal(p[k].account, auth.account.pub, `${k} account changed`);
+    }
+  });
+
   await cell("2. Workflow executes timer, parking at checkpoint", async () => {
     const ok = await until(async () => {
       const res = await runCli(["journal", activeRunId]);
