@@ -455,7 +455,20 @@ function readManagerInstanceRecord(f: string, space: string): ManagerInstanceIde
  * caller must hold its own stop and ownership evidence before retiring. A normal restart keeps the
  * identity, and retirement is for failed-new-space compensation or terminal retirement.
  */
-export function retireManagerInstanceIdentity(root: string, space: string, expected: ManagerInstanceIdentity): ManagerInstanceIdentityRetirement {
+/** Deterministic instrumentation hooks for testing concurrent retirement races. */
+export interface RetireManagerInstanceIdentityOpts {
+  /** Invoked after the initial pre-check passes and immediately before `renameSync`. */
+  readonly onBeforeRename?: () => void;
+  /** Invoked if the captured record differs from expected, immediately before attempting `linkSync`. */
+  readonly onBeforeLinkBack?: () => void;
+}
+
+export function retireManagerInstanceIdentity(
+  root: string,
+  space: string,
+  expected: ManagerInstanceIdentity,
+  opts?: RetireManagerInstanceIdentityOpts,
+): ManagerInstanceIdentityRetirement {
   const path = managerInstanceFile(root, space);
   const refuse = (why: string): never => {
     throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: ${why}`);
@@ -465,6 +478,7 @@ export function retireManagerInstanceIdentity(root: string, space: string, expec
   if (current === undefined) return { outcome: "absent" };
   if (!sameManagerInstanceIdentity(current, expected)) return refuse("the stored identity is not the expected generation");
 
+  opts?.onBeforeRename?.();
   const captured = `${path}.retiring.${randomUUID()}`;
   try { renameSync(path, captured); } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
@@ -473,6 +487,7 @@ export function retireManagerInstanceIdentity(root: string, space: string, expec
   let held: ManagerInstanceIdentity | undefined;
   try { held = readManagerInstanceRecord(captured, space); } catch { held = undefined; }
   if (held === undefined || !sameManagerInstanceIdentity(held, expected)) {
+    opts?.onBeforeLinkBack?.();
     try { linkSync(captured, path); unlinkSync(captured); } catch {
       return refuse(`the record changed before deletion and could not be put back; it is kept at ${captured}`);
     }
