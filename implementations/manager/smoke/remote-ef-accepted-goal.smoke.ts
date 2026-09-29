@@ -48,6 +48,8 @@ if (process.argv[2] === "agent-child") {
     });
     ep.on("error", () => {});
     await ep.start();
+    // CHILD-OWNED RESULT: the SDK child itself reports that it joined under its enrolled identity.
+    console.log(`SDK_RESULT:${JSON.stringify({ actor: process.env.COTAL_ACTOR, lifecycleUid: process.env.COTAL_LIFECYCLE_UID, joined: true })}`);
     await new Promise(() => {});
   } catch (e) {
     console.error(`ef-sdk-fixture child failed: ${(e instanceof Error ? e.message : String(e)).replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").replace(/-----BEGIN[\s\S]*?-----END[^-]*-----/g, "[creds]").slice(0, 400)}`);
@@ -226,7 +228,7 @@ try {
       await provisioner.start();
       try { await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe: t.subscribe ?? [], allowSubscribe: t.allowSubscribe ?? [] }); }
       finally { await provisioner.stop(); }
-      intercepted.push({ status: 200, actor: t.actor, owner });
+      intercepted.push({ status: 200, actor: t.actor, owner, lifecycleUid } as never);
       return send(200, {
         v: 1, kind: "manager-managed-agent-enrollment", space: r.space, owner, actor: r.actor, instanceId: r.instanceId,
         managerLifecycleUid: r.managerLifecycleUid, requestId: r.requestId, registrationProof: r.registrationProof, serveEpoch: r.serveEpoch,
@@ -298,6 +300,70 @@ registry.register({
   mkdirSync(join(partRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(partRoot, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
 
+  const POOLED = process.env.EF_POOLED === "1";
+  const execLaunches: Array<{ status: number; actor?: string; reason?: string }> = [];
+  const sdkResults: Array<Record<string, unknown>> = [];
+  if (POOLED) {
+    // ---- LABELLED SEPARATE TRUSTED FIXTURE EXECUTION HOST (not the Manager's process) ----
+    // Accepts a launch only for an identity the enrollment door authorized, and owns the SDK child.
+    const procs = new Map<string, ChildProcess>();
+    const exitCodes = new Map<string, number>();
+    const execHost = createServer(async (q, s) => {
+      const body = JSON.parse(await readBody(q) || "{}");
+      const reply = (code: number, v: unknown) => { s.writeHead(code, { "content-type": "application/json" }); s.end(JSON.stringify(v)); };
+      if (q.url === "/spawn") {
+        const env = body.spec?.env ?? {};
+        const authorized = intercepted.find((x: any) => x.status === 200 && x.actor === env.COTAL_ACTOR && x.owner === env.COTAL_OWNER && x.lifecycleUid === env.COTAL_LIFECYCLE_UID);
+        if (!authorized) { execLaunches.push({ status: 403, actor: env.COTAL_ACTOR, reason: "launch identity is not an authorized enrollment" }); return reply(403, { error: "launch identity is not an authorized enrollment" }); }
+        const id = `x${procs.size}`;
+        const child = spawn(body.spec.command, body.spec.args, { cwd: partRoot, env: { ...childEnv(partHome), ...env }, stdio: ["ignore", "pipe", "pipe"] });
+        kids.push(child);
+        procs.set(id, child);
+        child.stdout?.on("data", (d) => { for (const m of String(d).matchAll(/SDK_RESULT:(\{.*\})/g)) sdkResults.push(JSON.parse(m[1]!)); });
+        child.stderr?.on("data", (d) => { process.stderr.write(`[sdk-child] ${String(d).slice(0, 300)}`); });
+        child.on("exit", (code) => exitCodes.set(id, code ?? 1));
+        execLaunches.push({ status: 200, actor: env.COTAL_ACTOR });
+        return reply(200, { id });
+      }
+      if (q.url === "/status") return reply(200, exitCodes.has(body.id) ? { status: "exited", code: exitCodes.get(body.id) } : { status: "running" });
+      if (q.url === "/stop") { procs.get(body.id)?.kill("SIGTERM"); return reply(200, {}); }
+      reply(404, {});
+    });
+    await new Promise<void>((r) => execHost.listen(0, "127.0.0.1", r));
+    const execHostUrl = `http://127.0.0.1:${(execHost.address() as AddressInfo).port}`;
+    const mgrJwt = (await (await fetch(`${idpUrl}/token`, { headers: { cookie } })).json() as any).token as string;
+    const wsDir = join(partRoot, "pooled-ws");
+    mkdirSync(join(wsDir, ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(wsDir, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
+    const mproc = spawn(process.execPath, ["--import", tsxLoader, join(import.meta.dirname, "remote-manager-proc.ts"), space, servers, wsDir, `${proxyUrl}/manager-service-authority`, owner, mgrJwt], {
+      cwd: partRoot, stdio: ["pipe", "pipe", "pipe"],
+      env: { ...childEnv(partHome), EF_POOLED_RUNTIME: "1", EF_EXEC_HOST_URL: execHostUrl,
+        EF_CHILD_CMD: JSON.stringify([process.execPath, "--import", tsxLoader, import.meta.filename, "agent-child"]) },
+    });
+    kids.push(mproc);
+    let mOut = "";
+    mproc.stdout?.on("data", (d) => { mOut += d.toString(); });
+    mproc.stderr?.on("data", (d) => { mOut += d.toString(); });
+    for (let i = 0; i < 600 && mproc.exitCode === null && !/MANAGER_READY/.test(mOut); i++) await sleep(200);
+    const refused = mOut.match(/POOLED_PTY_REFUSED:(.*)/)?.[1] ?? "";
+    ok("pooled construction with the local PTY runtime is still refused", /pooled/.test(refused), refused || mOut.slice(-400));
+    ok("library-constructed pooled Manager starts on the non-custodial fixture runtime", /MANAGER_READY/.test(mOut), mOut.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").slice(-800));
+    const before = intercepted.length;
+    const sp = await cli(["spawn", "sdkfixture", "--detach", "--space", space], partRoot, partHome, 120_000);
+    const enrolled = intercepted.slice(before);
+    console.log(`    evidence: pooled cotal spawn exit=${sp.code} intercepted=${JSON.stringify(enrolled)} execLaunches=${JSON.stringify(execLaunches)} sdkResults=${JSON.stringify(sdkResults)} out=${sp.out.replace(/\s+/g, " ").slice(0, 500)}`);
+    console.log(`    manager: ${(mOut.match(/EXEC_HOST_SPAWN:.*/g) ?? []).join(" ")}`);
+    ok("pooled accepted goal: enrollment authorized by the stock door via the fixture host", enrolled.some((x) => x.status === 200 && x.actor === "sdkfixture" && x.owner === owner), enrolled);
+    ok("pooled accepted goal reaches terminal success", sp.code === 0, sp.out.slice(-500));
+    const en = enrolled.find((x) => x.status === 200) as any;
+    ok("the separate fixture host (not the Manager) launched the SDK child for the enrolled identity", execLaunches.some((x) => x.status === 200 && x.actor === "sdkfixture") && !/cotal-seat|node-pty/.test(mOut), execLaunches);
+    ok("the SDK child reported its own result under the enrolled actor and lifecycle", sdkResults.some((r) => r.actor === "sdkfixture" && r.lifecycleUid === en?.lifecycleUid && r.joined === true), sdkResults);
+    // Wrong identity: a launch whose lifecycle was never enrolled is refused by the execution host.
+    const forged = await fetch(`${execHostUrl}/spawn`, { method: "POST", body: JSON.stringify({ name: "sdkfixture", cwd: partRoot, spec: { command: process.execPath, args: ["-e", "0"], env: { COTAL_ACTOR: "sdkfixture", COTAL_OWNER: owner, COTAL_LIFECYCLE_UID: mintLifecycleUid() } } }) });
+    ok("wrong-identity launch (unenrolled lifecycle) is refused by the execution host and runs nothing", forged.status === 403 && execLaunches.filter((x) => x.status === 200).length === 1, execLaunches);
+    console.log("  ? LABEL: pooled via LIBRARY construction (cotal supervise has no pooled flag); fixture runtime + execution host are test-only, not a production SandboxProvider");
+    execHost.close();
+  } else {
   // ---- shipped `cotal supervise` as the signerless participant manager ----
   const sup = spawn(process.execPath, ["--import", tsxLoader, cliBin, "supervise", "--space", space], {
     cwd: partRoot, stdio: ["ignore", "pipe", "pipe"],
@@ -344,7 +410,8 @@ registry.register({
   ok("wrong-caller enrollment (IdP user with no ledger row) is refused and grants nothing",
     replay !== undefined && wrong.status === 403 && wrongRec.length === 1 && wrongRec[0]!.status === 403 && /is not granted for this user/.test(wrongRec[0]!.reason ?? ""),
     { status: wrong.status, wrongRec });
-  console.log("  ? LABEL: this is the ORDINARY signerless participant (cotal supervise, local launch); the pooled non-custodial runtime and SDK-owned result/successor fencing remain OPEN");
+  console.log("  ? LABEL: this is the ORDINARY signerless participant (cotal supervise, local launch); EF_POOLED=1 runs the pooled non-custodial variant");
+  }
 } finally {
   for (const k of kids) await killAndAwaitExit(k).catch(() => {});
   proxy?.close();

@@ -9,7 +9,7 @@ import {
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
-import { Manager } from "../src/manager.js";
+import { Manager, type ManagerOptions } from "../src/manager.js";
 import "@cotal-ai/runtime";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
@@ -31,6 +31,14 @@ import {
   remoteStandingBundleRenewal,
 } from "../src/remote-authority.js";
 
+// A library-hosted manager's shipped bearer command re-invokes THIS entry as `agent-bearer ...`
+// (process.argv[1]); delegate that one subcommand to the stock CLI composition root.
+if (process.argv[2] === "agent-bearer") {
+  await import(new URL("../../../bin/run.ts", import.meta.url).href);
+  await new Promise(() => {});
+}
+const POOLED = process.env.EF_POOLED_RUNTIME === "1";
+if (POOLED) await registerPooledFixture();
 const [space, servers, wsDir, httpUrl, owner, bearerToken] = process.argv.slice(2);
 if (!space || !servers || !wsDir || !httpUrl || !owner || !bearerToken) {
   console.error("usage: remote-manager-proc <space> <servers> <wsDir> <httpUrl> <owner> <bearerToken>");
@@ -114,10 +122,11 @@ const runBase = () => ({
   epoch: registered.processEpoch,
 });
 
-const manager = new Manager({
+const managerOpts = (runtime: string, pooled: boolean): ManagerOptions => ({
   space,
   servers,
-  runtime: "pty",
+  runtime,
+  ...(pooled ? { pooled: true, eventsRequired: true } : {}),
   workspaceRoot: wsDir,
   remoteAuthority: {
     ...standing,
@@ -133,7 +142,7 @@ const manager = new Manager({
     goalWriterCreds,
     sessionLedgerCreds,
     serveGrant: registered.serveGrant,
-    agentBearerExchangeUrl: "https://auth.example.test",
+    agentBearerExchangeUrl: POOLED ? new URL(httpUrl).origin : "https://auth.example.test",
     mintSessionServing: async () => { throw new Error("mintSessionServing unsupported in signerless continuity smoke"); },
     mintRetirementRequester: async () => { throw new Error("mintRetirementRequester unsupported in signerless continuity smoke"); },
     prepareAgentRetirement: async () => { throw new Error("prepareAgentRetirement unsupported in signerless continuity smoke"); },
@@ -173,7 +182,7 @@ const manager = new Manager({
     enrollManagedAgent: async ({ target }) => {
       const { proof, epoch } = runBase();
       const request = remoteManagedAgentEnrollmentRequest(mgrIdentity, "cli", proof, epoch, target);
-      const url = httpUrl.replace("/manager-service-authority", "/fixture-host/manager-service-authority");
+      const url = POOLED ? httpUrl : httpUrl.replace("/manager-service-authority", "/fixture-host/manager-service-authority");
       const resp = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: bearerToken, request }) });
       const json = (await resp.json()) as Record<string, unknown>;
       if (!resp.ok) throw new Error(`fixture host HTTP ${resp.status}: ${String(json.error ?? "unknown")}`);
@@ -220,6 +229,12 @@ const manager = new Manager({
     },
   },
 });
+if (POOLED) {
+  // Continued refusal: the SAME authority with the local custodial PTY runtime is refused.
+  try { new Manager(managerOpts("pty", true)); console.log("POOLED_PTY_REFUSED:false"); }
+  catch (e) { console.log(`POOLED_PTY_REFUSED:${JSON.stringify((e as Error).message.slice(0, 160))}`); }
+}
+const manager = new Manager(managerOpts(POOLED ? "ef-fixture-host" : "pty", POOLED));
 
 await manager.start();
 console.log(`MANAGER_READY:${mgrIdentity.instanceId}`);
@@ -321,4 +336,69 @@ async function enrollProbe(mode: "stock" | "host" | "host-forged" | "host-intrud
   const resp = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: bearerToken, request }) });
   const json = (await resp.json().catch(() => ({}))) as { error?: unknown };
   console.log(`ENROLL_RESULT:${JSON.stringify({ mode, status: resp.status, error: String(json.error ?? "").slice(0, 200) })}`);
+}
+
+/** LABELLED TEST FIXTURE (EF_POOLED_RUNTIME=1 only): the scripted SDK connector and a NON-custodial
+ *  runtime registered through the stock registry. The runtime owns no process: spawn() hands the
+ *  Manager's LaunchSpec to a SEPARATE trusted fixture host (EF_EXEC_HOST_URL), which verifies the
+ *  launch identity against the enrollment it authorized and runs the SDK child itself. Not a
+ *  production SandboxProvider. */
+async function registerPooledFixture() {
+  const { registry, eventChannel } = await import("@cotal-ai/core");
+  await import("@cotal-ai/auth");
+  const hostUrl = process.env.EF_EXEC_HOST_URL!;
+  const childCmd = JSON.parse(process.env.EF_CHILD_CMD!) as string[];
+  registry.register({
+    kind: "connector", name: "ef-sdk-fixture", readinessTimeoutMs: 30000,
+    eventChannel: (principal: { owner: string; actor: string }) => eventChannel(principal),
+    buildLaunch(opts: any) {
+      if (!opts.userAuth || !opts.lifecycleUid) throw new Error("ef-sdk-fixture requires enrolled user authority");
+      return {
+        command: childCmd[0]!, args: childCmd.slice(1),
+        env: {
+          COTAL_SPACE: opts.space, COTAL_SERVERS: opts.servers, COTAL_NAME: opts.name,
+          COTAL_OWNER: opts.userAuth.owner, COTAL_ACTOR: opts.userAuth.actor,
+          COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
+          COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd), COTAL_LIFECYCLE_UID: opts.lifecycleUid,
+        },
+      };
+    },
+  } as never);
+  const call = async (path: string, body: unknown) => {
+    const r = await fetch(`${hostUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { status: r.status, json: (await r.json().catch(() => ({}))) as Record<string, unknown> };
+  };
+  registry.register({
+    kind: "runtime", name: "ef-fixture-host", available: () => true,
+    create: () => ({
+      kind: "ef-fixture-host",
+      spawn(name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) {
+        let state: "running" | "exited" = "running";
+        let exit: { code?: number } | undefined;
+        const exitFns: Array<() => void> = [];
+        const done = (code?: number) => { if (state === "exited") return; state = "exited"; exit = { code }; for (const f of exitFns) f(); };
+        const launched = call("/spawn", { name, cwd, spec }).then((r) => {
+          console.log(`EXEC_HOST_SPAWN:${JSON.stringify({ name, status: r.status, error: r.json.error ?? null })}`);
+          if (r.status !== 200) done(1);
+          return r.json.id as string | undefined;
+        }, () => { done(1); return undefined; });
+        const poll = setInterval(async () => {
+          const id = await launched;
+          if (!id || state === "exited") return clearInterval(poll);
+          const r = await call("/status", { id }).catch(() => undefined);
+          if (r?.json.status === "exited") { clearInterval(poll); done(r.json.code as number); }
+        }, 500);
+        poll.unref();
+        return {
+          name, kind: "ef-fixture-host",
+          status: () => state,
+          stop: () => { void launched.then((id) => { if (id) void call("/stop", { id }); }); },
+          waitForExit: () => new Promise<void>((res) => state === "exited" ? res() : exitFns.push(res)),
+          exitInfo: () => exit,
+          interrupt: () => {},
+          attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: (f: () => void) => { exitFns.push(f); return () => {}; }, write: () => {}, resize: () => {} }),
+        };
+      },
+    }),
+  } as never);
 }
