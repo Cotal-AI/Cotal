@@ -312,6 +312,43 @@ try {
         settled?.lifecycleUid === uidB, settled);
     }
   }
+
+  // MEMBERSHIP ROWS (SPEC 13.1): a retired lifecycle's durable membership rows are part of its
+  // lifecycle-keyed footprint. The teardown purges exactly the named concrete channels' rows for
+  // THIS uid; an unnamed channel, a same-alias successor and a foreign principal keep theirs.
+  {
+    const { openMembersRegistry, commitMember, readMember, listMembers } = await import("../src/members.js");
+    const mkv = await openMembersRegistry(insp, space);
+    const who = localPrincipal(agent.id), peer = localPrincipal(newIdentity().id);
+    const uidE = mintLifecycleUid(), uidF = mintLifecycleUid();
+    const row = (channel: string, owner: string, lifecycleUid: string) => commitMember(mkv, {
+      channel, owner, lifecycleUid, state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now(),
+    });
+    await row("general", who, uidE); await row("ops", who, uidE); await row("other", who, uidE);
+    await row("general", who, uidF); await row("general", peer, uidE);
+    const has = async (ch: string, owner: string, uid: string) => (await readMember(mkv, ch, owner, uid)) !== undefined;
+    const before = (await listMembers(mkv)).length;
+    const dpvE = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"] } });
+    await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE });
+    check("MEMBERS: the retired lifecycle's named-channel rows are GONE", !(await has("general", who, uidE)) && !(await has("ops", who, uidE)));
+    check("MEMBERS: an unnamed channel's row is RETAINED", await has("other", who, uidE));
+    check("MEMBERS: the same-alias successor's row is RETAINED", await has("general", who, uidF));
+    check("MEMBERS: a foreign principal's row is RETAINED", await has("general", peer, uidE));
+    const after = (await listMembers(mkv)).length;
+    check("MEMBERS: exactly two rows removed (bounded, no prefix sweep)", before - after === 2, { before, after });
+    let retryThrew: unknown;
+    try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE }); }
+    catch (e) { retryThrew = e; }
+    check("MEMBERS: a retried teardown is an idempotent no-op", retryThrew === undefined && (await listMembers(mkv)).length === after, retryThrew);
+    let staleOutcome = "completed";
+    try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidF, memberChannels: ["general"], creds: dpvE }); }
+    catch { staleOutcome = "threw"; }
+    check("MEMBERS: the retired cred aimed at the successor's row is broker-DENIED", staleOutcome === "threw" && (await has("general", who, uidF)), { staleOutcome });
+    let wildcardRefused = false;
+    try { await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["team.>"] } }); }
+    catch { wildcardRefused = true; }
+    check("MEMBERS: a wildcard member channel is refused at mint (no prefix-wide grant)", wildcardRefused);
+  }
   await insp.drain().catch(() => {});
 
   console.log(`\nDEPROVISION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
