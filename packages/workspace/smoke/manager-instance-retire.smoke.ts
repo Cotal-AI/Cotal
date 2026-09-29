@@ -41,9 +41,14 @@ const retire = (space: string, expected: ManagerInstanceIdentity, opts?: RetireM
 };
 const noStrays = () => readdirSync(authDir(root)).every((n) => !n.includes(".retiring."));
 const childWrite = (action: "b" | "c" | "d" | "remove") => {
+  // Whatever runs this suite may be a managed agent session, so the inherited environment can carry
+  // a live credential and a live broker URL. Strip every COTAL_ key from the copy before the child
+  // sees it; the two set below are the only ones the worker reads.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   execFileSync(join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx"),
     [fileURLToPath(new URL("./manager-instance-retire-worker.ts", import.meta.url))],
-    { env: { ...process.env, COTAL_RETIRE_TEST_ROOT: root, COTAL_RETIRE_TEST_ACTION: action }, stdio: ["ignore", "pipe", "pipe"] });
+    { env: { ...childEnv, COTAL_RETIRE_TEST_ROOT: root, COTAL_RETIRE_TEST_ACTION: action }, stdio: ["ignore", "pipe", "pipe"] });
 };
 
 try {
