@@ -15,6 +15,10 @@ import type {
   RemoteManagedAgentPrepareRetirementResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
+  RemoteRunAdmissionRequest,
+  RemoteRunAdmissionResult,
+  RemoteRunAttemptRequest,
+  RemoteRunAttemptResult,
 } from "./remote-manager-authority.js";
 
 /**
@@ -111,6 +115,18 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** The registered host resolves issued admission and native run state before returning a
+   * closed admission or fixed JWT set for a caller-held nkey. No signer reaches the manager. */
+  requestRemoteRunAdmission?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteRunAdmissionRequest;
+  }): Promise<RemoteRunAdmissionResult>;
+  requestRemoteRunAttempt?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteRunAttemptRequest;
+  }): Promise<RemoteRunAttemptResult>;
   /** Host-owned registration maintenance for a remote manager. The provider must scope eviction to
    * the caller instance's credential family and guard reconciliation with affirmative liveness. */
   maintainRemoteManager?(opts: {
