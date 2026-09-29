@@ -251,6 +251,9 @@ install` covers only the manager, so for the broker and its siblings pick the ex
 matches the ownership you want, and treat
 `systemctl is-active` as unit health, not mesh health.
 
+A broker that crashes under that foreground `up` keeps its mesh record and exits non-zero, so the
+unit's restart takes the repair path against the recorded store rather than starting a second one.
+
 If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state
 instead of the launcher's exit:
 
