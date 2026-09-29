@@ -4061,8 +4061,8 @@ export class Manager {
     // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
     // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
     // against a same-name successor's footprint (its names embed a different uid).
-    // Durable membership rows are lifecycle-keyed per concrete channel. The launch's concrete read
-    // channels name every row this lifecycle could hold on them; wildcard-covered rows stay retained.
+    // Durable membership rows are lifecycle-keyed per concrete channel. Start with the launch's
+    // concrete read channels, then include wildcard-covered and unnamed channels from the inventory.
     const memberChannels = new Set((a.launch?.allowSubscribe ?? []).filter(isConcreteChannel));
     // Complete the set from the delivery daemon's lifecycle-exact inventory, which covers rows on
     // wildcard-granted channels and teardowns that carry no launch spec. An inventory that cannot be
