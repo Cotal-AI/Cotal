@@ -30,7 +30,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 13 + 5 + 13; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 13 + 5 + 14; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -312,6 +312,12 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
       else await sleep(1_000);
     }
     check("the foreground fixture answers channels set within the poll budget", railsUp);
+    let recorded = false;
+    for (let i = 0; i < 30 && !recorded; i++) {
+      if (findMesh(space) !== undefined) recorded = true;
+      else await sleep(500);
+    }
+    check("the foreground up records the mesh before the crash is induced", recorded);
 
     const pidPath = join(fixture.root, ".cotal", "nats.pid");
     const pid = Number(readFileSync(pidPath, "utf8").trim());
