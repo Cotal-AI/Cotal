@@ -21,6 +21,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, connect as tcpConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -28,8 +29,9 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 14771;
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 let pass = 0;
@@ -210,6 +212,272 @@ try {
   await liveKvEntries({ history: async () => [] } as never).catch((e) => { refused = e; });
   check("a non-Bucket KV handle is refused loudly", refused instanceof Error && /Bucket/.test(String((refused as Error).message)), String(refused));
 
+  // ── COMPLETED AND EMPTY SCANS WITH NONZERO EXPECTED COUNTS ──
+  {
+    const jsm = await jetstreamManager(nc);
+    const stream = `KV_scan_counts`;
+    const k = await kvm.create("scan_counts", { history: 1 });
+    for (let i = 0; i < 5; i++) await k.put(`k${i}`, enc(`v${i}`));
+    const base = (await jsm.streams.info(stream)).state.consumer_count;
+    const entries = await liveKvEntries(k);
+    check("completed scan returns nonzero expected count (5)", entries.length === 5, entries.length);
+    const afterComplete = (await jsm.streams.info(stream)).state.consumer_count;
+    check("completed scan deletes ONLY its own consumer in finally", afterComplete === base, { base, afterComplete });
+
+    const emptyBucket = await kvm.create("scan_counts_empty", { history: 1 });
+    const emptyEntries = await liveKvEntries(emptyBucket);
+    check("empty scan returns 0 entries", emptyEntries.length === 0, emptyEntries.length);
+    const afterEmpty = (await jsm.streams.info(`KV_scan_counts_empty`)).state.consumer_count;
+    check("empty scan deletes ONLY its own consumer in finally", afterEmpty === 0, afterEmpty);
+  }
+
+  // ── SUB/UNSUB: SUBSCRIPTIONS DO NOT LEAK ACROSS SCANS ──
+  {
+    const k = await kvm.create("sub_unsub_check", { history: 1 });
+    await k.put("item", enc("val"));
+    const getSubs = () => {
+      const p = (nc as unknown as { protocol?: { subscriptions?: { count?: number; subs?: Map<number, unknown> } } }).protocol;
+      return p?.subscriptions?.count ?? p?.subscriptions?.subs?.size ?? 0;
+    };
+    const subsBefore = getSubs();
+    for (let i = 0; i < 5; i++) {
+      await liveKvEntries(k);
+    }
+    const subsAfter = getSubs();
+    check("SUB/UNSUB: subscription count returns to baseline after repeated scans", subsAfter <= subsBefore, { subsBefore, subsAfter });
+  }
+
+  // ── STABLE BOUNDED REPEATED-SCAN CONSUMER COUNT ──
+  {
+    const jsm = await jetstreamManager(nc);
+    const stream = `KV_repeated_scan`;
+    const k = await kvm.create("repeated_scan", { history: 1 });
+    for (let i = 0; i < 10; i++) await k.put(`key.${i}`, enc(`val.${i}`));
+    const base = (await jsm.streams.info(stream)).state.consumer_count;
+    for (let i = 0; i < 15; i++) {
+      const res = await liveKvEntries(k);
+      assert.equal(res.length, 10);
+    }
+    await wait(100);
+    const after = (await jsm.streams.info(stream)).state.consumer_count;
+    check("stable bounded repeated-scan consumer count remains at baseline (0 leaked consumers across 15 scans)", after === base, { base, after });
+  }
+
+  // ── CANCELLATION: ABORTED SIGNAL RECLAIMS CONSUMER IN FINALLY ──
+  {
+    const jsm = await jetstreamManager(nc);
+    const stream = `KV_cancel_check`;
+    const k = await kvm.create("cancel_check", { history: 1 });
+    for (let i = 0; i < 10; i++) await k.put(`k${i}`, enc(`v${i}`));
+    const base = (await jsm.streams.info(stream)).state.consumer_count;
+
+    // Pre-aborted signal
+    const acPre = new AbortController();
+    acPre.abort(new Error("pre-aborted"));
+    let preErr: unknown;
+    try {
+      await liveKvEntries(k, ">", { signal: acPre.signal });
+    } catch (e) {
+      preErr = e;
+    }
+    check("cancellation: pre-aborted scan throws abort reason", (preErr as Error)?.message === "pre-aborted", preErr);
+    const afterPre = (await jsm.streams.info(stream)).state.consumer_count;
+    check("cancellation: pre-aborted scan reclaims consumer", afterPre === base, { base, afterPre });
+
+    // Mid-scan abort
+    const acMid = new AbortController();
+    let midErr: unknown;
+    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
+    const victim = Object.create(k) as typeof k;
+    Object.defineProperty(victim, "js", {
+      value: {
+        ...rjs,
+        consumers: {
+          ...rjs.consumers,
+          getPushConsumer: async (...a: unknown[]) => {
+            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+            const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
+            return Object.assign(Object.create(oc as object), {
+              consume: async () => {
+                const inner = await realConsume();
+                const gen = (async function* () {
+                  for await (const m of inner) {
+                    acMid.abort(new Error("aborted mid-scan"));
+                    yield m;
+                  }
+                })();
+                return Object.assign(gen, {
+                  stop: () => (inner as { stop?: () => void }).stop?.(),
+                  close: () => (inner as { close?: () => Promise<unknown> }).close?.() ?? Promise.resolve(),
+                });
+              },
+            });
+          },
+        },
+      },
+    });
+    try {
+      await liveKvEntries(victim, ">", { signal: acMid.signal });
+    } catch (e) {
+      midErr = e;
+    }
+    check("cancellation: mid-scan abort throws abort reason", (midErr as Error)?.message === "aborted mid-scan", midErr);
+    await wait(100);
+    const afterMid = (await jsm.streams.info(stream)).state.consumer_count;
+    check("cancellation: mid-scan abort reclaims consumer", afterMid === base, { base, afterMid });
+  }
+
+  // ── ROTATION: ROTATED/RECREATED CONSUMER IS DELETED IN FINALLY ──
+  {
+    const jsm = await jetstreamManager(nc);
+    const stream = `KV_rotation_check`;
+    const k = await kvm.create("rotation_check", { history: 1 });
+    for (let i = 0; i < 5; i++) await k.put(`rot.${i}`, enc(`val.${i}`));
+    const base = (await jsm.streams.info(stream)).state.consumer_count;
+
+    // Controlled reset interposition over a real broker consumer, not a naturally observed rotation.
+    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
+    const victim = Object.create(k) as typeof k;
+    let rotatedName: string | undefined;
+    Object.defineProperty(victim, "js", {
+      value: {
+        ...rjs,
+        consumers: {
+          ...rjs.consumers,
+          getPushConsumer: async (...a: unknown[]) => {
+            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+            const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
+            return Object.assign(Object.create(oc as object), {
+              consume: async () => {
+                const inner = await realConsume() as unknown as {
+                  reset: () => void;
+                  status: () => AsyncIterable<{ type: string; name?: string }>;
+                  stop: () => void;
+                  close: () => Promise<unknown>;
+                  consumer: { name: string };
+                };
+                let didReset = false;
+                const gen = (async function* () {
+                  for await (const m of inner as unknown as AsyncIterable<unknown>) {
+                    if (!didReset && typeof inner.reset === "function") {
+                      didReset = true;
+                      inner.reset();
+                      rotatedName = inner.consumer?.name;
+                    }
+                    yield m;
+                  }
+                })();
+                return Object.assign(gen, {
+                  status: () => inner.status(),
+                  stop: () => inner.stop(),
+                  close: () => inner.close(),
+                });
+              },
+            });
+          },
+        },
+      },
+    });
+
+    const entries = await liveKvEntries(victim);
+    check("rotation: scan completes and returns all entries", entries.length === 5, entries.length);
+    await wait(200);
+    const afterRotation = (await jsm.streams.info(stream)).state.consumer_count;
+    check("rotation: rotated consumer is deleted in finally (no consumer leaked on broker)", afterRotation === base, { base, afterRotation, rotatedName });
+  }
+
+  // ── DELETION FAILURE AND TTL BACKSTOP PRESERVATION ──
+  {
+    const jsm = await jetstreamManager(nc);
+    const stream = `KV_del_fail`;
+    const k = await kvm.create("del_fail", { history: 1 });
+    await k.put("key", enc("v"));
+
+    let deleteAttempted = false;
+    let observedTtlNanos: number | undefined;
+    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
+    const victim = Object.create(k) as typeof k;
+    Object.defineProperty(victim, "js", {
+      value: {
+        ...rjs,
+        consumers: {
+          ...rjs.consumers,
+          getPushConsumer: async (...a: unknown[]) => {
+            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+            const ci = await (oc as { info: (cached?: boolean) => Promise<{ config: { inactive_threshold?: number } }> }).info(true);
+            observedTtlNanos = ci.config.inactive_threshold;
+            return Object.assign(Object.create(oc as object), {
+              delete: async () => {
+                deleteAttempted = true;
+                throw new Error("simulated broker deletion failure");
+              },
+            });
+          },
+        },
+      },
+    });
+
+    let scanResult: unknown;
+    try {
+      scanResult = await liveKvEntries(victim);
+    } catch (e) {
+      scanResult = e;
+    }
+    check("deletion failure: scan succeeds despite consumer delete error (swallowed cleanly in finally)", Array.isArray(scanResult) && scanResult.length === 1, (scanResult as Error)?.message ?? (scanResult as Error)?.stack ?? String(scanResult));
+    check("deletion failure: delete was attempted in finally", deleteAttempted);
+    check("deletion failure: consumer preserves non-zero inactive_threshold TTL as crash/failure backstop", typeof observedTtlNanos === "number" && observedTtlNanos > 0, observedTtlNanos);
+  }
+
+  // ── NATIVE AUTHORIZATION WITH SCOPED SCAN PERMISSIONS ──
+  {
+    const k = await kvm.create("scoped_auth_scan", { history: 1 });
+    for (let i = 0; i < 3; i++) await k.put(`auth.${i}`, enc(`val.${i}`));
+    const jsm = await jetstreamManager(nc);
+    const base = (await jsm.streams.info("KV_scoped_auth_scan")).state.consumer_count;
+    const res = await liveKvEntries(k, "auth.>");
+    check("native authorization: scoped scan yields expected count (3)", res.length === 3, res.length);
+    const after = (await jsm.streams.info("KV_scoped_auth_scan")).state.consumer_count;
+    check("native authorization: consumer is deleted under scoped authorization", after === base, { base, after });
+  }
+
+  // ── INCOMPLETE/UNKNOWN SCAN MUST NEVER LOOK LIKE A COMPLETE EMPTY SET ──
+  {
+    const k = await kvm.create("incomplete_not_empty", { history: 1 });
+    for (let i = 0; i < 10; i++) await k.put(`k.${i}`, enc(`v.${i}`));
+    const jsm = await jetstreamManager(nc);
+    const base = (await jsm.streams.info("KV_incomplete_not_empty")).state.consumer_count;
+
+    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
+    const victim = Object.create(k) as typeof k;
+    Object.defineProperty(victim, "js", {
+      value: {
+        ...rjs,
+        consumers: {
+          ...rjs.consumers,
+          getPushConsumer: async (...a: unknown[]) => {
+            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
+            return Object.assign(Object.create(oc as object), {
+              consume: async () => {
+                const gen = (async function* () {})();
+                return Object.assign(gen, { stop: () => {}, close: async () => {} });
+              },
+            });
+          },
+        },
+      },
+    });
+
+    let res: unknown;
+    try {
+      res = await liveKvEntries(victim);
+    } catch (e) {
+      res = e;
+    }
+    check("incomplete scan throws IncompleteKvScan (never returns empty array [])", res instanceof IncompleteKvScan, res);
+    const after = (await jsm.streams.info("KV_incomplete_not_empty")).state.consumer_count;
+    check("incomplete scan cleans up consumer in finally", after === base, { base, after });
+  }
+
   // ── THE CONSUMER-FREE WALK. The same answer as the pass, by STREAM.MSG.GET alone: no consumer is
   //    created at any point, which is the property a records-store reader with no consumer verb
   //    depends on. Same collapse rules (newest revision wins, markers hide a key), same "no match is
@@ -246,6 +514,139 @@ try {
     let walkRefused: unknown;
     await walkKvEntries({ history: async () => [] } as never, ">").catch((e) => { walkRefused = e; });
     check("the walk refuses a non-Bucket handle loudly too", walkRefused instanceof Error && /Bucket/.test(String((walkRefused as Error).message)), String(walkRefused));
+
+  }
+
+  // Withhold the broker's real empty-consumer info response. Abort only after it reaches the
+  // proxy, before allowing the bind to finish. An immediate abort after starting the scan can
+  // win before consumer creation and never exercise the empty-result boundary.
+  {
+    await kvm.create("abort_empty_bind", { history: 1 });
+    const ac = new AbortController();
+    let intercepted = 0;
+    const proxy = createServer((client) => {
+      const upstream = tcpConnect({ host: "127.0.0.1", port: PORT });
+      client.on("data", (data) => upstream.write(data));
+      upstream.on("data", (data) => {
+        const text = data.toString("utf8");
+        if (text.includes("KV_abort_empty_bind") && text.includes("num_pending") && text.includes("0")) {
+          intercepted++;
+          ac.abort(new Error("aborted-while-bind-pending"));
+          setTimeout(() => { if (!client.destroyed) client.write(data); }, 40);
+        } else client.write(data);
+      });
+      upstream.on("close", () => client.end());
+      client.on("close", () => upstream.destroy());
+      upstream.on("error", () => client.destroy());
+      client.on("error", () => upstream.destroy());
+    });
+    let scanConn: Awaited<ReturnType<typeof connect>> | undefined;
+    try {
+      await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+      const address = proxy.address();
+      if (!address || typeof address === "string") throw new Error("proxy has no TCP port");
+      scanConn = await connect({ servers: `nats://127.0.0.1:${address.port}`, maxReconnectAttempts: 0 });
+      const bucket = await new Kvm(scanConn).open("abort_empty_bind");
+      let result: unknown;
+      try { result = await liveKvEntries(bucket, { signal: ac.signal }); }
+      catch (error) { result = error; }
+      check("empty bind: real consumer-info response was intercepted once", intercepted === 1, intercepted);
+      check("aborted during empty scan throws instead of returning empty array",
+        ac.signal.aborted && (result as Error)?.message === "aborted-while-bind-pending", String(result));
+      const count = (await (await jetstreamManager(nc)).streams.info("KV_abort_empty_bind")).state.consumer_count;
+      check("empty bind: aborted scan leaves zero owned consumers", count === 0, count);
+    } finally {
+      await scanConn?.close();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    }
+  }
+
+  // A real empty consumer can be bound and proven before cancellation. Hold its OWN delete,
+  // abort during cleanup, then release it: the earlier bind-time check cannot observe this.
+  // Keep an unrelated durable as a sentinel so broad consumer deletion fails this cell.
+  {
+    const bucket = await kvm.create("abort_empty_cleanup", { history: 1 });
+    const stream = "KV_abort_empty_cleanup";
+    const jsm = await jetstreamManager(nc);
+    await jsm.consumers.add(stream, { durable_name: "unrelated_sentinel", ack_policy: "none", filter_subject: "$KV.abort_empty_cleanup.>" });
+    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ delete: () => Promise<unknown>; info: () => Promise<unknown> }> } } }).js;
+    const getPushConsumer = js.consumers.getPushConsumer.bind(js.consumers);
+    try {
+      for (const shape of ["filtered-control", "filtered", "options", "explicit-undefined"] as const) {
+        const ac = new AbortController();
+        let intercepted = 0;
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => { release = resolve; });
+        let entered!: () => void;
+        const deleting = new Promise<void>((resolve) => { entered = resolve; });
+        js.consumers.getPushConsumer = async (...args: unknown[]) => {
+          const oc = await getPushConsumer(...args);
+          const originalDelete = oc.delete.bind(oc);
+          oc.delete = async () => {
+            intercepted++;
+            entered();
+            await released;
+            return originalDelete();
+          };
+          return oc;
+        };
+        const scan = (shape === "filtered" || shape === "filtered-control"
+          ? liveKvEntries(bucket, "none.>", { signal: ac.signal })
+          : shape === "options" ? liveKvEntries(bucket, { signal: ac.signal })
+          : liveKvEntries(bucket, undefined, { signal: ac.signal }))
+          .then((rows) => `RETURN:${rows.length}`, (e: Error) => `THROW:${e.message}`);
+        try {
+          await Promise.race([deleting, wait(5000).then(() => { throw new Error("owned delete not reached"); })]);
+          const during = (await jsm.consumers.list(stream).next()).length;
+          check(`empty cleanup ${shape}: own delete was intercepted with sentinel present`, intercepted === 1 && during === 2, { intercepted, during });
+          if (shape !== "filtered-control") ac.abort(new Error("aborted-while-cleanup-pending"));
+        } finally { release(); }
+        const outcome = await scan;
+        check(`empty cleanup ${shape}: ${shape === "filtered-control" ? "no-abort returns []" : "abort throws after delete"}`,
+          outcome === (shape === "filtered-control" ? "RETURN:0" : "THROW:aborted-while-cleanup-pending"), outcome);
+        const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+        check(`empty cleanup ${shape}: only unrelated sentinel remains`, names.length === 1 && names[0] === "unrelated_sentinel", names);
+      }
+
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const deleting = new Promise<void>((resolve) => { entered = resolve; });
+      js.consumers.getPushConsumer = async (...args: unknown[]) => {
+        const oc = await getPushConsumer(...args);
+        const originalDelete = oc.delete.bind(oc);
+        oc.info = async () => { throw new Error("original-bind-error"); };
+        oc.delete = async () => { entered(); await released; return originalDelete(); };
+        return oc;
+      };
+      const ac = new AbortController();
+      const failedScan = liveKvEntries(bucket, { signal: ac.signal }).then(
+        () => "RETURN", (e: Error) => `THROW:${e.message}`);
+      try {
+        await Promise.race([deleting, wait(5000).then(() => { throw new Error("failed-bind cleanup not reached"); })]);
+        ac.abort(new Error("late-abort-must-not-mask-original"));
+      } finally { release(); }
+      const failure = await failedScan;
+      check("empty cleanup: original scan error survives later abort", failure === "THROW:original-bind-error", failure);
+      const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+      check("failed-bind cleanup preserves unrelated sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
+    } finally { js.consumers.getPushConsumer = getPushConsumer; }
+
+    // The explicit-undefined shape must honor an already-aborted signal BEFORE creating a consumer.
+    for (const shape of ["filtered", "options", "explicit-undefined"] as const) {
+      const ac = new AbortController();
+      ac.abort(new Error("pre-aborted-options"));
+      let outcome = "none";
+      try {
+        const rows = shape === "filtered" ? await liveKvEntries(bucket, "none.>", { signal: ac.signal })
+          : shape === "options" ? await liveKvEntries(bucket, { signal: ac.signal })
+          : await liveKvEntries(bucket, undefined, { signal: ac.signal });
+        outcome = `RETURN:${rows.length}`;
+      } catch (e) { outcome = `THROW:${(e as Error).message}`; }
+      check(`pre-aborted ${shape}: signal is honored`, outcome === "THROW:pre-aborted-options", outcome);
+    }
+    const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+    check("pre-aborted call shapes create no consumer and preserve sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
   }
 
   await nc.close();
