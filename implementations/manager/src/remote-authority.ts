@@ -451,6 +451,33 @@ export function materialCredential(
   return credsFromJwt(credential.jwt, identity);
 }
 
+/** The shipped caller of the closed `renewStandingBundle` operation. Every coordinate comes from
+ * the held registration: the SAME identities and lifecycle, the host-authenticated current
+ * registration proof from activation, and the account the host's own issued supervisor JWT names.
+ * Only the process epoch is supplied per call, by the Manager's active serve grant. The whole
+ * five-key family is validated against the request before the Manager sees any of it. */
+export function remoteStandingBundleRenewal(args: {
+  state: RemoteManagerIdentityState;
+  owner: string;
+  registrationProof: string;
+  /** Host-issued supervisor credential; its signing account is the assigned account. */
+  supervisorCreds: string;
+  call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
+}): { accountPublicKey: string; renewStandingBundle: (processEpoch: number) => Promise<Record<keyof RemoteManagerIdentityState["identities"], string>> } {
+  const accountPublicKey = accountFromCreds(args.supervisorCreds);
+  if (!accountPublicKey) throw new Error("the host-issued supervisor credential names no account");
+  return {
+    accountPublicKey,
+    renewStandingBundle: async (processEpoch) => {
+      const request: RemoteManagerAuthorityRequest = {
+        ...remoteManagerAuthorityRequest(args.state, "cli", "renewStandingBundle", args.registrationProof),
+        accountPublicKey, processEpoch,
+      };
+      return remoteManagerRenewalCredentials(await args.call(request), request, args.owner, args.state.identities);
+    },
+  };
+}
+
 /** The whole standing family is validated before any holder receives one renewed credential.
  * A mismatched echo, missing profile or foreign nkey leaves the current live family untouched. */
 export function remoteManagerRenewalCredentials(

@@ -18,11 +18,9 @@
  * call's and expires with it; an answer is two such calls, the read that finds the pause and then
  * a write pinned to that pause's token. An open mesh has no credential system and connects bare.
  *
- * A USER-AUTH mesh hosts no runs, and the manager says so instead of standing this host up: a
- * hosted run's spawns, turns and despawns ride a caller derived from the run id under the static
- * owner, which is no user's, so on a user mesh they would be refused at the manager's own owner
- * check and the program would fail at its first seat. Until a run carries its starting user's
- * owner into that caller, the family is `unimplemented` there, named as such.
+ * A registered signerless user-auth manager may host runs only with all four closed callbacks.
+ * Its issuer checks the admitted caller and signs the fixed attempt profiles for manager-held
+ * nkeys; the runtime derives its stable effect caller under the admitted owner's account.
  *
  * A manager restart takes its runs back: at boot, every run recorded `running` under this
  * endpoint is resumed under a fresh takeover, epoch + 1, from its recorded program. A run whose
@@ -523,6 +521,16 @@ export class RunHosting {
         for (const [name, cred] of [["driver", pair.driver], ["mediator", pair.mediator]] as const)
           if (typeof cred !== "string" || inspectCredHealth(cred).state !== "healthy")
             throw new Error(`host returned an unusable run-${name} credential`);
+        // Neither holder changes until BOTH candidates have proved broker connectivity. A JWT
+        // with coherent local claims can still carry a bad signature or a revoked account.
+        for (const cred of [pair.driver, pair.mediator]) {
+          const candidate = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
+            servers: this.ctx.servers ?? DEFAULT_SERVER,
+            ...standaloneConnectOpts({ creds: cred, tls: false }),
+            maxReconnectAttempts: 0,
+          });
+          await candidate.close();
+        }
         if (this.stopping || this.runs.get(run.runId) !== run)
           throw new Error("the attempt left this host while its renewal was in flight");
         run.creds = pair.driver;
