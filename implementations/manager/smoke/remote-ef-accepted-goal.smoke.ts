@@ -311,6 +311,20 @@ registry.register({
   const ps2 = await cli(["ps", "--space", space], partRoot, partHome);
   console.log(`    evidence: ps after spawn exit=${ps2.code} out=${ps2.out.replace(/\s+/g, " ").slice(0, 300)}`);
   ok("manager lists the enrolled SDK fixture agent", ps2.code === 0 && /sdkfixture/.test(ps2.out), ps2.out.slice(-300));
+
+  // Wrong-caller refusal: an enrollment from an IdP user whose derived owner has NO interactive
+  // ledger row for the manager actor is refused by the stock door, and nothing is granted.
+  const other = await idp.api.signUpEmail({ body: { email: "o@example.test", password: "correct-horse-battery", name: "O" }, returnHeaders: true });
+  const otherCookie = other.headers.get("set-cookie")!.split(";")[0]!;
+  const otherJwt = (await (await fetch(`${idpUrl}/token`, { headers: { cookie: otherCookie } })).json() as any).token as string;
+  const wrongBefore = intercepted.length;
+  const wrong = await fetch(`${proxyUrl}/manager-service-authority`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idpToken: otherJwt, request: { v: 1, kind: "manager-managed-agent-enrollment", space, actor: "cli", instanceId: "x".repeat(31), managerLifecycleUid: mintLifecycleUid(), requestId: `enroll${mintLifecycleUid()}`, registrationProof: `sha256:${"0".repeat(64)}`, serveEpoch: 0, target: { actor: "intruder", tokenHash: "0".repeat(64), allowSubscribe: [] }, identities: {} } }),
+  });
+  const wrongBody = await wrong.json() as any;
+  console.log(`    evidence: wrong-caller enrollment status=${wrong.status} error=${String(wrongBody.error).slice(0, 160)} recorded=${JSON.stringify(intercepted.slice(wrongBefore))}`);
+  ok("wrong-caller enrollment (IdP user with no ledger row) is refused and grants nothing", wrong.status >= 400 && !intercepted.slice(wrongBefore).some((x) => x.status === 200), { status: wrong.status });
   console.log("  ? LABEL: this is the ORDINARY signerless participant (cotal supervise, local launch); the pooled non-custodial runtime and SDK-owned result/successor fencing remain OPEN");
 } finally {
   for (const k of kids) await killAndAwaitExit(k).catch(() => {});
