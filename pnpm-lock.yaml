@@ -732,6 +732,10 @@ importers:
       ses:
         specifier: ^2.3.0
         version: 2.3.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
   packages/seat:
     dependencies:
