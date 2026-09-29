@@ -156,7 +156,7 @@ try {
 
   // Unlike the bind-only control above, exercise the actual scanner under a scoped delivery
   // credential. It can consume and delete its own members consumer, but cannot open or delete
-  // consumers on the manager bucket, whose lease row remains a sentinel.
+  // its sentinel on the manager bucket, whose lease row remains intact.
   const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
   const scoped = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: deliveryCreds, tls: false }), maxReconnectAttempts: 0 });
   const admin = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: setupCreds, tls: false }), maxReconnectAttempts: 0 });
@@ -174,9 +174,9 @@ try {
     catch (e) { denied = /authorization|permission/i.test(String(e)); }
     check("scoped delivery credential cannot scan out-of-scope manager sentinel", denied);
     let deleteDenied = false;
-    try { await scoped.request(`$JS.API.CONSUMER.DELETE.KV_${managerBucket(space)}.sentinel`, undefined, { timeout: 500 }); }
+    try { await (await new Kvm(scoped).open(managerBucket(space))).delete(managerLeaseKey("liveone")); }
     catch (e) { deleteDenied = /authorization|permission/i.test(String(e)); }
-    check("scoped delivery credential cannot delete out-of-scope manager consumer", deleteDenied);
+    check("scoped delivery credential cannot delete out-of-scope manager sentinel", deleteDenied);
     const manager = await new Kvm(supervisor).open(managerBucket(space));
     check("out-of-scope manager sentinel remains intact", (await manager.get(managerLeaseKey("liveone"))) !== null);
   } finally {
