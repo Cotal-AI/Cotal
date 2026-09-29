@@ -21,7 +21,47 @@
  * throws: the interpreter would carry on driving a run this process no longer speaks for.
  */
 import type { JournalEntry, JournalStore } from "@cotal-ai/lang";
-import { RunJournalAppender, RunSuperseded, RunJournalStalled } from "@cotal-ai/core";
+import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
+import {
+  RunJournalAppender,
+  RunSuperseded,
+  RunJournalStalled,
+  RunJournalReplayRaced,
+  replayRunJournal,
+  type RunJournalReplay,
+} from "@cotal-ai/core";
+
+/**
+ * How many replays a drive makes of its own journal before a lost round fails the read. It is the
+ * takeover's bound: `activateRun` tries three rounds by default, and the driver hands that loop no
+ * `beforeRetry`, so a lost round there is replayed at once with no pause in between.
+ */
+export const OWN_REPLAY_ATTEMPTS = 3;
+
+/**
+ * Replay a run's journal under the drive's own takeover id, replaying again after a lost round.
+ *
+ * `RunJournalReplayRaced` says another reader held the replay durable. Nothing is missing from the
+ * journal and the run is not lost, which is why `activateRun` replays again on it. A drive reads
+ * the same durable at every effect and at every poll of a parked pause, so its reads get the same
+ * bounded retry, and a lost round is not handed to the program as the step's own `L4000`. Any other
+ * failure, and the race on the last attempt, is raised unchanged.
+ */
+export async function replayOwnJournal(
+  js: JetStreamClient,
+  jsm: JetStreamManager,
+  space: string,
+  runId: string,
+  takeoverId: string,
+): Promise<RunJournalReplay> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await replayRunJournal(js, jsm, space, runId, takeoverId);
+    } catch (e) {
+      if (!(e instanceof RunJournalReplayRaced) || attempt >= OWN_REPLAY_ATTEMPTS) throw e;
+    }
+  }
+}
 
 /**
  * A run whose journal writer is finished, offered to the interpreter as a durability failure.
