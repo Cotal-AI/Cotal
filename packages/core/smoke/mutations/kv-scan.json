@@ -11,8 +11,8 @@
       "file": "packages/core/src/kv-scan.ts",
       "find": "    await oc.delete().catch(() => { /* deletion failure: TTL is the backstop */ });",
       "replace": "",
-      "expectRed": "completed scan deletes ONLY its own consumer in finally",
-      "cell": "completed scan deletes ONLY its own consumer in finally",
+      "expectRed": "every read path reclaims its consumer",
+      "cell": "every read path reclaims its consumer",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
@@ -27,8 +27,8 @@
     {
       "name": "omits rotated consumer deletion in finally",
       "file": "packages/core/src/kv-scan.ts",
-      "find": "    if (targetName && initialName && targetName !== initialName) {",
-      "replace": "    if (false) {",
+      "find": "          deleted = await bucket.jsm.consumers.delete(bucket.stream, targetName);",
+      "replace": "          deleted = true;",
       "expectRed": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
       "cell": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
