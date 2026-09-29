@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
@@ -443,8 +443,8 @@ await h.waitForExit();
   }
 
   {
-    // A dead leader cannot conceal a live descendant: grandchild survives leader exit,
-    // reapSeat finds the surviving process group and cleans it up.
+    // A dead leader leaves no generation witness for its numeric group. Retain custody
+    // rather than signalling members whose relationship to the recorded leader is unproved.
     const rec = launchSeat({
       root,
       name: "dead-leader-grandchild",
@@ -468,18 +468,24 @@ await h.waitForExit();
         return false;
       }
     });
-    check("instrument: grandchild lives after leader exit", membersBefore.length >= 1, membersBefore);
+    const owned = membersBefore.map((pid) => ({ pid: Number(pid), start: processStartToken(Number(pid)) }));
+    check("instrument: grandchild lives after leader exit", owned.length >= 1 && owned.every((p) => p.start !== undefined), owned);
     const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
     check(
-      "reapSeat cleans up surviving grandchild under dead leader",
-      !(evidence instanceof Error) && evidence.outcome === "reaped",
+      "reapSeat refuses unproved dead-leader group ownership",
+      evidence instanceof Error && /group ownership is unproved/.test(evidence.message),
       evidence instanceof Error ? evidence.message : evidence,
     );
-    const membersAfter = membersBefore.filter((e) => state(Number(e)) !== "gone");
-    check("dead leader's grandchild is gone after reapSeat", membersAfter.length === 0, membersAfter);
-    for (const m of membersBefore) {
-      try { process.kill(Number(m), "SIGKILL"); } catch {}
+    check("unproved group members retain their recorded identities", owned.every((p) => p.start !== undefined && processStartToken(p.pid) === p.start));
+    check("unproved dead-leader custody record is retained", existsSync(join(root, rec.id, "record.json")));
+    for (const p of owned) {
+      if (p.start !== undefined && processStartToken(p.pid) === p.start) process.kill(p.pid, "SIGKILL");
     }
+    const departed = await until(() => owned.every((p) => processStartToken(p.pid) !== p.start), 5_000);
+    check("fixture-owned descendants depart before final reap", departed);
+    const reaped = departed ? await reapSeat(root, rec.id) : undefined;
+    check("verified empty group permits custody cleanup", reaped?.outcome === "reaped" && !existsSync(join(root, rec.id, "record.json")));
+
   }
 
   {

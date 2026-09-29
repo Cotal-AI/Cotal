@@ -1,0 +1,17 @@
+{
+  "suite": ["packages/seat/smoke/reap-group-identity.smoke.ts"],
+  "guard": "an absent recorded leader cannot authorize signals to an unproved numeric process group",
+  "command": "pnpm --filter @cotal-ai/seat build && pnpm exec tsx packages/seat/smoke/reap-group-identity.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config packages/seat/smoke/mutations/reap-group-identity.json",
+  "mutations": [
+    {
+      "name": "an absent leader authorizes a nonempty numeric group",
+      "file": "packages/seat/src/reap.ts",
+      "find": "  if (!groupKilled && processStartToken(rec.childPid) === undefined && groupMembers(rec.childPid).length > 0)\n    throw new Error(`seat ${id}: group ownership is unproved for absent leader ${rec.childPid}; custody retained`);\n  if (groupKilled) {",
+      "replace": "  if (groupKilled || (processStartToken(rec.childPid) === undefined && groupMembers(rec.childPid).length > 0)) {",
+      "expectRed": "AssertionError [ERR_ASSERTION]: dead-leader numeric group cannot authorize a signal",
+      "cell": "dead-leader numeric group cannot authorize a signal",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build && pnpm exec tsx packages/seat/smoke/reap-group-identity.smoke.ts"
+    }
+  ]
+}

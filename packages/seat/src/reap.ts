@@ -173,12 +173,12 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     throw new Error(`seat ${id}: custodian ${rec.custodianPid} or child ${rec.childPid} still holds its recorded start identity ${graceMs}ms after SIGKILL; exit not proved`);
   // The group after the leader: a member that re-parented to init keeps the pgid, and the pgid
   // cannot be reused while any member lives, so an empty group is proof for the descendants.
-  // Check the group whenever a group kill was initiated OR whenever the leader is gone and members
-  // remain in the group, so a dead leader cannot conceal a live descendant (while leaving a
-  // mismatched live foreign pid untouched).
+  // A retained record may outlive its original group and numeric PGID. Without a live leader
+  // identity, remaining members might belong to a later generation, so retain unproved custody.
   let group = 0;
-  const childLeaderGone = processStartToken(rec.childPid) === undefined;
-  if (groupKilled || (childLeaderGone && groupMembers(rec.childPid).length > 0)) {
+  if (!groupKilled && processStartToken(rec.childPid) === undefined && groupMembers(rec.childPid).length > 0)
+    throw new Error(`seat ${id}: group ownership is unproved for absent leader ${rec.childPid}; custody retained`);
+  if (groupKilled) {
     const empty = await until(() => {
       const members = groupMembers(rec.childPid);
       group = members.length;
