@@ -644,6 +644,17 @@ try {
     // Drive one REAL spawn goal through the stock CLI against the registered manager, to capture the
     // exact next refusal on the accepted-goal path. Recorded as a gap, never counted as a pass.
     const before = fixtureHostEnrollments.length;
+    const cliRaw = (argv: string[]) => new Promise<{ code: number | null; out: string }>((resolve) => {
+      const p = spawn(process.execPath, ["--import", tsxLoader, cotalBin, ...argv, "--space", SPACE, "--server", SERVERS],
+        { cwd: cliDir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      p.stdout?.on("data", (d) => { out += d.toString(); });
+      p.stderr?.on("data", (d) => { out += d.toString(); });
+      const t = setTimeout(() => p.kill("SIGTERM"), 60_000);
+      p.on("exit", (code) => { clearTimeout(t); resolve({ code, out }); });
+    });
+    const ps = await cliRaw(["ps"]);
+    console.log(`  ? GAP discriminator: same askManager rail, non-goal 'cotal ps': exit=${ps.code} out=${ps.out.replace(/\s+/g, " ").slice(0, 300)}`);
     const sp = await new Promise<{ code: number | null; out: string }>((resolve) => {
       const p = spawn(process.execPath, ["--import", tsxLoader, cotalBin, "spawn", "--detach", "--name", "sdk_fixture", "--space", SPACE, "--server", SERVERS],
         { cwd: cliDir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
