@@ -43,6 +43,7 @@ import {
   deprovisionTargetPrincipal,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
+import { requireBrokerFloor } from "./broker-floor.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
 import {
@@ -500,6 +501,9 @@ export async function reconcileSpaceTtls(opts: {
 }): Promise<TtlReconciled[]> {
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
+    // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
+    // fresh connection, including reconnects.
+    requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     const js = jetstream(nc);
     const reconciled = await Promise.all(
@@ -631,6 +635,9 @@ export async function setupSpaceStreams(opts: {
 }): Promise<void> {
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
+    // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
+    // fresh connection, including reconnects.
+    requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open

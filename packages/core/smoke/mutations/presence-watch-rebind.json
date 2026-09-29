@@ -91,6 +91,13 @@
       "find": "    this.presenceWriteFailures = 0;\n    this.presenceWriteEscalated = false;\n",
       "replace": "",
       "expectRed": "4.8 a refusal after recovery starts a fresh run at one and is not already stuck"
+    },
+    {
+      "name": "F1 the SPEC \u00a713.12 broker-floor gate is dropped from the dial, so a below-floor bind is never refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    requireBrokerFloor(this.nc);\n",
+      "replace": "",
+      "expectRed": "4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence"
     }
   ],
   "suite": [

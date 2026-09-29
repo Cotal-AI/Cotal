@@ -145,8 +145,9 @@ try {
   agent.items.push(emptyIdDelivery("first empty-id body"));
   agent.emitIncoming(); // the real MeshAgent fires "incoming" per buffered arrival
   const first = await waitFrame((f) => f.t === "incoming");
-  const firstMsg = first.msg as { id?: string; recvKey?: string };
+  const firstMsg = first.msg as { id?: string; recvKey?: string; historical?: boolean };
   assert.equal(firstMsg.id, "", "the empty wire id rides the wire item");
+  assert.strictEqual(firstMsg.historical, false, "the wire item carries the historical flag, so the sidecar can frame a backfill (#2205)");
   assert.ok(typeof firstMsg.recvKey === "string" && firstMsg.recvKey !== "", "the wire item carries a minted receive key");
 
   // ---- 2) the ack the sidecar sends (by receive key, wire id empty) clears the hold ----
@@ -187,8 +188,13 @@ try {
   ].join("\n");
   agent.items.push(emptyIdDelivery("third body, acked by the real client"));
   const thirdKey = agent.items[agent.items.length - 1].recvKey;
+  // Whatever runs this suite may be a managed agent session, so the inherited environment can carry
+  // a live credential and a live broker URL. Strip every COTAL_ key from the copy before the child
+  // sees it; the control token set below is the only one this client reads.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   const py = spawn(python!, ["-c", script, pluginDir, socketPath], {
-    env: { ...process.env, COTAL_CONTROL_TOKEN: TOKEN }, stdio: ["ignore", "inherit", "inherit"],
+    env: { ...childEnv, COTAL_CONTROL_TOKEN: TOKEN }, stdio: ["ignore", "inherit", "inherit"],
   });
   const [code] = (await once(py, "exit")) as [number | null];
   assert.equal(code, 0, "the real client subscribed and surfaced the pending item");
