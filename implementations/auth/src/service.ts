@@ -277,8 +277,14 @@ export async function openAuthAuthorityPlane(opts: {
    *  workspace root itself: the CLI wrapper passes its root's persisted identity, and a hosted
    *  context passes none, so only remote manager gates can be candidates. Absent means none. */
   localManager?: () => ManagerInstanceIdentity | undefined;
+  /** Bounded trusted-host-only standing renewable credential TTL option for rehearsal (default 24h). */
+  standingRenewableTtlSeconds?: number;
 }): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
+  const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
+  if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
+    throw new Error(`standingRenewableTtlSeconds must be an integer between 5 and ${STANDING_RENEWABLE_TTL_SEC} seconds (got ${standingTtl})`);
+  }
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
   let registry;
   try {
@@ -663,7 +669,7 @@ export async function openAuthAuthorityPlane(opts: {
           );
           const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
           const siblingOn = (gate: ReturnType<typeof serveIssuanceGateKv>, observed: EpGateState) => async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
-            const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: STANDING_RENEWABLE_TTL_SEC } : { expiresInSeconds: STANDING_RENEWABLE_TTL_SEC });
+            const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: standingTtl } : { expiresInSeconds: standingTtl });
             await commitSiblingIssuance(gate, observed, {
               credentialId: rawDigest(issued.jwt).replace("sha256:", "sha256-"),
               credentialKey: r.identities[key].id,
@@ -695,7 +701,7 @@ export async function openAuthAuthorityPlane(opts: {
           if (r.operation === "prepare" || r.operation === "renew") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
-              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+              expiresInSeconds: standingTtl,
             });
             // The executor receives the exact instance-scoped registration/maintenance surface under
             // a separate nkey and bounded five-minute lifetime. The participant retains it for the
@@ -762,7 +768,7 @@ export async function openAuthAuthorityPlane(opts: {
               throw new EpEnvelopeError("conflict", "manager-service standing renewal gate moved before issuance");
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
-              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+              expiresInSeconds: standingTtl,
             });
             credentials.executor = await credential("executor", "remote-manager", actors.executor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
@@ -775,7 +781,7 @@ export async function openAuthAuthorityPlane(opts: {
               {
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
-                expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+                expiresInSeconds: standingTtl,
                 endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
                 serveIssuance: gate,
               },
@@ -811,18 +817,18 @@ export async function openAuthAuthorityPlane(opts: {
               owner,
             };
             const auth = { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never;
-            const driverCreds = await mintCreds(auth, { id: r.run!.driverId, seed: newIdentity().seed }, "run-driver", {
+            credentials.runDriver = await mintPublicUserJwt(auth, r.run!.driverId, "run-driver", {
               principal: { owner, actor: caller.actor },
+              lifecycleUid: r.managerLifecycleUid,
               runDriver: binding,
-              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+              expiresInSeconds: standingTtl,
             });
-            const mediatorCreds = await mintCreds(auth, { id: r.run!.mediatorId, seed: newIdentity().seed }, "run-mediator", {
+            credentials.runMediator = await mintPublicUserJwt(auth, r.run!.mediatorId, "run-mediator", {
               principal: { owner, actor: caller.actor },
+              lifecycleUid: r.managerLifecycleUid,
               runMediator: binding,
-              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+              expiresInSeconds: standingTtl,
             });
-            credentials.runDriver = { jwt: jwtFromCreds(driverCreds)!, exp: credsClaims(driverCreds).exp! };
-            credentials.runMediator = { jwt: jwtFromCreds(mediatorCreds)!, exp: credsClaims(mediatorCreds).exp! };
             return { credentials };
           }
           if (r.operation === "activate") {
@@ -844,7 +850,7 @@ export async function openAuthAuthorityPlane(opts: {
               {
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
-                expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+                expiresInSeconds: standingTtl,
                 endpointServe: reconstructRemoteManagerServeGrant(r, owner, actors.serve, observed),
                 serveIssuance: gate,
               },
@@ -1053,15 +1059,17 @@ export async function openAuthAuthorityPlane(opts: {
       };
       if (grant.kind === "attempt") {
         const caller = runDriverCaller(grant.driver.runDriver.runId, owner);
-        const driverCreds = await mintCreds(hostAuth, { id: grant.driver.id, seed: newIdentity().seed }, "run-driver", {
+        const driver = await mintPublicUserJwt(hostAuth, grant.driver.id, "run-driver", {
           principal: { owner, actor: caller.actor },
+          lifecycleUid: req.managerLifecycleUid,
           runDriver: grant.driver.runDriver,
-          expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+          expiresInSeconds: standingTtl,
         });
-        const mediatorCreds = await mintCreds(hostAuth, { id: grant.mediator.id, seed: newIdentity().seed }, "run-mediator", {
+        const mediator = await mintPublicUserJwt(hostAuth, grant.mediator.id, "run-mediator", {
           principal: { owner, actor: caller.actor },
+          lifecycleUid: req.managerLifecycleUid,
           runMediator: grant.mediator.runMediator,
-          expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+          expiresInSeconds: standingTtl,
         });
         return {
           v: 1 as const,
@@ -1077,14 +1085,12 @@ export async function openAuthAuthorityPlane(opts: {
           processEpoch: req.processEpoch,
           identities: req.identities,
           attempt: req.attempt,
-          credentials: {
-            driver: { jwt: jwtFromCreds(driverCreds)!, exp: credsClaims(driverCreds).exp! },
-            mediator: { jwt: jwtFromCreds(mediatorCreds)!, exp: credsClaims(mediatorCreds).exp! },
-          },
+          credentials: { driver, mediator },
         };
       }
-      const operatorCreds = await mintCreds(hostAuth, { id: grant.operator.id, seed: newIdentity().seed }, "run-operator", {
+      const operator = await mintPublicUserJwt(hostAuth, grant.operator.id, "run-operator", {
         principal: { owner, actor: req.actor },
+        lifecycleUid: req.managerLifecycleUid,
         runOperator: grant.operator.runOperator,
         expiresInSeconds: 60,
       });
@@ -1102,12 +1108,7 @@ export async function openAuthAuthorityPlane(opts: {
         processEpoch: req.processEpoch,
         identities: req.identities,
         operator: req.operator,
-        credentials: {
-          operator: {
-            jwt: jwtFromCreds(operatorCreds)!,
-            exp: credsClaims(operatorCreds).exp!,
-          },
-        },
+        credentials: { operator },
       };
     },
     fenced,

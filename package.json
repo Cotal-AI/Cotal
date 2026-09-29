@@ -312,6 +312,7 @@
     "smoke:remote-closed-connection-recovery": "tsx implementations/manager/smoke/remote-closed-connection-recovery.smoke.ts",
     "smoke:remote-start-expiry-recovery": "tsx implementations/manager/smoke/remote-start-expiry-recovery.smoke.ts",
     "smoke:remote-run-renewal": "tsx implementations/manager/smoke/remote-run-renewal.smoke.ts",
+    "smoke:remote-ef-continuity": "tsx implementations/manager/smoke/remote-ef-continuity.smoke.ts",
     "smoke:remote-isolated-renewal": "for target in serve goalWriter executor; do F_ISOLATED_TARGET=$target tsx implementations/manager/smoke/remote-isolated-renewal.smoke.ts || exit 1; done",
     "smoke:hosted-retirement-order": "tsx implementations/manager/smoke/hosted-retirement-order.smoke.ts",
     "probe:hosted-retirement-stock-supervise": "tsx implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts",

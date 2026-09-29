@@ -536,6 +536,10 @@ export class RunHosting {
         run.creds = pair.driver;
         run.mediatorCreds = pair.mediator;
         run.renewalDebt = undefined;
+        await Promise.all([
+          run.nc?.reconnect().catch(() => {}),
+          run.mediatorNc?.reconnect().catch(() => {}),
+        ]);
       } catch (e) {
         run.renewalDebt = { at: Date.now(), reason: (e as Error).message };
         this.ctx.log(`! run-driver/mediator renewal for ${run.runId}: ${(e as Error).message} - last-good kept, nothing minted locally`);

@@ -1653,9 +1653,29 @@ export class Manager {
     } else if (this.remoteAuthority) {
       if (this.remoteAuthority.renewStandingBundle) await this.renewRemoteStandingBundle();
       else await this.renewRemoteExecutor();
-      this.credRenewTimer = setInterval(() => {
-        void (this.remoteAuthority?.renewStandingBundle ? this.renewRemoteStandingBundle() : this.renewRemoteExecutor());
-      }, credRenewIntervalMs(5 * 60));
+      let standingTtl = STANDING_RENEWABLE_TTL_SEC;
+      if (this.remoteSupervisorCreds) {
+        try {
+          const claims = credsClaims(this.remoteSupervisorCreds);
+          if (typeof claims.exp === "number" && typeof claims.iat === "number" && claims.exp > claims.iat) {
+            standingTtl = claims.exp - claims.iat;
+          }
+        } catch {}
+      }
+      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
+      this.credRenewTimer = setInterval(async () => {
+        try {
+          if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
+          else await this.renewRemoteExecutor();
+        } catch (e) {
+          console.error(`! remote manager renewal pass failed: ${(e as Error).message}`);
+        }
+        try {
+          await this.runHosting?.renew();
+        } catch (e) {
+          console.error(`! remote run-hosting renewal pass failed: ${(e as Error).message}`);
+        }
+      }, intervalMs);
       this.credRenewTimer.unref?.();
     }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
@@ -1695,7 +1715,7 @@ export class Manager {
         servers: this.servers,
         endpoint: MANAGER_ENDPOINT,
         instanceId: this.managerInstanceId,
-        holder: { id: this.ep.ref().id, lifecycleUid: this.managerLifecycleUid },
+        holder: { id: this.remoteAuthority.identities.supervisor.id, lifecycleUid: this.managerLifecycleUid },
         auth: undefined,
         log: (line) => console.error(line),
         admitRun: remoteRuns.admitRun,

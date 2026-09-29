@@ -628,6 +628,9 @@ importers:
       '@cotal-ai/delivery':
         specifier: workspace:*
         version: link:../delivery
+      '@cotal-ai/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
