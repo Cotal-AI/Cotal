@@ -1,0 +1,35 @@
+{
+  "suite": ["implementations/manager/smoke/remote-run-client.smoke.ts"],
+  "guard": "closed run replies bind the manager-held nkeys and reject partial or foreign-account pairs",
+  "command": "pnpm --dir packages/core build && pnpm exec tsx implementations/manager/smoke/remote-run-client.smoke.ts",
+  "completionMarker": "remote run client checks passed",
+  "mutations": [
+    {
+      "name": "run response ignores request id",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "result.requestId !== request.requestId || result.registrationProof !== request.registrationProof ||",
+      "replace": "result.registrationProof !== request.registrationProof ||",
+      "expectRed": "request, registration, process and nkey mismatch refuse",
+      "cell": "request, registration, process and nkey mismatch refuse",
+      "afterRestore": "pnpm --dir packages/core build"
+    },
+    {
+      "name": "run response accepts a missing mediator",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "const credentials = exactKeys(result.credentials, attempt ? [\"driver\", \"mediator\"] : [\"operator\"], \"manager run credentials\");",
+      "replace": "const credentials = result.credentials as Record<string, unknown>;",
+      "expectRed": "partial, widened, and wrong-operation response sets refuse",
+      "cell": "partial, widened, and wrong-operation response sets refuse",
+      "afterRestore": "pnpm --dir packages/core build"
+    },
+    {
+      "name": "run response skips foreign-account validation",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "if (accountFromCreds(creds) !== request.accountPublicKey)",
+      "replace": "if (false)",
+      "expectRed": "a foreign signer with the right public nkey still refuses before adoption",
+      "cell": "a foreign signer with the right public nkey still refuses before adoption",
+      "afterRestore": "pnpm --dir packages/core build"
+    }
+  ]
+}

@@ -79,9 +79,9 @@ const CHOP_TOTAL_MS = 6_000;
 /** Long enough to span at least one lease renew (~half the 30s TTL), so "the revision advanced" is
  *  a statement about a live renew loop rather than about polling luck. */
 const LEASE_RENEW_OBSERVE_MS = 18_000;
-/** Cell E's duty cycle: long enough that many probes are issued and answered late, and several
- *  multiples of the broker-gone window so a predicate reading elapsed time cannot avoid tripping. */
-const DUTY_CYCLE_MS = 20_000;
+/** Six 1s scheduling cycles charge about 1500ms at the 250ms sampler interval, within the
+ *  4000ms loss window and with room to reconnect. Wall time alone must not decide this burst. */
+const DUTY_CYCLE_MS = 6_000;
 
 /** Last few lines of a daemon's output, enough to diagnose a red without printing its whole life. */
 const tail = (d: Daemon): string => d.stderr.trimEnd().split("\n").slice(-4).join("\n");
@@ -295,6 +295,7 @@ function startFreshConnectBlackholeProxy(): {
   listening: Promise<number>;
   close: () => void;
   blackholeNew: boolean;
+  restore: () => void;
   dropEstablished: () => void;
   readonly established: number;
   readonly blackholed: number;
@@ -304,15 +305,8 @@ function startFreshConnectBlackholeProxy(): {
   let established = 0;
   let blackholed = 0;
   const state = { blackholeNew: false };
-  const server = createServer((client: Socket) => {
-    if (state.blackholeNew) {
-      // Accepted, never forwarded, never closed: the connect succeeds and the handshake never
-      // arrives, so the client's own deadline is what ends it.
-      blackholed += 1;
-      held.push(client);
-      client.on("error", () => { /* the client gave up; that is the point */ });
-      return;
-    }
+  const pending = new Set<Socket>();
+  const forward = (client: Socket): void => {
     const upstream = connectSocket({ host: "127.0.0.1", port: PORT });
     established += 1;
     held.push(client, upstream);
@@ -324,6 +318,17 @@ function startFreshConnectBlackholeProxy(): {
     upstream.on("error", drop);
     client.on("close", drop);
     upstream.on("close", drop);
+  };
+  const server = createServer((client: Socket) => {
+    if (state.blackholeNew) {
+      blackholed += 1;
+      held.push(client);
+      pending.add(client);
+      client.on("close", () => pending.delete(client));
+      client.on("error", () => { /* the client's deadline may end the attempt */ });
+      return;
+    }
+    forward(client);
   });
   const listening = new Promise<number>((res, rej) => {
     server.once("error", rej);
@@ -337,6 +342,11 @@ function startFreshConnectBlackholeProxy(): {
     },
     get blackholeNew() { return state.blackholeNew; },
     set blackholeNew(v: boolean) { state.blackholeNew = v; },
+    restore: () => {
+      state.blackholeNew = false;
+      for (const client of pending) if (!client.destroyed) forward(client);
+      pending.clear();
+    },
     /** Cut every socket that is currently carrying traffic, so the daemon's TRANSPORT goes down
      *  rather than merely its side-probes failing. Combined with `blackholeNew` this is the state
      *  in which the daemon has no standing evidence left and cannot obtain any: the honest
@@ -557,26 +567,10 @@ try {
   // so it is kept for what it does prove (the daemon survives a stall and goes on renewing) and the
   // discrimination is done here.
   //
-  // THIS is the mechanism the issue's own triage reproduced, and the one with no luck in it. The
-  // daemon reaches the broker through a proxy that PRESERVES every already-established socket and
-  // blackholes only NEW connections. The daemon's standing connection keeps working, so it is
-  // serving the whole time; its 2s side-probe opens a fresh connection every tick, and each one
-  // hangs until `isReachable`'s own deadline ends it and flattens it to `false`.
-  //
-  // WHAT SAVES THE DAEMON HERE IS THE OPEN TRANSPORT, AND ONLY THAT. An earlier draft of this
-  // comment also claimed the probe answers were "far past their own budget" and therefore read as
-  // starvation. That was wrong, and a reviewer's measurement is what showed it: a blackholed probe
-  // is ended BY its own deadline, so it arrives AT the budget, not past it, and on an unstarved
-  // host the server genuinely had that whole second and genuinely failed to complete a handshake.
-  // Those are honest negatives about this address, and they are counted as such. The daemon stays
-  // only because its existing connection to that same broker is open and serving, which is real
-  // evidence that the broker is there and this process merely cannot open a NEW socket to it.
-  //
-  // The blackhole therefore runs INSIDE the hard backstop. Past the backstop this daemon SHOULD
-  // exit even with a live transport. That is the bound, and cell D grades it.
-  //
-  // The pre-fix predicate cannot tell this from a dead server: it sees `false` and a window that has
-  // elapsed, and it exits.
+  // Preserve established sockets and blackhole only new connections. Resident PING/PONGs keep
+  // proving the healthy transport without authenticated side-dials or a false degraded state.
+  // No loss timer should run while that connection stays healthy. D cuts the resident transport
+  // as well, so it independently grades real disconnection and the exit bound.
   console.log("\nC. new connections are blackholed while the daemon's established socket keeps working");
   const proxy = startFreshConnectBlackholeProxy();
   const proxyPort = await proxy.listening;
@@ -609,15 +603,15 @@ try {
   // still look green for the wrong reason.
   check("C4b and stayed inside the hard backstop, so this cell grades the transport, not the bound",
     Date.now() - choppedStart < WINDOW_MS * 4, { ranMs: Date.now() - choppedStart, backstopMs: WINDOW_MS * 4 });
-  check("C5 the daemon's side-probes were actually being blackholed",
-    proxy.blackholed > 0, { blackholed: proxy.blackholed, established: proxy.established });
+  check("C5 healthy interval makes zero additional broker connections",
+    proxy.blackholed === 0, { blackholed: proxy.blackholed, established: proxy.established });
   check("C6 the daemon did NOT exit while it could not complete a fresh handshake",
     !exitedDuringBlackhole && !chopped.exited,
     { exited: chopped.exited, code: chopped.code, tail: tail(chopped) });
   check("C7 and it never claimed the broker was gone",
     !chopped.stderr.includes("exiting (coupled to the broker)"), tail(chopped));
-  check("C8 it reported DEGRADED instead, naming the condition rather than vanishing",
-    /DEGRADED/.test(chopped.stderr), tail(chopped));
+  check("C8 healthy daemon does not report false degraded state",
+    !/DEGRADED/.test(chopped.stderr), tail(chopped));
   // Still SERVING, from the broker's own record rather than the daemon's word for it.
   const cLease = await readLease(spaceC, credsPathC);
   check("C9 it still holds a live, ready lease on the far side of the wire",
@@ -666,41 +660,28 @@ try {
     cutExitMs < WINDOW_MS * 4, { cutExitMs, backstopMs: WINDOW_MS * 4 });
   cutProxy.close();
 
-  // ── E. THE INCIDENT'S OWN CONDITION: starved but still running, so probes complete LATE ─────────
+  // ── E. A BOUNDED SCHEDULING BURST, followed by prolonged transport loss ───────────────────────
   //
-  // A AND D BETWEEN THEM STILL DO NOT GRADE THE LATENESS SIGNAL, and the mutation record is what
-  // established that. Under A's full SIGSTOP no probe completes at all, so there is nothing to be
-  // late; under D every blackholed probe is cut off by its own deadline ON TIME, at ~1000ms of a
-  // 1000ms budget, so it is an honest negative. Deleting the lateness rule left both green. The
-  // condition it exists for is neither: it is load 311 on 12 cores, where the process DOES run, just
-  // not when it meant to. A probe issued there completes, and its own deadline timer fires seconds
-  // after the deadline it was supposed to enforce, so the `false` it returns was decided by this
-  // host's runqueue rather than by the server. That is the third mechanism in #1318, and the
-  // measured incident is full of it.
-  //
-  // Duty-cycled SIGSTOP/SIGCONT is that state, reproduced with signals alone: the daemon runs in
-  // short slices and is off the runqueue in between, exactly like a process getting a few percent of
-  // a CPU. The transport is cut and new connects are blackholed as in D, so no other evidence can
-  // carry the verdict and the lateness of the answers is the ONLY thing standing between this
-  // daemon and an exit. The broker is alive throughout, so staying is the correct answer.
-  //
-  // The backstop is raised FOR THIS DAEMON ONLY, and that is not a thumb on the scale: the backstop
-  // is a different guarantee, graded on its own by cell D (which exits well inside it) and by the
-  // pure suite's F-section. Leaving it at 4× a 2s window would end this daemon on the backstop
-  // before the signal under test ever got to matter, and the cell would grade the backstop twice
-  // instead of grading lateness once.
-  console.log("\nE. the daemon is duty-cycled off the CPU, so its probes complete long past their own deadline");
+  // Cut the resident socket and blackhole reconnects. During six 10%-duty cycles the process's
+  // measured scheduling credit keeps unstarved loss below the window, despite longer wall time.
+  // Then restore the wire and prove serving resumes. A second, prolonged loss must still fence
+  // the daemon: scheduling credit cannot excuse disconnection indefinitely.
+  console.log("\nE. bounded scheduling credit preserves recovery but does not excuse prolonged loss");
   const lateProxy = startFreshConnectBlackholeProxy();
   const latePort = await lateProxy.listening;
-  const late = spawnDaemon(spaceE, credsPathE, `nats://127.0.0.1:${latePort}`, { COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS: String(DUTY_CYCLE_MS * 4) });
+  const burstWindowMs = WINDOW_MS * 2;
+  const late = spawnDaemon(spaceE, credsPathE, `nats://127.0.0.1:${latePort}`, {
+    COTAL_DELIVERY_BROKER_GONE_MS: String(burstWindowMs),
+    COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS: String(DUTY_CYCLE_MS * 4),
+  });
   const lateUp = await untilUp(late);
   check("E1 the daemon comes up and is serving through the proxy", lateUp, tail(late));
   if (!lateUp) throw new Error("the late-probe cell needs a daemon that was running; it never came up");
   lateProxy.blackholeNew = true;
   lateProxy.dropEstablished();
-  // ~10% duty cycle: awake 100ms in every second. Long enough a slice that the daemon makes
-  // progress and issues probes, short enough that a 1000ms deadline lands many seconds late.
-  const dutyUntil = Date.now() + DUTY_CYCLE_MS;
+  // ~10% duty cycle: the native health callback gets a short runnable slice each second.
+  const dutyStart = Date.now();
+  const dutyUntil = dutyStart + DUTY_CYCLE_MS;
   while (Date.now() < dutyUntil && !late.exited) {
     signalGroup(late, "SIGSTOP");
     await wait(900);
@@ -708,24 +689,44 @@ try {
     await wait(100);
   }
   if (!late.exited) signalGroup(late, "SIGCONT");
-  const dutyElapsed = DUTY_CYCLE_MS;
-  check("E2 the duty cycle lasted several multiples of the daemon's broker-gone window",
-    dutyElapsed > WINDOW_MS * 4, { dutyElapsed, window: WINDOW_MS });
+  const dutyElapsed = Date.now() - dutyStart;
+  check("E2 the duty cycle exceeds the daemon's wall-clock loss window",
+    dutyElapsed > burstWindowMs, { dutyElapsed, window: burstWindowMs });
   check("E3 the broker answered this process directly throughout", await isReachable(SERVERS));
-  check("E4 the daemon's probes were being blackholed while it was descheduled",
+  check("E4 the daemon's reconnects were blackholed while it was descheduled",
     lateProxy.blackholed > 0, { blackholed: lateProxy.blackholed });
-  // THE CELL. Every probe came back false; each was decided by a deadline this process could not
-  // honour. A predicate that reads those as statements about the server exits here.
-  check("E5 the daemon did NOT exit on answers its own scheduling delay produced", !late.exited, tail(late));
+  check("E5 the bounded scheduling burst does not cause a premature exit", !late.exited, tail(late));
   check("E6 and it never claimed the broker was gone",
     !late.stderr.includes("exiting (coupled to the broker)"), tail(late));
   // It must also RECOVER: a daemon that survives by going permanently quiet has not distinguished
   // anything, it has just stopped reacting. Unblackhole and it should reconnect and serve.
-  lateProxy.blackholeNew = false;
-  await wait(WINDOW_MS * 3);
-  const eLease = await readLease(spaceE, credsPathE);
-  check("E7 and once the wire is healthy again it is serving: a live, ready lease on the far side",
-    eLease !== undefined && eLease.info.ready === true, { eLease, tail: tail(late) });
+  const recoveryRevision = (await readLease(spaceE, credsPathE))?.revision;
+  lateProxy.restore(); // release pending handshakes too, rather than leaving existing dials blackholed
+  let eLease: Awaited<ReturnType<typeof readLease>>;
+  const recoveryUntil = Date.now() + LEASE_RENEW_OBSERVE_MS;
+  while (!late.exited && Date.now() < recoveryUntil) {
+    eLease = await readLease(spaceE, credsPathE);
+    if (recoveryRevision !== undefined && eLease?.info.ready && eLease.revision > recoveryRevision) break;
+    await wait(100);
+  }
+  check("E7 recovered live daemon advances its ready lease after the wire returns",
+    !late.exited && recoveryRevision !== undefined && eLease !== undefined && eLease.info.ready === true && eLease.revision > recoveryRevision,
+    { recoveryRevision, eLease, tail: tail(late) });
+  check("E8 prolonged loss starts with the recovered daemon still alive", !late.exited, tail(late));
+  lateProxy.blackholeNew = true;
+  lateProxy.dropEstablished();
+  const prolongedStart = Date.now();
+  while (Date.now() - prolongedStart < 20_000 && !late.exited) {
+    signalGroup(late, "SIGSTOP");
+    await wait(900);
+    signalGroup(late, "SIGCONT");
+    await wait(100);
+  }
+  if (!late.exited) signalGroup(late, "SIGCONT");
+  check("E9 the independent broker remains reachable during prolonged scoped loss", await isReachable(SERVERS));
+  check("E10 prolonged disconnected duty cycling still fences within its bound", late.exited,
+    { elapsed: Date.now() - prolongedStart, tail: tail(late) });
+  check("E11 prolonged scoped loss reports broker unavailability", late.stderr.includes("exiting (coupled to the broker)"), tail(late));
   signalGroup(late, "SIGKILL");
   await untilExit(late, 5000);
   lateProxy.close();
@@ -1396,7 +1397,8 @@ try {
   // 93 -> 98: P1-P5. The discriminator shipped unreachable and no cell noticed, because a branch
   // that only fires on a broken environment is never walked by a passing suite. It is a pure
   // function now precisely so it can be walked without one.
-  const EXPECTED_CELLS = 97;
+  // E8-E11 retain the prolonged-loss case after the bounded scheduling-burst control.
+  const EXPECTED_CELLS = 101;
   check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
   console.log(`\nDELIVERY-STARVATION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

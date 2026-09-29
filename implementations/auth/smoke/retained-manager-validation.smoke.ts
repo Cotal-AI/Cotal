@@ -148,6 +148,8 @@ await cell("actual host dispatcher runs the fixed provider validation and return
       maintainRemoteManager: async () => { throw new Error("wrong dispatcher arm"); },
       scanManagerGoalIndex: async () => { throw new Error("wrong dispatcher arm"); },
       authorizeManagerAdmin: async () => { throw new Error("wrong dispatcher arm"); },
+      admitManagerRun: async () => { throw new Error("wrong dispatcher arm"); },
+      issueManagerRunAttempt: async () => { throw new Error("wrong dispatcher arm"); },
       validateRetainedAgent: ({ owner: requestOwner, scope, request: candidate }) =>
         authorizeRemoteRetainedAgentValidation({
           owner: requestOwner, scope, request: candidate, space, proofSecret,

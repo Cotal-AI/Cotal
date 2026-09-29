@@ -45,12 +45,30 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, `readiness`, `drain`, and idempotent `close`. `runAuthService` remains the CLI entry. |
+| `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `retireManagerInstanceIdentity(root, space, expected)` | `@cotal-ai/workspace` | remove a persisted manager identity only if its complete instance id and serve identity still match `expected`. Returns `removed` or `absent`; refuses malformed, nonregular, and changed records. `absent` is not proof of ownership or successful teardown. The caller must separately prove stop and retirement ownership before using it. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
+| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumer; broker inactivity expiry remains the crash or deletion-failure backstop. |
+
+The remote manager authority parser accepts `renewStandingBundle` and `renewRunDriver` only with
+an assigned account nkey, the current manager process epoch, and a host-authenticated registration
+proof. A run renewal also names its active holder, takeover, epoch, fencing token, and the two
+existing nkeys. The host must fresh-check those coordinates against its registration gate and run
+journal before issuing server-selected profiles. A host without that renewal authorization refuses
+the request. Until the host issuer wires the operations and validates them on real connections,
+the presence of these types is not an operational pooled renewal guarantee.
+
+With `renewStandingBundle` configured, the manager renews all five standing credentials together.
+It checks every returned credential for the held nkey and assigned account, test-connects each one,
+and adopts them only if the serve epoch has not moved. A refused or failed candidate leaves the
+current credentials in place and records the refusal as cleanup debt until a later renewal succeeds.
+On shutdown, after the standing context is drained, an expired maintenance executor is renewed
+through the existing scoped host operation so deregistration can finish without restarting duties.
 
 **Provisioning and minting** (all `@cotal-ai/core`)
 
@@ -95,6 +113,32 @@ The runners take a CLI-shaped `ParsedArgs`, not a typed options object, so a hos
 ```ts
 const args: ParsedArgs = { values: { space, server, port: "0" }, positionals: [], raw: [] };
 ```
+
+For an embedded delivery instance, use `startDeliveryService` instead. Its `HostedContextInputs`
+include the account public key and lifecycle UID, space, broker URL, injected store, stable
+`storeIdentity`, and an explicit `stateDir`. The store must declare that same injected identity.
+The initial delivery credential must belong to the assigned account. The function returns only
+after the delivery responder is bound. `close()` withdraws serving and releases only the lease
+owned by that instance. It closes both membership connections even when a disconnected drain
+fails, so they cannot reconnect after closure. Credential-expiry health state clears after
+successful broker-verified adoption through the existing `reloadCreds` rail. A failed start
+refuses locally without exiting the host process or stopping another account's delivery service.
+If a health fault occurs during an asynchronous store read, startup rejects when the read returns
+and closes any resources created by that late completion.
+
+`startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
+injected identity, and its data account must be the assigned account. The IdP pin and ledger live
+under the explicit `stateDir`. The context never resolves a workspace root from the working
+directory and has no local manager, so only remote manager gates can be selected. It returns after
+the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
+a lost broker connection makes that context `unavailable` and closes it without exiting the process.
+The host writes no discovery file for it. The auth plane can renew a registered manager's
+five standing credentials from the current service registration. Run-driver renewal still
+refuses without an authoritative activated-run reader, so these handles do not yet make a
+complete pooled auth and delivery host. A fresh auth plane can initialize without a
+delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
+instance first: its admin rail must complete the broker connection-liveness sweep before the
+auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim.
 
 ### Long-lived endpoints take a bearer function
 
