@@ -698,6 +698,11 @@ try {
   await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });
   mAny.deprovisionBroker = origBroker;
 
+  const replayRes = (manager as unknown as { lastDeprovisionResources?: import("@cotal-ai/core").DeprovisionResourceAccounting }).lastDeprovisionResources;
+  check("REPLAY ACCOUNTING: replayed predecessor teardown reports zero deletions",
+    replayRes !== undefined && replayRes.deleted === 0 && replayRes.absent >= 3,
+    replayRes);
+
   const fpPost = await footprint();
   const survives = (succ: string[], post: string[]): boolean => succ.length > 0 && succ.every((n) => post.includes(n));
   check("BARRIER: the replacement's dm_ durables survive the replayed cleanup", survives(fpS.dm, fpPost.dm),
