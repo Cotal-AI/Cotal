@@ -9,7 +9,6 @@ import {
   deliveryBucket,
   dialerFor,
   idFromCreds,
-  defaultProbeTimeoutMs,
   isCasLoss,
   isPermissionDenied,
   isReachable,
@@ -30,7 +29,8 @@ import {
 import { PermissionViolationError } from "@nats-io/transport-node";
 import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
+import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
+import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState } from "@cotal-ai/workspace";
 
@@ -547,6 +547,8 @@ async function runStartedDelivery(
     watchPresence: true, // read the roster for @mention resolution …
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
     card: { id: ownId, name: "delivery", role: "delivery", kind: "endpoint" },
+    transportPingIntervalMs: Number(process.env.COTAL_DELIVERY_PING_INTERVAL_MS) || 2500,
+    transportMaxPingOut: Number(process.env.COTAL_DELIVERY_MAX_PING_OUT) || 2,
   });
   // Both channels: raw connection errors ride `error`, while every condition the endpoint is
   // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
@@ -557,6 +559,40 @@ async function runStartedDelivery(
   ep.on("warning", say);
   try { await ep.start(); }
   catch (error) { await ep.stop(); throw error; }
+
+  const BROKER_GONE_MS = Number(process.env.COTAL_DELIVERY_BROKER_GONE_MS) || 15_000;
+  const BROKER_GONE_BACKSTOP_MS = Math.max(
+    BROKER_GONE_MS,
+    Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
+  );
+  let stopHandler: ((code: number, cause?: string) => void) | undefined;
+  const health = new DeliveryTransportHealth(
+    (reason) => {
+      console.error(
+        reason === "credential-expired"
+          ? "✗ delivery: credential expired without renewal"
+          : reason === "backstop"
+            ? "✗ delivery: broker connection unavailable past backstop (broker unreachable), exiting (coupled to the broker)"
+            : "✗ delivery: broker connection unavailable (broker unreachable), exiting (coupled to the broker)",
+      );
+      if (stopHandler !== undefined) stopHandler(1, reason === "credential-expired" ? "credential expired without renewal" : `broker connection unavailable (${reason})`);
+      else earlyStop(1);
+    },
+    () => console.error("! delivery: credential expired, awaiting proved renewal"),
+    BROKER_GONE_MS,
+    BROKER_GONE_BACKSTOP_MS,
+  );
+  ep.on("transport", ({ connected }: { connected: boolean }) => {
+    health.transport(connected);
+  });
+  ep.on("error", (e: Error) => {
+    if (e.name === "UserAuthenticationExpiredError" || (e as { cause?: { name?: string } }).cause?.name === "UserAuthenticationExpiredError") {
+      health.credentialExpired();
+    }
+  });
+  ep.on("creds-adopted", () => {
+    health.adopted();
+  });
 
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
@@ -622,7 +658,6 @@ async function runStartedDelivery(
   let timerWriterAttempt: Promise<void> | undefined;
   let stopLeaseWatch: (() => void) | undefined;
   let renew: ReturnType<typeof setInterval> | undefined;
-  let brokerWatch: ReturnType<typeof setInterval> | undefined;
   /** Removes THIS process's liveness record, once it has one. Declared BEFORE the handlers that
    *  call it and assigned below, so a signal landing between the two is a no-op rather than a
    *  temporal-dead-zone throw: at that instant nothing has been written, so there is nothing to
@@ -632,6 +667,7 @@ async function runStartedDelivery(
   const earlyStop = (code: number): void => {
     if (stopping) return;
     stopping = true;
+    health.stop();
     setTimeout(() => process.exit(code), 2000);
     unrecordPid?.();
     void (async () => {
@@ -643,6 +679,7 @@ async function runStartedDelivery(
       process.exit(code);
     })();
   };
+  stopHandler = earlyStop;
   const earlySigint = (): void => earlyStop(0);
   const earlySigterm = (): void => earlyStop(0);
   if (hosted === undefined) {
@@ -679,7 +716,7 @@ async function runStartedDelivery(
     if (closePromise !== undefined) return closePromise;
     stopping = true;
     if (renew !== undefined) clearInterval(renew);
-    if (brokerWatch !== undefined) clearInterval(brokerWatch);
+    health.stop();
     stopLeaseWatch?.();
     unrecordPid?.();
     closePromise = (async () => {
@@ -690,7 +727,7 @@ async function runStartedDelivery(
       } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
-      try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
+      try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
       try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
     })();
@@ -764,6 +801,7 @@ async function runStartedDelivery(
     // killing it to discover it was alive (any refusal/unknown blocks the repair, fail-closed).
     principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
     reloadStoreIdentity: () => reloadStoreIdentity,
+    onDeliveryCredsAdopted: () => health.adopted(),
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
@@ -835,16 +873,16 @@ async function runStartedDelivery(
     }
   })();
 
-  const shutdown = (code: number): void => {
+  const shutdown = (code: number, cause?: string): void => {
     if (hosted !== undefined) {
-      unavailable = `delivery context stopped (code ${code})`;
+      unavailable = cause ? `delivery context stopped (code ${code}): ${cause}` : `delivery context stopped (code ${code})`;
       void close();
       return;
     }
     if (stopping) return;
     stopping = true;
     if (renew !== undefined) clearInterval(renew);
-    if (brokerWatch !== undefined) clearInterval(brokerWatch);
+    health.stop();
     stopLeaseWatch?.();
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
     // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
@@ -899,6 +937,7 @@ async function runStartedDelivery(
       process.exit(code);
     })();
   };
+  stopHandler = shutdown;
 
   // SIGNAL HANDLERS GO UP THE MOMENT `shutdown` EXISTS, NOT AFTER STARTUP FINISHES.
   //
@@ -1217,192 +1256,7 @@ async function runStartedDelivery(
     })();
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
-  // Coupled to the broker: POLL its reachability. Survive brief blips (the endpoint reconnects on its
-  // own), but EXIT if the broker is GONE, the endpoint would otherwise retry reconnect forever (its
-  // terminal-close never fires), so this is what stops the daemon outliving the server it serves.
-  // (`cotal up`/`down` teardown stops it too.) The window is env-overridable for tests.
-  //
-  // WHAT "GONE" MEANS IS NOW DECIDED FROM EVIDENCE, NOT FROM A CLOCK (#1318). Three conditions used
-  // to produce one signal and only one of them was a dead server: the broker being down, this
-  // process being descheduled so the interval never fired, and a probe that could not complete a
-  // handshake because the local process could not get scheduled to finish it. A wall-clock
-  // `Date.now() - lastReachable` cannot tell them apart, and widening it only moves the threshold.
-  // Three signals separate them, and all three are things this process can actually observe:
-  //
-  //   • MEASURED LOOP LAG. The gap between consecutive firings of a timer we own, minus its nominal
-  //     period, is local starvation by direct measurement. It is credited back, so time this process
-  //     spent off the runqueue is never counted against the broker.
-  //   • COMPLETED NEGATIVE PROBES. Only a probe that RAN TO COMPLETION and returned false is
-  //     evidence about the server. A probe that never ran contributes nothing (that was the whole
-  //     defect: the window aged with no probe having failed), and one that REJECTED is an
-  //     unanswered question, it now resets the counter and logs, where it used to be swallowed by
-  //     `.catch(() => {})` and silently age the window.
-  //   • TRANSPORT-LEVEL LIVENESS. A `transport: connected` edge from the endpoint's own connection
-  //     cannot happen without a server on the other end, so it is positive evidence obtained for
-  //     free, on a path that does not need this process to schedule a probe at all.
-  //
-  // A starvation diagnosis therefore reports DEGRADED and keeps serving; a genuinely dead broker
-  // still exits, on the same window, as fast as completed probes can say so.
-  const BROKER_GONE_MS = Number(process.env.COTAL_DELIVERY_BROKER_GONE_MS) || 15_000;
-  // How many completed negatives make elapsed time believable. Two is the floor: one completed
-  // negative is a single refused connect, which a loopback under momentary pressure can produce.
-  // The default scales with the window so a test that shortens the window does not thereby demand
-  // more evidence than the window has room for.
-  const BROKER_GONE_PROBES = Math.max(
-    2,
-    Number(process.env.COTAL_DELIVERY_BROKER_GONE_PROBES) || Math.ceil(BROKER_GONE_MS / PROBE_INTERVAL_MS / 2),
-  );
-  // The hard backstop: past this, no amount of measured lag or transport optimism keeps the daemon
-  // alive. A daemon that OUTLIVES a dead broker is worse than one that restarts unnecessarily, so
-  // the repair is bounded and fails toward exiting.
-  const BROKER_GONE_BACKSTOP_MS = Math.max(
-    BROKER_GONE_MS,
-    Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
-  );
-  let lastReachable = Date.now();
-  let completedNegatives = 0;
-  let degraded = false;
-  // What the endpoint's OWN connection reports about its socket to this same broker. Seeded true
-  // because `ep.start()` above completed, which it cannot do without a server having answered.
-  let transportConnected = true;
-  const lag = new LoopLagMeter(PROBE_INTERVAL_MS);
-  /** Positive evidence, from wherever it came: restart the window and its lag budget together. */
-  const sawBroker = (): void => {
-    lastReachable = Date.now();
-    completedNegatives = 0;
-    lag.reset();
-    if (degraded) {
-      degraded = false;
-      console.error(`✓ delivery: the broker is answering again, Plane-3 is serving normally (space ${space})`);
-    }
-  };
-  // The endpoint's OWN transport edge. This is evidence the daemon gets without being scheduled to
-  // probe for it, and it is the signal that distinguishes "the connection object reports a
-  // transport-level close" from "silence": a live connection to that address proves a server, while
-  // a disconnect is the endpoint's own business (nats.js reconnects through blips of its own
-  // accord) and merely stops excusing a probe that will not complete.
-  ep.on("transport", (t: { connected: boolean }) => {
-    transportConnected = t.connected;
-    if (t.connected) sawBroker();
-  });
-  // THE BUDGET THE PROBE IS ACTUALLY GIVEN, asked of the one function that decides it. A ws(s)
-  // broker rides an HTTPS edge and gets 5s, not the 1s a loopback TCP broker gets; judging a ws
-  // probe against 1000 would read every honest refusal on such a broker as this process's own
-  // starvation, so the completed-negative count could never rise and a genuinely dead ws broker
-  // would be ended only by the backstop, with the wrong reason in its log. The budget and the
-  // judgment have to come from the same place.
-  const probeBudgetMs = defaultProbeTimeoutMs(server);
-  brokerWatch = setInterval(() => {
-    if (stopping) return;
-    // Measure FIRST, before any await: this is the gap since the previous firing, and it is the
-    // only place the daemon can learn that it was not scheduled.
-    lag.tick(Date.now());
-    // THE SAME TRANSPORT AS EVERY OTHER DIAL IN THIS PROCESS. This poll carries `latestCreds` — a
-    // standing credential — and `isReachable` performs a real authenticated connect whenever creds
-    // are supplied, every 2 seconds, for the life of the daemon. It is the most repeated credential
-    // presentation in the system, and it was the one dial here that did not name its transport.
-    //
-    // The poll predates TLS and is identical on `main`, where nothing is encrypted and it is at
-    // least consistent. What is new is the ASYMMETRY: with the two dials above upgraded, an operator
-    // who enables TLS would get a protected main path and an unprotected watchdog. An inconsistent
-    // guarantee is worse than a uniformly absent one, because the operator now believes something.
-    const probeStarted = Date.now();
-    // Watch this process's own scheduling FOR THE DURATION OF THE PROBE. A refusal is only evidence
-    // about the server if the server was actually given the time the deadline promised it, and
-    // under short CPU slices most of a probe's wall-clock can be time this process was not running.
-    const sampler = new DescheduleSampler();
-    sampler.start(probeStarted);
-    void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
-      .then(
-        (ok) => classifyProbe(ok, Date.now() - probeStarted, probeBudgetMs, PROBE_LATE_FACTOR, sampler.stop()),
-        // A REJECTED probe is an unanswered question, not a negative answer. It used to be swallowed
-        // whole by `.catch(() => {})`, so it neither refreshed the window nor evaluated anything and
-        // silently aged the daemon toward an exit it had gathered no evidence for.
-        (e: Error) => {
-          sampler.stop();
-          console.error(`! delivery: the broker probe did not complete (${e.message}), no verdict from it; serving, retrying`);
-          return classifyProbe(undefined, Date.now() - probeStarted);
-        },
-      )
-      .then((probe) => {
-        if (stopping) return;
-        if (probe.counts === "positive") { sawBroker(); return; }
-        if (probe.counts === "incomplete") {
-          // The run of credible refusals is broken by a probe that did not complete.
-          completedNegatives = 0;
-          return;
-        }
-        if (probe.counts === "starved") {
-          // The probe RAN and said no, but its answer arrived so far past its own deadline that the
-          // deadline was enforced against this process rather than against the server. That is the
-          // starved-client case, and it is the one an elapsed-time predicate cannot see at all: the
-          // timer is firing, the probes are completing, and every one of them is `false`.
-          // Dated with the instant the answer ARRIVED, so the meter can tell whether this stall is
-          // the same wall-clock interval the tick above already charged (union, counted once) or an
-          // adjacent one (disjoint, both counted). The overlap question is settled by timestamps
-          // rather than by comparing magnitudes, which cannot distinguish the two.
-          lag.credit(probe.lateBy, Date.now());
-          completedNegatives = 0;
-        } else {
-          // A refusal that arrived on time. This is the only thing that may accrue against the broker.
-          completedNegatives += 1;
-        }
-        // ONE SPAN, MEASURED ONCE, USED FOR BOTH. Reading the clock twice would let the elapsed span
-        // and the lag clamp disagree by the cost of the call itself.
-        const sinceReachable = Date.now() - lastReachable;
-        const verdict = brokerGoneVerdict({
-          msSinceLastReachable: sinceReachable,
-          // CLAMPED TO THE SPAN IT IS SUBTRACTED FROM. The interval gap and a late probe answer can
-          // testify to the same stall, and the meter cannot tell that from two adjacent stalls, so it
-          // keeps both charges and the bound is applied here, where the span is known. Without it a
-          // 10s stall read 17s and drove unstarved time negative, which cannot be cleared by any
-          // amount of real outage: a dead broker then survives the evidence clause and exits only on
-          // the backstop, 44s -> 62s measured. Time not had cannot exceed time passed.
-          starvedMs: lag.starvedMsWithin(sinceReachable),
-          completedNegatives,
-          transportConnected,
-          windowMs: BROKER_GONE_MS,
-          requiredNegatives: BROKER_GONE_PROBES,
-          backstopMs: BROKER_GONE_BACKSTOP_MS,
-        });
-        if (verdict.exit) {
-          // SAY WHICH EXIT THIS IS. The single message here previously claimed completed probes over
-          // ">15s of unstarved time" on BOTH paths, and on the backstop path that sentence is simply
-          // false: the backstop fires precisely when the evidence clauses did NOT conclude, often
-          // with zero completed refusals. An operator debugging a starved host was handed a
-          // confident evidentiary claim the daemon had not established.
-          console.error(
-            verdict.reason === "backstop"
-              ? `✗ delivery: giving up on elapsed time alone, ${Math.round(BROKER_GONE_BACKSTOP_MS / 1000)}s since the last ` +
-                  `confirmed reachability with no sufficient evidence either way (${completedNegatives} completed probes refused, ` +
-                  `${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited). This is a BOUND, not a diagnosis: the ` +
-                  `broker may be gone or this process may have been starved past the bound, exiting (coupled to the broker)`
-              : `✗ delivery: broker unreachable, ${completedNegatives} completed probes refused within their deadline over ` +
-                  `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited), exiting (coupled to the broker)`,
-          );
-          shutdown(1);
-          return;
-        }
-        // NOT an exit. Say so once per episode, naming WHICH condition it is, so an operator reading
-        // the log during a load incident sees "this host starved me" rather than a daemon that
-        // silently vanished.
-        if (!degraded && verdict.reason !== "reachable") {
-          degraded = true;
-          console.error(
-            verdict.reason === "starved"
-              ? `! delivery: DEGRADED, cannot reach the broker, but ${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
-              : verdict.reason === "transport-live"
-                ? `! delivery: DEGRADED, a fresh probe cannot complete, but this daemon's own connection to ${server} is still open, so the broker is there and this process cannot ask; serving, retrying`
-                : `! delivery: DEGRADED, the broker has not answered for >${BROKER_GONE_MS / 1000}s but only ${completedNegatives} of ${BROKER_GONE_PROBES} probes have refused within their deadline; serving, retrying`,
-          );
-        }
-      })
-      .catch((e: Error) => {
-        // The verdict path itself faulted. Never silent, and never an exit: a bug in the detector
-        // must not end the daemon it is meant to keep alive.
-        console.error(`! delivery: the broker watch tick faulted (${e.message}); serving, retrying`);
-      });
-  }, PROBE_INTERVAL_MS);
+  // Native transport health is driven by DeliveryTransportHealth above (resident transport events).
 
   if (hosted !== undefined) {
     const context = hosted.context;

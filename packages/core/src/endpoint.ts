@@ -493,6 +493,8 @@ export class CotalEndpoint extends EventEmitter {
      *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). `expected`
      *  is the renewal owner's generation token for the rw cred (see {@link reloadCreds}). */
     reloadMembershipCreds?: (expected?: string) => Promise<unknown>;
+    /** Composition-root hook: notified when delivery credentials have been successfully proved and adopted. */
+    onDeliveryCredsAdopted?: () => void;
     /** Composition-root hook: the live-eviction executor (D5 slice 6) — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
     evictPrincipal?: (principal: string) => Promise<unknown>;
@@ -1190,6 +1192,7 @@ export class CotalEndpoint extends EventEmitter {
     CotalEndpoint.assertRenewableGeneration(candidate, this.currentCreds, delay);
     this.currentCreds = candidate;
     this.armCredsRefresh(delay);
+    this.emit("creds-adopted", credsClaims(candidate));
     return credsClaims(candidate);
   }
 
@@ -4400,10 +4403,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted };
     await this.armPlane3();
   }
 
@@ -4763,7 +4766,10 @@ export class CotalEndpoint extends EventEmitter {
       // Arm the resident wire swap ONLY now — after BOTH proofs settled, right before the reply is
       // returned+responded — so a slow membership proof can never let the delivery reconnect strand
       // this reply. Only when delivery actually adopted a new candidate (currentCreds was updated).
-      if (delivery.ok) this.scheduleResidentSwap();
+      if (delivery.ok) {
+        this.plane3?.onDeliveryCredsAdopted?.();
+        this.scheduleResidentSwap();
+      }
       return failures.length
         ? { ok: false, error: failures.join("; "), data: { delivery, membership } }
         : { ok: true, data: { delivery, membership } };
