@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
-  createSpaceAuth, credsClaims, isReachable, jwtFromCreds, mintCreds, mintLifecycleUid,
-  newIdentity, runDriverCaller, serverConfig, type Identity, type RemoteRunAttemptResult,
+  createSpaceAuth, credsClaims, isReachable, jwtFromCreds, mintCreds, mintLifecycleUid, mintPublicUserJwt,
+  newIdentity, runDriverCaller, serverConfig, type Identity, type IssuedCaller, type RemoteRunAttemptResult, type RemoteRunAdmissionResult, type RunAdmission,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { remoteRunAttemptCredentials, remoteRunAttemptRequest } from "../src/remote-authority.js";
+import { remoteRunAdmission, remoteRunAdmissionRequest, remoteRunAttemptCredentials, remoteRunAttemptRequest } from "../src/remote-authority.js";
 
 const space = `runclient${mintLifecycleUid().slice(0, 8).toLowerCase()}`;
 const auth = await createSpaceAuth(space);
@@ -42,6 +42,22 @@ const refused = (candidate: RemoteRunAttemptResult, pattern: RegExp) =>
 
 let count = 0;
 const check = (name: string, test: () => void) => { test(); count++; console.log(`  ✓ ${name}`); };
+const admissionRequest = remoteRunAdmissionRequest(state, proof, auth.account.pub, 3, { runId, subject: "subject-from-served-context" });
+const admissionUid = mintLifecycleUid();
+const admission: RunAdmission = {
+  version: 1 as const, space, endpoint: "manager", runId, instanceId,
+  caller: { owner, actor: "cli", uid: admissionUid, generation: "a".repeat(64) } as IssuedCaller,
+  ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } },
+  provenance: { kind: "issued", ref: { space, owner, actor: "cli", uid: admissionUid, generation: "a".repeat(64) }, resolvedRevision: 1 },
+  admittedAt: Date.now(),
+};
+const admissionResult: RemoteRunAdmissionResult = { v: 1, kind: "manager-run-admission", requestId: admissionRequest.requestId, runId, revision: 1, admission };
+check("admission response binds the request, run, instance and issued provenance", () => {
+  assert.equal(remoteRunAdmission(admissionResult, admissionRequest).runId, runId);
+  assert.throws(() => remoteRunAdmission({ ...admissionResult, requestId: "other" }, admissionRequest), /coordinates/);
+  assert.throws(() => remoteRunAdmission({ ...admissionResult, admission: { ...admission, instanceId: mintLifecycleUid() } }, admissionRequest), /foreign/);
+  assert.throws(() => remoteRunAdmission({ ...admissionResult, admission: { ...admission, provenance: { kind: "operator", by: "x", reason: "y" } } as never }, admissionRequest), /foreign/);
+});
 check("first attempt supplies exactly the held pair", () => {
   const pair = remoteRunAttemptCredentials(result, request, owner, { driver, mediator });
   assert.ok("driver" in pair);
@@ -76,6 +92,15 @@ const opResult: RemoteRunAttemptResult = { ...opRequest, owner, credentials: { o
 check("one-shot operator permits exactly one credential", () => {
   assert.ok("operator" in remoteRunAttemptCredentials(opResult, opRequest, owner, { operator }));
   assert.throws(() => remoteRunAttemptCredentials({ ...opResult, credentials: { ...opResult.credentials, driver: credentials.driver } as never }, opRequest, owner, { operator }), /non-closed/);
+});
+const publicJwt = await mintPublicUserJwt(auth, driver.id, "run-driver", {
+  principal: { owner, actor: runDriverCaller(runId, owner).actor },
+  runDriver: { endpoint: "manager", runId, owner, takeoverId: attempt.takeoverId, instanceId, epoch: 1 },
+  expiresInSeconds: 90,
+});
+check("host signs the caller-held public nkey without receiving its seed", () => {
+  const pair = remoteRunAttemptCredentials({ ...result, credentials: { ...credentials, driver: publicJwt } }, request, owner, { driver, mediator });
+  assert.ok("driver" in pair);
 });
 
 const port = await pickFreePort();
