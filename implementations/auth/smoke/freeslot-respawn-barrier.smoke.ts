@@ -372,23 +372,24 @@ try {
   const dlvObserverCreds = await mintMembershipObserverCreds(auth, newIdentity());
   const dlvEvictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
   const dlvId = newIdentity();
-  delivery = new CotalEndpoint({
-    space: SPACE, servers: SERVER, creds: await mintCreds(auth, dlvId, "delivery"),
-    card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
-    channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
-  });
-  delivery.on("error", () => {});
-  await delivery.start();
-  await delivery.startPlane3((owner: string, lifecycleUid: string) => delivery!.aclForOwner(owner, lifecycleUid), {
-    evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
-      servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
-    }),
-    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
-  });
-  // The manager's #1694 binding requires the answer to name a real holder of the delivery
-  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
-  // `holdsDeliveryLease` below is truthful.
-  await delivery.acquireDeliveryLease(0).catch(() => {});
+  const spawnDeliveryDaemon = async () => {
+    const d = new CotalEndpoint({
+      space: SPACE, servers: SERVER, creds: await mintCreds(auth, dlvId, "delivery"),
+      card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
+      channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+    });
+    d.on("error", () => {});
+    await d.start();
+    await d.startPlane3((owner: string, lifecycleUid: string) => d.aclForOwner(owner, lifecycleUid), {
+      evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
+        servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
+      }),
+      reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
+    });
+    await d.acquireDeliveryLease(0).catch(() => {});
+    return d;
+  };
+  delivery = await spawnDeliveryDaemon();
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", `${AGENT}.md`), `---\nname: ${AGENT}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${AGENT} persona.\n`);
@@ -495,7 +496,7 @@ try {
   type DeprovArg = { id: string; name: string };
   type DeprovBroker = (a: DeprovArg) => Promise<void>;
   type Handle = import("@cotal-ai/core").AgentHandle;
-  const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; ep: { ref: () => { id: string }; getRoster: () => Array<{ card: { name: string }; status?: string }> }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
+  const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; absentByLeaseRow: () => Promise<"absent">; ep: { ref: () => { id: string }; getRoster: () => Array<{ card: { name: string }; status?: string }> }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
   const origBroker: DeprovBroker = mAny.deprovisionBroker.bind(manager);
   let releaseGate!: () => void;
   const gate = new Promise<void>((r) => { releaseGate = r; });
@@ -720,10 +721,10 @@ try {
   check("BARRIER: a second same-name spawn while the alias is live numbers to a suffix and leaves the live seat alone",
     listNames().includes(AGENT) && !addedCtrl.includes(AGENT) && addedCtrl.every((n) => n === `${AGENT}_2`),
     { added: addedCtrl, reply: rCtrl });
-  // F) INCOMPLETE INVENTORY: the sibling retires while the daemon's inventory verb is refused
-  // (fault injected on the manager's own rail for this one op). Its launch-channel row is removed;
-  // its row on a channel outside the launch policy stays RETAINED, the teardown reports incomplete,
-  // the name remains HELD (never freed with unpurged residue), and a same-name spawn is refused.
+  // F) INCOMPLETE INVENTORY: stop only the fixture delivery daemon / observe actual lease absence.
+  // Shipped retirement removes its launch-channel row; its row on a channel outside the launch policy
+  // stays RETAINED, the teardown reports incomplete, the name remains HELD (never freed with unpurged
+  // residue), and a same-name spawn is refused. Positive control restarts the actual delivery daemon.
   const sib = addedCtrl[0];
   const sibUid = sib ? (manager as unknown as { agents: Map<string, { lifecycleUid: string }> }).agents.get(sib)?.lifecycleUid : undefined;
   const sibKey = sib ? principalKey(OWNER, sib).key : "";
@@ -732,23 +733,30 @@ try {
     await delivery!.durableJoinFor(sibKey, "general", sibUid);
     await delivery!.durableJoinFor(sibKey, "unnamed", sibUid);
   }
-  const epRail = mAny.ep as unknown as { requestDeliveryAdmin: (op: string, args: Record<string, unknown>, t?: number) => Promise<ControlReply> };
-  const realAdmin = epRail.requestDeliveryAdmin.bind(epRail);
-  epRail.requestDeliveryAdmin = (op, args, t) => op === "lifecycleMemberships" ? Promise.reject(new Error("injected inventory outage")) : realAdmin(op, args, t);
+
+  // Stop only the fixture delivery daemon and observe actual lease absence:
+  const leaseEntry = await delivery!.readDeliveryLeaseEntry(0);
+  if (leaseEntry) await delivery!.releaseDeliveryLease(0, leaseEntry.revision).catch(() => {});
+  await delivery!.stop();
+  delivery = undefined;
+  await wait(100);
+  const leaseAbsent = await mAny.absentByLeaseRow();
+  check("ABSENT: fixture delivery daemon stopped and lease is absent", leaseAbsent === "absent", { leaseAbsent });
+
   const errLines: string[] = [];
   const realErr = console.error;
   console.error = (...a: unknown[]) => { errLines.push(a.map(String).join(" ")); realErr(...a); };
   for (const n of addedCtrl) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
-  for (let i = 0; i < 100 && sib && (await sibRow("general")); i++) await wait(100);
+  for (let i = 0; i < 100 && (sib && (await sibRow("general")) || errLines.length === 0); i++) await wait(50);
   console.error = realErr;
-  check("INCOMPLETE: with the inventory refused, the sibling's launch-channel row is still removed", !!sibUid && !(await sibRow("general")), { sib, sibUid });
+  check("INCOMPLETE: with delivery daemon absent, the sibling's launch-channel row is still removed", !!sibUid && !(await sibRow("general")), { sib, sibUid });
   check("INCOMPLETE: its row outside the launch policy stays RETAINED", !!sibUid && await sibRow("unnamed"));
   check("INCOMPLETE: the teardown reports the inventory as incomplete and the rows as RETAINED",
     errLines.some((l) => l.includes(`membership inventory incomplete`) && l.includes("RETAINED") && l.includes(sibUid ?? "?")), errLines.filter((l) => /inventory/.test(l)));
 
   // The sibling alias stays HELD in retiring while inventory is incomplete:
   const heldSibling = (manager as unknown as { retiring: Map<string, unknown> }).retiring;
-  check("INCOMPLETE: the sibling alias stays held in retiring while inventory is incomplete", !!sib && heldSibling.has(sib));
+  check("INCOMPLETE: the sibling alias stays held in retiring while delivery daemon is absent", !!sib && heldSibling.has(sib));
 
   // A spawn attempting to reuse the alias while inventory was incomplete is refused with reserved pending retirement:
   const spawnWhileHeld = sib ? await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false }) : undefined;
@@ -757,12 +765,14 @@ try {
     spawnWhileHeld);
   check("INCOMPLETE: predecessor memberKey row is still RETAINED while alias remains held", !!sib && await sibRow("unnamed"));
 
-  // Wait for the in-flight failed deprovision to settle before restoring rail:
+  // Wait for the in-flight failed deprovision to settle before restoring delivery:
   const mDeprov = manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> };
   for (let i = 0; i < 100 && sib && sibUid && mDeprov.deprovisioningFlight.has(JSON.stringify([sib, sibUid])); i++) await wait(50);
 
-  // Restore the delivery admin rail and retry to complete exact cleanup:
-  epRail.requestDeliveryAdmin = realAdmin;
+  // Positive control: restart the actual delivery daemon and retry to complete exact cleanup:
+  delivery = await spawnDeliveryDaemon();
+  await wait(100);
+
   // Re-attempting spawn re-drives deprovision under restored inventory:
   const redriveSpawn = sib ? await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false }) : undefined;
   for (let i = 0; i < 100 && sib && (heldSibling.has(sib) || (await sibRow("unnamed"))); i++) await wait(100);
