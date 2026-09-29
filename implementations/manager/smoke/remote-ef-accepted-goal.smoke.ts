@@ -115,6 +115,7 @@ let proxy: ReturnType<typeof createServer> | undefined;
 let releaseBroker: (() => void) | undefined;
 let broker: ChildProcess | undefined;
 const intercepted: Array<{ status: number; actor?: string; owner?: string; reason?: string }> = [];
+const authorizedRequests: unknown[] = [];
 try {
   // ---- dev IdP ----
   const { betterAuth } = await import(new URL("dist/index.mjs", baRoot).href);
@@ -208,6 +209,7 @@ try {
         return send(door.status === 200 ? 403 : door.status, { error: verdict.error ?? "refused" });
       }
       const r = parsed.request;
+      authorizedRequests.push(structuredClone(r));
       const t = r.target;
       const lifecycleUid = mintLifecycleUid();
       grantManagedActor(hostDir, {
@@ -328,14 +330,20 @@ registry.register({
   const other = await idp.api.signUpEmail({ body: { email: "o@example.test", password: "correct-horse-battery", name: "O" }, returnHeaders: true });
   const otherCookie = other.headers.get("set-cookie")!.split(";")[0]!;
   const otherJwt = (await (await fetch(`${idpUrl}/token`, { headers: { cookie: otherCookie } })).json() as any).token as string;
+  // The wrong caller REPLAYS the well-formed request the door just authorized for the real user,
+  // so shape validation passes and the refusal must come from the door's ledger scope derivation.
+  const replay = authorizedRequests.at(-1);
   const wrongBefore = intercepted.length;
   const wrong = await fetch(`${proxyUrl}/manager-service-authority`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ idpToken: otherJwt, request: { v: 1, kind: "manager-managed-agent-enrollment", space, actor: "cli", instanceId: "x".repeat(31), managerLifecycleUid: mintLifecycleUid(), requestId: `enroll${mintLifecycleUid()}`, registrationProof: `sha256:${"0".repeat(64)}`, serveEpoch: 0, target: { actor: "intruder", tokenHash: "0".repeat(64), allowSubscribe: [] }, identities: {} } }),
+    body: JSON.stringify({ idpToken: otherJwt, request: replay }),
   });
   const wrongBody = await wrong.json() as any;
-  console.log(`    evidence: wrong-caller enrollment status=${wrong.status} error=${String(wrongBody.error).slice(0, 160)} recorded=${JSON.stringify(intercepted.slice(wrongBefore))}`);
-  ok("wrong-caller enrollment (IdP user with no ledger row) is refused and grants nothing", wrong.status >= 400 && !intercepted.slice(wrongBefore).some((x) => x.status === 200), { status: wrong.status });
+  const wrongRec = intercepted.slice(wrongBefore);
+  console.log(`    evidence: wrong-caller replay status=${wrong.status} error=${String(wrongBody.error).slice(0, 160)} recorded=${JSON.stringify(wrongRec)}`);
+  ok("wrong-caller enrollment (IdP user with no ledger row) is refused and grants nothing",
+    replay !== undefined && wrong.status === 403 && wrongRec.length === 1 && wrongRec[0]!.status === 403 && /is not granted for this user/.test(wrongRec[0]!.reason ?? ""),
+    { status: wrong.status, wrongRec });
   console.log("  ? LABEL: this is the ORDINARY signerless participant (cotal supervise, local launch); the pooled non-custodial runtime and SDK-owned result/successor fencing remain OPEN");
 } finally {
   for (const k of kids) await killAndAwaitExit(k).catch(() => {});
