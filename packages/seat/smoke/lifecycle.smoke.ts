@@ -443,6 +443,46 @@ await h.waitForExit();
   }
 
   {
+    // A dead leader cannot conceal a live descendant: grandchild survives leader exit,
+    // reapSeat finds the surviving process group and cleans it up.
+    const rec = launchSeat({
+      root,
+      name: "dead-leader-grandchild",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "const c = require('child_process').spawn(process.execPath, ['-e', 'process.on(\"SIGHUP\", ()=>{}); setInterval(()=>{},1000)'], { stdio: 'ignore' }); c.on('spawn', () => { setTimeout(() => process.exit(0), 100); });"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    // Wait for leader to exit naturally
+    await until(() => state(rec.childPid) === "gone" || state(rec.childPid) === "Z", 5_000);
+    // Wait for custodian to settle and exit
+    await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 5_000);
+    // Verify grandchild is still running in the leader's process group
+    const membersBefore = readdirSync("/proc").filter((e) => /^\d+$/.test(e)).filter((e) => {
+      try {
+        const stat = readFileSync(`/proc/${e}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2] === String(rec.childPid);
+      } catch {
+        return false;
+      }
+    });
+    check("instrument: grandchild lives after leader exit", membersBefore.length >= 1, membersBefore);
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check(
+      "reapSeat cleans up surviving grandchild under dead leader",
+      !(evidence instanceof Error) && evidence.outcome === "reaped",
+      evidence instanceof Error ? evidence.message : evidence,
+    );
+    const membersAfter = membersBefore.filter((e) => state(Number(e)) !== "gone");
+    check("dead leader's grandchild is gone after reapSeat", membersAfter.length === 0, membersAfter);
+    for (const m of membersBefore) {
+      try { process.kill(Number(m), "SIGKILL"); } catch {}
+    }
+  }
+
+  {
     // A reference reaches reapSeat and loadSeat from a durable slot row, so the id is checked
     // against the shape seatId mints before it is joined to the custody root. An id that walks out
     // of the root is refused rather than resolved: reporting it as absent would call an
