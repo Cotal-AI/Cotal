@@ -28,12 +28,12 @@
       "file": "implementations/delivery/src/transport-health.ts",
       "find": "elapsed - this.lag.starvedMsWithin(elapsed)",
       "replace": "elapsed",
-      "expectRed": "E5 the bounded scheduling burst does not cause a premature exit",
-      "cell": "E5 the bounded scheduling burst does not cause a premature exit",
+      "expectRed": "E6 and it never claimed the broker was gone",
+      "cell": "E6 and it never claimed the broker was gone",
       "command": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null && pnpm smoke:delivery-starvation",
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter \"@cotal-ai/delivery...\" build > /dev/null",
-      "note": "Removing actual resident-health scheduling credit makes the short disconnected CPU-duty burst exceed the loss window. The healthy transport and prolonged-loss controls remain separate."
+      "note": "Removing actual resident-health scheduling credit makes the short disconnected CPU-duty burst exceed the loss window and announce broker loss. E6 observes shutdown initiation; E5 can still see the process alive while asynchronous shutdown drains. The healthy transport and prolonged-loss controls remain separate."
     },
     {
       "name": "M2 a probe answer that arrived long past its own deadline counts against the broker again",
