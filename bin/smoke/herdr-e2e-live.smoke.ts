@@ -167,8 +167,20 @@ const records = JSON.stringify(herdr.run(HERDR_SESSION, ["pane", "list"]))
   + JSON.stringify(herdr.run(HERDR_SESSION, ["agent", "list"]))
   + JSON.stringify(herdr.run(HERDR_SESSION, ["pane", "process-info", "--pane", paneId]));
 const scrollback = execFileSync("herdr", ["--session", HERDR_SESSION, "pane", "read", paneId], { encoding: "utf8" });
+// The detail below answers WHY this control failed, because the first 160 characters never could:
+// the prefix has a near constant length, so the slice ends just after the launch directory and
+// before the filename on every run, and three failures in a row said nothing about whether
+// `launch.mjs` was present further on (#2249). `squeezed` is the same read with every whitespace
+// run removed, so a token the pane soft wrapped still matches there: squeezed true with raw false
+// is a wrapping problem and the fix is to normalise before matching, while both false means the
+// pane read genuinely lacks the launcher, which would also undercut the four secrecy cells below.
+// The three booleans settle that on their own, so the printed text stays the same bounded head this
+// already emitted: this suite's subject is that the scrollback carries no token and no seed, and a
+// detail that dumped more of it would copy a real secrecy failure straight into the CI log.
+const squeezed = scrollback.replace(/\s+/g, "");
 check("positive control: scrollback is readable and shows the launcher", scrollback.includes("launch.mjs"),
-  scrollback.slice(0, 160));
+  { chars: scrollback.length, raw: scrollback.includes("launch.mjs"), squeezed: squeezed.includes("launch.mjs"),
+    head: scrollback.slice(0, 160) });
 check("herdr records do NOT contain the control token", !records.includes(CANARY));
 check("pane scrollback does NOT contain the control token", !scrollback.includes(CANARY));
 check("herdr records do NOT contain the agent's nkey seed", seed.length > 20 && !records.includes(seed));
