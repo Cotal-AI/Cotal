@@ -9,7 +9,8 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
-import type { SecretStore } from "@cotal-ai/core";
+import { join } from "node:path";
+import { mintCreds, newIdentity, setupSpaceStreams, type SecretStore } from "@cotal-ai/core";
 import { startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -24,13 +25,21 @@ const health = async (h: AuthServiceHandle) => {
 };
 try {
   const [a, b] = fx.accounts;
+  // Each fixture account is a provisioned space (as a hosted platform provisions it before starting
+  // auth, and as hosted-bootstrap-order does): the per-space streams the auth plane publishes into.
+  for (const acct of fx.accounts)
+    await setupSpaceStreams({ servers: fx.servers, space: acct.space, creds: await mintCreds(acct.auth, newIdentity(), "provisioner") });
   const inputs = fx.accounts.map((acct, i) => ({
     context: { accountPublicKey: acct.accountPublicKey, lifecycleUid: `life-${i}` },
     space: acct.space, servers: fx.servers, store: acct.store, storeIdentity: acct.store.identity, stateDir: acct.stateDir,
   }));
   const signals = process.listenerCount("SIGTERM") + process.listenerCount("SIGINT");
   const exit = process.exit;
-  const cwdBefore = readdirSync(process.cwd());
+  // Before/after footprint of the cwd AND of any pre-existing cwd .cotal folder (a real worktree may
+  // already carry one): hosted contexts must neither create nor write into a cwd-selected root.
+  const cwdCotal = join(process.cwd(), ".cotal");
+  const footprint = () => JSON.stringify([readdirSync(process.cwd()).sort(), existsSync(cwdCotal) ? readdirSync(cwdCotal, { recursive: true }).map(String).sort() : null]);
+  const cwdBefore = footprint();
   const anonymous: SecretStore = { get: (k) => a.store.get(k), put: (k, v) => a.store.put(k, v), delete: (k) => a.store.delete(k) };
   await refuses(startAuthService({ ...inputs[0], store: anonymous }), /must declare a stable identity/, "identity-less store refuses");
   await refuses(startAuthService({ ...inputs[0], storeIdentity: b.store.identity }), /identity does not match/, "wrong store identity refuses");
@@ -47,7 +56,7 @@ try {
   await refuses(startAuthService(inputs[0]), /plane|claim|held/i, "a duplicate context for A refuses locally at the plane claim");
   ok(process.exit === exit, "no process.exit replaced or called by a failed start");
   ok(process.listenerCount("SIGTERM") + process.listenerCount("SIGINT") === signals, "hosted contexts install no process signal listeners");
-  ok(!existsSync(`${process.cwd()}/.cotal`) && readdirSync(process.cwd()).length === cwdBefore.length, "no cwd-selected root was created");
+  ok(footprint() === cwdBefore, "no cwd-selected root was created or written");
   ok((await second.readiness()).state === "ready" && (await health(second)) === issB, "B remains ready and serving after A's failed duplicate");
   ok((await first.readiness()).state === "ready" && (await health(first)) === issA, "A remains ready after its own refused duplicate");
 
