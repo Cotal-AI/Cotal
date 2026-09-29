@@ -1,5 +1,18 @@
 # @cotal-ai/connector-opencode
 
+## 0.57.0
+
+### Patch Changes
+
+- 93b98e9: Let a cooperative teardown publish departure after it has given up waiting on a presence write. Presence writes are serialized, so the departure publish queued behind the very write the teardown's intake bound had just abandoned: the wait ended, offline never published, the seat kept its last status until its presence TTL expired, and the plugin process never reached its exit. The agent gains `abandonPresenceWrites()`, which the teardown calls only on the path where it announces the bound expired; ordering behind writes that do settle inside the bound is unchanged (#2207).
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- baf7596: Fixed the OpenCode 2.x adapter dropping `cotal spawn --prompt`'s kickoff text: `plugin2.ts` now reads `COTAL_OPENCODE_PROMPT` and submits it as its first connector-driven turn, alongside the briefing and the persona as `system`, the same floor the 1.x plugin already runs. A failed first submission keeps the text for the next drive.
+
 ## 0.56.0
 
 ### Minor Changes

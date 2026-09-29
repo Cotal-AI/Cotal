@@ -59,11 +59,10 @@ import {
   subjectMatches,
   AUTH_ENDPOINT,
   EP_CMD_RETIRE_LIFECYCLE,
-  epRequestSubject,
-  epCallerReplyFilter,
-  parseEpSubject,
   controlServiceSubject,
   eventChannelPrincipal,
+  resolveService,
+  invokeCommand,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
@@ -175,7 +174,7 @@ import {
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStaticReconciliationFailure, type ManagerStaticReconciliationStatus, type ManagerStaticReconciliationSweep, type ManagerStatus } from "./manager-service-contract.js";
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
   staticLifecycleTransport,
@@ -187,6 +186,7 @@ import {
   appendStaticCredentialRow,
   planStaticSlotResume,
   observeStaticSlot,
+  listStaticSlotObservations,
   renderStaticSlotObservation,
   StaticSlotReadError,
   STATIC_SLOT_READ_FAILED_DETAIL,
@@ -916,51 +916,6 @@ function parseTurnNote(raw: string): TurnNote | undefined {
  *  same-goalId retry or a successor incarnation re-derives the identical token with no lookup. */
 function turnHoldToken(goalId: string): string {
   return createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
-}
-
-/** One ep request/reply round-trip on the caller's OWN reply-plane filter (§13.2). The responder
- *  derives the reply subject from the authenticated request, so there is no caller-selected reply
- *  target to honour; the caller binds the answer off the reply SUBJECT — endpoint and nonce, both
- *  broker-pinned by the responder's serve publish grant. A reply on another nonce belongs to a
- *  different request (the rail is shared) and is ignored rather than allowed to fail this one. */
-export async function epAwaitReply(
-  nc: NatsConnection,
-  space: string,
-  caller: { owner: string; actor: string; uid: string },
-  nonce: string,
-  requestId: string,
-  requestSubject: string,
-  body: string,
-  timeoutMs: number,
-): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-  let sub: Subscription | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const got = new Promise<{ ok: boolean; data?: unknown; error?: string }>((resolve, reject) => {
-      sub = nc.subscribe(epCallerReplyFilter(space, caller), {
-        callback: (err, msg) => {
-          if (err) { reject(new Error(`the retirement reply subscription failed: ${err.message}`)); return; }
-          const parsed = parseEpSubject(msg.subject);
-          if (!parsed || parsed.plane !== "reply" || parsed.endpoint !== AUTH_ENDPOINT || parsed.nonce !== nonce) return;
-          let body: { ok: boolean; id?: unknown; data?: unknown; error?: string };
-          try { body = JSON.parse(new TextDecoder().decode(msg.data)) as typeof body; }
-          catch { return; } // a malformed body on our nonce is not an answer; keep waiting
-          // REQUIRE THE ID ECHO. Binding on (endpoint, nonce) alone would accept a malformed or
-          // WRONG-ID `{ok:true}` and clear a retirement hold on it. Ignore rather than fail: the
-          // rail is shared across concurrent requests and a responder may publish at any nonce, so
-          // an unmatched reply is someone else's answer, never grounds to fail the honest one.
-          if (body.id !== requestId) return;
-          resolve(body);
-        },
-      });
-      timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-      nc.publish(requestSubject, new TextEncoder().encode(body));
-    });
-    return await got;
-  } finally {
-    if (timer) clearTimeout(timer);
-    try { sub?.unsubscribe(); } catch { /* connection already down */ }
-  }
 }
 
 /**
@@ -3300,6 +3255,31 @@ export class Manager {
         }
         return row;
       }),
+      slots: (ctx) => this.serveGated(ctx, async () => {
+        // No manager-local durable static slot store exists for a user-mode or open manager: an
+        // empty list here would claim nothing is stranded from a store that was never consulted,
+        // the very ambiguity #1274 is about.
+        if (!this.auth || this.userMode)
+          throw new EpEnvelopeError("failed-precondition", "user-mode and open managers own no durable static slot rows; the projection is static-manager local");
+        const recordsKv = this.goalWriter?.ctx.kv;
+        if (!recordsKv)
+          throw new EpEnvelopeError("unavailable", "the durable static slot store is not ready", [
+            { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: "slot", operation: "scan" },
+          ]);
+        let observed;
+        try {
+          observed = await listStaticSlotObservations(recordsKv, DEV_OWNER, this.managerInstanceId);
+        } catch (error) {
+          throw new EpEnvelopeError("unavailable", `the durable static slot state could not be scanned: ${(error as Error).message}`, [
+            { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "scan" },
+          ]);
+        }
+        return observed.map(({ kind: _kind, ...detail }) => ({
+          ...detail,
+          live: this.agents.has(detail.name),
+          managerInstanceId: this.managerInstanceId,
+        }));
+      }),
       models: (ctx) => this.serveGated(ctx, async () => {
         const data = unwrap(await this.opModels(args(ctx)));
         return { catalogs: Array.isArray(data) ? data : [data] };
@@ -4131,46 +4111,40 @@ export class Manager {
         : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
             retirementRequester: { ...caller, target: retirementTarget },
           });
-      const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
+      // The requester grant subscribes `_INBOX_<id>.>` only (provision.ts): the endpoint path's
+      // JetStream API requests (the contract-store read inside resolveService) must reply under it, not under the client default `_INBOX.`.
+      const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${requestIdentity.id}`, maxReconnectAttempts: 0 });
       try {
-        // §13.2 nonce: >=128 bits of CSPRNG entropy, base64url (the `endpoint-invoke` idiom).
-        const nonce = randomBytes(24).toString("base64url");
-        // The caller-chosen request id the reply MUST echo (the minimal correctness guard from the
-        // not-yet-migrated endpoint envelope - see the residual in the auth listener).
-        const requestId = randomBytes(16).toString("base64url");
-        const subject = epRequestSubject(this.space, {
-          route: { mode: "one" },
-          endpoint: AUTH_ENDPOINT,
-          command: EP_CMD_RETIRE_LIFECYCLE,
-          // The TARGET rides the subject (authz mode `handle`, arity 3) — broker-enforced, and
-          // pinned by the grant minted above, so it is not a body claim the caller can vary.
-          target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: a.lifecycleUid },
-          caller,
-          nonce,
+        // The service resolves FRESH on every attempt (never cached on `this`): a plane restart
+        // mid-despawn then lands on the new epoch through an ordinary resolve, rather than a
+        // caller pinned to a now-superseded incarnation.
+        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000 });
+        // The TARGET rides the invoke's own target (authz mode `exact`, arity 3) — broker-enforced,
+        // and pinned by the grant minted above, so it is not a body claim the caller can vary.
+        const attributed = await invokeCommand(nc, this.space, service, EP_CMD_RETIRE_LIFECYCLE, {
+          opId,
+          serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch,
+        }, {
+          target: { mode: "exact", owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
+          deadlineMs: 20_000,
         });
-        // The responder derives its OWN reply subject from this request (caller triple + nonce,
-        // prefixed with the RESPONDER's instance identity), so a caller-supplied `reply` header
-        // would be ignored — that is the confused-deputy boundary being structural. The caller
-        // therefore reads its own reply-plane filter and binds the answer off the reply SUBJECT.
-        const m = await epAwaitReply(nc, this.space, caller, nonce, requestId, subject,
-          // Declare THIS manager instance's serve identity. Since #350 these SELECT the gate row;
-          // they no longer authorize — the rail refuses unless the row they name belongs to this
-          // caller's own subject-derived principal. A superseded predecessor (same instanceId, OLD
-          // epoch after a restart) is still refused by the epoch comparison.
-          JSON.stringify({ id: requestId, op: "retireLifecycle", args: {
-            opId,
-            serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch,
-          } }),
-          20_000,
-        );
-        const r = m as { ok: boolean; data?: unknown; error?: string };
+        const r = attributed.reply;
         if (r.ok) {
           this.confirmRetirement(a);
+        } else if (r.error?.code === "expired") {
+          // A stale-epoch refusal: the responder answered, but at another epoch than this resolve
+          // bound (a plane restart mid-despawn landed on the new epoch) - the retry copy, never a
+          // hard despawn failure line, since a same-name spawn (or the auth service's own boot
+          // resume) re-drives the same teardown.
+          const copy = uncertain(r.error.message);
+          if (held) held.lastError = copy;
+          console.error(`despawn ${a.name}: ${copy}`);
         } else {
           // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
           // full-no-op statements included) - surface it INTACT, never flattened.
-          if (held) held.lastError = r.error ?? "the auth service refused the retirement without a reason";
-          console.error(`despawn ${a.name}: ${r.error ?? "the auth service refused the retirement without a reason"}`);
+          const message = r.error?.message ?? "the auth service refused the retirement without a reason";
+          if (held) held.lastError = message;
+          console.error(`despawn ${a.name}: ${message}`);
         }
       } finally {
         await nc.close().catch(() => {});
@@ -5452,7 +5426,7 @@ export class Manager {
                 configSha256,
                 manifestSha256,
               }
-            : { kind: "persona", ref, configPath, configSha256 },
+            : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,
           variant,
@@ -9088,6 +9062,10 @@ export class Manager {
       const health = a.userOwner
         ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid).health)
         : undefined;
+      // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
+      // when it is a non-empty string. Absent when the connector reported none — never fabricated.
+      const providerMeta = roster.get(a.name)?.card.meta?.provider;
+      const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
       return {
         name: a.name,
         // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
@@ -9113,6 +9091,7 @@ export class Manager {
         // pid is absent on runtimes that do not own a real process; a launch may pin no model).
         model: a.launch.model,
         variant: a.launch.variant,
+        ...(provider ? { provider } : {}),
         cwd: a.launch.cwd,
         pid: a.handle.pid,
         spawner: a.spawner,

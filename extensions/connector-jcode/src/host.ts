@@ -9,7 +9,7 @@ import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
-import { activeModelRoute, bareModelId, describeRoute } from "./route-identity.js";
+import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
@@ -450,8 +450,8 @@ export async function runJcodeHost(): Promise<void> {
           // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
           // wins over the current journal end and replays everything appended after that cursor.
           await initializeJcodeEventBoundary(journalPath, wal);
-          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+          const resumeBrackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
           return AguiEmitter.start<PositionedJcodeJournalRecord>({
             endpoint: agent.ep,
             wal,
@@ -1842,7 +1842,11 @@ export async function runJcodeHost(): Promise<void> {
         "model_mismatch",
         `jcode connector: the Harness API did not identify the active provider route for model ${JSON.stringify(effectiveModel ?? "(the provider default)")} — refusing to apply launch settings to an unverified route`,
       );
-    if (effectiveModel && runtime) writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
+    if (effectiveModel && runtime) {
+      writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
+      const provider = effectiveProvider(runtime, effectiveModel);
+      if (provider) await agent.setModel(effectiveModel, undefined, provider);
+    }
     // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.

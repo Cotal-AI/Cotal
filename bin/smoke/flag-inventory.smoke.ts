@@ -56,6 +56,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "rotate-sys:boolean",
       // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
       "max-file-store:string",
+      // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
+      "no-manager:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -128,9 +130,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
     // the identity's bind-only durables so the credential can CONSUME, not only publish (issue #306's
     // second half); the target flags name the mesh that provisioning connects to.
+    // `--expires-in` / `--expires-at` / `--identity` (2026-09, #1992): bound the credential's lifetime
+    // (TTL seconds or absolute exp, mutually exclusive), and re-mint for the nkey an existing creds
+    // file already carries. All three are refused together with `--signer`.
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string",
-      "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string",
+      "allow-publish:string", "allow-subscribe:string", "expires-at:string", "expires-in:string",
+      "force:boolean", "identity:string", "out:string", "profile:string", "provision:boolean",
+      "role:string", "server:string", "signer:boolean", "space:string",
     ],
     positionals: true,
   },
@@ -182,7 +188,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   // #651: `--wide` (human facts line) / `--json` (machine rows) enrich the SAME listing; bare
   // output is unchanged. Mutually exclusive by construction, refused rather than prioritized.
-  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean"], positionals: false },
+  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean", "slots:boolean"], positionals: false },
   // `--no-reconnect` (2026-08, lane A1): attach re-establishes its session when the LINK dies,
   // so the flag is the opt OUT, for scripts that want one session and one exit code. Named
   // `no-reconnect` rather than a negation of a `reconnect` flag for the reason `input` gives
@@ -197,8 +203,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
     // long ago and the SERVER half did not, which is this whole feature in one line.
-    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean"],
-    positionals: false,
+    flags: [
+      "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
+      "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+    ],
+    positionals: true,
   },
   "feedback-intake": {
     flags: [
@@ -231,18 +240,24 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
+  // `--manager-call` / `--manager-instance` (2026-09): mint a token bound to one manager instance.
   "agent-bearer": {
-    flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    flags: [
+      "actor:string", "dir:string", "exchange-url:string", "health-file:string", "manager-call:boolean",
+      "manager-instance:string", "owner:string", "space:string", "token-file:string",
+    ],
     positionals: false,
   },
   // `run` (2026-09): the workflow-run operator surface from @cotal-ai/runtime. The run id is
   // minted by the driver (the records table forbids a caller-supplied id), so `start` takes no id
   // flag; resume/journal/answer name an existing run positionally.
+  // `--adopt` / `--release` / `--discard-approvals` (2026-09, #1863): what a `migrate` commit does
+  // with an orphan or a recorded decision; the checking verb refuses them.
   run: {
     flags: [
-      "admit-publish:string", "admit-read:string", "artifact:string", "by:string", "creds:string",
-      "endpoint:string", "file:string:f", "local:boolean", "reason:string", "server:string", "space:string",
-      "timeout:string", "value:string",
+      "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
+      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "local:boolean",
+      "reason:string", "release:string", "server:string", "space:string", "timeout:string", "value:string",
     ],
     positionals: true,
   },

@@ -58,7 +58,9 @@ live inside a per-turn process; the connector's command is a small **launcher/su
 owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run` as its child.
 
 - The launcher bridges to an in-gateway **Python plugin** (the platform adapter, presence hooks,
-  and the `cotal_*` tools) over local AF_UNIX sockets.
+  and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket is authenticated on
+  connect with the launch's control token (the first frame must carry it), and its path is not
+  predictable: it is derived from the token rather than from the space and agent name alone.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).

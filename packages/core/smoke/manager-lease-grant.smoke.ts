@@ -45,11 +45,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { KvWatchInclude } from "@nats-io/kv/internal";
 import {
   CotalEndpoint, isReachable, createSpaceAuth, serverConfig, mintCreds, newIdentity,
   setupSpaceStreams, standaloneConnectOpts, managerBucket, presenceBucket, managerLeaseKey,
-  principalKey, DEV_OWNER,
+  principalKey, DEV_OWNER, membersBucket,
+  liveKvEntries,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -151,6 +153,37 @@ try {
   check("a consumer bind on the manager lease bucket is REFUSED", onManager === "denied", onManager);
   check("the fixture discriminates (allowed and denied differ in one run, one credential)",
     onPresence !== onManager, { presence: onPresence, manager: onManager });
+
+  // Unlike the bind-only control above, exercise the actual scanner under a scoped delivery
+  // credential. It can consume and delete its own members consumer, but cannot open or delete
+  // its sentinel on the manager bucket, whose lease row remains intact.
+  const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
+  const scoped = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: deliveryCreds, tls: false }), maxReconnectAttempts: 0 });
+  const admin = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: setupCreds, tls: false }), maxReconnectAttempts: 0 });
+  const supervisor = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: supCreds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const members = await new Kvm(scoped).open(membersBucket(space));
+    await members.put("sentinel", enc({ present: true }));
+    const rows = await liveKvEntries(members);
+    check("scoped delivery credential scans its permitted members bucket", rows.some((r) => r.key === "sentinel"));
+    const jsm = await jetstreamManager(admin);
+    check("scoped delivery scan deletes its own members consumer",
+      (await jsm.streams.info(`KV_${membersBucket(space)}`)).state.consumer_count === 0);
+    let denied = false;
+    try { await liveKvEntries(await new Kvm(scoped).open(managerBucket(space))); }
+    catch (e) { denied = /authorization|permission/i.test(String(e)); }
+    check("scoped delivery credential cannot scan out-of-scope manager sentinel", denied);
+    let deleteDenied = false;
+    try { await (await new Kvm(scoped).open(managerBucket(space))).delete(managerLeaseKey("liveone")); }
+    catch (e) { deleteDenied = /authorization|permission/i.test(String(e)); }
+    check("scoped delivery credential cannot delete out-of-scope manager sentinel", deleteDenied);
+    const manager = await new Kvm(supervisor).open(managerBucket(space));
+    check("out-of-scope manager sentinel remains intact", (await manager.get(managerLeaseKey("liveone"))) !== null);
+  } finally {
+    await scoped.close();
+    await admin.close();
+    await supervisor.close();
+  }
 } finally {
   try { srv.kill("SIGKILL"); } catch { /* gone */ }
 }

@@ -115,6 +115,7 @@ const untargeted = parse(epRequestSubject("demo", { route: { mode: "one" }, endp
 const ownerSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "spawn", target: { mode: "owner", tOwner: "u_abc" }, caller, nonce: NONCE }));
 const selfSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "restart", target: { mode: "self" }, caller, nonce: NONCE }));
 const handleSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "attach", target: { mode: "handle", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) }, caller, nonce: NONCE }));
+const exactSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "attach", target: { mode: "exact", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) }, caller, nonce: NONCE }));
 const bodyTarget = { owner: "u_abc", actor: "runner", lifecycleUid: "t".repeat(26) };
 
 admits("untargeted request agrees with its subject", () => checkRequestSubjectAgreement(req, untargeted));
@@ -134,6 +135,10 @@ rejects("handle mode compares the whole redemption triple", "target-mismatch",
   () => checkRequestSubjectAgreement(
     parseEndpointRequest({ ...goodReq, op: { ...goodReq.op, command: "attach" }, target: { owner: "u_t", actor: "other", lifecycleUid: "h".repeat(26) } }),
     handleSub));
+rejects("exact mode compares the whole triple exactly like handle", "target-mismatch",
+  () => checkRequestSubjectAgreement(
+    parseEndpointRequest({ ...goodReq, op: { ...goodReq.op, command: "attach" }, target: { owner: "u_t", actor: "other", lifecycleUid: "h".repeat(26) } }),
+    exactSub));
 rejects("from.id must equal the subject sender principal", "sender-mismatch",
   () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, from: { id: "u_abc.impostor", name: "x" } }), untargeted));
 rejects("the declared class must equal the contract class", "class-mismatch",

@@ -1,0 +1,77 @@
+{
+  "suite": [
+    "extensions/connector-jcode/smoke/journal-lifecycle.smoke.ts"
+  ],
+  "guard": "Jcode checkpoints preserve valid event brackets and reject unrelated source faults",
+  "command": "pnpm smoke:jcode-journal-lifecycle",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-jcode/smoke/mutations/journal-lifecycle.json",
+  "why": [
+    "Real managed seats were terminated by event-source checkpoint errors during tool calls. The controls drive the shipped journal reader, mapper and strict bracket validator."
+  ],
+  "mutations": [
+    {
+      "name": "leave interrupted tool observations open",
+      "file": "extensions/connector-jcode/src/agui-map.ts",
+      "find": "    const events = [...tools].sort().map((toolCallId) => toolCallEnd({ toolCallId, timestamp }));",
+      "replace": "    const events: AguiEvent[] = [];",
+      "expectRed": "FAIL checkpoint during an open tool preserves valid event brackets",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "publish an end whose start was lost",
+      "file": "extensions/connector-jcode/src/agui-map.ts",
+      "find": "        const missingStart = parts.some((part) => part?.type === \"tool_result\" &&\n          typeof part.tool_use_id === \"string\" && part.tool_use_id.length > 0 && !remaining.delete(part.tool_use_id));",
+      "replace": "        const missingStart = false;",
+      "expectRed": "FAIL a post-checkpoint tool result without its start is an explicit valid discontinuity",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "forget persisted open tool identities",
+      "file": "extensions/connector-jcode/src/agui-map.ts",
+      "find": "  const tools = new Set(opts.resumeTools ?? []);",
+      "replace": "  const tools = new Set<string>();",
+      "expectRed": "FAIL restart restores open tool observations without manufacturing a gap",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "accept another session snapshot",
+      "file": "extensions/connector-jcode/src/agui-source.ts",
+      "find": "(parsed as { id?: unknown }).id !== sessionId",
+      "replace": "false",
+      "expectRed": "FAIL a foreign session snapshot cannot authorize a reset",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "misclassify every cursor failure as a checkpoint",
+      "file": "extensions/connector-jcode/src/agui-source.ts",
+      "find": "        if (!isMissing(error) && !(error instanceof JsonlFileResetError)) throw error;\n        const fresh = await this.foldedSince();",
+      "replace": "        const fresh = await this.foldedSince();",
+      "expectRed": "FAIL a valid snapshot cannot disguise a malformed cursor",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "fail when a second checkpoint races adoption",
+      "file": "extensions/connector-jcode/src/agui-source.ts",
+      "find": "          if (!isMissing(error) && !(error instanceof JsonlFileResetError)) throw error;\n          return null;",
+      "replace": "          if (!isMissing(error)) throw error;\n          return null;",
+      "expectRed": "FAIL a checkpoint racing the new-journal adoption remains recoverable",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "lose the typed truncation boundary",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "      if (from.offset > size)\n        throw new JsonlFileResetError(",
+      "replace": "      if (from.offset > size)\n        throw new Error(",
+      "expectRed": "FAIL checkpoint during an open tool preserves valid event brackets",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "parse the cursor only after opening the possibly missing file",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "    const from = cursor === undefined ? undefined : JsonlFileSource.parseCursor(cursor);\n    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));\n    try {\n",
+      "replace": "    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));\n    try {\n      const from = cursor === undefined ? undefined : JsonlFileSource.parseCursor(cursor);\n",
+      "expectRed": "FAIL a missing journal cannot disguise a malformed cursor behind a valid snapshot",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    }
+  ]
+}

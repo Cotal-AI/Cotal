@@ -57,6 +57,13 @@ const state = (pid: number): string => {
     }
   }
 };
+const oomAdj = (pid: number): string => {
+  try {
+    return readFileSync(`/proc/${pid}/oom_score_adj`, "utf8").trim();
+  } catch {
+    return "unreadable";
+  }
+};
 
 const root = makeSeatRoot("cotal-seat-life-");
 const handles: Array<{
@@ -77,6 +84,9 @@ const collect = async (h: ReturnType<typeof adoptSeatSync>, ms = 800): Promise<s
 
 try {
   {
+    // The launcher raises its own oom_score_adj above the seat value before launching: the custodian and the child inherit 600, so only the helper's write can make the child read 500. On a hosted runner whose processes already start at 500 an inherited value would otherwise pass the child cell with the write skipped (the CI reproof at 19312d774 let both oom mutants survive).
+    writeFileSync("/proc/self/oom_score_adj", "600");
+    check("oom: the launcher sits above the seat value, so inheritance cannot pass the child cell", oomAdj(process.pid) === "600");
     const rec = launchSeat({
       root,
       name: "counter",
@@ -90,6 +100,8 @@ try {
     const h = adoptSeatSync(rec);
     handles.push(h);
     check("spawn: custodian and child are live", state(rec.custodianPid) !== "gone" && state(rec.childPid) !== "gone", rec);
+    check("oom: the custodial child carries the seat preference", oomAdj(rec.childPid) === "500");
+    check("oom: the custodian keeps the launcher's inherited oom_score_adj", oomAdj(rec.custodianPid) === oomAdj(process.pid));
     const snap = await h.attach().backlog();
     check("snapshot: backlog returns bytes", snap.length >= 0);
     const first = await collect(h, 400);

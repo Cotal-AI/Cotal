@@ -173,12 +173,12 @@ try {
   const bobWarnings: string[] = [];
   bob.on("warning", (error: Error) => bobWarnings.push(error.message));
 
-  const bobReceived: Array<{ kind: string; text: string }> = [];
+  const bobReceived: Array<{ kind: string; text: string; id: string }> = [];
   let bobMentions: string[] | undefined;
   bob.on("message", (message: CotalMessage, delivery: Delivery) => {
     const kind = message.to ? "dm" : message.toService ? `any:${message.toService}` : `channel:${message.channel ?? ""}`;
     const text = textOf(message);
-    bobReceived.push({ kind, text });
+    bobReceived.push({ kind, text, id: message.id });
     if (text === "hello team") bobMentions = message.mentions;
     delivery.ack();
   });
@@ -245,7 +245,12 @@ try {
     mentions: ["BOB", " bob ", "carol", ""],
   });
   const omitted = await alice.multicast("no ping", { channel: "general", mentions: [""] });
-  await alice.unicast(bob.card.id, "private hello");
+  let liveDmAck: { seq: number; duplicate: boolean } | undefined;
+  let liveDmMsgId: string | undefined;
+  await alice.unicastAttributed(bob.card.id, "private hello").then(({ msg, ack }) => {
+    liveDmAck = ack;
+    liveDmMsgId = msg.id;
+  });
   await alice.anycast("builder", "build the thing");
   await until(
     () => bobReceived.some((entry) => entry.kind === "channel:general" && entry.text === "hello team")
@@ -262,6 +267,16 @@ try {
     "unicast reaches the addressed principal",
     bobReceived.some((entry) => entry.kind === "dm" && entry.text === "private hello"),
     bobReceived,
+  );
+  check(
+    "unicastAttributed returns a real stored sequence",
+    typeof liveDmAck?.seq === "number" && liveDmAck.seq >= 1,
+    liveDmAck,
+  );
+  check(
+    "bob received the exact id unicastAttributed returned",
+    bobReceived.some((entry) => entry.kind === "dm" && entry.id === liveDmMsgId),
+    { liveDmMsgId, bobReceived },
   );
   check(
     "anycast reaches the builder role",
@@ -306,7 +321,17 @@ try {
   check("carol's lifecycle creates its DM durable before the offline gap", carolDurableExists);
 
   await stopEndpoint(carol);
-  await alice.unicast(carol.card.id, "held during the offline gap");
+  const { ack: carolOfflineAck } = await alice.unicastAttributed(carol.card.id, "held during the offline gap");
+
+  const carolDurable = dmDurable(DEV_OWNER, carolActor, carolLifecycleUid);
+  const pendingProbe = await connect({ servers: SERVERS });
+  let carolNumPending = -1;
+  try {
+    carolNumPending = (await (await jetstreamManager(pendingProbe)).consumers.info(dmStream(SPACE), carolDurable)).num_pending;
+  } finally {
+    await pendingProbe.close();
+  }
+  check("carol's durable holds exactly the one offline send", carolNumPending === 1, carolNumPending);
 
   const carolRestarted = new CotalEndpoint({
     space: SPACE,
@@ -330,12 +355,51 @@ try {
     carolReceived,
   );
 
+  const carolAckFloorProbe = await connect({ servers: SERVERS });
+  let carolAckFloor = -1;
+  try {
+    await until(async () => {
+      carolAckFloor = (await (await jetstreamManager(carolAckFloorProbe)).consumers.info(dmStream(SPACE), carolDurable)).ack_floor.stream_seq;
+      return carolAckFloor >= carolOfflineAck.seq;
+    });
+  } finally {
+    await carolAckFloorProbe.close();
+  }
+  check(
+    "the restart's ack floor caught up to the offline send's stored sequence",
+    carolAckFloor >= carolOfflineAck.seq,
+    { carolAckFloor, storedSeq: carolOfflineAck.seq },
+  );
+
   const daveActor = `dave_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  await alice.unicast(principalKey(DEV_OWNER, daveActor).key, "published before activation");
+  const { ack: davePreActivationAck } = await alice.unicastAttributed(
+    principalKey(DEV_OWNER, daveActor).key,
+    "published before activation",
+  );
+  check(
+    "a pre-activation attributed publish still returns a stored sequence",
+    typeof davePreActivationAck?.seq === "number" && davePreActivationAck.seq >= 1,
+    davePreActivationAck,
+  );
+  const daveLifecycleUid = mintLifecycleUid();
+  const daveNotYetActiveDurable = dmDurable(DEV_OWNER, daveActor, daveLifecycleUid);
+  let daveDurableThrewBeforeActivation = false;
+  const daveDurableProbe = await connect({ servers: SERVERS });
+  try {
+    await (await jetstreamManager(daveDurableProbe)).consumers.info(dmStream(SPACE), daveNotYetActiveDurable);
+  } catch {
+    daveDurableThrewBeforeActivation = true;
+  } finally {
+    await daveDurableProbe.close();
+  }
+  check(
+    "a stream append is not an active durable before the lifecycle ever ran",
+    daveDurableThrewBeforeActivation,
+  );
   const dave = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
-    lifecycleUid: mintLifecycleUid(),
+    lifecycleUid: daveLifecycleUid,
     card: { id: daveActor, name: "dave", role: "tester", kind: "agent" },
     channels: [],
     heartbeatMs: 300,
@@ -432,7 +496,7 @@ try {
   if (brokerExited && storeRemoved) releaseBroker();
 }
 
-const EXPECTED_BEFORE_COUNT = 24;
+const EXPECTED_BEFORE_COUNT = 30;
 check(
   `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
   pass + fail === EXPECTED_BEFORE_COUNT,

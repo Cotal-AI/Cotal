@@ -33,6 +33,7 @@ in-memory store latch and preserves the JetStream root. Current credentials spli
 authority: the `cotal up` provisioner can create the presence stream but cannot delete it, while the
 teardown credential can delete it but cannot recreate it. Cotal therefore reports the condition but
 does not attempt an unsafe partial delete-and-recreate. Stop and restart the broker to recover.
+A broker below nats-server 2.14.5 carries the latch (nats-server fixed it in 2.14.5); `cotal up` says so when it starts or finds one. A broker below the SPEC §13.12 floor of 2.12 is refused at connect with the floor sentence.
 
 Three modes:
 
@@ -232,6 +233,10 @@ that `cotal up` starts a local manager as well as the broker and delivery daemon
 `cotal up --no-manager` (add the flag to the unit's `ExecStart` too) on a host intended to be
 broker-only, so the unit and the host agree.
 
+Seats spawned by the built-in `pty` runtime run with `oom_score_adj` 500, so under memory
+pressure the kernel prefers a seat over the broker, manager and delivery daemon, which are left as
+they were started; the extension runtimes do not own the seat's process and get no preference.
+
 That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
 `Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote
 managers drop for the time it takes the broker to come back. Wrapping `cotal up --detach` in
@@ -246,6 +251,9 @@ restart, including the nats PID. Escaping that cgroup needs an explicit unit set
 install` covers only the manager, so for the broker and its siblings pick the example that
 matches the ownership you want, and treat
 `systemctl is-active` as unit health, not mesh health.
+
+A broker that crashes under that foreground `up` keeps its mesh record and exits non-zero, so the
+unit's restart takes the repair path against the recorded store rather than starting a second one.
 
 If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state
 instead of the launcher's exit:
@@ -516,6 +524,9 @@ cotal up --detach
 # or, from another preserved cut, restore before the normal listener opens
 cotal up --restore ./space-backup --detach
 ```
+
+A refused cut leaves the mesh running and unfenced: fix what the refusal names and run
+`cotal down --preserve-state` again.
 
 Use `--store-dir` on both preservation and backup for a custom JetStream store. A store cap set
 with `cotal up --max-file-store <bytes>` travels with the preserved state, and the resume renders it

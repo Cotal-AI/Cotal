@@ -17,6 +17,7 @@ import {
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
+import { requireBrokerFloor } from "./broker-floor.js";
 import { inspectCredHealth } from "./provision.js";
 import {
   parseSecretStoreIdentity,
@@ -250,6 +251,12 @@ export interface EndpointOptions {
   sentinelCreds?: string;
   /** Require a TLS connection to the server. */
   tls?: boolean;
+  /** Native NATS PING interval for this endpoint's resident connection, in milliseconds.
+   *  Omitted uses the transport's default. Pair with transportMaxPingOut. No probe connection. */
+  transportPingIntervalMs?: number;
+  /** Unanswered native PING count before the resident transport becomes stale. Omitted uses
+   *  the transport's default. Pair with transportPingIntervalMs for bounded silent loss. */
+  transportMaxPingOut?: number;
   /** Channels to subscribe to; the first concrete one is the default broadcast target. Omitted or
    *  empty ⇒ NO channels: the endpoint joins nothing, and {@link CotalEndpoint.multicast} refuses
    *  a call with no explicit channel rather than picking one. */
@@ -430,6 +437,8 @@ export class CotalEndpoint extends EventEmitter {
   private authExpiryReconnectTimer?: NodeJS.Timeout;
   private readonly sentinelCreds?: string;
   private readonly tls: boolean;
+  private readonly transportPingIntervalMs?: number;
+  private readonly transportMaxPingOut?: number;
   private readonly heartbeatMs: number;
   private readonly ttlMs: number;
   private readonly doRegister: boolean;
@@ -797,6 +806,14 @@ export class CotalEndpoint extends EventEmitter {
     this.user = opts.user;
     this.pass = opts.pass;
     this.tls = opts.tls ?? false;
+    for (const [label, value] of [["transportPingIntervalMs", opts.transportPingIntervalMs], ["transportMaxPingOut", opts.transportMaxPingOut]] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+        throw new Error(`EndpointOptions.${label} must be a positive safe integer`);
+    }
+    if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
+      throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
+    this.transportPingIntervalMs = opts.transportPingIntervalMs;
+    this.transportMaxPingOut = opts.transportMaxPingOut;
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
@@ -1305,6 +1322,8 @@ export class CotalEndpoint extends EventEmitter {
       // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
       // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
       inboxPrefix: `_INBOX_${this.connId}`,
+      ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
+      ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
       // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
       // attempt, so internal reconnects present whatever refreshBearer last fetched.
       // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
@@ -1318,6 +1337,9 @@ export class CotalEndpoint extends EventEmitter {
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
       ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
     });
+    // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
+    // fresh connection, including the reconnects the library performs on its own here.
+    requireBrokerFloor(this.nc);
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();
     this.js = jetstream(this.nc);
@@ -2118,6 +2140,18 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<CotalMessage> {
+    const { msg } = await this.unicastAttributed(instanceId, text, opts);
+    return msg;
+  }
+
+  /** Unicast, returning the JetStream publish ack alongside the message: the only truthful proof
+   *  a sender has is that the broker stored the message at a sequence, never that anyone read it. */
+  async unicastAttributed(
+    instanceId: string,
+    text: string,
+    opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
+  ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
@@ -2132,11 +2166,15 @@ export class CotalEndpoint extends EventEmitter {
     // subject forge-locks recipient AND sender, so both are split into their tokens here.
     const recip = parsePrincipalKey(instanceId);
     if (!recip) throw new Error(`unicast: "${instanceId}" is not a valid recipient principal <owner>.<actor>`);
-    await this.publishMsg(
+    assertPartsSerializable(msg.parts);
+    // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
+    // must read the ack, and publishMsg deliberately discards it.
+    const ack = await this.js.publish(
       unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor),
-      msg,
+      JSON.stringify(msg),
+      { msgID: msg.id },
     );
-    return msg;
+    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
@@ -2620,14 +2658,20 @@ export class CotalEndpoint extends EventEmitter {
   /** Overlay the host's live model and optional variant onto the card's display-only metadata, then
    *  republish presence. For connectors that learn their actual selection only after launch (e.g.
    *  Claude Code's `SessionStart` hook). The mutated card is read live by every later publish, so even
-   *  a pre-connect call surfaces on the first presence write. */
-  async setCardModel(model: string, variant?: string): Promise<void> {
+   *  a pre-connect call surfaces on the first presence write. `provider` is the effective provider
+   *  the connector reported serving the model; when omitted an existing `meta.provider` is left
+   *  untouched (unlike `variant`, it is never deleted, since a caller that does not know the
+   *  provider says nothing about whether one still applies). */
+  async setCardModel(model: string, variant?: string, provider?: string): Promise<void> {
     const m = model.trim();
     const v = variant?.trim();
-    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v)) return;
+    const p = provider?.trim();
+    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v && (p === undefined || this.card.meta?.provider === p)))
+      return;
     const meta: Record<string, unknown> = { ...(this.card.meta ?? {}), model: m };
     if (v) meta.variant = v;
     else delete meta.variant;
+    if (p) meta.provider = p;
     this.card.meta = meta;
     await this.publishPresence();
   }

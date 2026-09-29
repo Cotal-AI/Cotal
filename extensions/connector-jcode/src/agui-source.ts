@@ -1,7 +1,7 @@
-import { access, readFile, stat } from "node:fs/promises";
+import { access, open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { JsonlFileSource, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
+import { JsonlFileSource, JsonlFileResetError, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
 import type { JcodeJournalRecord, PositionedJcodeJournalRecord } from "./agui-map.js";
 
 const JOURNAL_WAIT_MS = 5_000;
@@ -47,14 +47,10 @@ export async function initializeJcodeEventBoundary(path: string, wal: EventWal):
   return boundary;
 }
 
-/**
- * A Jcode session journal appears only when the first durable turn output is persisted. Wait for
- * that first complete file read, then use ordinary append-only JSONL cursor semantics forever.
- */
+/** Read native journal appends and report checkpoints as explicit event discontinuities. */
 export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   readonly kind = "jcode-session-journal";
   private readonly file: JsonlFileSource<JcodeJournalRecord>;
-  private snapshotMessages = 0;
 
   constructor(
     readonly path: string,
@@ -66,12 +62,17 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
   async read(cursor: string | undefined): Promise<SourceRead<JcodeJournalRecord>> {
     if (cursor !== undefined) {
       try {
-        const read = await this.file.read(cursor);
-        this.snapshotMessages = await this.snapshotMessageCount();
-        return read;
+        return await this.file.read(cursor);
       } catch (error) {
+        // A malformed cursor, invalid complete record or access refusal is not a checkpoint.
+        if (!isMissing(error) && !(error instanceof JsonlFileResetError)) throw error;
         const fresh = await this.foldedSince();
         if (fresh === undefined) throw error;
+        if (fresh === null) {
+          // A checkpoint can remove the journal until a long tool finishes. Keep the previous
+          // cursor while marking the gap, then read the new file from its first complete record.
+          return { cursor, records: [{ cursor, value: { journal_fold: {} } }] };
+        }
         return {
           cursor: fresh.fresh.cursor,
           records: [
@@ -86,11 +87,7 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     for (;;) {
       try {
         await access(this.path, constants.R_OK);
-        const read = cursor === undefined
-          ? await this.file.readFromBeginning()
-          : await this.file.read(cursor);
-        this.snapshotMessages = await this.snapshotMessageCount();
-        return read;
+        return await this.file.readFromBeginning();
       } catch (error) {
         if (!isMissing(error)) throw error;
         const remaining = deadline - performance.now();
@@ -105,32 +102,41 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     }
   }
 
-  private async snapshotMessageCount(): Promise<number> {
-    const snapshot = join(dirname(this.path), `${basename(this.path, ".journal.jsonl")}.json`);
+  private async hasSessionSnapshot(): Promise<boolean> {
+    const sessionId = basename(this.path, ".journal.jsonl");
+    const snapshot = join(dirname(this.path), `${sessionId}.json`);
     try {
-      if ((await stat(snapshot)).size === 0) return 0;
-      const parsed: unknown = JSON.parse(await readFile(snapshot, "utf8"));
-      if (parsed === null || typeof parsed !== "object" || !Array.isArray((parsed as { messages?: unknown }).messages)) return 0;
-      return (parsed as { messages: unknown[] }).messages.length;
+      const file = await open(snapshot, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        if (!(await file.stat()).isFile()) throw new Error("Jcode AG-UI source: session snapshot is not a regular file");
+        const parsed: unknown = JSON.parse(await file.readFile("utf8"));
+        if (parsed === null || typeof parsed !== "object" ||
+            (parsed as { id?: unknown }).id !== sessionId || !Array.isArray((parsed as { messages?: unknown }).messages))
+          throw new Error("Jcode AG-UI source: checkpoint snapshot does not identify this session");
+        return true;
+      } finally {
+        await file.close();
+      }
     } catch (error) {
-      if (isMissing(error)) return 0;
+      if (isMissing(error)) return false;
       throw error;
     }
   }
 
-  private async foldedSince(): Promise<{ beginning: string; fresh: SourceRead<JcodeJournalRecord> } | undefined> {
+  private async foldedSince(): Promise<{ beginning: string; fresh: SourceRead<JcodeJournalRecord> } | null | undefined> {
     const deadline = performance.now() + this.waitMs;
     let retryMs = RETRY_INITIAL_MS;
     for (;;) {
-      const messages = await this.snapshotMessageCount();
-      if (messages > this.snapshotMessages) {
+      // Message-count growth is not a generation fence: a reader can observe the new snapshot
+      // before the old journal is unlinked. Bind to the actual session, and report any lost prefix.
+      if (await this.hasSessionSnapshot()) {
         try {
           const beginning = await this.file.cursorAtBeginning();
           const fresh = await this.file.read(beginning);
-          this.snapshotMessages = messages;
           return { beginning, fresh };
         } catch (error) {
-          if (!isMissing(error)) throw error;
+          if (!isMissing(error) && !(error instanceof JsonlFileResetError)) throw error;
+          return null;
         }
       }
       const remaining = deadline - performance.now();

@@ -47,7 +47,7 @@ let child: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let passed = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   passed++;
   console.log(`  ✓ ${name}`);
 };

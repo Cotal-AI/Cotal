@@ -122,6 +122,15 @@ interruption required. One mechanism covers three needs at once: live delivery, 
 inbound buffer, and late-join history. DMs and anycast are always at-least-once this way
 ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
 
+A send result proves only that the broker accepted and stored the message at a sequence
+(`stored seq N`), not that any recipient read it: `cotal send dm` and the `cotal_dm` tool
+report that sequence together with the recipient's roster status at the moment of send
+(`idle`, `working`, or `offline`), and neither ever claims `delivered`. The stored sequence
+is a fact about the stream; the status-at-send words are a fact about the roster a moment
+before publish; retention (how long the durable holds it, whether a same-name respawn
+inherits it) is a third, separate fact, covered below and inspectable with
+[`cotal deliver pending`](cli.md#deliver).
+
 ## Channel delivery
 
 Channel delivery has two wire-observable classes, fixed per channel

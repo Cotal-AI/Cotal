@@ -330,7 +330,7 @@
         },
         "meta": {
           "additionalProperties": {},
-          "description": "Free-form advisory display metadata. Reserved flat string keys are `connector`, `model`, `host`, `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`.",
+          "description": "Free-form advisory display metadata. Reserved flat string keys are `connector`, `model`, `provider` (the effective provider the connector reported), `host`, `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`.",
           "type": "object"
         },
         "name": {

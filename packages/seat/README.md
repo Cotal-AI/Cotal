@@ -12,6 +12,9 @@ named `custody transport unsupported on <platform>` error on darwin and win32. T
 in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
 Linux and only `adopt` throws that named error.
 
+The custodian raises its child's `oom_score_adj` to 500 and writes one line to `custodian.log`
+when the kernel refuses.
+
 The Linux `SO_PEERCRED` helper is compiled for the host arch by `pnpm build`. That is a
 developer tree, not a publishable one: it prints a host-dev-build banner and writes
 `build/Release/linux-<arch>/peercred.node`. Pack and publish require both `linux-x64`

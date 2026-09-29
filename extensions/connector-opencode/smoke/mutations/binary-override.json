@@ -48,6 +48,38 @@
       "command": "pnpm smoke:opencode",
       "expectRed": "2.x: an empty listing is waited on, and the model check passes once the server lists it",
       "cell": "2.x: an empty listing is waited on, and the model check passes once the server lists it"
+    },
+    {
+      "name": "plugin2.ts never reads the operator's boot prompt off the environment",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;",
+      "replace": "  let bootPrompt: string | undefined = undefined;",
+      "expectRed": "on 2.x a boot prompt drives a turn without any peer traffic",
+      "cell": "on 2.x a boot prompt drives a turn without any peer traffic"
+    },
+    {
+      "name": "plugin2.ts's boot task never opens the boot gate",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    bootReady = true;\n    await drive();",
+      "replace": "    await drive();",
+      "expectRed": "on 2.x a boot prompt drives a turn without any peer traffic",
+      "cell": "on 2.x a boot prompt drives a turn without any peer traffic (the gate mutant)"
+    },
+    {
+      "name": "plugin2.ts never clears the boot prompt once the submission lands",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "      if (system) primed = true;\n      if (boot !== undefined) bootPrompt = undefined;",
+      "replace": "      if (system) primed = true;",
+      "expectRed": "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again",
+      "cell": "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again"
+    },
+    {
+      "name": "plugin2.ts clears the boot prompt before the submission has landed",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    busy = true;\n    surfaced = ids;\n    briefed = true;\n    try {\n      await opencodeApi(",
+      "replace": "    busy = true;\n    surfaced = ids;\n    briefed = true;\n    if (boot !== undefined) bootPrompt = undefined;\n    try {\n      await opencodeApi(",
+      "expectRed": "a failed boot submission keeps the prompt and the next drive submits it",
+      "cell": "a failed boot submission keeps the prompt and the next drive submits it"
     }
   ]
 }

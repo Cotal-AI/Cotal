@@ -5,6 +5,7 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { peerCredentials } from "./peercred.js";
+import { preferSeatForOomKill } from "./oom.js";
 import {
   CONFIRM_TIMEOUT_MS,
   DEFAULT_COLS,
@@ -67,6 +68,12 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     cwd: launch.cwd,
     env: launch.env,
   });
+  const oomPref = preferSeatForOomKill(proc.pid);
+  if (!oomPref.applied) {
+    const line = `oom preference not applied to child ${proc.pid}: ${oomPref.reason}\n`;
+    if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+    else process.stderr.write(line);
+  }
   // Pin both start identities NOW, before the child can exit and be reaped: a successor that finds
   // these pids later must be able to tell this custodian and this child from an unrelated process
   // that inherited the pid. A zombie still reports its start token, a reaped pid does not: a child

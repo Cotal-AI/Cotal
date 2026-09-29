@@ -99,7 +99,7 @@ let outageOperator: CotalEndpoint | undefined;
 const frames: Array<{ threadId: string; runId: string; events: Array<{ type: string; [key: string]: unknown }> }> = [];
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -291,15 +291,21 @@ try {
     for (const part of message.parts) if (isAguiFramePart(part)) frames.push(part as typeof frames[number]);
   });
   let peerId: string | undefined;
+  let peerMeta: Record<string, unknown> | undefined;
+  let noProviderMeta: Record<string, unknown> | undefined;
   let foldPeerId: string | undefined;
   const foldStatuses: string[] = [];
   let busyPeerId: string | undefined;
   let busyActivity = "";
   const announced = new Set<string>();
-  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string; status?: string } }) => {
+  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string; meta?: Record<string, unknown> }; activity?: string; status?: string } }) => {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
-    if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.presence.card.name === "jcodepeer") {
+      peerId = event.presence.card.id;
+      peerMeta = event.presence.card.meta;
+    }
+    if (event.presence.card.name === "noproviderpeer") noProviderMeta = event.presence.card.meta;
     if (event.presence.card.name === "foldpeer") {
       foldPeerId = event.presence.card.id;
       foldStatuses.push(event.presence.status ?? "");
@@ -403,6 +409,7 @@ try {
       FAKE_JCODE_FOLD_AFTER_RECORD: "1",
       FAKE_JCODE_FOLD_DELAY_MS: "5000",
       FAKE_JCODE_FOLD_ON_CONTENT: "JCODE-JOURNAL-FOLD-1984",
+      FAKE_JCODE_FOLD_WITH_TOOL: "1",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "foldpeer",
@@ -475,7 +482,7 @@ try {
   await waitFor("Jcode journal fold", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
     "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity",
-    () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR" && event.code === "jcode_journal_fold")) ? true : undefined,
+    () => fold.exitCode !== null || fold.signalCode !== null || frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR")) ? true : undefined,
   );
   const foldedFrames = frames.slice(foldStart);
   const foldEvents = foldedFrames.flatMap((frame) => frame.events);
@@ -603,6 +610,11 @@ try {
     peerLog.includes("model fake-model is served by provider selected-provider via responses") &&
       !peerLog.includes("model fake-model is served by provider default-provider"),
     peerLog,
+  );
+  check(
+    "the presence card names the provider serving the pinned model and keeps the pin",
+    peerMeta?.provider === "selected-provider" && peerMeta?.model === "fake-model",
+    peerMeta,
   );
 
   await stopHostTree(child, "SIGTERM");
@@ -804,6 +816,51 @@ try {
   );
   await stopHostTree(modelOnly, "SIGTERM");
   check("the model-only lag launch exits cleanly", modelOnly.exitCode === 0, { code: modelOnly.exitCode, stderr: modelOnlyErr });
+
+  // A route the Harness API names with no provider publishes no provider key: absent, never
+  // fabricated (#785).
+  const noProviderLog = join(root, "no-provider.jsonl");
+  const noProvider = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: noProviderLog,
+      FAKE_JCODE_RUNTIME_PROVIDER: "",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "", api_method: "chat_completions", available: true, detail: "no provider" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "noproviderpeer",
+      COTAL_ID: "noproviderpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_CONTROL_SOCKET: controlSock("no-provider-control.sock"),
+      COTAL_CONTROL_TOKEN: "no-provider-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let noProviderErr = "";
+  noProvider.stderr?.on("data", (chunk: Buffer) => (noProviderErr += chunk.toString()));
+  await Promise.race([
+    once(noProvider, "exit"),
+    waitFor("no-provider mesh presence", () => announced.has("noproviderpeer") ? true : undefined),
+  ]);
+  const noProviderConnectorLog = connectorLog(managedHome("jcodehost", "noproviderpeer"));
+  check(
+    "a route with no provider named by the Harness publishes no provider key",
+    (noProviderMeta === undefined || !("provider" in noProviderMeta)) &&
+      noProviderConnectorLog.includes("served by an unreported provider"),
+    { noProviderMeta, noProviderConnectorLog },
+  );
+  await stopHostTree(noProvider, "SIGTERM");
+  check("the no-provider launch exits cleanly", noProvider.exitCode === 0, { code: noProvider.exitCode, stderr: noProviderErr });
 
   // A stale RuntimeInfo.model is not permission to guess. Variant startup still requires a route for
   // the requested pin that is uniquely tied to RuntimeInfo.provider before effort can be applied.

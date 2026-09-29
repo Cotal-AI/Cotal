@@ -87,7 +87,7 @@ check(
     /noManager && values\.runtime/.test(up) &&
     /noManager && values\["max-sessions"\]/.test(up) &&
     up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
-    deliveryProc.includes("if (o.noManager) return { running: false, responderBound: delivery.responderBound };") &&
+    /if \(o\.noManager\) return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/.test(deliveryProc) &&
     !cli.includes("There is no broker-only mode") &&
     !runAMesh.includes("There is no broker-only `up`") &&
     !runAMesh.includes("Broker-only `up` remains a product request"),
@@ -107,8 +107,8 @@ check(
 check(
   "claim 2: detach summary and ensureManager are pidfile-live; supervise prints manager up after start",
   upReport.includes("return `✓ running in the background: ${components.join(\", \")} - stop with: cotal down`;") &&
-    managerProc.includes('if (state === "alive") return { running: true }') &&
-    /startManagerDetached\(o\);\n  return \{ running: true \};/.test(managerProc) &&
+    /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
+    /const pid = startManagerDetached\(o\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
     supervise.includes('c.green("✓ manager up")'),
 );

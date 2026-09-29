@@ -248,14 +248,14 @@
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "replace": "    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
-      "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
+      "expectRed": "mirror-seat: departure was still unpublished while admitted work was in flight"
     },
     {
       "name": "C15 absorption is hand-rolled again and covers only the FIRST admitted call, so a failure anywhere behind it still ends the wait early",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "replace": "    const settled = await settleWithin(Promise.all([...inFlight].map((work, i) => (i === 0 ? work.then(() => undefined, () => undefined) : work))), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
-      "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
+      "expectRed": "interior-seat: an interior failure did not release departure while parked work remained"
     },
     {
       "name": "C16 absorption is hand-rolled again and covers only the LAST admitted call, so a failure at the head of the set still ends the wait early",

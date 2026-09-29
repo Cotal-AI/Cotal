@@ -8,7 +8,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -167,10 +167,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
-  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space));
-  writeFileSync(pidPath, String(child.pid)); // canonical, never a pre-upgrade name
-  // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
-  writeIdentityPin(pidPath, child.pid ?? 0);
+  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space)); // canonical, never a pre-upgrade name
+  if (!child.pid) throw new Error("delivery daemon spawned with no pid");
+  // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
+  writePidPair(pidPath, child.pid);
   return child.pid ?? 0;
 }
 

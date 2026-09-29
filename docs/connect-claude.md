@@ -357,8 +357,8 @@ the event channel joins nothing and the frames never arrive. And it reads histor
 `channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
 creates, by design. `cotal console` and the web console already do both.
 
-The `<owner>.<actor>` pair is the session's principal, not its display name. On a user-auth mesh
-the actor half **is** the agent's name, so the channel is `events.<your-owner>.<agent-name>`. On a
+The `<owner>.<actor>` pair is the session's principal. On a user-auth mesh the actor half is the
+agent's own name, so the channel is `events.<your-owner>.<agent-name>`. On a
 static mesh the owner half is the literal `local` and the actor is a key the manager allocated, so
 the channel is `events.local.<key>`; the spawn reply carries that key as `id`. Note
 that `cotal console` and the web console keep event channels out of their channel lists on purpose,

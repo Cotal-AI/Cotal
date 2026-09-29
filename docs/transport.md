@@ -59,6 +59,18 @@ Capabilities 2 and 3 are offloaded to JetStream and KV. Cotal does not implement
 presence, ack/redelivery, or publish dedup itself; it uses the native NATS mechanisms. Handlers
 still need to be idempotent because durable delivery may redeliver a message.
 
+`CotalEndpoint` can configure native NATS heartbeat detection on its resident connection with
+`transportPingIntervalMs` and `transportMaxPingOut`. Both options must be positive integers and
+supplied together. When omitted, NATS keeps its defaults. PING/PONG uses the existing socket and
+opens no authenticated probe connection. A stale connection emits a transport disconnect before
+NATS retries, so a service can bound silent link-loss detection without periodic login dials.
+
+The reference client's finite KV scan binds an ordered consumer to read its pending count.
+It deletes that consumer before returning a complete result, including an empty result.
+An abort before the result is returned raises the abort reason, even when deletion was pending.
+The scan does not turn that cancellation into an empty answer. A scan that ends without its
+terminal delivery raises an incomplete-scan error.
+
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
 native message schedules (durable timers) and per-message TTLs, with no degraded fallback
 ([SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding)).

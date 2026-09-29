@@ -417,6 +417,64 @@ export function createManagerInstanceIdentity(root: string, space: string, candi
   }
 }
 
+/** The AUTH PLANE's persisted instance identity (#399 M2): a stable `instanceId` + serve nkey so
+ *  a restart re-registers the SAME `svc.auth.<instanceId>` instance (`registerServiceInstance`
+ *  advances the process epoch on a re-registration and fences the predecessor rather than minting
+ *  a fresh, un-fenced one). Mirrors {@link ManagerInstanceIdentity} exactly; kept as its own type
+ *  (not a reuse) because it is a distinct persisted principal for a distinct served endpoint. */
+export interface AuthInstanceIdentity {
+  instanceId: string;
+  serveIdentity: { id: string; seed: string };
+}
+function authInstanceFile(root: string, space: string): string {
+  return join(authDir(root), `auth-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+}
+/** Load this workspace root's persisted auth-plane instance identity for `space`, or undefined if
+ *  the auth plane has never registered here. A present-but-MALFORMED file fails LOUD: minting a
+ *  fresh id over it would orphan the prior registration and break the restart-fence guarantee. */
+export function loadAuthInstanceIdentity(root: string, space: string): AuthInstanceIdentity | undefined {
+  const f = authInstanceFile(root, space);
+  if (!existsSync(f)) return undefined;
+  let parsed: AuthInstanceIdentity;
+  try { parsed = JSON.parse(readFileSync(f, "utf8")) as AuthInstanceIdentity; }
+  catch (e) { throw new Error(`the persisted auth instance identity at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`); }
+  if (parsed === null || typeof parsed !== "object"
+    || typeof parsed.instanceId !== "string" || parsed.instanceId.length === 0
+    || parsed.serveIdentity === null || typeof parsed.serveIdentity !== "object"
+    || typeof parsed.serveIdentity.id !== "string" || parsed.serveIdentity.id.length === 0
+    || typeof parsed.serveIdentity.seed !== "string" || parsed.serveIdentity.seed.length === 0)
+    throw new Error(`the persisted auth instance identity at ${f} is malformed; refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`);
+  return { instanceId: parsed.instanceId, serveIdentity: { id: parsed.serveIdentity.id, seed: parsed.serveIdentity.seed } };
+}
+/** Persist this workspace root's auth-plane instance identity for `space` (hardened secret file). */
+export function saveAuthInstanceIdentity(root: string, space: string, identity: AuthInstanceIdentity): void {
+  const dir = authDir(root);
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
+  writeSecretFile(authInstanceFile(root, space), JSON.stringify(identity, null, 2));
+}
+
+/**
+ * First-start identity mint for the auth plane: of N concurrent creators on a fresh root, exactly
+ * one creates the file and the others adopt the winner (mirrors {@link createManagerInstanceIdentity}).
+ */
+export function createAuthInstanceIdentity(root: string, space: string, candidate: AuthInstanceIdentity): AuthInstanceIdentity {
+  const dir = authDir(root);
+  mkSecretDir(dir);
+  const path = authInstanceFile(root, space);
+  try {
+    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
+    return candidate;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const winner = loadAuthInstanceIdentity(root, space);
+    if (winner === undefined)
+      throw new Error(
+        `auth-instance-identity-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`,
+      );
+    return winner;
+  }
+}
+
 /** The outcome of {@link retireManagerInstanceIdentity}. `removed` means this call deleted the
  *  record that matched `expected`. `absent` means no record exists for the space: a retry after an
  *  earlier `removed`, or a record that was never created. It never reports that this call deleted
@@ -428,7 +486,8 @@ function sameManagerInstanceIdentity(a: ManagerInstanceIdentity, b: ManagerInsta
 }
 
 function readManagerInstanceRecord(f: string, space: string): ManagerInstanceIdentity | undefined {
-  const raw = readAuthRecord<ManagerInstanceIdentity>(f, `the manager instance identity for space "${space}"`);
+  const what = `the manager instance identity for space "${space}"`;
+  const raw = readAuthRecord<ManagerInstanceIdentity>(f, what);
   if (raw === undefined) return undefined;
   if (raw === null || typeof raw !== "object"
     || typeof raw.instanceId !== "string" || raw.instanceId.length === 0
@@ -439,23 +498,35 @@ function readManagerInstanceRecord(f: string, space: string): ManagerInstanceIde
   return { instanceId: raw.instanceId, serveIdentity: { id: raw.serveIdentity.id, seed: raw.serveIdentity.seed } };
 }
 
+/** Deterministic instrumentation hooks for testing concurrent retirement races. Hooks do not
+ *  replace filesystem operations: each callback returns before the real rename or link runs. */
+export interface RetireManagerInstanceIdentityOpts {
+  /** Invoked after the initial pre-check passes and immediately before `renameSync`. */
+  readonly onBeforeRename?: () => void;
+  /** Invoked if the captured record differs from expected, immediately before attempting `linkSync`. */
+  readonly onBeforeLinkBack?: () => void;
+}
+
 /**
  * Delete this root's persisted manager instance identity for `space`, only when the stored record
  * is the complete `expected` identity (instanceId, serve nkey id and serve seed).
  *
- * It refuses, throwing an error that starts with `manager-instance-identity-retire-refused` and
- * leaving every entry in place, when the entry is not a regular file (symlink, directory), does
- * not parse, is malformed, or holds any other identity, such as a successor written after
- * `expected` was provisioned. A missing record returns `absent`, so an interrupted retirement can
- * be retried. The record is first renamed to a private name in the auth directory and checked
- * again there, so a successor written between the check and the delete is never removed. If that
- * second check fails, the captured record is linked back when the path is still free.
+ * It refuses, throwing an error that starts with `manager-instance-identity-retire-refused`, when
+ * the entry is not regular, does not parse, is malformed, or holds another identity. A missing
+ * record returns `absent` and never establishes ownership. The record is renamed to a private name
+ * in the auth directory and checked again there before deletion. A changed captured record is
+ * linked back only if the canonical path is still free; on a collision both records are preserved.
  *
  * This establishes only which record was deleted. It is not proof that a manager stopped: the
  * caller must hold its own stop and ownership evidence before retiring. A normal restart keeps the
  * identity, and retirement is for failed-new-space compensation or terminal retirement.
  */
-export function retireManagerInstanceIdentity(root: string, space: string, expected: ManagerInstanceIdentity): ManagerInstanceIdentityRetirement {
+export function retireManagerInstanceIdentity(
+  root: string,
+  space: string,
+  expected: ManagerInstanceIdentity,
+  opts?: RetireManagerInstanceIdentityOpts,
+): ManagerInstanceIdentityRetirement {
   const path = managerInstanceFile(root, space);
   const refuse = (why: string): never => {
     throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: ${why}`);
@@ -465,14 +536,16 @@ export function retireManagerInstanceIdentity(root: string, space: string, expec
   if (current === undefined) return { outcome: "absent" };
   if (!sameManagerInstanceIdentity(current, expected)) return refuse("the stored identity is not the expected generation");
 
+  opts?.onBeforeRename?.();
   const captured = `${path}.retiring.${randomUUID()}`;
   try { renameSync(path, captured); } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
-    throw e;
+    throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: capture failed`, { cause: e });
   }
   let held: ManagerInstanceIdentity | undefined;
   try { held = readManagerInstanceRecord(captured, space); } catch { held = undefined; }
   if (held === undefined || !sameManagerInstanceIdentity(held, expected)) {
+    opts?.onBeforeLinkBack?.();
     try { linkSync(captured, path); unlinkSync(captured); } catch {
       return refuse(`the record changed before deletion and could not be put back; it is kept at ${captured}`);
     }

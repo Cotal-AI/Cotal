@@ -135,7 +135,7 @@ const watchdogFiredDuring = async (yieldEvery: number): Promise<boolean> => {
     const logs: unknown[] = [];
     const raced = run(source, {
       runId,
-      handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
+      handler: new SimHandler({ turns: { quick: { status: "done" } } }),
       yieldEvery: 64,
       stepBudget: 40_000,
       onLog: (l) => logs.push(l.values[0]),
@@ -226,10 +226,10 @@ log(votes.a.status);
     runId: "f-5",
     handler: new SimHandler({
       turns: {
-        plan: { status: "done", at: 0 },
-        build: { status: "done", at: 0 },
-        review: { status: "done", at: 0 },
-        check: { status: "done", at: 0 },
+        plan: { status: "done" },
+        build: { status: "done" },
+        review: { status: "done" },
+        check: { status: "done" },
       },
     }),
     onLog: (l) => logs.push(l.values[0]),

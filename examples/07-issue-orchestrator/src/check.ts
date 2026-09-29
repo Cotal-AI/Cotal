@@ -70,8 +70,8 @@ for (const [file, src] of Object.entries(sources)) {
 }
 
 // ---- 3. the four scripts ----------------------------------------------------------------------------
-// The simulator stamps `at` from its virtual clock; the type still asks for one.
-const done = { status: "done", at: 0 } as const;
+// The simulator stamps `at` from its virtual clock; the type no longer asks for one.
+const done = { status: "done" } as const;
 const S1 = "1111111111111111111111111111111111111111";
 const S2 = "2222222222222222222222222222222222222222";
 const M1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

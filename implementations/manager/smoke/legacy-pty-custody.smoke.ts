@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 
 let pass = 0;
 let fail = 0;
@@ -43,18 +45,31 @@ const repo = join(managerRoot, "..", "..");
 const childProgram = "const fs=require('node:fs');fs.writeFileSync(process.env.PIDFILE,String(process.pid));let n=0;setInterval(()=>process.stdout.write(String(++n)+'\\n'),50)";
 writeFileSync(
   owner,
-  `import { PtyRuntime } from ${JSON.stringify(join(managerRoot, "dist", "runtime", "pty.js"))};\n` +
+  // A file URL, not a bare path. The generated owner is ESM, and on Windows an absolute path is
+  // not a valid specifier: node rejects `D:\...` with ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received
+  // protocol 'd:'") before the module loads, so the owner died with no record written. Same idiom
+  // spawn-action.smoke.ts uses for the same reason.
+  `import { PtyRuntime } from ${JSON.stringify(pathToFileURL(join(managerRoot, "dist", "runtime", "pty.js")).href)};\n` +
     `import { writeFileSync } from "node:fs";\n` +
-    `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { PATH: process.env.PATH ?? "", PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
+    `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { ...${JSON.stringify(launchEnv())}, PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
     `writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined }));\n` +
     `setInterval(() => {}, 1_000);\n`,
 );
 
+// Both spawns take the OS allow-list a real connector supplies, not a bare PATH. On Windows a node
+// child without `SystemRoot` aborts at startup before its first line, and a pty (ConPTY) child does
+// not inherit it the way a plain child_process does (see connector-core's OS_ENV_ALLOW). With only
+// PATH set the owner died on launch and this suite read the silence as "fixture did not write its
+// ownership record", which is how it reddened `Windows / required` once #2047 stopped skipping it.
 let ownerProcess: ChildProcess | undefined;
+let ownerStderr = "";
 try {
   ownerProcess = spawn(process.execPath, [owner], {
-    env: { PATH: process.env.PATH ?? "", READY: ready, PIDFILE: pidfile },
-    stdio: "ignore",
+    env: { ...launchEnv(), READY: ready, PIDFILE: pidfile },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  ownerProcess.stderr?.on("data", (chunk: Buffer | string) => {
+    ownerStderr += String(chunk);
   });
   const armed = await until(() => {
     try {
@@ -63,8 +78,8 @@ try {
       return false;
     }
   }, 10_000);
-  check("isolated manager fixture armed", armed);
-  if (!armed) throw new Error("fixture did not write its ownership record");
+  check("isolated manager fixture armed", armed, armed ? undefined : { ownerStderr: ownerStderr.slice(-800) });
+  if (!armed) throw new Error(`fixture did not write its ownership record${ownerStderr === "" ? "" : `; owner stderr: ${ownerStderr.slice(-800)}`}`);
   const ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number; hasReference: boolean };
   check("counter child is live before manager death", state(ids.childPid) !== "gone" && state(ids.childPid) !== "Z", { childPid: ids.childPid, state: state(ids.childPid) });
   check("legacy PTY exposes no durable reference a successor can adopt", ids.hasReference === false, ids);
@@ -76,15 +91,26 @@ try {
     console.log("  – skipped: M1 red: legacy manager death ends the manager-owned counter PTY (the Z residue is /proc state after SIGKILL, Linux-only)");
   }
 } finally {
+  // The verdict is printed and the exit code set BEFORE teardown, because teardown has already
+  // eaten one. On Windows every cell here passed and the process then died inside this block within
+  // 36 ms, printing nothing at all, so the run read as a failing suite when the suite had in fact
+  // passed. Cleanup is best effort and must never be able to decide the result.
+  console.log(`\nLEGACY PTY CUSTODY ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
+  process.exitCode = fail === 0 ? 0 : 1;
   try {
     const ids = JSON.parse(readFileSync(ready, "utf8")) as { childPid: number };
-    if (state(ids.childPid) !== "gone") process.kill(ids.childPid, "SIGKILL");
+    // Only Linux kills the counter by the pid the owner recorded. The owner held the pty, so the
+    // child goes with it on every platform, and killing a recorded pid is the one operation in this
+    // block that can reach a process we do not own if the number has been reused.
+    if (process.platform === "linux" && state(ids.childPid) !== "gone") process.kill(ids.childPid, "SIGKILL");
   } catch {
     // The fixture did not arm, so it owns no child PID to clean up.
   }
-  if (ownerProcess?.exitCode === null) ownerProcess.kill("SIGKILL");
-  rmSync(root, { recursive: true, force: true });
+  try {
+    if (ownerProcess?.exitCode === null) ownerProcess.kill("SIGKILL");
+    // maxRetries is what makes this survive Windows holding a handle on the tree for a moment.
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    console.log(`  (teardown left something behind, which does not change the verdict: ${String(err)})`);
+  }
 }
-
-console.log(`\nLEGACY PTY CUSTODY ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-process.exitCode = fail === 0 ? 0 : 1;

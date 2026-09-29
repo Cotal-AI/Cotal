@@ -657,27 +657,40 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         "any",
         60_000,
       );
-      if (!prepared.ok) throw new Error(prepared.error ?? "manager preservation prepare failed");
-      const plan = prepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
-      if (!plan?.inventory || (plan.failures?.length ?? 0) !== 0 || (plan.state !== "prepared" && plan.state !== "preserved"))
-        throw new Error("manager returned an invalid or incomplete preservation plan");
-      const retainedPrincipals = retainedPrincipalKeys(plan.inventory);
-      let observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
-      retainedPrincipals.add(observed.managerId);
-      let unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
-      if (unmanaged.length) {
-        await sleep(11_000); // Let stopped predecessor presence and manager leases expire before refusing.
-        observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
+      let plan: { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
+      try {
+        if (!prepared.ok) throw new Error(prepared.error ?? "manager preservation prepare failed");
+        plan = prepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
+        if (!plan?.inventory || (plan.failures?.length ?? 0) !== 0 || (plan.state !== "prepared" && plan.state !== "preserved"))
+          throw new Error("manager returned an invalid or incomplete preservation plan");
+        const retainedPrincipals = retainedPrincipalKeys(plan.inventory);
+        let observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
         retainedPrincipals.add(observed.managerId);
-        unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
+        let unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
+        if (unmanaged.length) {
+          await sleep(11_000); // Let stopped predecessor presence and manager leases expire before refusing.
+          observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
+          retainedPrincipals.add(observed.managerId);
+          unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
+        }
+        if (unmanaged.length)
+          throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
+        // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
+        // still running. This reads only the prepared inventory, so it needs nothing that stopping
+        // would provide, and refusing after the stack is down would cost the operator a running mesh
+        // to tell them the cut was never going to complete.
+        assertSeatsCheckpointable(plan.inventory);
+      } catch (cause) {
+        // A refused prepare (or a live-unmanaged / uncheckpointable refusal) must not leave the
+        // manager fenced in "preserving" mode with no running preservation to finish: abort the
+        // attempt (best effort, the same shape as the stale-inventory retry above) and clear the
+        // intent, so the operator is left with a running, unfenced mesh and the refusal reason.
+        try {
+          await askManager(target.space, target.server, "abortPreservation", { attemptId }, target.auth, "any", 30_000);
+        } catch { /* best effort - the fence dies with the manager */ }
+        clearPreservationPrepareIntent(lock);
+        throw cause;
       }
-      if (unmanaged.length)
-        throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
-      // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
-      // still running. This reads only the prepared inventory, so it needs nothing that stopping
-      // would provide, and refusing after the stack is down would cost the operator a running mesh
-      // to tell them the cut was never going to complete.
-      assertSeatsCheckpointable(plan.inventory);
       resume = writeMaintenanceResumeDocument(lock, {
         version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
         inventory: plan.inventory as JsonValue,

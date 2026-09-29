@@ -1464,7 +1464,15 @@ export class MeshAgent extends EventEmitter {
     return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
   }
 
-  async dm(target: string, text: string): Promise<{ msg: CotalMessage; peer: Presence }> {
+  async dm(
+    target: string,
+    text: string,
+  ): Promise<{
+    msg: CotalMessage;
+    peer: Presence;
+    ack: { seq: number; duplicate: boolean };
+    recipientStatusAtSend: Presence["status"];
+  }> {
     await this.requireConnected();
     // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
     // the roster may be a reconnect refill in progress, so wait once for the snapshot and
@@ -1488,8 +1496,13 @@ export class MeshAgent extends EventEmitter {
         `cannot verify peer "${target}" in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The DM was not sent.`,
       );
     }
-    const msg = await this.ep.unicast(peer.card.id, text, { contextId: this._contextId });
-    return { msg, peer };
+    // The only status we can truthfully attribute is the roster snapshot taken right before the
+    // publish: recipient state can change the instant after, and the ack never tells us either way.
+    const recipientStatusAtSend = peer.status;
+    const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, {
+      contextId: this._contextId,
+    });
+    return { msg, peer, ack, recipientStatusAtSend };
   }
 
   // ---- supervision ---------------------------------------------------------
@@ -1981,6 +1994,26 @@ export class MeshAgent extends EventEmitter {
     return next;
   }
 
+  /** Detach the chain from writes the CALLER has abandoned, so the next write is ordered behind
+   *  what has actually settled rather than behind work nobody is waiting for any more.
+   *
+   *  The chain above orders departure after every admitted write, which is right while those writes
+   *  are still progressing and wrong once a teardown has given up on them. A host bounds its wait on
+   *  admitted intake and then attempts departure; without this, that attempt queues behind the very
+   *  write the bound just abandoned, so the bound buys nothing, offline never publishes, and the seat
+   *  stays at its last status until its presence TTL expires. The host says in its own log that
+   *  abandoned work is uncancelled and may land after departure, and the chain quietly contradicted
+   *  it.
+   *
+   *  ABANDONED IS NOT CANCELLED here either. The detached writes keep running and may still publish,
+   *  which is the same residual the caller already announces; what changes is only that departure
+   *  stops waiting on them. Call it exactly where the give-up is decided, never as a general reset:
+   *  a caller that invokes this while its writes are still progressing has reintroduced the race the
+   *  chain exists to close. */
+  abandonPresenceWrites(): void {
+    this.presenceChain = Promise.resolve();
+  }
+
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
     await this.inOrder(async () => {
     await this.requireConnected();
@@ -2049,11 +2082,13 @@ export class MeshAgent extends EventEmitter {
 
   /** Record the host's actual model and optional variant learned after launch, so peers see the
    *  selection in `cotal_roster` and the web roster even when the operator never pinned one. Explicit
-   *  `model:` / `variant:` config wins; this only fills the gap. Best-effort presence mirror (no
-   *  `requireConnected` — safe pre-connect; it rides the first publish). */
-  async setModel(model: string, variant?: string): Promise<void> {
-    if (this.config.model) return; // operator pin is authoritative — never override it with the runtime value
-    await this.inOrder(() => this.ep.setCardModel(model, this.config.variant ?? variant));
+   *  `model:` / `variant:` config wins; this only fills the gap. `provider` is best-effort and
+   *  reported independently of the model pin: a pinned seat can still report which provider is
+   *  serving it, so the early return only short-circuits when no provider was given either. Best-
+   *  effort presence mirror (no `requireConnected` — safe pre-connect; it rides the first publish). */
+  async setModel(model: string, variant?: string, provider?: string): Promise<void> {
+    if (this.config.model && provider === undefined) return; // operator pin is authoritative for the model
+    await this.inOrder(() => this.ep.setCardModel(this.config.model ?? model, this.config.variant ?? variant, provider));
   }
 
   // ---- channel registry ----------------------------------------------------

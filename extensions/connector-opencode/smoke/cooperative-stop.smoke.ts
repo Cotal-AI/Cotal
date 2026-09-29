@@ -247,6 +247,7 @@ try {
   const late = join(dir, "coop-knock-now");
   const lateFired = join(dir, "coop-knocked");
   const crossParked = join(dir, "coop-crossing-parked");
+  const departureAdmitted = join(dir, "coop-departure-admitted");
   const crossRelease = join(dir, "coop-crossing-release");
   const crossArm = join(dir, "coop-crossing-arm");
   const rejectRelease = join(dir, "coop-reject-release");
@@ -268,6 +269,7 @@ try {
       COOP_CROSS: "hook",
       COOP_CROSS_ARM: crossArm,
       COOP_CROSS_PARKED: crossParked,
+      COOP_DEPARTURE_ADMITTED: departureAdmitted,
       COOP_CROSS_RELEASE: crossRelease,
       COOP_REJECT_RELEASE: rejectRelease,
       COOP_REJECT_PARKED: rejectParked,
@@ -345,8 +347,19 @@ try {
 
   await wait(200);
   const beforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Otto")?.status;
+  // THE ADMISSION IS THE HALF WITH TEETH, and the roster reading on its own has none. Presence
+  // writes are serialized agent-side (#2065), so the departure publish queues behind the write that
+  // is parked here and cannot reach the mesh while one is held. A teardown that skipped its wait
+  // entirely reads exactly like one that is still holding: non-offline, both. Measured rather than
+  // reasoned about, and it is why this half exists: C10, C14 and C15 each removed the wait in a
+  // different way and every one of them SURVIVED against the roster reading alone.
+  // The marker is written where departure is ADMITTED, which is above the chain and therefore
+  // reached at call time. A correct teardown has not admitted it yet at this sample, inside the
+  // bound; one that stopped waiting early admitted it the moment it stopped.
+  const departedEarly = existsSync(departureAdmitted);
   check("hook-seat: departure was still unpublished while admitted work was in flight",
-    beforeRelease !== undefined && beforeRelease !== "offline", { beforeRelease });
+    beforeRelease !== undefined && beforeRelease !== "offline" && !departedEarly,
+    { beforeRelease, departedEarly });
   writeFileSync(crossRelease, "go\n");
   check("control server acked the shutdown", reply.trim() === JSON.stringify({ ok: true }), reply);
 
@@ -445,6 +458,7 @@ try {
   const toolEp = toolSpec.control!;
   const toolArm = join(dir, "tool-crossing-arm");
   const toolParked = join(dir, "tool-crossing-parked");
+  const toolDepartureAdmitted = join(dir, "tool-departure-admitted");
   const toolRelease = join(dir, "tool-crossing-release");
   mkdirSync(join(dir, "ws-tool"), { recursive: true });
   toolProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
@@ -455,6 +469,7 @@ try {
       COOP_CROSS: "tool",
       COOP_CROSS_ARM: toolArm,
       COOP_CROSS_PARKED: toolParked,
+      COOP_DEPARTURE_ADMITTED: toolDepartureAdmitted,
       COOP_CROSS_RELEASE: toolRelease,
     },
     stdio: ["ignore", "inherit", "inherit"],
@@ -484,8 +499,11 @@ try {
   // by the terminal stop, leaving the cell green against a broken implementation.
   await wait(300);
   const toolBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Tilly")?.status;
+  // Same pairing as the hook seat above, for the same reason recorded there.
+  const toolDepartedEarly = existsSync(toolDepartureAdmitted);
   check("tool-seat: departure was still unpublished while admitted work was in flight",
-    toolBeforeRelease !== undefined && toolBeforeRelease !== "offline", { toolBeforeRelease });
+    toolBeforeRelease !== undefined && toolBeforeRelease !== "offline" && !toolDepartedEarly,
+    { toolBeforeRelease, toolDepartedEarly });
   writeFileSync(toolRelease, "go\n");
   await awaitExit(toolProbe, 15_000);
 
@@ -506,6 +524,7 @@ try {
   const modelEp = modelSpec.control!;
   const modelArm = join(dir, "model-crossing-arm");
   const modelParked = join(dir, "model-crossing-parked");
+  const modelDepartureAdmitted = join(dir, "model-departure-admitted");
   const modelRelease = join(dir, "model-crossing-release");
   mkdirSync(join(dir, "ws-model"), { recursive: true });
   modelProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
@@ -516,6 +535,7 @@ try {
       COOP_CROSS: "model",
       COOP_CROSS_ARM: modelArm,
       COOP_CROSS_PARKED: modelParked,
+      COOP_DEPARTURE_ADMITTED: modelDepartureAdmitted,
       COOP_CROSS_RELEASE: modelRelease,
     },
     stdio: ["ignore", "inherit", "inherit"],
@@ -542,8 +562,12 @@ try {
 
   await wait(300);
   const modelBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Milo")?.status;
+  // Same pairing as the hook seat above. The model door parks in a different endpoint method, but
+  // departure still leaves through the status write, so the admission marker reads the same here.
+  const modelDepartedEarly = existsSync(modelDepartureAdmitted);
   check("model-seat: departure was still unpublished while admitted work was in flight",
-    modelBeforeRelease !== undefined && modelBeforeRelease !== "offline", { modelBeforeRelease });
+    modelBeforeRelease !== undefined && modelBeforeRelease !== "offline" && !modelDepartedEarly,
+    { modelBeforeRelease, modelDepartedEarly });
   writeFileSync(modelRelease, "go\n");
   await awaitExit(modelProbe, 15_000);
 
@@ -565,6 +589,7 @@ try {
   const mirrorEp = mirrorSpec.control!;
   const mirrorArm = join(dir, "mirror-arm");
   const mirrorParked = join(dir, "mirror-parked");
+  const mirrorDepartureAdmitted = join(dir, "mirror-departure-admitted");
   const mirrorRelease = join(dir, "mirror-release");
   const mirrorRejectParked = join(dir, "mirror-reject-parked");
   const mirrorRejectRelease = join(dir, "mirror-reject-release");
@@ -577,6 +602,7 @@ try {
       COOP_CROSS: "mirror",
       COOP_CROSS_ARM: mirrorArm,
       COOP_CROSS_PARKED: mirrorParked,
+      COOP_DEPARTURE_ADMITTED: mirrorDepartureAdmitted,
       COOP_CROSS_RELEASE: mirrorRelease,
       COOP_REJECT_PARKED: mirrorRejectParked,
       COOP_REJECT_RELEASE: mirrorRejectRelease,
@@ -609,8 +635,13 @@ try {
   writeFileSync(mirrorRejectRelease, "go\n");
   await wait(200);
   const mirrorBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Nell")?.status;
+  // Same pairing as the hook seat above. C16 absorbs the TAIL of the set, which in this seat is the
+  // parked call, so the failing head still ends a Promise.all early and departure is admitted at
+  // once. That is the difference this half reads and the roster one could not.
+  const mirrorDepartedEarly = existsSync(mirrorDepartureAdmitted);
   check("mirror-seat: departure was still unpublished while admitted work was in flight",
-    mirrorBeforeRelease !== undefined && mirrorBeforeRelease !== "offline", { mirrorBeforeRelease });
+    mirrorBeforeRelease !== undefined && mirrorBeforeRelease !== "offline" && !mirrorDepartedEarly,
+    { mirrorBeforeRelease, mirrorDepartedEarly });
   writeFileSync(mirrorRelease, "go\n");
   await awaitExit(mirrorProbe, 15_000);
 
@@ -631,6 +662,9 @@ try {
   const interiorEp = interiorSpec.control!;
   const interiorArm = join(dir, "interior-arm");
   const interiorParked = join(dir, "interior-parked");
+  const interiorDepartureAdmitted = join(dir, "interior-departure-admitted");
+  const interiorFirstParked = join(dir, "interior-first-parked");
+  const interiorFirstRelease = join(dir, "interior-first-release");
   const interiorRelease = join(dir, "interior-release");
   const interiorRejectParked = join(dir, "interior-reject-parked");
   const interiorRejectRelease = join(dir, "interior-reject-release");
@@ -644,6 +678,9 @@ try {
       COOP_CROSS: "interior",
       COOP_CROSS_ARM: interiorArm,
       COOP_CROSS_PARKED: interiorParked,
+      COOP_DEPARTURE_ADMITTED: interiorDepartureAdmitted,
+      COOP_FIRST_PARKED: interiorFirstParked,
+      COOP_FIRST_RELEASE: interiorFirstRelease,
       COOP_CROSS_RELEASE: interiorRelease,
       COOP_REJECT_PARKED: interiorRejectParked,
       COOP_REJECT_RELEASE: interiorRejectRelease,
@@ -664,25 +701,39 @@ try {
   let interiorReady = false;
   for (let i = 0; i < 60 && !interiorReady; i++) {
     await wait(50);
-    interiorReady = existsSync(interiorShape);
+    interiorReady = existsSync(interiorShape) && existsSync(interiorFirstParked);
   }
   // THE SHAPE IS THE CELL. Without this the leg could grade a two-call set while claiming three, and
   // the mutation it exists to kill would survive again for the same reason it survived before.
-  check("interior-seat: three calls were admitted with the failing one between two parked ones",
-    interiorReady, { interiorShape, interiorParked, interiorRejectParked });
+  // The leading call must also be RUNNING and not merely admitted, because the teardown's snapshot
+  // holds only writes that have not finished. A leading call that had already completed would be
+  // absent from it, the failing call would be entry 0, and the set would have no interior again.
+  check("interior-seat: three calls were admitted with the failing one in the middle",
+    interiorReady, { interiorShape, interiorFirstParked, interiorParked, interiorRejectParked });
 
   const interiorReply = await sendShutdown(interiorEp.path, interiorEp.token);
   check("interior-seat: control server acked the shutdown",
     interiorReply.trim() === JSON.stringify({ ok: true }), interiorReply);
 
-  await wait(100);
+  // THREE RELEASES IN ORDER, all inside the 1s intake bound. The leading call goes first and
+  // completes, which hands the chain to the failing one; the failing one then rejects at entry 1 of
+  // the teardown's snapshot, with the third still unstarted behind it. Releasing them together, or
+  // releasing the failing one alone, puts the only possible failure at entry 0 and leaves every
+  // mutation that absorbs entry 0 indistinguishable from waiting properly.
+  await wait(50);
+  writeFileSync(interiorFirstRelease, "go\n");
+  await wait(50);
   writeFileSync(interiorRejectRelease, "go\n");
   await wait(200);
   const interiorBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Ivy")?.status;
   // An interior rejection must not end the wait: both parked calls are still in flight, so departure
-  // may not have been published yet.
+  // may not have been attempted yet. Paired with the admission marker for the reason recorded at the
+  // hook seat: the roster half cannot fail while a write is parked, so on its own it graded nothing
+  // and C17 survived against it.
+  const interiorDepartedEarly = existsSync(interiorDepartureAdmitted);
   check("interior-seat: an interior failure did not release departure while parked work remained",
-    interiorBeforeRelease !== undefined && interiorBeforeRelease !== "offline", { interiorBeforeRelease });
+    interiorBeforeRelease !== undefined && interiorBeforeRelease !== "offline" && !interiorDepartedEarly,
+    { interiorBeforeRelease, interiorDepartedEarly });
   writeFileSync(interiorRelease, "go\n");
   await awaitExit(interiorProbe, 15_000);
 

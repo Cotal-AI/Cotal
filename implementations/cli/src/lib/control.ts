@@ -62,6 +62,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   input: { command: "input", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
+  slots: { command: "slots" },
   models: { command: "models" },
   launch: { command: "launch" },
   purge: { command: "purge" },

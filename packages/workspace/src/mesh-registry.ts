@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { spaceSegment } from "./auth-paths.js";
 
@@ -61,6 +61,11 @@ export interface MeshEntry {
    *  re-renders it, and a refresh compares a requested cap against it. Absent means the broker runs
    *  on nats-server's dynamic default. */
   maxFileStore?: number;
+  /** The JetStream store directory the broker was started with (`cotal up --store-dir`, or the
+   *  root's default), as a resolved absolute path. A same-root repair `up` reopens it; an explicit
+   *  `--store-dir` that disagrees is refused. Absent means the record was written before this field
+   *  existed, and a repair then opens the root's default store and says so. */
+  storeDir?: string;
   /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
    *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
    *  decision was recorded (and is what any record written before this field means).
@@ -385,6 +390,8 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
     throw new Error(`${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
   if (entry.origin !== undefined && entry.origin !== "up" && entry.origin !== "manual" && entry.origin !== "catalog")
     throw new Error(`${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
+  if (entry.storeDir !== undefined && (typeof entry.storeDir !== "string" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))
+    throw new Error(`${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
   try {
     spaceSegment(entry.space);
   } catch (e) {

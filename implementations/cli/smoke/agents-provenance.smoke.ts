@@ -48,6 +48,19 @@ check(
   "cwd /workspace | pid 42 | spawner owner | uid life | instance instance | host host",
 );
 check(
+  "wide facts name the reported provider first when the row carries one",
+  agentWideFacts({
+    provider: "gateway-b",
+    cwd: "/workspace",
+    pid: 42,
+    spawner: "owner",
+    lifecycleUid: "life",
+    instanceId: "instance",
+    host: "host",
+  }).join(" | "),
+  "provider gateway-b | cwd /workspace | pid 42 | spawner owner | uid life | instance instance | host host",
+);
+check(
   "declared Jcode caveat appears where variants print",
   modelVariantsLine({
     id: "model",

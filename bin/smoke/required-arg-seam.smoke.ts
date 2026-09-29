@@ -385,7 +385,14 @@ const SEAMS: Seam[] = [
   // user-manager-transport.smoke.ts seven. All state `tls: false`.
   // 193/149 -> 196/152: the artifact-store no-reserve landing (#2123) adds three smoke-side calls
   // in packages/core/smoke/artifact-store-no-reserve.smoke.ts. All state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 196, untypecheckedSites: 152 },
+  // 196/152 -> 197/152: `cotal deliver pending` (#417) adds one typechecked call, the inspection
+  // read's own connection in implementations/delivery/src/pending.ts. States `tls` explicitly.
+  // 197/152 -> 198/152: the broker-version check (#2233) adds one typechecked call in
+  // implementations/cli/src/commands/up.ts. States `tls: false` explicitly.
+  // 198/152 -> 201/155: the scoped-consumer and scan-abort cells add three smoke-side calls in
+  // packages/core/smoke/manager-lease-grant.smoke.ts (the scoped delivery reader, the admin setup
+  // connection, and the supervisor). All state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 201, untypecheckedSites: 155 },
 ];
 
 /**

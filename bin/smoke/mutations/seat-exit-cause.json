@@ -9,7 +9,7 @@
   "why": [
     "NO BUILD IN `command`, AND THE RUN CHECKS THAT RATHER THAN ASSUMING IT. The suite imports the",
     "subject relatively (`../src/manager.js`), so tsx loads `manager.ts` and `runtime/pty.ts` from",
-    "source. `@cotal-ai/core` is reached as a bare specifier and therefore resolves to `dist` — but",
+    "source. `@cotal-ai/core` is reached as a bare specifier and therefore resolves to `dist` \u2014 but",
     "this change adds only an OPTIONAL INTERFACE MEMBER to core, which erases at runtime, so nothing",
     "in core's dist participates in any assertion here and no mutation below targets it. If that",
     "reasoning were wrong, mutation 1 would come back SURVIVED.",
@@ -36,8 +36,8 @@
     "silently log the wrong cause. It kills on the despawn cell, which is the one whose caller passes",
     "a value the default would override.",
     "",
-    "MUTATION 6 RESTORES THE DISCARDED PAYLOAD IN THE PTY RUNTIME — the actual root of the missing",
-    "information. `proc.onExit(() => …)` threw away the `{ exitCode, signal }` node-pty already",
+    "MUTATION 6 RESTORES THE DISCARDED PAYLOAD IN THE PTY RUNTIME \u2014 the actual root of the missing",
+    "information. `proc.onExit(() => \u2026)` threw away the `{ exitCode, signal }` node-pty already",
     "hands it; the manager could not have reported what nothing captured.",
     "",
     "MUTATION 7 IS THE CONTROL FOR THE CAPTURE INSTRUMENT. Every graded cell asserts on captured",
@@ -51,7 +51,7 @@
     "",
     "ALSO NOT GRADED, narrowed after the harness refused the first attempt: cells 7-9 spawn real children",
     "and prove the pty runtime captures a real exit code and a real kill signal. They do NOT prove the manager's",
-    "line and that capture are wired together end to end through a live spawn — no cell starts a pty child and",
+    "line and that capture are wired together end to end through a live spawn \u2014 no cell starts a pty child and",
     "then drives freeSlot over it. The two halves are each proven; the seam between them is argued, not measured."
   ],
   "mutations": [
@@ -69,8 +69,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "- ${causeText}; ${detail}`,",
       "replace": "- ${detail}`,",
-      "expectRed": "…and says the manager did NOT stop it",
-      "cell": "…and says the manager did NOT stop it",
+      "expectRed": "\u2026and says the manager did NOT stop it",
+      "cell": "\u2026and says the manager did NOT stop it",
       "note": "Half the answer. A despawn and a crash now print identically, which is exactly the ambiguity that made the incident unattributable. Re-anchored when the stop family gained its own renderer: the line now interpolates `causeText`, which both string causes and principal-bearing stop causes go through."
     },
     {
@@ -117,6 +117,15 @@
       "expectRed": "CONTROL: stderr capture sees a line (instrument works)",
       "cell": "CONTROL: stderr capture sees a line (instrument works)",
       "note": "Positive control. A capture that caught nothing would make all nine line-reading cells vacuous while they read as passes."
+    },
+    {
+      "name": "the in-process pty runtime skips the seat preference",
+      "file": "implementations/manager/src/runtime/pty.ts",
+      "find": "    const oomPref = preferSeatForOomKill(proc.pid);",
+      "replace": "    const oomPref = { applied: true, value: 500 } as const;",
+      "expectRed": "the in-process pty runtime applies the seat preference to its child",
+      "cell": "the in-process pty runtime applies the seat preference to its child",
+      "note": "Skipping the call leaves the child at the 600 the test process raised itself to before the spawn, which the cell reads directly from /proc; no afterRestore needed, manager source runs through tsx."
     }
   ]
 }

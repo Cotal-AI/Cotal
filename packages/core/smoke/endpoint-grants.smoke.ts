@@ -49,6 +49,10 @@ const handleCap: EpCapability = { endpoint: "manager", command: "attach", target
 c("handle row builds through epRequestGrantRows (the redemption path) with the full triple pinned",
   epRequestGrantRows("demo", handleCap, caller)[0]
   === `cotal.demo.ep.one.manager.attach.handle.u_t.svc.${"h".repeat(26)}.u_abc.cli.${UID}.*`);
+const exactCap: EpCapability = { endpoint: "manager", command: "attach", target: { mode: "exact", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) } };
+c("exact row builds through epRequestGrantRows as a literal one triple, never a wildcard",
+  epRequestGrantRows("demo", exactCap, caller)[0]
+  === `cotal.demo.ep.one.manager.attach.exact.u_t.svc.${"h".repeat(26)}.u_abc.cli.${UID}.*`);
 c("any mode accepts a wildcard target owner (operator/admin mint policy)",
   epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "any", tOwner: "*" } }, caller)[0]
   === `cotal.demo.ep.one.manager.stop.any.*.u_abc.cli.${UID}.*`);
@@ -64,6 +68,8 @@ throws("caller owner/actor tokens are grammar-validated in grant rows too",
   () => epRequestGrantRows("demo", spawnCap, { owner: "u_abc", actor: "c.li", uid: UID }));
 throws("standing caller bundle refuses a handle-mode capability (redemption-minted only)",
   () => epCallerGrantRows("demo", [handleCap], caller));
+throws("standing caller bundle refuses an exact-mode capability (minted only through its owning profile)",
+  () => epCallerGrantRows("demo", [exactCap], caller));
 const bundle = epCallerGrantRows("demo", [spawnCap], caller);
 c("caller bundle: request + journal pub, reply-rail + own-goal-progress sub (spawn is goal-bearing, P2 item 2)",
   bundle.pub.length === 2 && bundle.sub.length === 2
@@ -133,9 +139,14 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + define-persona + the run family, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 14
+  operatorInstrumentCapabilities("privileged").length === 15
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,list-personas,show-persona,goal-result,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,define-persona,run-status,run-ps,run-start,run-resume,run-answer");
+// The two class-scatter reads (`cotal ps` and `cotal ps --slots`) carry the `all` route beside
+// `one`; every other read is anycast-only. A `slots` row without `all` is exactly the #1274 hand
+// test's broker refusal on a static mesh: the CLI scatters it like `ps`.
+c("the instrument's `ps` and `slots` rows are the only reads minted on the scatter rail",
+  operatorInstrumentCapabilities("privileged").filter((cap) => cap.routes?.includes("all")).map((cap) => cap.command).join(",") === "ps,slots");
 // The `run` capability (SPEC 14.3): four untargeted run-* rows, self-targeted run-answer, PLUS the whole spawn set, and
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
@@ -147,7 +158,7 @@ c("the run capability set: run-start/run-resume/run-status/run-ps untargeted, ru
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 28
+  adminCaps.length === 29
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
