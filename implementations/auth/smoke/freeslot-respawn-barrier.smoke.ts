@@ -710,7 +710,31 @@ try {
   check("BARRIER: a second same-name spawn while the alias is live numbers to a suffix and leaves the live seat alone",
     listNames().includes(AGENT) && !addedCtrl.includes(AGENT) && addedCtrl.every((n) => n === `${AGENT}_2`),
     { added: addedCtrl, reply: rCtrl });
+  // F) INCOMPLETE INVENTORY: the sibling retires while the daemon's inventory verb is refused
+  // (fault injected on the manager's own rail for this one op). Its launch-channel row is removed;
+  // its row on a channel outside the launch policy stays RETAINED and the teardown says so.
+  const sib = addedCtrl[0];
+  const sibUid = sib ? (manager as unknown as { agents: Map<string, { lifecycleUid: string }> }).agents.get(sib)?.lifecycleUid : undefined;
+  const sibKey = sib ? principalKey(OWNER, sib).key : "";
+  const sibRow = (ch: string) => inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), ch, sibKey, sibUid!)) !== undefined);
+  if (sib && sibUid) {
+    await delivery!.durableJoinFor(sibKey, "general", sibUid);
+    await delivery!.durableJoinFor(sibKey, "unnamed", sibUid);
+  }
+  const epRail = mAny.ep as unknown as { requestDeliveryAdmin: (op: string, args: Record<string, unknown>, t?: number) => Promise<ControlReply> };
+  const realAdmin = epRail.requestDeliveryAdmin.bind(epRail);
+  epRail.requestDeliveryAdmin = (op, args, t) => op === "lifecycleMemberships" ? Promise.reject(new Error("injected inventory outage")) : realAdmin(op, args, t);
+  const errLines: string[] = [];
+  const realErr = console.error;
+  console.error = (...a: unknown[]) => { errLines.push(a.map(String).join(" ")); realErr(...a); };
   for (const n of addedCtrl) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
+  for (let i = 0; i < 100 && sib && (await sibRow("general")); i++) await wait(100);
+  console.error = realErr;
+  epRail.requestDeliveryAdmin = realAdmin;
+  check("INCOMPLETE: with the inventory refused, the sibling's launch-channel row is still removed", !!sibUid && !(await sibRow("general")), { sib, sibUid });
+  check("INCOMPLETE: its row outside the launch policy stays RETAINED", !!sibUid && await sibRow("unnamed"));
+  check("INCOMPLETE: the teardown reports the inventory as incomplete and the rows as RETAINED",
+    errLines.some((l) => l.includes(`membership inventory incomplete`) && l.includes("RETAINED") && l.includes(sibUid ?? "?")), errLines.filter((l) => /inventory/.test(l)));
 
   console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
 
