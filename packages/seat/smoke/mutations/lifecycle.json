@@ -133,8 +133,8 @@
     {
       "name": "ungate group sweep in reapSeat regardless of leader status",
       "file": "packages/seat/src/reap.ts",
-      "find": "  let group = 0;\n  if (groupKilled) {",
-      "replace": "  let group = 0;\n  if (true) {",
+      "find": "  if (groupKilled) {",
+      "replace": "  if (true) {",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "a pid whose start identity differs from the record is treated as gone, never signalled",
       "cell": "a pid whose start identity differs from the record is treated as gone, never signalled",
