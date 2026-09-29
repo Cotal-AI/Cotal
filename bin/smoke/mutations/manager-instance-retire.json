@@ -33,8 +33,8 @@
       "file": "packages/workspace/src/auth-paths.ts",
       "find": "if (current === undefined) return { outcome: \"absent\" };",
       "replace": "if (current === undefined) return { outcome: \"removed\" };",
-      "cell": "a space never provisioned reports absent",
-      "expectRed": "a space never provisioned reports absent"
+      "cell": "a retry after removal reports absent, not removed",
+      "expectRed": "a retry after removal reports absent, not removed"
     }
   ]
 }
