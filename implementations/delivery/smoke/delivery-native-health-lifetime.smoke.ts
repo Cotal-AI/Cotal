@@ -3,14 +3,18 @@
  *
  * Exercises the ACTUAL delivery daemon and embedded delivery paths:
  * 1. Counted healthy connection churn: zero additional broker connections over time (no polling).
- * 2. Successful and failed credential adoption via delivery-admin rail and injected SecretStore.
- * 3. Context isolation: sibling context remains serving when one context closes or faults.
- * 4. Broker restart: resident daemon recovers without exit when broker restarts promptly.
- * 5. Sustained broker loss: daemon exits within bounded window when broker is gone.
+ * 2. Event-loop lag: short local scheduler burst causes no health dial or false loss.
+ * 3. Actual daemon silent packet loss: byte-dropping proxy drops native PINGs; daemon detects
+ *    loss within bounded 15s window while sibling context remains ready and serving.
+ * 4. Successful and failed credential adoption via delivery-admin rail and injected SecretStore.
+ * 5. Context isolation: sibling context remains serving when one context closes or faults.
+ * 6. Broker restart: resident connection recovers without exit when broker restarts promptly.
+ * 7. Sustained broker loss: daemon exits within bounded window when broker is gone.
  */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect as connectSocket, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -18,7 +22,7 @@ import { connect, credsAuthenticator, NoRespondersError, RequestError, type Nats
 import {
   CotalEndpoint, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds,
   mintMembershipObserverCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
-  controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER, idFromCreds,
+  controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER,
   type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
 import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, type HostedServiceHandle } from "@cotal-ai/workspace";
@@ -35,7 +39,7 @@ class MemoryStore implements SecretStore {
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until(check: () => Promise<boolean>, timeout = 12_000): Promise<boolean> {
+async function until(check: () => Promise<boolean>, timeout = 14_000): Promise<boolean> {
   const end = Date.now() + timeout;
   while (Date.now() < end) { if (await check()) return true; await wait(100); }
   return false;
@@ -67,6 +71,30 @@ writeFileSync(
 let nats: ChildProcess = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
 let release = teardownOnSignal(nats, brokerDir);
 
+let hold = false;
+let dropped = 0, forwarded = 0;
+const liveSockets = new Set<Socket>();
+const proxy = createServer((client) => {
+  const upstream = connectSocket(port, "127.0.0.1");
+  liveSockets.add(client);
+  liveSockets.add(upstream);
+  const pipe = (to: Socket) => (chunk: Buffer) => {
+    if (hold) { dropped++; return; }
+    forwarded++;
+    if (!to.destroyed) to.write(chunk);
+  };
+  client.on("data", pipe(upstream));
+  upstream.on("data", pipe(client));
+  client.on("error", () => upstream.destroy());
+  upstream.on("error", () => client.destroy());
+  client.on("close", () => { liveSockets.delete(client); upstream.destroy(); });
+  upstream.on("close", () => { liveSockets.delete(upstream); client.destroy(); });
+});
+const proxyPort = await new Promise<number>((resolve, reject) => {
+  proxy.once("error", reject);
+  proxy.listen(0, "127.0.0.1", () => resolve((proxy.address() as AddressInfo).port));
+});
+
 const handles: HostedServiceHandle[] = [];
 const endpoints: CotalEndpoint[] = [];
 const callers: NatsConnection[] = [];
@@ -97,10 +125,18 @@ try {
     await store.put(membershipObserverCredsKey(space, composition), await mintMembershipObserverCreds(auths[i], newIdentity()));
   }
 
-  const inputs = spaces.map((space, i) => ({
-    context: { accountPublicKey: accounts[i].account.pub, lifecycleUid: `life-${i}` },
-    space, servers, store: stores[i], storeIdentity: stores[i].identity, stateDir: join(brokerDir, `state-${i}`),
-  }));
+  // Space A connects through the proxy (with paired heartbeat 2500/2)
+  // Space B connects directly to broker
+  const inputs = [
+    {
+      context: { accountPublicKey: accounts[0].account.pub, lifecycleUid: "life-0" },
+      space: spaces[0], servers: `nats://127.0.0.1:${proxyPort}`, store: stores[0], storeIdentity: stores[0].identity, stateDir: join(brokerDir, "state-0"),
+    },
+    {
+      context: { accountPublicKey: accounts[1].account.pub, lifecycleUid: "life-1" },
+      space: spaces[1], servers, store: stores[1], storeIdentity: stores[1].identity, stateDir: join(brokerDir, "state-1"),
+    },
+  ];
 
   const [first, second] = await Promise.all(inputs.map((input) => startDeliveryService(input)));
   handles.push(first, second);
@@ -108,7 +144,7 @@ try {
   check("space A delivery context reports ready", (await first.readiness()).state === "ready");
   check("space B delivery context reports ready", (await second.readiness()).state === "ready");
 
-  // Verify responders are up
+  // Verify responders are up via direct broker callers
   const ask = await Promise.all(spaces.map(async (space, i) => {
     const id = newIdentity();
     const uid = mintLifecycleUid();
@@ -121,10 +157,15 @@ try {
         await nc.request(subject, JSON.stringify({
           op: "listMemberships", args: { lifecycleUid: uid },
           from: { id: `${DEV_OWNER}.${id.id}`, name: "probe", kind: "agent" },
-        }), { timeout: 2500, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
+        }), { timeout: 1200, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
         return "answered";
       } catch (e) {
-        if (e instanceof NoRespondersError || (e instanceof RequestError && e.isNoResponders())) return "absent";
+        if (
+          e instanceof NoRespondersError ||
+          (e instanceof RequestError && e.isNoResponders()) ||
+          (e as Error).name === "TimeoutError" ||
+          (e as Error).message?.includes("timeout")
+        ) return "absent";
         throw e;
       }
     };
@@ -134,10 +175,8 @@ try {
   check("space B delivery control rail answers", (await ask[1]()) === "answered");
 
   // ── 1. Counted healthy connection churn ──────────────────────────────────────
-  // Wait to let startup connections settle
   await wait(500);
   const baselineConns = await totalConnections();
-  // Wait 2500ms (exceeding the old 2000ms probe interval which made 2+ conns every 2s)
   await wait(2500);
   const postConns = await totalConnections();
   check(
@@ -146,7 +185,35 @@ try {
     `start=${baselineConns} end=${postConns}`,
   );
 
-  // ── 2. Credential adoption through admin rail ────────────────────────────────
+  // ── 2. Event-loop lag burst ─────────────────────────────────────────────────
+  const burstUntil = Date.now() + 160;
+  while (Date.now() < burstUntil) { /* busy stall */ }
+  await wait(300);
+  check("short event-loop burst creates no extra health dial", (await totalConnections()) === baselineConns);
+  check("both delivery contexts remain ready after scheduler burst", (await first.readiness()).state === "ready" && (await second.readiness()).state === "ready");
+
+  // ── 3. Silent packet loss detection on actual delivery daemon ────────────────
+  const blackholeStarted = Date.now();
+  hold = true;
+
+  // Space A's delivery daemon sends native PINGs every 2500ms (maxPingOut=2).
+  // Under byte blackhole, dropped count increases and connection becomes stale.
+  const lossDetected = await until(async () => (await ask[0]()) === "absent", 14_000);
+  const blackholeDuration = Date.now() - blackholeStarted;
+
+  check("silent byte blackhole dropped native PING packets", dropped >= 2, `dropped=${dropped}`);
+  check("actual delivery daemon detects silent packet loss within 15s window", lossDetected && blackholeDuration < 15_000, `duration=${blackholeDuration}ms`);
+  check("sibling space B remains ready and answering during space A silent loss", (await second.readiness()).state === "ready" && (await ask[1]()) === "answered");
+
+  // Release proxy blackhole and reset proxy sockets to allow reconnect
+  hold = false;
+  for (const s of liveSockets) s.destroy();
+
+  const reconnected = await until(async () => (await ask[0]()) === "answered", 10_000);
+  check("delivery daemon reconnects and resumes serving once link is restored", reconnected);
+  check("space A returns to ready state after link recovery", (await first.readiness()).state === "ready");
+
+  // ── 4. Credential adoption through admin rail ────────────────────────────────
   const supId = newIdentity();
   const sup = new CotalEndpoint({
     space: spaces[0], servers,
@@ -157,51 +224,44 @@ try {
   endpoints.push(sup);
   await sup.start();
 
-  // Re-sign Space A's delivery cred for the same identity and put in store
+  const adminReq = async (op: string, args: Record<string, unknown> = {}) => {
+    let last: Error | undefined;
+    for (let i = 0; i < 15; i++) {
+      try { return await sup.requestDeliveryAdmin(op, args, 10_000); }
+      catch (e) { last = e as Error; await wait(250); }
+    }
+    throw last;
+  };
+
   const renewedCred = await mintCreds(auths[0], deliveryIdentities[0], "delivery", { expiresInSeconds: 120 });
   await stores[0].put(deliveryCredsKey(spaces[0], { injected: true }), renewedCred);
 
-  const connsBeforeAdopt = await totalConnections();
-  const adoptReply = await sup.requestDeliveryAdmin("reloadCreds", {}, 10_000);
+  const adoptReply = await adminReq("reloadCreds");
   check("admin reloadCreds succeeds with valid re-signed credential", adoptReply.ok === true, JSON.stringify(adoptReply));
 
-  // Disposable preflight creates exactly one short connection, but no continuous churn after
   await wait(1000);
   const connsAfterAdopt = await totalConnections();
   check("no continuous connection churn after adoption", (await totalConnections()) === connsAfterAdopt);
 
-  // Negative adoption control: corrupted / expired credential in store refuses reloadCreds
   await stores[0].put(deliveryCredsKey(spaces[0], { injected: true }), "corrupted-invalid-cred");
-  const failedAdoptReply = await sup.requestDeliveryAdmin("reloadCreds", {}, 10_000);
+  const failedAdoptReply = await adminReq("reloadCreds");
   check("reloadCreds refuses invalid credential candidate", failedAdoptReply.ok === false, JSON.stringify(failedAdoptReply));
 
-  // Restore valid credential
   await stores[0].put(deliveryCredsKey(spaces[0], { injected: true }), renewedCred);
 
-  // ── 3. Sibling context isolation on drain/close ─────────────────────────────
+  // ── 5. Sibling context isolation on drain/close ─────────────────────────────
   await first.drain();
   check("space A context transitions out of ready on drain", (await first.readiness()).state !== "ready");
   check("sibling space B remains ready after space A closes", (await second.readiness()).state === "ready");
   check("space B control rail still answers after space A closes", (await ask[1]()) === "answered");
 
-  // Close supervisor and callers before broker restart test
   await sup.stop();
   for (const c of callers) await c.close();
   callers.length = 0;
 
-  // ── 4. Standalone daemon broker kill & prompt restart ───────────────────────
-  // Launch standalone delivery daemon on space B with custom short broker gone window
-  const standaloneState = join(brokerDir, "state-standalone");
-  const standaloneStore = new MemoryStore({ kind: "injected", coordinate: "mem:standalone" });
-  const standaloneId = newIdentity();
-  await standaloneStore.put(deliveryCredsKey(spaces[1], { injected: true }), await mintCreds(auths[1], standaloneId, "delivery", { expiresInSeconds: 60 }));
-  await standaloneStore.put(membershipRwCredsKey(spaces[1], { injected: true }), await mintCreds(auths[1], newIdentity(), "membership-rw"));
-  await standaloneStore.put(membershipObserverCredsKey(spaces[1], { injected: true }), await mintMembershipObserverCreds(auths[1], newIdentity()));
-
-  // Close second context before starting standalone on same space
+  // ── 6. Standalone daemon broker kill & prompt restart ───────────────────────
   await second.close();
 
-  // Test broker restart with a resident endpoint connection using short native ping
   const restartAuth = auths[1];
   const residentCred = await mintCreds(restartAuth, newIdentity(), "delivery", { expiresInSeconds: 30 });
   const resident = await connect({
@@ -220,14 +280,12 @@ try {
     }
   })();
 
-  // Kill broker with SIGKILL
   await killAndAwaitExit(nats, "SIGKILL");
   release();
 
   for (let i = 0; i < 40 && !residentEvents.includes("disconnect"); i++) await wait(100);
   check("broker stop emits disconnect event to resident connection", residentEvents.includes("disconnect"));
 
-  // Restart broker quickly
   nats = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
   release = teardownOnSignal(nats, brokerDir);
 
@@ -237,8 +295,7 @@ try {
   await resident.close();
   await statusWatcher;
 
-  // ── 5. Sustained broker loss detection ──────────────────────────────────────
-  // Re-start embedded delivery service on space A with short broker gone window
+  // ── 7. Sustained broker loss detection ──────────────────────────────────────
   process.env.COTAL_DELIVERY_BROKER_GONE_MS = "1200";
   process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS = "3000";
 
@@ -250,7 +307,6 @@ try {
 
   check("loss-test delivery context starts ready", (await lossContext.readiness()).state === "ready");
 
-  // Permanently kill broker
   await killAndAwaitExit(nats, "SIGKILL");
   release();
 
@@ -267,6 +323,8 @@ try {
 } finally {
   delete process.env.COTAL_DELIVERY_BROKER_GONE_MS;
   delete process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS;
+  for (const s of liveSockets) s.destroy();
+  await new Promise<void>((resolve) => proxy.close(() => resolve()));
   await killAndAwaitExit(nats, "SIGKILL");
   release();
   rmSync(brokerDir, { recursive: true, force: true });

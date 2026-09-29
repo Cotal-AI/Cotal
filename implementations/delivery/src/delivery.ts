@@ -548,6 +548,8 @@ async function runStartedDelivery(
     watchPresence: true, // read the roster for @mention resolution …
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
     card: { id: ownId, name: "delivery", role: "delivery", kind: "endpoint" },
+    transportPingIntervalMs: Number(process.env.COTAL_DELIVERY_PING_INTERVAL_MS) || 2500,
+    transportMaxPingOut: Number(process.env.COTAL_DELIVERY_MAX_PING_OUT) || 2,
   });
   // Both channels: raw connection errors ride `error`, while every condition the endpoint is
   // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
