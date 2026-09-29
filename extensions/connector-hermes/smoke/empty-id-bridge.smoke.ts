@@ -30,6 +30,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { once } from "node:events";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { startBridgeServer } from "../src/bridge.js";
 
@@ -163,7 +165,37 @@ try {
   assert.deepEqual(agent.drained, [firstMsg.recvKey, secondKey], "the second empty-id delivery is retired too: not a one-shot unwedge");
 
   client.destroy();
-  console.log("✓ hermes empty-id bridge: unauthenticated connections are dropped; the legit client still receives incoming after authenticating; id-less deliveries pump, ack, and unwedge by receive key");
+
+  // ---- 4) the REAL Python client's ack retires the delivery (#2237) ----
+  // Cells 2-3 write the ack frame by hand, so they cannot see which field the shipped client
+  // puts the key in. Here the plugin's own BridgeClient subscribes, receives one item, and acks
+  // it through `delivered()` exactly as the adapter does; the bridge must drain that key.
+  const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { stdio: "ignore" }).status === 0);
+  assert.ok(python, "python is on PATH, so the real client's ack can be driven at all");
+  const pluginDir = fileURLToPath(new URL("../plugin", import.meta.url));
+  const script = [
+    "import sys, threading",
+    "sys.path.insert(0, sys.argv[1])",
+    "from cotal.bridge_client import BridgeClient",
+    "c = BridgeClient(sys.argv[2])",
+    "done = threading.Event()",
+    "def on_incoming(m):",
+    "    c.delivered(m['recvKey'])",
+    "    done.set()",
+    "c.start(on_incoming)",
+    "sys.exit(0 if done.wait(10) else 3)",
+  ].join("\n");
+  agent.items.push(emptyIdDelivery("third body, acked by the real client"));
+  const thirdKey = agent.items[agent.items.length - 1].recvKey;
+  const py = spawn(python!, ["-c", script, pluginDir, socketPath], {
+    env: { ...process.env, COTAL_CONTROL_TOKEN: TOKEN }, stdio: ["ignore", "inherit", "inherit"],
+  });
+  const [code] = (await once(py, "exit")) as [number | null];
+  assert.equal(code, 0, "the real client subscribed and surfaced the pending item");
+  for (let i = 0; i < 50 && !agent.drained.includes(thirdKey); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(agent.drained, [firstMsg.recvKey, secondKey, thirdKey], "the real client's delivered() ack names the receive key the bridge matches (#2237)");
+
+  console.log("✓ hermes empty-id bridge: unauthenticated connections are dropped; the legit client still receives incoming after authenticating; id-less deliveries pump, ack, and unwedge by receive key; the real Python client's ack retires its delivery");
 } finally {
   bridge.close();
   rmSync(dir, { recursive: true, force: true });

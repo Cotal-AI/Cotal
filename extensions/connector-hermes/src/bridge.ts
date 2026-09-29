@@ -9,7 +9,7 @@
  *
  *   Python → sidecar
  *     {t:"subscribe"}                          adapter: start receiving inbound pushes
- *     {t:"delivered", id}                      adapter: turn accepted msg <id> → ack it on the stream
+ *     {t:"delivered", recvKey}                 adapter: turn accepted delivery <recvKey> → ack it on the stream
  *     {t:"reply", target, text}                adapter: route a turn's reply back to its origin
  *     {t:"tool", id, name, args}               tools: invoke a cotal_* tool (full shared surface)
  *
