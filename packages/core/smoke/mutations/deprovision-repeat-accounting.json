@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "packages/core/smoke/deprovision-agent-auth.smoke.ts"
+  ],
+  "guard": "deprovisionAgent reports zero deletions and marks absent entries when retrying KV purges",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/core exec tsx smoke/deprovision-agent-auth.smoke.ts",
+  "completionMarker": "DEPROVISION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/deprovision-repeat-accounting.json",
+  "why": [
+    "purgeKvKeyWithAccounting must inspect KV entries prior to purge to distinguish live rows from tombstones.",
+    "Mutating the return to always report 'deleted' claims false deletions on repeated teardown attempts.",
+    "The suite must catch this on the named cell asserting repeated cleanup reports zero total deletions."
+  ],
+  "mutations": [
+    {
+      "name": "claim absent KV entry as deleted on repeated deprovision",
+      "file": "packages/core/src/streams.ts",
+      "find": "  await kv.purge(key);\n  return wasLive ? \"deleted\" : \"absent\";",
+      "replace": "  await kv.purge(key);\n  return \"deleted\";",
+      "expectRed": "AUDIT: repeated cleanup reports zero total deletions after verified absence",
+      "cell": "AUDIT: repeated cleanup reports zero total deletions after verified absence",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

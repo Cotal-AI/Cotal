@@ -35,6 +35,7 @@ import {
   setupSpaceStreams,
   provisionAgent,
   deprovisionAgent,
+  DeprovisionError,
   openAclRegistry,
   readAcl,
   mintLifecycleUid,
@@ -167,7 +168,10 @@ try {
   }
   check("second deprovisionAgent is a no-op (idempotent)", !threw);
   check("ACCOUNTING: first deprovision deleted live consumers", a1.consumers.deleted === 2 && a1.consumers.absent === 0, a1);
+  check("ACCOUNTING: first deprovision deleted live resources", a1.deleted === 3 && a1.absent === 0 && a1.refused === 0 && a1.acls.deleted === 1 && a1.acls.absent === 0, a1);
   check("ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers", a2?.consumers?.deleted === 0 && a2?.consumers?.absent === 2, a2);
+  check("AUDIT: repeated cleanup reports zero total deletions after verified absence", a2?.deleted === 0 && a2?.acls?.absent === 1, a2);
+  check("ACCOUNTING: repeated deprovision reports all absent and 0 refused", a2?.deleted === 0 && a2?.absent === 3 && a2?.refused === 0 && a2?.examined === 3, a2);
 
   // ---- THE D15 BARRIERS (SPEC 13.1): a same-name SUCCESSOR is untouchable by the retired
   // lifecycle's teardown — by NAME DISJOINTNESS (the replay names only A's uid) and by the
@@ -332,7 +336,8 @@ try {
     const has = async (ch: string, owner: string, uid: string) => (await readMember(mkv, ch, owner, uid)) !== undefined;
     const before = (await listMembers(mkv)).length;
     const dpvE = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"] } });
-    await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE });
+    const firstMemberAccounting = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE });
+    check("MEMBERS ACCOUNTING: first deprovision deleted live member rows", firstMemberAccounting.members.deleted === 2 && firstMemberAccounting.members.absent === 0, firstMemberAccounting);
     check("MEMBERS: the retired lifecycle's named-channel rows are GONE", !(await has("general", who, uidE)) && !(await has("ops", who, uidE)));
     check("MEMBERS: an unnamed channel's row is RETAINED", await has("other", who, uidE));
     check("MEMBERS: the same-alias successor's row is RETAINED", await has("general", who, uidF));
@@ -340,9 +345,34 @@ try {
     const after = (await listMembers(mkv)).length;
     check("MEMBERS: exactly two rows removed (bounded, no prefix sweep)", before - after === 2, { before, after });
     let retryThrew: unknown;
-    try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE }); }
+    let repeatAccounting: Awaited<ReturnType<typeof deprovisionAgent>> | undefined;
+    try { repeatAccounting = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "ops"], creds: dpvE }); }
     catch (e) { retryThrew = e; }
     check("MEMBERS: a retried teardown is an idempotent no-op", retryThrew === undefined && (await listMembers(mkv)).length === after, retryThrew);
+    check("AUDIT: repeated member cleanup reports zero member deletions", repeatAccounting?.members.deleted === 0 && repeatAccounting?.members.absent === 2, repeatAccounting);
+    check("MEMBERS ACCOUNTING: repeated member cleanup reports all absent and 0 deleted", repeatAccounting?.deleted === 0 && repeatAccounting?.absent === 5 && repeatAccounting?.refused === 0, repeatAccounting);
+
+    // MISSING: non-existent candidate resources report zero deleted and all absent
+    const uidMissing = mintLifecycleUid();
+    const dpvMissing = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidMissing, memberChannels: ["general"] } });
+    const aMissing = await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidMissing, memberChannels: ["general"], creds: dpvMissing });
+    check("MISSING ACCOUNTING: non-existent candidate resources report zero deleted and all absent",
+      aMissing.deleted === 0 && aMissing.absent === 4 && aMissing.examined === 4 && aMissing.refused === 0 &&
+      aMissing.acls.absent === 1 && aMissing.members.absent === 1 && aMissing.consumers.absent === 2, aMissing);
+
+    // PARTIAL REFUSED: ungranted resource fails with DeprovisionError carrying partial accounting
+    let partialThrew: unknown;
+    try {
+      await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidE, memberChannels: ["general", "unauthorized_ch"], creds: dpvE });
+    } catch (e) {
+      partialThrew = e;
+    }
+    const isDeprovError = partialThrew instanceof DeprovisionError;
+    const partialAccounting = isDeprovError ? (partialThrew as DeprovisionError).accounting : undefined;
+    check("PARTIAL REFUSED: ungranted resource fails with DeprovisionError carrying partial accounting",
+      isDeprovError && partialAccounting?.refused === 1 && partialAccounting?.members?.refused === 1 &&
+      partialAccounting?.acls?.absent === 1 && partialAccounting?.consumers?.absent === 2 && partialAccounting?.examined === 5,
+      partialAccounting);
     let staleOutcome = "completed";
     try { await deprovisionAgent({ servers: SERVERS, space, targetId: agent.id, lifecycleUid: uidF, memberChannels: ["general"], creds: dpvE }); }
     catch { staleOutcome = "threw"; }

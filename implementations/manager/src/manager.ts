@@ -21,6 +21,8 @@ import {
   connectorServers,
   spawnEnvAllow,
   deprovisionAgent,
+  DeprovisionError,
+  type DeprovisionResourceAccounting,
   isConcreteChannel,
   deprovisionTargetPrincipal,
   firstFreeName,
@@ -993,7 +995,7 @@ export class Manager {
    *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
-  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] } }>();
+  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] }; lastResources?: DeprovisionResourceAccounting }>();
   /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
    *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
    *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
@@ -1141,7 +1143,9 @@ export class Manager {
       terminalized: number;
       failed: number;
     };
+    deprovision?: DeprovisionResourceAccounting;
   };
+  public lastDeprovisionResources?: DeprovisionResourceAccounting;
   private staticReconcileSweepsInFlight = 0;
   private staticReconcileDrainWaiters: Array<() => void> = [];
   private staticReconcileStopping = false;
@@ -3896,11 +3900,15 @@ export class Manager {
       }
     }
     try {
-      await this.deprovisionBroker(a);
+      const res = await this.deprovisionBroker(a);
+      const h = this.retiring.get(a.name);
+      if (h && h.lifecycleUid === a.lifecycleUid) h.lastResources = res;
     } catch (e) {
       const h = this.retiring.get(a.name);
-      if (h && h.lifecycleUid === a.lifecycleUid)
+      if (h && h.lifecycleUid === a.lifecycleUid) {
         h.lastError = (e as Error).message;
+        if (e instanceof DeprovisionError) h.lastResources = e.accounting;
+      }
       throw e;
     }
     // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
@@ -4068,7 +4076,7 @@ export class Manager {
    *  standing-authority revoke AND the lifecycle retirement both confirm (see {@link driveRetirement}) —
    *  but the deletes here are still lifecycle-uid-pinned so even a replayed/stale teardown can never
    *  reach a same-name successor's footprint (its names embed a different uid). */
-  private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }): Promise<DeprovisionResourceAccounting> {
     // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
     // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
     // against a same-name successor's footprint (its names embed a different uid).
@@ -4088,22 +4096,30 @@ export class Manager {
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
-    await withTimeout(
-      deprovisionAgent({
-        servers: this.servers ?? DEFAULT_SERVER,
-        space: this.space,
-        targetId: a.id,
-        lifecycleUid: a.lifecycleUid,
-        memberChannels: [...memberChannels],
-        knownLiveMembers: inventory.complete ? inventory.channels : undefined,
-        knownAclLive: !this.confirmedRetiredPredecessors.has(a.name),
-        creds,
-      }),
-      DEPROVISION_TIMEOUT_MS,
-      `deprovision ${a.name} (${a.id}): broker teardown timed out`,
-    );
+    let accounting: DeprovisionResourceAccounting | undefined;
+    try {
+      accounting = await withTimeout(
+        deprovisionAgent({
+          servers: this.servers ?? DEFAULT_SERVER,
+          space: this.space,
+          targetId: a.id,
+          lifecycleUid: a.lifecycleUid,
+          memberChannels: [...memberChannels],
+          creds,
+        }),
+        DEPROVISION_TIMEOUT_MS,
+        `deprovision ${a.name} (${a.id}): broker teardown timed out`,
+      );
+      this.lastDeprovisionResources = accounting;
+    } catch (e) {
+      if (e instanceof DeprovisionError) {
+        this.lastDeprovisionResources = e.accounting;
+      }
+      throw e;
+    }
     if (!inventory.complete)
       throw new Error(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
+    return accounting;
   }
 
   /** The retiring lifecycle's durable membership channels, read from the delivery daemon's
@@ -8552,6 +8568,15 @@ export class Manager {
         // Mark the complete planned set before the first terminal awaits. A timer owns only its own
         // alias, but the initial serial sweep must close every discovery-to-await gap up front.
         for (const row of terminalRows) this.reconcilingAliases.add(row.alias);
+        const sweepDeprovision: DeprovisionResourceAccounting = {
+          examined: 0,
+          deleted: 0,
+          absent: 0,
+          refused: 0,
+          consumers: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+          acls: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+          members: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+        };
         for (const row of terminalRows) {
           if (this.staticReconcileStopping) break;
           sweep.attempted++;
@@ -8570,7 +8595,27 @@ export class Manager {
             };
             this.staticReconcileItems.set(key, item);
           }
+          this.lastDeprovisionResources = undefined;
           const succeeded = await this.attemptStaticReconcile(key, item, row);
+          const acc = (this as { lastDeprovisionResources?: DeprovisionResourceAccounting }).lastDeprovisionResources;
+          if (acc) {
+            sweepDeprovision.examined += acc.examined;
+            sweepDeprovision.deleted += acc.deleted;
+            sweepDeprovision.absent += acc.absent;
+            sweepDeprovision.refused += acc.refused;
+            sweepDeprovision.consumers.examined += acc.consumers.examined;
+            sweepDeprovision.consumers.deleted += acc.consumers.deleted;
+            sweepDeprovision.consumers.absent += acc.consumers.absent;
+            sweepDeprovision.consumers.refused += acc.consumers.refused;
+            sweepDeprovision.acls.examined += acc.acls.examined;
+            sweepDeprovision.acls.deleted += acc.acls.deleted;
+            sweepDeprovision.acls.absent += acc.acls.absent;
+            sweepDeprovision.acls.refused += acc.acls.refused;
+            sweepDeprovision.members.examined += acc.members.examined;
+            sweepDeprovision.members.deleted += acc.members.deleted;
+            sweepDeprovision.members.absent += acc.members.absent;
+            sweepDeprovision.members.refused += acc.members.refused;
+          }
           if (succeeded) sweep.succeeded++;
           else sweep.failed++;
           this.reconcilingAliases.delete(row.alias);
@@ -8586,6 +8631,7 @@ export class Manager {
             terminalized: sweep.succeeded,
             failed: sweep.failed,
           },
+          deprovision: sweepDeprovision,
         };
         for (const row of terminalRows) {
           const key = this.staticReconcileKey(row);

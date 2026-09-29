@@ -29,6 +29,7 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  aclKey,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -40,8 +41,10 @@ import {
   readerDurable,
   DEV_OWNER,
   principalKey,
+  memberKey,
   deprovisionTargetPrincipal,
 } from "./subjects.js";
+import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
@@ -776,6 +779,16 @@ export interface DeprovisionResourceAccounting {
   members: { examined: number; deleted: number; absent: number; refused: number };
 }
 
+/** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
+export class DeprovisionError extends Error {
+  public readonly accounting: DeprovisionResourceAccounting;
+  constructor(message: string, accounting: DeprovisionResourceAccounting, cause?: unknown) {
+    super(message, cause !== undefined ? { cause } : undefined);
+    this.name = "DeprovisionError";
+    this.accounting = accounting;
+  }
+}
+
 export async function deprovisionAgent(opts: {
   servers: string;
   space: string;
@@ -783,10 +796,6 @@ export async function deprovisionAgent(opts: {
   lifecycleUid: string;
   /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
   memberChannels?: readonly string[];
-  /** Concrete channels verified by authoritative inventory to hold live rows prior to this teardown. */
-  knownLiveMembers?: readonly string[];
-  /** Whether the ACL entry was verified to be live prior to this teardown. */
-  knownAclLive?: boolean;
   creds?: string;
 }): Promise<DeprovisionResourceAccounting> {
   const nc = await connect({
@@ -799,51 +808,134 @@ export async function deprovisionAgent(opts: {
     maxReconnectAttempts: 0,
     timeout: 5_000,
   });
+
+  const accounting: DeprovisionResourceAccounting = {
+    examined: 0,
+    deleted: 0,
+    absent: 0,
+    refused: 0,
+    consumers: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+    acls: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+    members: { examined: 0, deleted: 0, absent: 0, refused: 0 },
+  };
+
   try {
     // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
     // local owner, PLUS the exact lifecycle uid being torn down — the SAME resolution the
     // deprovisioner cred's permission pin used, so the delete names and the grant can't diverge.
     const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid, memberChannels: opts.memberChannels });
     const jsm = await jetstreamManager(nc);
-    const dmOutcome = await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
-    const dlvOutcome = await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
+    const errors: Error[] = [];
 
-    const consumersDeleted = (dmOutcome === "deleted" ? 1 : 0) + (dlvOutcome === "deleted" ? 1 : 0);
-    const consumersAbsent = (dmOutcome === "absent" ? 1 : 0) + (dlvOutcome === "absent" ? 1 : 0);
+    // 1. Consumers (dm + dlv)
+    accounting.consumers.examined++;
+    accounting.examined++;
+    try {
+      const dmOutcome = await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
+      if (dmOutcome === "deleted") { accounting.consumers.deleted++; accounting.deleted++; }
+      else { accounting.consumers.absent++; accounting.absent++; }
+    } catch (e) {
+      accounting.consumers.refused++;
+      accounting.refused++;
+      errors.push(e as Error);
+    }
 
-    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key, t.lifecycleUid);
-    const aclLive = opts.knownAclLive ?? true;
-    const aclsDeleted = aclLive ? 1 : 0;
-    const aclsAbsent = aclLive ? 0 : 1;
+    accounting.consumers.examined++;
+    accounting.examined++;
+    try {
+      const dlvOutcome = await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
+      if (dlvOutcome === "deleted") { accounting.consumers.deleted++; accounting.deleted++; }
+      else { accounting.consumers.absent++; accounting.absent++; }
+    } catch (e) {
+      accounting.consumers.refused++;
+      accounting.refused++;
+      errors.push(e as Error);
+    }
 
-    let membersDeleted = 0;
-    let membersAbsent = 0;
+    // 2. Read-ACL entry
+    accounting.acls.examined++;
+    accounting.examined++;
+    try {
+      const aclsKv = await openAclRegistry(nc, opts.space);
+      const aclKeyStr = aclKey(principalKey(t.owner, t.actor).key, t.lifecycleUid);
+      const aclOutcome = await purgeKvKeyWithAccounting(jsm, aclsKv, aclBucket(opts.space), aclKeyStr);
+      if (aclOutcome === "deleted") { accounting.acls.deleted++; accounting.deleted++; }
+      else { accounting.acls.absent++; accounting.absent++; }
+    } catch (e) {
+      accounting.acls.refused++;
+      accounting.refused++;
+      errors.push(e as Error);
+    }
+
+    // 3. Member rows
     if (t.memberChannels.length > 0) {
-      const members = await openMembersRegistry(nc, opts.space);
-      const liveSet = opts.knownLiveMembers !== undefined ? new Set(opts.knownLiveMembers) : new Set(t.memberChannels);
-      for (const ch of t.memberChannels) {
-        await deleteMember(members, ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
-        if (liveSet.has(ch)) membersDeleted++;
-        else membersAbsent++;
+      try {
+        const membersKv = await openMembersRegistry(nc, opts.space);
+        for (const ch of t.memberChannels) {
+          accounting.members.examined++;
+          accounting.examined++;
+          try {
+            const mKeyStr = memberKey(ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+            const mOutcome = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);
+            if (mOutcome === "deleted") { accounting.members.deleted++; accounting.deleted++; }
+            else { accounting.members.absent++; accounting.absent++; }
+          } catch (e) {
+            accounting.members.refused++;
+            accounting.refused++;
+            errors.push(e as Error);
+          }
+        }
+      } catch (e) {
+        for (let i = accounting.members.examined; i < t.memberChannels.length; i++) {
+          accounting.members.examined++;
+          accounting.examined++;
+          accounting.members.refused++;
+          accounting.refused++;
+        }
+        errors.push(e as Error);
       }
     }
 
-    const examined = 2 + 1 + t.memberChannels.length;
-    const deleted = consumersDeleted + aclsDeleted + membersDeleted;
-    const absent = consumersAbsent + aclsAbsent + membersAbsent;
+    if (errors.length > 0) {
+      throw new DeprovisionError(
+        `deprovision refused on ${errors.length} resource(s): ${errors.map((e) => e.message).join("; ")}`,
+        accounting,
+        errors[0],
+      );
+    }
 
-    return {
-      examined,
-      deleted,
-      absent,
-      refused: 0,
-      consumers: { examined: 2, deleted: consumersDeleted, absent: consumersAbsent, refused: 0 },
-      acls: { examined: 1, deleted: aclsDeleted, absent: aclsAbsent, refused: 0 },
-      members: { examined: t.memberChannels.length, deleted: membersDeleted, absent: membersAbsent, refused: 0 },
-    };
+    return accounting;
   } finally {
     await nc.drain();
   }
+}
+
+/** Purge one exact KV key, checking beforehand via Direct Get whether it was live or absent/tombstoned. */
+async function purgeKvKeyWithAccounting(
+  jsm: JetStreamManager,
+  kv: KV,
+  bucket: string,
+  key: string,
+): Promise<"deleted" | "absent"> {
+  let wasLive = false;
+  const stream = `KV_${bucket}`;
+  const subject = `$KV.${bucket}.${key}`;
+  try {
+    const msg = await jsm.direct.getMessage(stream, { last_by_subj: subject });
+    const op = msg?.header?.get("KV-Operation");
+    if (msg !== null && op !== "PURGE" && op !== "DEL") {
+      wasLive = true;
+    }
+  } catch (err: unknown) {
+    const m = (err as Error)?.message ?? "";
+    if (m.includes("10037") || m.includes("no message found") || m.includes("404")) {
+      wasLive = false;
+    } else {
+      throw err;
+    }
+  }
+  await kv.purge(key);
+  return wasLive ? "deleted" : "absent";
 }
 
 /** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays
