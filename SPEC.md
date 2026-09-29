@@ -4286,7 +4286,10 @@ single-function profiles, each granting only the verbs its function needs and no
   delete only lifecycle-keyed names, so it structurally cannot reach a same-name successor
   (§13.1). The footprint is the `dm_`/`dlv_` durables, the read-ACL row, and the durable
   membership row for each concrete channel the teardown names (one exact `memberKey` grant per
-  channel). A wildcard channel is refused at mint, and a row on an unnamed channel is retained.
+  channel). A wildcard channel is refused at mint. The manager names the launch's concrete read
+  channels plus the channels the delivery daemon's read-only `lifecycleMemberships` admin verb
+  lists for that exact `(principal, lifecycleUid)`. When that inventory cannot be read, rows on
+  other channels stay retained and the teardown logs the inventory as incomplete.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
   the delivery endpoint's admin commands (below).
