@@ -827,72 +827,106 @@ export async function deprovisionAgent(opts: {
     const jsm = await jetstreamManager(nc);
     const errors: Error[] = [];
 
-    // 1. Consumers (dm + dlv)
-    accounting.consumers.examined++;
-    accounting.examined++;
-    try {
-      const dmOutcome = await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
-      if (dmOutcome === "deleted") { accounting.consumers.deleted++; accounting.deleted++; }
-      else { accounting.consumers.absent++; accounting.absent++; }
-    } catch (e) {
-      accounting.consumers.refused++;
-      accounting.refused++;
-      errors.push(e as Error);
-    }
-
-    accounting.consumers.examined++;
-    accounting.examined++;
-    try {
-      const dlvOutcome = await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
-      if (dlvOutcome === "deleted") { accounting.consumers.deleted++; accounting.deleted++; }
-      else { accounting.consumers.absent++; accounting.absent++; }
-    } catch (e) {
-      accounting.consumers.refused++;
-      accounting.refused++;
-      errors.push(e as Error);
-    }
-
-    // 2. Read-ACL entry
+    // 1. Read-ACL entry (fenced via CAS sequence - stock lifecycle barrier)
     accounting.acls.examined++;
     accounting.examined++;
+    let aclStatus: "won" | "raced-loss" | "already-tombstoned" | "missing" = "already-tombstoned";
     try {
       const aclsKv = await openAclRegistry(nc, opts.space);
       const aclKeyStr = aclKey(principalKey(t.owner, t.actor).key, t.lifecycleUid);
-      const aclOutcome = await purgeKvKeyWithAccounting(jsm, aclsKv, aclBucket(opts.space), aclKeyStr);
-      if (aclOutcome === "deleted") { accounting.acls.deleted++; accounting.deleted++; }
-      else { accounting.acls.absent++; accounting.absent++; }
+      const aclRes = await purgeKvKeyWithAccounting(jsm, aclsKv, aclBucket(opts.space), aclKeyStr);
+      aclStatus = aclRes.status;
+      if (aclRes.outcome === "deleted") {
+        accounting.acls.deleted++;
+        accounting.deleted++;
+      } else {
+        accounting.acls.absent++;
+        accounting.absent++;
+      }
     } catch (e) {
       accounting.acls.refused++;
       accounting.refused++;
       errors.push(e as Error);
     }
 
-    // 3. Member rows
-    if (t.memberChannels.length > 0) {
+    // 2. Consumers (dm + dlv)
+    accounting.consumers.examined += 2;
+    accounting.examined += 2;
+    if (aclStatus === "raced-loss") {
+      // Another concurrent teardown won the lifecycle CAS at this exact instant and is
+      // actively removing the consumers. Count as absent without interfering with the winner.
+      accounting.consumers.absent += 2;
+      accounting.absent += 2;
+    } else {
       try {
-        const membersKv = await openMembersRegistry(nc, opts.space);
-        for (const ch of t.memberChannels) {
-          accounting.members.examined++;
-          accounting.examined++;
-          try {
-            const mKeyStr = memberKey(ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
-            const mOutcome = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);
-            if (mOutcome === "deleted") { accounting.members.deleted++; accounting.deleted++; }
-            else { accounting.members.absent++; accounting.absent++; }
-          } catch (e) {
-            accounting.members.refused++;
-            accounting.refused++;
-            errors.push(e as Error);
-          }
+        const dmOutcome = await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
+        if (dmOutcome === "deleted") {
+          accounting.consumers.deleted++;
+          accounting.deleted++;
+        } else {
+          accounting.consumers.absent++;
+          accounting.absent++;
         }
       } catch (e) {
-        for (let i = accounting.members.examined; i < t.memberChannels.length; i++) {
-          accounting.members.examined++;
-          accounting.examined++;
-          accounting.members.refused++;
-          accounting.refused++;
-        }
+        accounting.consumers.refused++;
+        accounting.refused++;
         errors.push(e as Error);
+      }
+
+      try {
+        const dlvOutcome = await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
+        if (dlvOutcome === "deleted") {
+          accounting.consumers.deleted++;
+          accounting.deleted++;
+        } else {
+          accounting.consumers.absent++;
+          accounting.absent++;
+        }
+      } catch (e) {
+        accounting.consumers.refused++;
+        accounting.refused++;
+        errors.push(e as Error);
+      }
+    }
+
+    // 3. Member rows
+    if (t.memberChannels.length > 0) {
+      if (aclStatus === "raced-loss") {
+        accounting.members.examined += t.memberChannels.length;
+        accounting.examined += t.memberChannels.length;
+        accounting.members.absent += t.memberChannels.length;
+        accounting.absent += t.memberChannels.length;
+      } else {
+        try {
+          const membersKv = await openMembersRegistry(nc, opts.space);
+          for (const ch of t.memberChannels) {
+            accounting.members.examined++;
+            accounting.examined++;
+            try {
+              const mKeyStr = memberKey(ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+              const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);
+              if (mRes.outcome === "deleted") {
+                accounting.members.deleted++;
+                accounting.deleted++;
+              } else {
+                accounting.members.absent++;
+                accounting.absent++;
+              }
+            } catch (e) {
+              accounting.members.refused++;
+              accounting.refused++;
+              errors.push(e as Error);
+            }
+          }
+        } catch (e) {
+          for (let i = accounting.members.examined; i < t.memberChannels.length; i++) {
+            accounting.members.examined++;
+            accounting.examined++;
+            accounting.members.refused++;
+            accounting.refused++;
+          }
+          errors.push(e as Error);
+        }
       }
     }
 
@@ -910,32 +944,53 @@ export async function deprovisionAgent(opts: {
   }
 }
 
-/** Purge one exact KV key, checking beforehand via Direct Get whether it was live or absent/tombstoned. */
+/** Purge one exact KV key with revision fencing (CAS), checking beforehand via Direct Get whether it was live or absent/tombstoned. */
 async function purgeKvKeyWithAccounting(
   jsm: JetStreamManager,
   kv: KV,
   bucket: string,
   key: string,
-): Promise<"deleted" | "absent"> {
+): Promise<{ outcome: "deleted" | "absent"; status: "won" | "raced-loss" | "already-tombstoned" | "missing" }> {
   let wasLive = false;
+  let isMissing = false;
+  let seq: number | undefined;
   const stream = `KV_${bucket}`;
   const subject = `$KV.${bucket}.${key}`;
   try {
     const msg = await jsm.direct.getMessage(stream, { last_by_subj: subject });
     const op = msg?.header?.get("KV-Operation");
-    if (msg !== null && op !== "PURGE" && op !== "DEL") {
+    if (msg === null) {
+      isMissing = true;
+    } else if (op !== "PURGE" && op !== "DEL") {
       wasLive = true;
+      seq = msg.seq;
     }
   } catch (err: unknown) {
     const m = (err as Error)?.message ?? "";
     if (m.includes("10037") || m.includes("no message found") || m.includes("404")) {
-      wasLive = false;
+      isMissing = true;
     } else {
       throw err;
     }
   }
-  await kv.purge(key);
-  return wasLive ? "deleted" : "absent";
+
+  if (!wasLive) {
+    if (!isMissing) {
+      await kv.purge(key);
+    }
+    return { outcome: "absent", status: isMissing ? "missing" : "already-tombstoned" };
+  }
+
+  try {
+    await kv.purge(key, seq !== undefined ? { previousSeq: seq } : undefined);
+    return { outcome: "deleted", status: "won" };
+  } catch (err: unknown) {
+    const m = (err as Error)?.message ?? "";
+    if (m.includes("10071") || m.includes("wrong last sequence")) {
+      return { outcome: "absent", status: "raced-loss" };
+    }
+    throw err;
+  }
 }
 
 /** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays

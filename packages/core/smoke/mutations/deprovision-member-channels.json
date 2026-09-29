@@ -15,8 +15,8 @@
     {
       "name": "deprovisionAgent skips deleting member rows on the target channels",
       "file": "packages/core/src/streams.ts",
-      "find": "const mOutcome = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);",
-      "replace": "const mOutcome: any = \"absent\"; /* member row deletion skipped */",
+      "find": "const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);",
+      "replace": "const mRes: any = { outcome: \"absent\", status: \"absent\" }; /* member row deletion skipped */",
       "expectRed": "MEMBERS: the retired lifecycle's named-channel rows are GONE",
       "cell": "MEMBERS: the retired lifecycle's named-channel rows are GONE",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

@@ -36,6 +36,7 @@ import {
   provisionAgent,
   deprovisionAgent,
   DeprovisionError,
+  standaloneConnectOpts,
   openAclRegistry,
   readAcl,
   mintLifecycleUid,
@@ -380,7 +381,7 @@ try {
     // Isolate the member-row grant: purge the successor's row DIRECTLY with the retired cred, so no
     // earlier dm_/dlv_ denial can mask a widened `$KV.<members>.>` grant.
     {
-      const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(dpvE)), maxReconnectAttempts: 0 });
+      const dnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dpvE, tls: false }), maxReconnectAttempts: 0 });
       let directOutcome = "completed";
       try {
         const dkv = await openMembersRegistry(dnc, space);
@@ -388,14 +389,59 @@ try {
         await deleteMember(dkv, "general", who, uidF);
         await dnc.flush();
       } catch { directOutcome = "threw"; }
-      await dnc.close().catch(() => {});
       check("MEMBERS: a direct purge of the successor's row with the retired cred is broker-DENIED", directOutcome === "threw" && (await has("general", who, uidF)), { directOutcome });
+
+      // Explicit native denial of exact Direct Get permissions on successor and foreign keys
+      const djsm = await jetstreamManager(dnc);
+      let dgSuccAcl = "allowed";
+      try {
+        await djsm.direct.getMessage(`KV_${aclBucket(space)}`, { last_by_subj: `$KV.${aclBucket(space)}.${aclKey(who, uidF)}` });
+      } catch { dgSuccAcl = "denied"; }
+      check("SECURITY: Direct Get on successor ACL key with retired cred is broker-DENIED", dgSuccAcl === "denied");
+
+      let dgSuccMember = "allowed";
+      try {
+        await djsm.direct.getMessage(`KV_${membersBucket(space)}`, { last_by_subj: `$KV.${membersBucket(space)}.${memberKey("general", who, uidF)}` });
+      } catch { dgSuccMember = "denied"; }
+      check("SECURITY: Direct Get on successor member key with retired cred is broker-DENIED", dgSuccMember === "denied");
+
+      let dgForeignMember = "allowed";
+      try {
+        await djsm.direct.getMessage(`KV_${membersBucket(space)}`, { last_by_subj: `$KV.${membersBucket(space)}.${memberKey("general", peer, uidE)}` });
+      } catch { dgForeignMember = "denied"; }
+      check("SECURITY: Direct Get on foreign member key with retired cred is broker-DENIED", dgForeignMember === "denied");
+
+      await dnc.close().catch(() => {});
     }
     let wildcardRefused = false;
     try { await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["team.>"] } }); }
     catch { wildcardRefused = true; }
     check("MEMBERS: a wildcard member channel is refused at mint (no prefix-wide grant)", wildcardRefused);
   }
+  // Coordinator audit: concurrent callers use the shipped teardown and real target-pinned grants.
+  const auditProv = new CotalEndpoint({
+    space, servers: SERVERS, creds: provCreds,
+    card: { id: provId.id, name: "audit-prov", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  await auditProv.start();
+  try {
+    for (let trial = 0; trial < 8; trial++) {
+      const target = newIdentity();
+      const uid = mintLifecycleUid();
+      await provisionAgent(auditProv, auth, target, { subscribe: ["general"], allowSubscribe: ["general"], lifecycleUid: uid });
+      const creds = await Promise.all([0, 1].map(() => mintCreds(auth, newIdentity(), "deprovisioner", {
+        deprovisionTarget: { principal: target.id, lifecycleUid: uid },
+      })));
+      const outcomes = await Promise.all(creds.map((credential) => deprovisionAgent({
+        servers: SERVERS, space, targetId: target.id, lifecycleUid: uid, creds: credential,
+      })));
+      const deleted = outcomes.reduce((sum, result) => sum + result.deleted, 0);
+      check(`AUDIT: concurrent cleanup ${trial} accounts for three physical resources once`, deleted === 3, outcomes);
+      check(`AUDIT: concurrent cleanup ${trial} leaves target absent`,
+        !(await aclPresent(provCreds, provId.id, localPrincipal(target.id), uid)));
+    }
+  } finally { await auditProv.stop(); }
   await insp.drain().catch(() => {});
 
   console.log(`\nDEPROVISION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
