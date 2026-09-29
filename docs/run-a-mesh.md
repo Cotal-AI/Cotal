@@ -232,6 +232,10 @@ that `cotal up` starts a local manager as well as the broker and delivery daemon
 `cotal up --no-manager` (add the flag to the unit's `ExecStart` too) on a host intended to be
 broker-only, so the unit and the host agree.
 
+Seats spawned by the built-in `pty` runtime run with `oom_score_adj` 500, so under memory
+pressure the kernel prefers a seat over the broker, manager and delivery daemon, which are left as
+they were started; the extension runtimes do not own the seat's process and get no preference.
+
 That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
 `Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote
 managers drop for the time it takes the broker to come back. Wrapping `cotal up --detach` in
