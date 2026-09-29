@@ -70,6 +70,9 @@ function wireItem(i: InboxItem): Record<string, unknown> {
     fromRole: i.fromRole,
     mentions: i.mentions,
     mentionsMe: i.mentionsMe,
+    // Backfilled on join: the sidecar frames it as history, as connector-core's fmtItem does.
+    // Without it a restart replays every retained mention as a live turn (#2205).
+    historical: i.historical,
     text: i.text,
     replyTo: i.replyTo,
     contextId: i.contextId,

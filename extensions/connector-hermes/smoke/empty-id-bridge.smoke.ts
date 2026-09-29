@@ -147,6 +147,7 @@ try {
   const first = await waitFrame((f) => f.t === "incoming");
   const firstMsg = first.msg as { id?: string; recvKey?: string };
   assert.equal(firstMsg.id, "", "the empty wire id rides the wire item");
+  assert.strictEqual(firstMsg.historical, false, "the wire item carries the historical flag, so the sidecar can frame a backfill (#2205)");
   assert.ok(typeof firstMsg.recvKey === "string" && firstMsg.recvKey !== "", "the wire item carries a minted receive key");
 
   // ---- 2) the ack the sidecar sends (by receive key, wire id empty) clears the hold ----
