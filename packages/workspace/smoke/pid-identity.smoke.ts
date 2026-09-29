@@ -254,6 +254,69 @@ try {
       verifyIdentityPin(legacyPath, () => win32Token).kind === "legacy");
     reap(liveLegacy.child);
   }
+
+  // ── G. writePidPair (#1238): the WRITE side has no cell today; a crash mid-publish is planted
+  // through `onStep` and each cell reads the two files back, never the helper's return.
+  {
+    const gPath = join(root, ".cotal", "g-replace.pid");
+    const oldTarget = spawnTarget();
+    strays.push(oldTarget.child);
+    await wait(150);
+    writePidPair(gPath, oldTarget.pid!);
+    check("G0 a first publish with no injection leaves a complete, matching record",
+      verifyIdentityPin(gPath).kind === "match" && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid);
+
+    const newTarget = spawnTarget();
+    strays.push(newTarget.child);
+    await wait(150);
+
+    let g1Threw = false;
+    try {
+      writePidPair(gPath, newTarget.pid!, { onStep: (step) => { if (step === "temporaries") throw new Error("planted crash after temporaries"); } });
+    } catch { g1Threw = true; }
+    check("G1 a crash after `temporaries` leaves the OLD complete record untouched",
+      g1Threw && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid && verifyIdentityPin(gPath).kind === "match",
+      { pidfile: readFileSync(gPath, "utf8"), verdict: verifyIdentityPin(gPath).kind });
+    check("G1b no `.publish.` temporary survives the planted crash",
+      !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
+
+    let g2Threw = false;
+    try {
+      writePidPair(gPath, newTarget.pid!, { onStep: (step) => { if (step === "unlink-old-pin") throw new Error("planted crash after unlink-old-pin"); } });
+    } catch { g2Threw = true; }
+    check("G2 a crash after `unlink-old-pin` leaves the OLD pid with no pin (legacy, never torn)",
+      g2Threw && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid && verifyIdentityPin(gPath).kind === "legacy",
+      { pidfile: readFileSync(gPath, "utf8"), verdict: verifyIdentityPin(gPath).kind });
+
+    let g3Threw = false;
+    try {
+      writePidPair(gPath, newTarget.pid!, { onStep: (step) => { if (step === "publish-pid") throw new Error("planted crash after publish-pid"); } });
+    } catch { g3Threw = true; }
+    check("G3 a crash after `publish-pid` leaves the NEW pid with no pin (legacy, never torn-pairing)",
+      g3Threw && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid && verifyIdentityPin(gPath).kind === "legacy",
+      { pidfile: readFileSync(gPath, "utf8"), verdict: verifyIdentityPin(gPath).kind });
+
+    writePidPair(gPath, newTarget.pid!);
+    check("G4 a full publish leaves the NEW complete record, matching",
+      verifyIdentityPin(gPath).kind === "match" && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid);
+    reap(oldTarget.child);
+    reap(newTarget.child);
+
+    const firstPath = join(root, ".cotal", "g-first.pid");
+    const firstTarget = spawnTarget();
+    strays.push(firstTarget.child);
+    await wait(150);
+    let g5Threw = false;
+    try {
+      writePidPair(firstPath, firstTarget.pid!, { onStep: (step) => { if (step === "publish-pid") throw new Error("planted crash after publish-pid, first start"); } });
+    } catch { g5Threw = true; }
+    check("G5 a first-start crash after `publish-pid` leaves a bare NEW pid with no pin (legacy)",
+      g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && !existsSync(identityPinPath(firstPath)));
+    reap(firstTarget.child);
+
+    check("G6 no `.publish.` temporary survives ANY of G1 through G5",
+      !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
+  }
 } finally {
   for (const s of strays) reap(s);
   process.chdir(prevCwd);
