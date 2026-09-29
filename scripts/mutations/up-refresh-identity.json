@@ -32,7 +32,7 @@
       "name": "the refusal condition forced false",
       "file": "implementations/cli/src/commands/up.ts",
       "find": "            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir) {",
-      "replace": "            if (false) {",
+      "replace": "            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir && process.env.FX121_NEVER_SET !== undefined) {",
       "expectRed": "(5) a disagreeing --store-dir repair refuses",
       "cell": "(5) a disagreeing --store-dir repair refuses",
       "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
@@ -53,8 +53,8 @@
       "file": "implementations/cli/src/commands/up.ts",
       "find": "      if (activationFinished) process.exit(code ?? 1);\n",
       "replace": "",
-      "expectRed": "...stderr names 'exited unexpectedly'",
-      "cell": "...stderr names 'exited unexpectedly'",
+      "expectRed": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
+      "cell": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
       "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
       "afterRestore": "pnpm build"
     }

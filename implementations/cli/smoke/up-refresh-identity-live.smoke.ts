@@ -320,11 +320,11 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
       const timer = setTimeout(() => res(null), 20_000); // a mutation that drops the exit call must not hang the suite
       child.once("exit", (code) => { clearTimeout(timer); res(code); });
     });
-    check("a killed broker makes the foreground `up` exit non-zero", exitCode !== 0 && exitCode !== null, { exitCode, stdout, stderr });
+    check("the record survives the crash", findMesh(space) !== undefined, findMesh(space));
+    check("a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13", exitCode === 1, { exitCode, stdout, stderr });
     check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
     check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
     check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);
-    check("the record survives the crash", findMesh(space) !== undefined, findMesh(space));
     const meshes = cotal(fixture, ["meshes"]);
     check("`cotal meshes` tags the crashed mesh offline", new RegExp(`${space}[^\n]*offline`).test(`${meshes.stdout}`), meshes.stdout);
 
