@@ -44,7 +44,7 @@ import type { StepKey } from "../keys.js";
 /** One 16-byte SharedArrayBuffer: an Int32 answer flag at 0, the Float64 clock value at 8. */
 export const CLOCK_BYTES = 16;
 
-/** The ten async members of {@link EffectHandler}, the only methods the bridge will forward. */
+/** The eleven async members of {@link EffectHandler}, the only methods the bridge will forward. */
 const METHODS = [
   "spawn",
   "turn",
@@ -52,6 +52,7 @@ const METHODS = [
   "checkpoint",
   "sleep",
   "wait",
+  "observe",
   "notify",
   "monitor",
   "openConclave",
