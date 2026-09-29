@@ -98,6 +98,10 @@ export class IncompleteKvScan extends Error {
   }
 }
 
+export interface LiveKvEntriesOptions {
+  signal?: AbortSignal;
+}
+
 /**
  * Every currently-live entry of `kv`, in ONE pass, with values.
  *
@@ -108,7 +112,24 @@ export class IncompleteKvScan extends Error {
  * Throws {@link IncompleteKvScan} if the pass is cut short. Returns `[]` for a bucket that is
  * genuinely empty (proven at bind time, not inferred from silence).
  */
-export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
+export async function liveKvEntries(
+  kv: KV,
+  filterOrOptions?: string | string[] | LiveKvEntriesOptions,
+  options?: LiveKvEntriesOptions,
+): Promise<KvEntry[]> {
+  let filter: string | string[] | undefined;
+  let opts: LiveKvEntriesOptions | undefined;
+  if (typeof filterOrOptions === "string" || Array.isArray(filterOrOptions)) {
+    filter = filterOrOptions;
+    opts = options;
+  } else if (filterOrOptions && typeof filterOrOptions === "object") {
+    opts = filterOrOptions;
+  }
+
+  if (opts?.signal?.aborted) {
+    throw opts.signal.reason ?? new Error("scan aborted");
+  }
+
   // OWN THE PASS. This deliberately does NOT call `kv.history()`. That helper hides the consumer's
   // bind-time `num_pending`, and without it an empty result is ambiguous: a genuinely empty bucket
   // and a pass that died before its first message look identical. For a FILTERED scan that ambiguity
@@ -142,16 +163,46 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
+  let activeConsumerName: string | undefined;
+  let initialName: string | undefined;
   try {
     // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
-    expected = (await oc.info(true)).num_pending;
+    const initialInfo = await oc.info(true);
+    initialName = initialInfo.name;
+    activeConsumerName = initialInfo.name;
+    expected = initialInfo.num_pending;
     if (expected === 0) return [];
+
+    if (opts?.signal?.aborted) {
+      throw opts.signal.reason ?? new Error("scan aborted");
+    }
 
     // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
     // what makes concurrent rewrites and drifted `history` settings both correct.
     const iter = await oc.consume();
+    const statusIter = typeof iter.status === "function" ? iter.status() : undefined;
+    if (statusIter) {
+      (async () => {
+        try {
+          for await (const s of statusIter) {
+            if (s.type === "ordered_consumer_recreated" && "name" in s && typeof s.name === "string") {
+              activeConsumerName = s.name;
+            }
+          }
+        } catch {
+          /* status iterator closed */
+        }
+      })();
+    }
+
+    const onAbort = () => {
+      iter.stop(opts?.signal?.reason ?? new Error("scan aborted"));
+    };
+    opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
     try {
       for await (const m of iter) {
+        if (opts?.signal?.aborted) break;
         const e = bucket.jmToWatchEntry(m, false);
         received++;
         bucketName = e.bucket;
@@ -163,10 +214,34 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
         if (m.info.pending === 0) { sawTerminal = true; break; }
       }
     } finally {
-      iter.stop();
+      opts?.signal?.removeEventListener("abort", onAbort);
+      if (typeof (iter as { close?: () => Promise<unknown> }).close === "function") {
+        await (iter as { close: () => Promise<unknown> }).close().catch(() => {});
+      } else {
+        iter.stop();
+      }
     }
   } finally {
-    await oc.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
+    // Delete ONLY this scan's own consumer in finally. If rotation occurred, delete the rotated consumer too.
+    // TTL (inactive_threshold) remains the crash/deletion-failure backstop.
+    const targetName = (oc as unknown as { name?: string }).name ?? activeConsumerName;
+    await oc.info(false).catch(() => {});
+    await oc.delete().catch(() => { /* deletion failure: TTL is the backstop */ });
+    if (targetName && initialName && targetName !== initialName) {
+      for (let i = 0; i < 20; i++) {
+        let deleted = false;
+        try {
+          deleted = await bucket.jsm.consumers.delete(bucket.stream, targetName);
+        } catch {
+          // in-flight creation or already deleted
+        }
+        if (deleted) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    }
+  }
+  if (opts?.signal?.aborted) {
+    throw opts.signal.reason ?? new Error("scan aborted");
   }
   // Fell out without the terminal message: the connection dropped, the consumer was removed, or the
   // stream stalled past the heartbeat. Whatever the cause, this is a PARTIAL view and saying so is
@@ -243,10 +318,11 @@ export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> 
 export async function liveKvValues<T>(
   kv: KV,
   decode: (e: KvEntry) => T | undefined,
-  filter?: string | string[],
+  filterOrOptions?: string | string[] | LiveKvEntriesOptions,
+  options?: LiveKvEntriesOptions,
 ): Promise<T[]> {
   const out: T[] = [];
-  for (const e of await liveKvEntries(kv, filter)) {
+  for (const e of await liveKvEntries(kv, filterOrOptions, options)) {
     const v = decode(e);
     if (v !== undefined) out.push(v);
   }
