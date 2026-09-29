@@ -389,7 +389,10 @@ const SEAMS: Seam[] = [
   // read's own connection in implementations/delivery/src/pending.ts. States `tls` explicitly.
   // 197/152 -> 198/152: the broker-version check (#2233) adds one typechecked call in
   // implementations/cli/src/commands/up.ts. States `tls: false` explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 198, untypecheckedSites: 152 },
+  // 198/152 -> 201/155: the scoped-consumer and scan-abort cells add three smoke-side calls in
+  // packages/core/smoke/manager-lease-grant.smoke.ts (the scoped delivery reader, the admin setup
+  // connection, and the supervisor). All state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 201, untypecheckedSites: 155 },
 ];
 
 /**
