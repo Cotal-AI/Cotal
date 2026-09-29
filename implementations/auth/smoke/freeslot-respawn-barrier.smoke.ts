@@ -138,7 +138,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  principalKey, registry, dmStream, dlvStream, openAclRegistry,
+  principalKey, registry, dmStream, dlvStream, openAclRegistry, openMembersRegistry, readMember, listMembers,
   CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
   createEndpointStreams,
 } = await import("@cotal-ai/core");
@@ -442,6 +442,19 @@ try {
   check("predecessor footprint exists (row + dm + dlv + acl)",
     fp1.row && fp1.dm.length > 0 && fp1.dlv.length > 0 && fp1.acl.length > 0, fp1);
   const hash1 = rowHash(OWNER);
+  // Durable membership rows written by the REAL delivery daemon's privileged join primitive: one on
+  // the launch's concrete read channel ("general") and one on a channel the launch does not name
+  // ("unnamed", the shape of a row covered only by a wildcard policy). Both are this lifecycle's.
+  const predUid = (manager as unknown as { agents: Map<string, { lifecycleUid: string }> }).agents.get(AGENT)!.lifecycleUid;
+  const memberRow = (ch: string, uid: string) =>
+    inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), ch, principal.key, uid)) !== undefined);
+  const memberRowsFor = () =>
+    inspect(async (_j, nc) => (await listMembers(await openMembersRegistry(nc, SPACE), { owner: principal.key })).map((r: { channel: string; lifecycleUid: string }) => `${r.channel}/${r.lifecycleUid}`).sort());
+  const jGeneral = await delivery!.durableJoinFor(principal.key, "general", predUid);
+  const jUnnamed = await delivery!.durableJoinFor(principal.key, "unnamed", predUid);
+  const membersBefore = await memberRowsFor();
+  check("MEMBERS: the delivery daemon committed the predecessor's durable rows (general + unnamed)",
+    jGeneral.generation === 1 && jUnnamed.generation === 1 && membersBefore.length === 2, { jGeneral, jUnnamed, membersBefore });
 
   // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
   console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
@@ -491,6 +504,8 @@ try {
   // the wrong mechanism and contradicted production's own note; a review caught it.
   check("predecessor row already revoked before the broker phase (gate held nothing local)",
     !existsSync(managedRowPath(OWNER)));
+  check("MEMBERS: while the retirement's cleanup is pending the predecessor's rows are RETAINED",
+    await memberRow("general", predUid) && await memberRow("unnamed", predUid));
 
   // BARRIER 1 — while the predecessor's cleanup is pending, the alias must stay RESERVED: a
   // same-name spawn must not yield a NEW live agent under the exact alias (refusing loudly or
@@ -526,6 +541,10 @@ try {
   const fpRetired = await footprint();
   check("witness: the predecessor's broker footprint is fully retired before the alias frees",
     fpRetired.dm.length === 0 && fpRetired.dlv.length === 0 && fpRetired.acl.length === 0, fpRetired);
+  const membersRetired = await memberRowsFor();
+  check("MEMBERS: the retirement removed the predecessor's launch-channel row (general)", !(await memberRow("general", predUid)), membersRetired);
+  check("MEMBERS: exactly one row removed; the unnamed-channel row stays an explicit RETAINED residue",
+    membersBefore.length - membersRetired.length === 1 && membersRetired.length === 1 && membersRetired[0] === `unnamed/${predUid}`, { membersBefore, membersRetired });
 
   // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
   console.log("D) same-alias respawn after the predecessor retired");
@@ -616,6 +635,8 @@ try {
   // three named BARRIER cells (dm durable, dlv durable, read-ACL), so these cells are not green
   // merely because an unobserved no-op ran.
   console.log("E) replay the retired predecessor's broker cleanup against the live replacement");
+  await delivery!.durableJoinFor(principal.key, "general", succUid);
+  check("MEMBERS: the replacement holds its own lifecycle-distinct general row", succUid !== predUid && await memberRow("general", succUid), { predUid, succUid });
   replayAtMs = Date.now();
   await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });
   mAny.deprovisionBroker = origBroker;
@@ -626,6 +647,9 @@ try {
     { successor: fpS.dm, post: fpPost.dm });
   check("BARRIER: the replacement's dlv_ durables survive the replayed cleanup", survives(fpS.dlv, fpPost.dlv),
     { successor: fpS.dlv, post: fpPost.dlv });
+  check("MEMBERS: the replacement's general row survives the replayed retired cleanup", await memberRow("general", succUid));
+  check("MEMBERS: the replayed retired cleanup is idempotent (predecessor residue unchanged)",
+    JSON.stringify((await memberRowsFor()).filter((k: string) => k.endsWith(predUid))) === JSON.stringify([`unnamed/${predUid}`]));
   check("BARRIER: the replacement's read-ACL rows survive the replayed cleanup", survives(fpS.acl, fpPost.acl),
     { successor: fpS.acl, post: fpPost.acl });
   // No retired-lifecycle resource may REAPPEAR either (a resurrecting cleanup would be its own
