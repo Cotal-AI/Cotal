@@ -34,12 +34,21 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
-      "name": "omits abort check before expected === 0 empty return",
+      "name": "returns empty result before owned consumer cleanup completes",
       "file": "packages/core/src/kv-scan.ts",
-      "find": "    if (opts?.signal?.aborted) {\n      throw opts.signal.reason ?? new Error(\"scan aborted\");\n    }\n\n    if (expected === 0) return [];",
-      "replace": "    if (expected === 0) return [];\n\n    if (opts?.signal?.aborted) {\n      throw opts.signal.reason ?? new Error(\"scan aborted\");\n    }",
-      "expectRed": "aborted during empty scan throws instead of returning empty array",
-      "cell": "aborted during empty scan throws instead of returning empty array",
+      "find": "    if (expected !== 0) {",
+      "replace": "    if (expected === 0) return [];\n    if (expected !== 0) {",
+      "expectRed": "empty cleanup filtered: abort throws after delete",
+      "cell": "empty cleanup filtered: abort throws after delete",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "drops options when filter argument is explicitly undefined",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "  let opts: LiveKvEntriesOptions | undefined = options;",
+      "replace": "  let opts: LiveKvEntriesOptions | undefined;",
+      "expectRed": "empty cleanup explicit-undefined: abort throws after delete",
+      "cell": "empty cleanup explicit-undefined: abort throws after delete",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]

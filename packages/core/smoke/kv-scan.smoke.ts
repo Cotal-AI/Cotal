@@ -561,6 +561,94 @@ try {
     }
   }
 
+  // A real empty consumer can be bound and proven before cancellation. Hold its OWN delete,
+  // abort during cleanup, then release it: the earlier bind-time check cannot observe this.
+  // Keep an unrelated durable as a sentinel so broad consumer deletion fails this cell.
+  {
+    const bucket = await kvm.create("abort_empty_cleanup", { history: 1 });
+    const stream = "KV_abort_empty_cleanup";
+    const jsm = await jetstreamManager(nc);
+    await jsm.consumers.add(stream, { durable_name: "unrelated_sentinel", ack_policy: "none", filter_subject: "$KV.abort_empty_cleanup.>" });
+    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ delete: () => Promise<unknown>; info: () => Promise<unknown> }> } } }).js;
+    const getPushConsumer = js.consumers.getPushConsumer.bind(js.consumers);
+    try {
+      for (const shape of ["filtered-control", "filtered", "options", "explicit-undefined"] as const) {
+        const ac = new AbortController();
+        let intercepted = 0;
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => { release = resolve; });
+        let entered!: () => void;
+        const deleting = new Promise<void>((resolve) => { entered = resolve; });
+        js.consumers.getPushConsumer = async (...args: unknown[]) => {
+          const oc = await getPushConsumer(...args);
+          const originalDelete = oc.delete.bind(oc);
+          oc.delete = async () => {
+            intercepted++;
+            entered();
+            await released;
+            return originalDelete();
+          };
+          return oc;
+        };
+        const scan = (shape === "filtered" || shape === "filtered-control"
+          ? liveKvEntries(bucket, "none.>", { signal: ac.signal })
+          : shape === "options" ? liveKvEntries(bucket, { signal: ac.signal })
+          : liveKvEntries(bucket, undefined, { signal: ac.signal }))
+          .then((rows) => `RETURN:${rows.length}`, (e: Error) => `THROW:${e.message}`);
+        try {
+          await Promise.race([deleting, wait(5000).then(() => { throw new Error("owned delete not reached"); })]);
+          const during = (await jsm.consumers.list(stream).next()).length;
+          check(`empty cleanup ${shape}: own delete was intercepted with sentinel present`, intercepted === 1 && during === 2, { intercepted, during });
+          if (shape !== "filtered-control") ac.abort(new Error("aborted-while-cleanup-pending"));
+        } finally { release(); }
+        const outcome = await scan;
+        check(`empty cleanup ${shape}: ${shape === "filtered-control" ? "no-abort returns []" : "abort throws after delete"}`,
+          outcome === (shape === "filtered-control" ? "RETURN:0" : "THROW:aborted-while-cleanup-pending"), outcome);
+        const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+        check(`empty cleanup ${shape}: only unrelated sentinel remains`, names.length === 1 && names[0] === "unrelated_sentinel", names);
+      }
+
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const deleting = new Promise<void>((resolve) => { entered = resolve; });
+      js.consumers.getPushConsumer = async (...args: unknown[]) => {
+        const oc = await getPushConsumer(...args);
+        const originalDelete = oc.delete.bind(oc);
+        oc.info = async () => { throw new Error("original-bind-error"); };
+        oc.delete = async () => { entered(); await released; return originalDelete(); };
+        return oc;
+      };
+      const ac = new AbortController();
+      const failedScan = liveKvEntries(bucket, { signal: ac.signal }).then(
+        () => "RETURN", (e: Error) => `THROW:${e.message}`);
+      try {
+        await Promise.race([deleting, wait(5000).then(() => { throw new Error("failed-bind cleanup not reached"); })]);
+        ac.abort(new Error("late-abort-must-not-mask-original"));
+      } finally { release(); }
+      const failure = await failedScan;
+      check("empty cleanup: original scan error survives later abort", failure === "THROW:original-bind-error", failure);
+      const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+      check("failed-bind cleanup preserves unrelated sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
+    } finally { js.consumers.getPushConsumer = getPushConsumer; }
+
+    // The explicit-undefined shape must honor an already-aborted signal BEFORE creating a consumer.
+    for (const shape of ["filtered", "options", "explicit-undefined"] as const) {
+      const ac = new AbortController();
+      ac.abort(new Error("pre-aborted-options"));
+      let outcome = "none";
+      try {
+        const rows = shape === "filtered" ? await liveKvEntries(bucket, "none.>", { signal: ac.signal })
+          : shape === "options" ? await liveKvEntries(bucket, { signal: ac.signal })
+          : await liveKvEntries(bucket, undefined, { signal: ac.signal });
+        outcome = `RETURN:${rows.length}`;
+      } catch (e) { outcome = `THROW:${(e as Error).message}`; }
+      check(`pre-aborted ${shape}: signal is honored`, outcome === "THROW:pre-aborted-options", outcome);
+    }
+    const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
+    check("pre-aborted call shapes create no consumer and preserve sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
+  }
+
   await nc.close();
   console.log(`\nkv-scan smoke: ${pass} checks passed`);
 } finally {

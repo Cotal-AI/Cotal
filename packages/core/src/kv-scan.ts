@@ -118,7 +118,8 @@ export async function liveKvEntries(
   options?: LiveKvEntriesOptions,
 ): Promise<KvEntry[]> {
   let filter: string | string[] | undefined;
-  let opts: LiveKvEntriesOptions | undefined;
+  // The three-argument form may deliberately omit the filter: (kv, undefined, options).
+  let opts: LiveKvEntriesOptions | undefined = options;
   if (typeof filterOrOptions === "string" || Array.isArray(filterOrOptions)) {
     filter = filterOrOptions;
     opts = options;
@@ -176,50 +177,52 @@ export async function liveKvEntries(
       throw opts.signal.reason ?? new Error("scan aborted");
     }
 
-    if (expected === 0) return [];
-
-    // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
-    // what makes concurrent rewrites and drifted `history` settings both correct.
-    const iter = await oc.consume();
-    const statusIter = typeof iter.status === "function" ? iter.status() : undefined;
-    if (statusIter) {
-      (async () => {
-        try {
-          for await (const s of statusIter) {
-            if (s.type === "ordered_consumer_recreated" && "name" in s && typeof s.name === "string") {
-              activeConsumerName = s.name;
+    // Keep the empty path inside this try/finally too. Returning here would commit [] before
+    // cleanup finishes, even if a caller aborts while the consumer delete is pending.
+    if (expected !== 0) {
+      // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
+      // what makes concurrent rewrites and drifted `history` settings both correct.
+      const iter = await oc.consume();
+      const statusIter = typeof iter.status === "function" ? iter.status() : undefined;
+      if (statusIter) {
+        (async () => {
+          try {
+            for await (const s of statusIter) {
+              if (s.type === "ordered_consumer_recreated" && "name" in s && typeof s.name === "string") {
+                activeConsumerName = s.name;
+              }
             }
+          } catch {
+            /* status iterator closed */
           }
-        } catch {
-          /* status iterator closed */
-        }
-      })();
-    }
-
-    const onAbort = () => {
-      iter.stop(opts?.signal?.reason ?? new Error("scan aborted"));
-    };
-    opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-    try {
-      for await (const m of iter) {
-        if (opts?.signal?.aborted) break;
-        const e = bucket.jmToWatchEntry(m, false);
-        received++;
-        bucketName = e.bucket;
-        const prior = latest.get(e.key);
-        if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
-        // The ONLY completion signal accepted: a delivered message that says nothing is left behind
-        // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
-        // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
-        if (m.info.pending === 0) { sawTerminal = true; break; }
+        })();
       }
-    } finally {
-      opts?.signal?.removeEventListener("abort", onAbort);
-      if (typeof (iter as { close?: () => Promise<unknown> }).close === "function") {
-        await (iter as { close: () => Promise<unknown> }).close().catch(() => {});
-      } else {
-        iter.stop();
+
+      const onAbort = () => {
+        iter.stop(opts?.signal?.reason ?? new Error("scan aborted"));
+      };
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        for await (const m of iter) {
+          if (opts?.signal?.aborted) break;
+          const e = bucket.jmToWatchEntry(m, false);
+          received++;
+          bucketName = e.bucket;
+          const prior = latest.get(e.key);
+          if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+          // The ONLY completion signal accepted: a delivered message that says nothing is left behind
+          // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
+          // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
+          if (m.info.pending === 0) { sawTerminal = true; break; }
+        }
+      } finally {
+        opts?.signal?.removeEventListener("abort", onAbort);
+        if (typeof (iter as { close?: () => Promise<unknown> }).close === "function") {
+          await (iter as { close: () => Promise<unknown> }).close().catch(() => {});
+        } else {
+          iter.stop();
+        }
       }
     }
   } finally {
@@ -244,6 +247,9 @@ export async function liveKvEntries(
   if (opts?.signal?.aborted) {
     throw opts.signal.reason ?? new Error("scan aborted");
   }
+  // No original scan error was caught or replaced; only a successful empty result waits for
+  // cleanup and this final abort check before it can be returned.
+  if (expected === 0) return [];
   // Fell out without the terminal message: the connection dropped, the consumer was removed, or the
   // stream stalled past the heartbeat. Whatever the cause, this is a PARTIAL view and saying so is
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
