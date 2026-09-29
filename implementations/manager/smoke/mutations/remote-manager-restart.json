@@ -20,7 +20,7 @@
     {
       "name": "clean stop reuses the stale remote executor",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== \"healthy\"))\n      await this.renewRemoteExecutor(true);",
+      "find": "    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== \"healthy\"))\n      await (this.remoteAuthority.renewStandingBundle ? this.renewRemoteStandingBundle(true) : this.renewRemoteExecutor(true));",
       "replace": "",
       "expectRed": "stock clean stop refreshes the executor and deregisters after its retained credential expires",
       "cell": "stock clean stop refreshes the executor and deregisters after its retained credential expires",

@@ -245,7 +245,7 @@
     {
       "name": "M19 the signal handlers go back to being armed only at the END of start-up",
       "file": "implementations/delivery/src/delivery.ts",
-      "find": "  process.on(\"SIGINT\", earlySigint);\n  process.on(\"SIGTERM\", earlySigterm);",
+      "find": "    process.on(\"SIGINT\", earlySigint);\n    process.on(\"SIGTERM\", earlySigterm);",
       "replace": "",
       "expectRed": "W4 the lease row is GONE, not stranded for the bucket TTL",
       "cell": "W4 the lease row is GONE, not stranded for the bucket TTL",

@@ -26,8 +26,8 @@
     {
       "name": "hosted startup health fault reaches the CLI process exit",
       "file": "implementations/delivery/src/delivery.ts",
-      "find": "      if (hosted !== undefined) {\n        hostedStartupFailure ??= new Error(`delivery context stopped during startup: ${cause}`);\n        if (stopHosted !== undefined) stopHosted(cause);\n        else void ep.stop(); // before lease acquisition, no context-owned lease can be released\n        return;\n      }",
-      "replace": "      /* mutation: hosted startup uses the CLI fatal path */",
+      "find": "        if (stopHosted !== undefined) stopHosted(cause);",
+      "replace": "        if (stopHosted !== undefined) earlyStop(1);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/delivery build && pnpm exec tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted startup fault leaves the sibling process alive",
       "cell": "hosted startup fault leaves the sibling process alive",
