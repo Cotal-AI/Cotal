@@ -47,40 +47,26 @@
  * sealed records scanner exactly like the boot resume; the gate read is a leader read, no
  * consumer-create anywhere; the requester credential is request + reply-inbox ONLY.
  */
-import type { Subscription } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   AUTH_ENDPOINT,
   EP_CMD_RETIRE_LIFECYCLE,
   EpEnvelopeError,
-  assertLifecycleToken,
-  deriveReplySubject,
-  endpointToken,
   epAuthBucket,
-  epClassQueueGroup,
-  epResponderReplyPattern,
-  assertCommandToken,
-  spacePrefix,
-  mintLifecycleUid,
+  epServeGrantRows,
   managedRetirementOpId,
-  parseEpSubject,
   principalKey,
   retirementFrontierStreams,
+  serveEndpoint,
   serveIssuanceGateKv,
-  type ParsedEpRequest,
+  type EpServeContext,
+  type EpServeGrant,
+  type EpServeHandle,
 } from "@cotal-ai/core";
+import { authCommandDefs, type AuthServiceHandlers } from "./auth-service-contract.js";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { observeGate, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
-
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-
-/** The auth endpoint's one class rail, per-command (never a cross-command `>`): the grant and the
- *  runtime subscription are built from THIS, so a widened subscription cannot outrun its grant. */
-function authClassRail(space: string): string {
-  return `${spacePrefix(space)}.ep.one.${endpointToken(AUTH_ENDPOINT)}.${assertCommandToken(EP_CMD_RETIRE_LIFECYCLE)}.>`;
-}
 
 /** The LISTENER profile (SPEC 13.9 "Auth endpoint rail" row): serve + bounded replies on the auth
  *  endpoint's class rail, plus the ONE leader-served gate read the authz check performs.
@@ -90,16 +76,19 @@ export function authAdminListenerGrants(
   connId: string,
   responder: { instanceId: string; epoch: number },
 ): { publish: string[]; subscribe: string[] } {
+  // The generic serve rows for this instance/epoch (reply plane, events, timer schedule, record
+  // writes on publish; the class/all/inst rails plus the derived `describe` and the epoch-pinned
+  // timer fire row on subscribe) — the SAME assembly `serveEndpoint` callers use, replacing the
+  // hand-built reply-pattern/class-rail rows above (M3, #399).
+  const serveRows = epServeGrantRows(space, {
+    endpoint: AUTH_ENDPOINT,
+    instanceId: responder.instanceId,
+    epoch: responder.epoch,
+    ephemeralCommands: [EP_CMD_RETIRE_LIFECYCLE],
+  });
   return {
     publish: [
-      // REPLIES ONLY, and on the REPLY PLANE — which is a stronger statement than the `ctl` rail
-      // could make. There, request and reply shared one subtree, so the grant had to carve replies
-      // out of it by shape (`*.*.reply.>`) to stop a compromised listener self-publishing a request
-      // as the lease holder and passing its own subject-derived check (self-forge). Here the planes
-      // are DISJOINT: `ep.reply.…` cannot express a request subject at all, so the self-forge is
-      // closed by the grammar rather than by a pattern. The instance triple and epoch are pinned;
-      // only the caller suffixes span (addressing is confined by nonce possession, §13.2).
-      epResponderReplyPattern(space, AUTH_ENDPOINT, responder.instanceId, responder.epoch),
+      ...serveRows.pub,
       "$JS.API.INFO",
       // The ONE leader-served read the authz check performs: the serve-issuance GATE, a point-get
       // of `epgate.<endpoint>.<instanceId>` proving the requesting manager instance's serve grant
@@ -107,12 +96,7 @@ export function authAdminListenerGrants(
       // authority, no store writes.
       `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`,
     ],
-    // The class rail, QUEUE-QUALIFIED and per-command (§13.9, `endpoint-grants.ts:293-300`): the
-    // NATS `"<subject> <queue>"` grant form. A PLAIN subject row would let this credential
-    // plain-subscribe the class rail and observe EVERY request's nonce — the property the queue
-    // qualification exists to protect. The runtime's queue subscription is not a substitute: it
-    // constrains what this process does, not what the credential permits.
-    subscribe: [`${authClassRail(space)} ${epClassQueueGroup(AUTH_ENDPOINT)}`, `_INBOX_${connId}.>`],
+    subscribe: [...serveRows.sub, `_INBOX_${connId}.>`],
   };
 }
 
@@ -127,48 +111,6 @@ interface RetireArgs {
   serveEndpoint: string;
   serveInstanceId: string;
   serveEpoch: number;
-}
-
-const RETIRE_ARG_KEYS = ["opId", "serveEndpoint", "serveInstanceId", "serveEpoch"];
-
-/** The request id a reply MUST echo. This is the MINIMAL correctness guard from the full
- *  `EndpointRequest`/`EndpointReply` envelope, which this rail does NOT yet carry (named residual:
- *  the rail moved to `ep` SUBJECTS while still exchanging the ctl-era `{op,args}` / `{ok,data,error}`
- *  bodies, and SPEC 1421 states those envelopes are DELETED). Without the echo, a caller binding a
- *  reply on (endpoint, nonce) alone can accept a malformed or WRONG-ID `{ok:true}` and clear a
- *  retirement hold on it. The full envelope migration is its own cut; this edge is not deferrable. */
-function parseRequestId(raw: unknown): string {
-  if (typeof raw !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(raw))
-    throw new EpEnvelopeError("failed-precondition", `the request requires an "id" ([A-Za-z0-9_-]{1,64}); the reply echoes it so a caller cannot accept another request's answer`);
-  return raw;
-}
-
-function parseRetireArgs(raw: unknown): RetireArgs {
-  const shape = "{ opId, serveEndpoint, serveInstanceId, serveEpoch }";
-  if (raw === null || typeof raw !== "object")
-    throw new EpEnvelopeError("failed-precondition", `retireLifecycle requires args ${shape}`);
-  const a = raw as Record<string, unknown>;
-  // The TARGET (owner, actor, lifecycleUid) is no longer an argument: `handle` mode carries it in
-  // the subject, broker-enforced and grant-pinned, so the handler reads it from there. Sending it
-  // in the body is now a CLOSED-SHAPE violation rather than a redundancy to reconcile — which
-  // removes the whole body-vs-subject mismatch class instead of managing it.
-  for (const k of Object.keys(a)) if (!RETIRE_ARG_KEYS.includes(k))
-    throw new EpEnvelopeError("failed-precondition", `retireLifecycle args carry the unknown field "${k}" (closed shape; the target rides the SUBJECT)`);
-  if (typeof a.opId !== "string" ||
-      typeof a.serveEndpoint !== "string" || typeof a.serveInstanceId !== "string" ||
-      typeof a.serveEpoch !== "number" || !Number.isInteger(a.serveEpoch) || a.serveEpoch < 0)
-    throw new EpEnvelopeError("failed-precondition", `retireLifecycle requires args ${shape} (serveEpoch a non-negative integer)`);
-  return {
-    // opId is OPERATION IDENTITY, not an authz input: the terminal rail independently derives it
-    // from the broker-pinned lifecycle target below. This parse only enforces the token grammar.
-    opId: assertLifecycleToken(a.opId, "opId"),
-    // LOOKUP COORDINATES, not authz inputs: they select WHICH gate row to read. The row they
-    // select must then survive the principal cross-check below, so naming a foreign row buys a
-    // refusal, never an authorization.
-    serveEndpoint: endpointToken(a.serveEndpoint),
-    serveInstanceId: assertLifecycleToken(a.serveInstanceId, "serveInstanceId"),
-    serveEpoch: a.serveEpoch,
-  };
 }
 
 /** The terminal rail's operation-identity authorization. The requester credential pins the target
@@ -216,16 +158,23 @@ export async function openAuthAdminListener(opts: {
   reg: LifecycleRegistry;
   retirement: RetirementDeps;
   barrierFlight: RetirementFlights;
+  /** The plane's #399 M2-registered instance id and current process epoch (`authServeGrant.epoch`)
+   *  — the SAME instance/epoch the registration ceremony fenced. The gate's process-epoch reader is
+   *  the fence now; there is no separate fixed responder identity to mint. */
+  instanceId: string;
+  epoch: number;
+  /** The M2-authorized serve artifact for this instance/epoch (`authServeGrant`, `service.ts:513`)
+   *  — `serveEndpoint` consumes it directly; it is the ONE authority source for what this
+   *  credential may serve (SPEC 13.9). */
+  grant: EpServeGrant;
   log: (line: string) => void;
 }): Promise<AuthAdminListener> {
   const { space, log } = opts;
-  // The auth plane's responder identity. The plane is SINGLE per space by construction (§13.13:
-  // at most one authority plane holds the sealed scanners, by a broker-visible claim), so the
-  // instance id is per-process and the epoch is fixed: there is no successor to fence and no
-  // registration whose epoch could advance beneath us. It exists because the reply plane pins the
-  // responder triple in the grant; callers read replies through a filter that wildcards these
-  // positions (`ep.reply.*.*.*.<cO>.<cA>.<cUid>.*`), so they never need to learn it.
-  const responder = { instanceId: mintLifecycleUid(), epoch: 0 };
+  // The auth plane's responder identity is the #399 M2-registered instance/epoch (the SAME triple
+  // `registerServiceInstance` fenced and `authorizeServeGrant` minted a serve grant for). The reply
+  // plane pins this triple in the grant; callers read replies through a filter that wildcards the
+  // caller-suffix positions (`ep.reply.*.*.*.<cO>.<cA>.<cUid>.*`), so they never need to learn it.
+  const responder = { instanceId: opts.instanceId, epoch: opts.epoch };
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space, dataAccount: opts.dataAccount,
     label: `cotal:auth-admin:${space}`,
@@ -241,49 +190,6 @@ export async function openAuthAdminListener(opts: {
     await client.close();
     throw e;
   }
-  const sub: Subscription = client.nc.subscribe(authClassRail(space), {
-    queue: epClassQueueGroup(AUTH_ENDPOINT),
-    callback: (err, msg) => {
-      if (err) return;
-      void (async () => {
-        // The reply target is DERIVED from the parsed request, never taken from the wire. On the
-        // `ctl` rail this was a guard: the listener held a subtree-wide reply grant, so a
-        // caller-selected foreign reply target had to be refused by inspecting `msg.reply`. Here
-        // there is no argument through which a payload-supplied reply target could arrive — the
-        // guard became structural, so the check it replaced cannot be forgotten.
-        const parsed = parseEpSubject(msg.subject);
-        if (parsed === null || parsed.plane !== "request") {
-          // null = MUST NOT handle (§13.2). Never a reply: an unparseable subject has no
-          // derivable reply target, and answering one would be the confused deputy itself.
-          log(`auth-admin: dropped an unparseable request subject ${msg.subject}`);
-          return;
-        }
-        const request: ParsedEpRequest = parsed;
-        // The echoed id is stamped HERE, outside the handler, so EVERY reply carries it - including
-        // the thrown-error path. A reply the caller cannot bind to its own request is one it must
-        // ignore, so an unstamped error reply would silently become a timeout instead of a refusal.
-        let echoId: string | undefined;
-        try { echoId = parseRequestId((JSON.parse(dec.decode(msg.data)) as { id?: unknown }).id); }
-        catch { echoId = undefined; }
-        let reply: { ok: boolean; id?: string; data?: unknown; error?: string };
-        try {
-          reply = await handle(request, msg.data);
-        } catch (e) {
-          reply = { ok: false, error: e instanceof Error ? e.message : String(e) };
-        }
-        // A request with no usable id gets an unbindable reply BY CONSTRUCTION: the caller requires
-        // the echo, so it will refuse this answer rather than accept an unattributable one.
-        if (echoId !== undefined) reply.id = echoId;
-        const target = deriveReplySubject(space, request, responder);
-        try {
-          client.nc.publish(target, enc.encode(JSON.stringify(reply)));
-        } catch (e) {
-          log(`auth-admin: reply publish failed on ${target}: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      })();
-    },
-  });
-
   // SINGLE-FLIGHT the barrier EXECUTION per opId (audit #1): each request still runs its OWN fresh
   // lease re-check + idempotence, but concurrent same-opId requests (a manager nudge + a retry, or a boot
   // resume racing the rail) share ONE runAgentRetirementBarrier, so the barrier body never dual-executes
@@ -296,102 +202,110 @@ export async function openAuthAdminListener(opts: {
   // never run two barrier executions of one opId in this process (#2070).
   const barrierFlight = opts.barrierFlight;
 
-  const handle = async (request: ParsedEpRequest, body: Uint8Array): Promise<{ ok: boolean; id?: string; data?: unknown; error?: string }> => {
-    if (request.command !== EP_CMD_RETIRE_LIFECYCLE)
-      return { ok: false, error: `command "${request.command}" not supported on the auth endpoint` };
-    // The TARGET comes from the subject (`handle` mode, arity 3) — broker-enforced and
-    // grant-pinned, so it is not a claim the caller can vary independently of what it may publish.
-    if (request.target === null || request.target.mode !== "handle")
-      return { ok: false, error: `retire-lifecycle requires a handle target (<owner>.<actor>.<lifecycleUid>) in the subject` };
-    const target = { owner: request.target.tOwner, actor: request.target.tActor, lifecycleUid: request.target.tUid };
-    // The CALLER principal likewise comes from the subject, and is now an AUTHZ INPUT (the
-    // cross-check below), not just the audit line it was on the `ctl` rail.
-    const requester = principalKey(request.caller.owner, request.caller.actor).key;
-    let req: { id?: unknown; op?: unknown; args?: unknown };
-    try {
-      req = JSON.parse(dec.decode(body)) as { op?: unknown; args?: unknown };
-    } catch {
-      return { ok: false, error: "auth-admin: the request body is not JSON" };
-    }
-    if (req.op !== "retireLifecycle")
-      return { ok: false, error: `op "${String(req.op)}" not supported on the auth admin service` };
-    const args = parseRetireArgs(req.args);
-    // TARGET comes from the broker-authorized subject. Bind the body's opId to it BEFORE the serve
-    // gate, lifecycle head, intent, or barrier is touched, so mint-time validation is not the only
-    // fence and the same target can never start a second durable terminal operation.
-    authorizeRetirementOperation(target.lifecycleUid, args.opId);
-
-    // THE RAIL-TIME REGISTRATION RE-CHECK (fresh, leader-served, fail-closed) — P2 item 3 (3b-3):
-    // the requesting manager instance's SERVE GRANT must be current. Read the serve-issuance gate
-    // (registration-record-derived, REPLACING the old name-derived manager-lease holder check): the
-    // requester declares its (serveEndpoint, serveInstanceId, serveEpoch); an absent/retired gate means
-    // no registered instance, and a gate whose current processEpoch moved past the declared one means
-    // the requester was SUPERSEDED (a deposed predecessor after a restart) — refused as a full no-op.
-    // The row this NAMES must also BELONG to the subject-derived caller principal (the cross-check
-    // below). Before #350 it did not have to: every instance of one space shares the manager
-    // principal, and the two-token `ctl` subject could not express the caller beyond that alias, so
-    // any current instance's gate authorized. That is no longer true, and the coordinates above no
-    // longer authorize — they only select which row to read.
-    // ALIAS-LEVEL, not incarnation-level: a DIFFERENT INSTANCE OF THE SAME PRINCIPAL still passes
-    // (the gate is keyed by the persisted instanceId and its row carries no lifecycle uid). What is
-    // refused is a row belonging to a DIFFERENT PRINCIPAL.
-    let serveGate: Awaited<ReturnType<ReturnType<typeof serveIssuanceGateKv>["observe"]>>;
-    try {
-      serveGate = await serveIssuanceGateKv(epAuthKv, space, { endpoint: args.serveEndpoint, instanceId: args.serveInstanceId }).observe();
-    } catch (e) {
-      return { ok: false, error: `the retirement request cannot be authorized right now: the manager serve-issuance gate could not be read (${e instanceof Error ? e.message : String(e)}). Nothing was applied - the agent is unchanged. NEXT: check the broker and retry the despawn.` };
-    }
-    if (serveGate === null || serveGate.state === "retired")
-      return { ok: false, error: `no manager instance currently holds a serve registration for "${space}" (instance ${args.serveInstanceId} is ${serveGate === null ? "unregistered" : "retired"}), so nothing may retire agents. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: start or recover the manager (\`cotal supervise\`), then retry the despawn.` };
-    // THE PRINCIPAL CROSS-CHECK (#350). The two serve coordinates above only SELECTED this row;
-    // they do not authorize. The row must belong to the SUBJECT-derived caller principal — which
-    // the broker enforced when it admitted the publish. Without this, naming any currently
-    // registered instance's row authorizes the caller, which is what the `ctl` rail did: its
-    // two-token subject could not express the caller beyond an alias, so there was nothing to
-    // compare the row against.
-    // ALIAS-LEVEL, not incarnation-level: the gate is keyed by the PERSISTED instanceId and its
-    // schema carries no uid, while the caller triple's uid is per-process. A same-principal zombie
-    // predecessor holding the current epoch value still passes. Closing that needs a gate-row
-    // schema change; it is deliberately not in this cut.
-    if (serveGate.principal !== requester)
-      return { ok: false, error: `the retirement request was REFUSED: the serve registration named (${args.serveEndpoint}/${args.serveInstanceId}) belongs to ${serveGate.principal}, not to the requesting principal ${requester}. A caller may only be authorized by its OWN serve registration. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: name your OWN principal's serve registration (any current instance of ${requester} will do), or call as the principal that owns this one.` };
-    if (serveGate.processEpoch !== args.serveEpoch)
-      return { ok: false, error: `the requesting manager instance ${args.serveInstanceId} was SUPERSEDED (it registered at epoch ${args.serveEpoch}, the current serve grant is epoch ${serveGate.processEpoch}), so this despawn was REFUSED as a FULL no-op - the agent is unchanged and still running, nothing was torn down. NEXT: recover the manager (\`cotal supervise\`), then retry the despawn under the current serving instance.` };
-
-    // IDEMPOTENCE (the four-outcome table, in operator vocabulary).
-    const head = await readLifecycleHeadForOperation(opts.reg, target.owner, target.actor);
-    if (head === undefined)
-      return { ok: false, error: `no lifecycle exists for "${target.owner}/${target.actor}"; there is nothing to retire.` };
-    if (head.mapping.state === "retired" && head.mapping.lifecycleUid === target.lifecycleUid)
-      return { ok: true, data: { alreadyRetired: true, lifecycleUid: target.lifecycleUid } };
-    if (head.mapping.lifecycleUid !== target.lifecycleUid)
-      return { ok: false, error: `the despawn names a stale incarnation of "${target.owner}/${target.actor}" (current is ${head.mapping.lifecycleUid}); nothing was retired. NEXT: refresh the agent list and retry against the current incarnation.` };
-    const gate = await observeGate(opts.reg, target.lifecycleUid);
-    if (gate !== undefined && gate.row.state === "frozen" && gate.row.op !== undefined && gate.row.op.opId !== args.opId)
-      return { ok: false, error: `another operation (${gate.row.op.kind} ${gate.row.op.opId}) already holds "${target.owner}/${target.actor}"; this despawn did not start a second one. NEXT: wait for that operation to finish (or its resume on the next auth-service boot), then retry.` };
-
-    // EXECUTE (create-or-resume: the barrier's own freeze CAS + durable intent make the same
-    // opId resumable and a re-request idempotent). The drain, cleaner, and repair credentials
-    // all come from the plane's reviewed deps - this listener holds none of those rights.
-    const existing = barrierFlight.get(args.opId);
-    // A despawn cannot know the target's pool work, and the barrier never takes a pool hint: it
-    // DISCOVERS the real (endpoint, pools) cleaner inventory from the target's own accepted pool
-    // obligations (#F). Discovery is never a gap - the barrier never closes a frontier over
-    // un-cleaned accepted pool work (SPEC 13.1/13.9).
-    const flight = joinOrStartRetirement(barrierFlight, opts.reg, {
-      owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid, opId: args.opId,
-      frontierStreams: retirementFrontierStreams(space),
-    }, opts.retirement);
-    if (flight === undefined)
-      return { ok: false, error: `operation id ${args.opId} is already in flight for a different lifecycle (${existing?.owner}/${existing?.actor} ${existing?.lifecycleUid}); this despawn of "${target.owner}/${target.actor}" (${target.lifecycleUid}) was a FULL no-op - nothing was retired and it is still running. NEXT: retry the despawn (the manager derives a distinct operation id per lifecycle).` };
-    const result = await flight;
-    log(`auth-admin: retired ${target.owner}/${target.actor} (${target.lifecycleUid}) by despawn request from ${requester} (op ${args.opId})`);
-    return { ok: true, data: { retired: true, lifecycleUid: target.lifecycleUid, opId: result.opId, evictedPrincipals: result.evictedPrincipals } };
+  // The FRESH target resolver (§13.3/§13.9) for the `exact`-mode `retire-lifecycle` target: the
+  // lifecycle registry's own leader-served mapping read is the current-mapping authority.
+  const resolveTarget = async (t: { owner: string; actor: string }): Promise<{ lifecycleUid: string; mappingRevision: number } | undefined> => {
+    const head = await readLifecycleHeadForOperation(opts.reg, t.owner, t.actor);
+    return head === undefined ? undefined : { lifecycleUid: head.mapping.lifecycleUid, mappingRevision: head.revision };
   };
+
+  const handlers: AuthServiceHandlers = {
+    retireLifecycle: async (ctx: EpServeContext) => {
+      // The TARGET comes from the subject (`exact` mode, arity 3) — broker-enforced and
+      // grant-pinned, not a claim the caller can vary independently of what it may publish.
+      const t = ctx.subject.target;
+      if (t === null || t.mode !== "exact")
+        throw new EpEnvelopeError("failed-precondition", `retire-lifecycle requires an exact target (<owner>.<actor>.<lifecycleUid>) in the subject`);
+      const target = { owner: t.tOwner, actor: t.tActor, lifecycleUid: t.tUid };
+      // The CALLER principal likewise comes from the subject, and is an AUTHZ INPUT (the
+      // cross-check below), not just an audit line.
+      const requester = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+      const args = ctx.request.args as unknown as RetireArgs;
+      // TARGET comes from the broker-authorized subject. Bind the body's opId to it BEFORE the
+      // serve gate, lifecycle head, intent, or barrier is touched, so mint-time validation is not
+      // the only fence and the same target can never start a second durable terminal operation.
+      authorizeRetirementOperation(target.lifecycleUid, args.opId);
+
+      // THE RAIL-TIME REGISTRATION RE-CHECK (fresh, leader-served, fail-closed) — P2 item 3 (3b-3):
+      // the requesting manager instance's SERVE GRANT must be current. Read the serve-issuance gate
+      // (registration-record-derived, REPLACING the old name-derived manager-lease holder check): the
+      // requester declares its (serveEndpoint, serveInstanceId, serveEpoch); an absent/retired gate means
+      // no registered instance, and a gate whose current processEpoch moved past the declared one means
+      // the requester was SUPERSEDED (a deposed predecessor after a restart) — refused as a full no-op.
+      // The row this NAMES must also BELONG to the subject-derived caller principal (the cross-check
+      // below). Before #350 it did not have to: every instance of one space shares the manager
+      // principal, and the two-token `ctl` subject could not express the caller beyond that alias, so
+      // any current instance's gate authorized. That is no longer true, and the coordinates above no
+      // longer authorize — they only select which row to read.
+      // ALIAS-LEVEL, not incarnation-level: a DIFFERENT INSTANCE OF THE SAME PRINCIPAL still passes
+      // (the gate is keyed by the persisted instanceId and its row carries no lifecycle uid). What is
+      // refused is a row belonging to a DIFFERENT PRINCIPAL.
+      let serveGate: Awaited<ReturnType<ReturnType<typeof serveIssuanceGateKv>["observe"]>>;
+      try {
+        serveGate = await serveIssuanceGateKv(epAuthKv, space, { endpoint: args.serveEndpoint, instanceId: args.serveInstanceId }).observe();
+      } catch (e) {
+        throw new EpEnvelopeError("unavailable", `the retirement request cannot be authorized right now: the manager serve-issuance gate could not be read (${e instanceof Error ? e.message : String(e)}). Nothing was applied - the agent is unchanged. NEXT: check the broker and retry the despawn.`);
+      }
+      if (serveGate === null || serveGate.state === "retired")
+        throw new EpEnvelopeError("failed-precondition", `no manager instance currently holds a serve registration for "${space}" (instance ${args.serveInstanceId} is ${serveGate === null ? "unregistered" : "retired"}), so nothing may retire agents. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: start or recover the manager (\`cotal supervise\`), then retry the despawn.`);
+      // THE PRINCIPAL CROSS-CHECK (#350). The two serve coordinates above only SELECTED this row;
+      // they do not authorize. The row must belong to the SUBJECT-derived caller principal — which
+      // the broker enforced when it admitted the publish. Without this, naming any currently
+      // registered instance's row authorizes the caller, which is what the `ctl` rail did: its
+      // two-token subject could not express the caller beyond an alias, so there was nothing to
+      // compare the row against.
+      // ALIAS-LEVEL, not incarnation-level: the gate is keyed by the PERSISTED instanceId and its
+      // schema carries no uid, while the caller triple's uid is per-process. A same-principal zombie
+      // predecessor holding the current epoch value still passes. Closing that needs a gate-row
+      // schema change; it is deliberately not in this cut.
+      if (serveGate.principal !== requester)
+        throw new EpEnvelopeError("permission-denied", `the retirement request was REFUSED: the serve registration named (${args.serveEndpoint}/${args.serveInstanceId}) belongs to ${serveGate.principal}, not to the requesting principal ${requester}. A caller may only be authorized by its OWN serve registration. The despawn was a FULL no-op - the agent is unchanged and still running. NEXT: name your OWN principal's serve registration (any current instance of ${requester} will do), or call as the principal that owns this one.`);
+      if (serveGate.processEpoch !== args.serveEpoch)
+        throw new EpEnvelopeError("expired", `the requesting manager instance ${args.serveInstanceId} was SUPERSEDED (it registered at epoch ${args.serveEpoch}, the current serve grant is epoch ${serveGate.processEpoch}), so this despawn was REFUSED as a FULL no-op - the agent is unchanged and still running, nothing was torn down. NEXT: recover the manager (\`cotal supervise\`), then retry the despawn under the current serving instance.`);
+
+      // IDEMPOTENCE (the four-outcome table, in operator vocabulary).
+      const head = await readLifecycleHeadForOperation(opts.reg, target.owner, target.actor);
+      if (head === undefined)
+        throw new EpEnvelopeError("failed-precondition", `no lifecycle exists for "${target.owner}/${target.actor}"; there is nothing to retire.`);
+      if (head.mapping.state === "retired" && head.mapping.lifecycleUid === target.lifecycleUid)
+        return { retired: true, lifecycleUid: target.lifecycleUid, opId: args.opId, evictedPrincipals: [] };
+      if (head.mapping.lifecycleUid !== target.lifecycleUid)
+        throw new EpEnvelopeError("expired", `the despawn names a stale incarnation of "${target.owner}/${target.actor}" (current is ${head.mapping.lifecycleUid}); nothing was retired. NEXT: refresh the agent list and retry against the current incarnation.`);
+      const gate = await observeGate(opts.reg, target.lifecycleUid);
+      if (gate !== undefined && gate.row.state === "frozen" && gate.row.op !== undefined && gate.row.op.opId !== args.opId)
+        throw new EpEnvelopeError("conflict", `another operation (${gate.row.op.kind} ${gate.row.op.opId}) already holds "${target.owner}/${target.actor}"; this despawn did not start a second one. NEXT: wait for that operation to finish (or its resume on the next auth-service boot), then retry.`);
+
+      // EXECUTE (create-or-resume: the barrier's own freeze CAS + durable intent make the same
+      // opId resumable and a re-request idempotent). The drain, cleaner, and repair credentials
+      // all come from the plane's reviewed deps - this listener holds none of those rights.
+      const existing = barrierFlight.get(args.opId);
+      // A despawn cannot know the target's pool work, and the barrier never takes a pool hint: it
+      // DISCOVERS the real (endpoint, pools) cleaner inventory from the target's own accepted pool
+      // obligations (#F). Discovery is never a gap - the barrier never closes a frontier over
+      // un-cleaned accepted pool work (SPEC 13.1/13.9).
+      const flight = joinOrStartRetirement(barrierFlight, opts.reg, {
+        owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid, opId: args.opId,
+        frontierStreams: retirementFrontierStreams(space),
+      }, opts.retirement);
+      if (flight === undefined)
+        throw new EpEnvelopeError("conflict", `operation id ${args.opId} is already in flight for a different lifecycle (${existing?.owner}/${existing?.actor} ${existing?.lifecycleUid}); this despawn of "${target.owner}/${target.actor}" (${target.lifecycleUid}) was a FULL no-op - nothing was retired and it is still running. NEXT: retry the despawn (the manager derives a distinct operation id per lifecycle).`);
+      const result = await flight;
+      log(`auth-admin: retired ${target.owner}/${target.actor} (${target.lifecycleUid}) by despawn request from ${requester} (op ${args.opId})`);
+      return { retired: true, lifecycleUid: target.lifecycleUid, opId: result.opId, evictedPrincipals: result.evictedPrincipals };
+    },
+  };
+
+  // §13.9: the descriptor is PUBLIC. The broker grant on the request subject (who holds the
+  // caller triple's request-publish row, minted only by the `retirement-requester` profile) is the
+  // load-bearing authority tier; describe merely lists command names/schemas, which leaks nothing
+  // a holder of that grant does not already need to know to call successfully.
+  const handle: import("@cotal-ai/core").EpServeHandle = serveEndpoint(
+    client.nc, space, opts.grant, authCommandDefs(handlers), { public: true }, { resolveTarget },
+  );
 
   return {
     close: async () => {
-      try { sub.unsubscribe(); } catch { /* connection already down */ }
+      await handle.stop();
       await client.close();
     },
   };

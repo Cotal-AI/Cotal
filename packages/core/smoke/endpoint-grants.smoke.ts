@@ -49,6 +49,10 @@ const handleCap: EpCapability = { endpoint: "manager", command: "attach", target
 c("handle row builds through epRequestGrantRows (the redemption path) with the full triple pinned",
   epRequestGrantRows("demo", handleCap, caller)[0]
   === `cotal.demo.ep.one.manager.attach.handle.u_t.svc.${"h".repeat(26)}.u_abc.cli.${UID}.*`);
+const exactCap: EpCapability = { endpoint: "manager", command: "attach", target: { mode: "exact", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) } };
+c("exact row builds through epRequestGrantRows as a literal one triple, never a wildcard",
+  epRequestGrantRows("demo", exactCap, caller)[0]
+  === `cotal.demo.ep.one.manager.attach.exact.u_t.svc.${"h".repeat(26)}.u_abc.cli.${UID}.*`);
 c("any mode accepts a wildcard target owner (operator/admin mint policy)",
   epRequestGrantRows("demo", { endpoint: "manager", command: "stop", target: { mode: "any", tOwner: "*" } }, caller)[0]
   === `cotal.demo.ep.one.manager.stop.any.*.u_abc.cli.${UID}.*`);
@@ -64,6 +68,8 @@ throws("caller owner/actor tokens are grammar-validated in grant rows too",
   () => epRequestGrantRows("demo", spawnCap, { owner: "u_abc", actor: "c.li", uid: UID }));
 throws("standing caller bundle refuses a handle-mode capability (redemption-minted only)",
   () => epCallerGrantRows("demo", [handleCap], caller));
+throws("standing caller bundle refuses an exact-mode capability (minted only through its owning profile)",
+  () => epCallerGrantRows("demo", [exactCap], caller));
 const bundle = epCallerGrantRows("demo", [spawnCap], caller);
 c("caller bundle: request + journal pub, reply-rail + own-goal-progress sub (spawn is goal-bearing, P2 item 2)",
   bundle.pub.length === 2 && bundle.sub.length === 2

@@ -49,7 +49,9 @@ the fetched input schema before publish. A signed-in user invokes the same surfa
 bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
 through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
 does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
-same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
+same trust chain, so there is nothing the built-ins can reach that a described contract cannot. The registered
+`auth` endpoint is describable the same way `manager` is: `cotal describe auth` lists
+`retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an

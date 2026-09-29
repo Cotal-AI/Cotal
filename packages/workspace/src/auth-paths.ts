@@ -416,6 +416,64 @@ export function createManagerInstanceIdentity(root: string, space: string, candi
   }
 }
 
+/** The AUTH PLANE's persisted instance identity (#399 M2): a stable `instanceId` + serve nkey so
+ *  a restart re-registers the SAME `svc.auth.<instanceId>` instance (`registerServiceInstance`
+ *  advances the process epoch on a re-registration and fences the predecessor rather than minting
+ *  a fresh, un-fenced one). Mirrors {@link ManagerInstanceIdentity} exactly; kept as its own type
+ *  (not a reuse) because it is a distinct persisted principal for a distinct served endpoint. */
+export interface AuthInstanceIdentity {
+  instanceId: string;
+  serveIdentity: { id: string; seed: string };
+}
+function authInstanceFile(root: string, space: string): string {
+  return join(authDir(root), `auth-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+}
+/** Load this workspace root's persisted auth-plane instance identity for `space`, or undefined if
+ *  the auth plane has never registered here. A present-but-MALFORMED file fails LOUD: minting a
+ *  fresh id over it would orphan the prior registration and break the restart-fence guarantee. */
+export function loadAuthInstanceIdentity(root: string, space: string): AuthInstanceIdentity | undefined {
+  const f = authInstanceFile(root, space);
+  if (!existsSync(f)) return undefined;
+  let parsed: AuthInstanceIdentity;
+  try { parsed = JSON.parse(readFileSync(f, "utf8")) as AuthInstanceIdentity; }
+  catch (e) { throw new Error(`the persisted auth instance identity at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`); }
+  if (parsed === null || typeof parsed !== "object"
+    || typeof parsed.instanceId !== "string" || parsed.instanceId.length === 0
+    || parsed.serveIdentity === null || typeof parsed.serveIdentity !== "object"
+    || typeof parsed.serveIdentity.id !== "string" || parsed.serveIdentity.id.length === 0
+    || typeof parsed.serveIdentity.seed !== "string" || parsed.serveIdentity.seed.length === 0)
+    throw new Error(`the persisted auth instance identity at ${f} is malformed; refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`);
+  return { instanceId: parsed.instanceId, serveIdentity: { id: parsed.serveIdentity.id, seed: parsed.serveIdentity.seed } };
+}
+/** Persist this workspace root's auth-plane instance identity for `space` (hardened secret file). */
+export function saveAuthInstanceIdentity(root: string, space: string, identity: AuthInstanceIdentity): void {
+  const dir = authDir(root);
+  mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
+  writeSecretFile(authInstanceFile(root, space), JSON.stringify(identity, null, 2));
+}
+
+/**
+ * First-start identity mint for the auth plane: of N concurrent creators on a fresh root, exactly
+ * one creates the file and the others adopt the winner (mirrors {@link createManagerInstanceIdentity}).
+ */
+export function createAuthInstanceIdentity(root: string, space: string, candidate: AuthInstanceIdentity): AuthInstanceIdentity {
+  const dir = authDir(root);
+  mkSecretDir(dir);
+  const path = authInstanceFile(root, space);
+  try {
+    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
+    return candidate;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const winner = loadAuthInstanceIdentity(root, space);
+    if (winner === undefined)
+      throw new Error(
+        `auth-instance-identity-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`,
+      );
+    return winner;
+  }
+}
+
 /** The account file's key IS {@link spaceKey} — one injective, case-safe encoder for every
  *  tenant-keyed namespace. The space's real name rides in the document, never inferred from the
  *  key alone. */

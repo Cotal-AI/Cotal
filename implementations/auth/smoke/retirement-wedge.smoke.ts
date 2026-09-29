@@ -45,10 +45,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epAuthBucket, epgateKey,
-  epCallerReplyFilter, epRequestSubject, parseEpSubject,
   createEndpointStreams, createRecordEntry, createSpaceAuth, ensureAuthorityStores,
   epfStreamName, epwStreamName, isReachable, managedRetirementOpId, mintCreds, mintLifecycleUid, newIdentity,
   principalKey, recordAtomicKey, RETIREMENT_FRONTIER, serverConfig, DEV_OWNER,
+  resolveService, invokeCommand, idFromCreds,
   type EvictionResult, type PlaneConnTuple, type PlaneLivenessQuery, type PlaneLivenessResult,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
@@ -102,44 +102,28 @@ const MGR_INST = mintLifecycleUid();
 const SERVE_EPOCH = 1;
 const MGR_KEY = principalKey(DEV_OWNER, MGR_SERVE.id).key;
 
-/** One rail request over a FRESH requester credential (the real mint + real broker ACLs), exactly
- *  as auth-admin.smoke.ts drives the retire-lifecycle rail. */
+/** One rail request over a FRESH requester credential (the real mint + real broker ACLs), sent
+ *  through the GENERIC client (`resolveService` + `invokeCommand` from `@cotal-ai/core`) exactly
+ *  as auth-admin.smoke.ts's own `request()` sends it - never a hand-built pre-lane body, which
+ *  the v1 envelope refuses `unsupported-version` before its id is even read. */
 async function railRequest(
   caller: { owner: string; actor: string; uid: string },
   target: { owner: string; actor: string; lifecycleUid: string },
   args: Record<string, unknown> = {},
 ): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply"> {
   const creds = await mintCreds(auth, newIdentity(), "retirement-requester", { retirementRequester: { ...caller, target } });
-  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), maxReconnectAttempts: 0 });
-  const nonce = randomUUID().replace(/-/g, "") + "aaaaaaaa";
+  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
   try {
-    const subject = epRequestSubject(space, {
-      route: { mode: "one" }, endpoint: AUTH_ENDPOINT, command: EP_CMD_RETIRE_LIFECYCLE,
-      target: { mode: "handle", tOwner: target.owner, tActor: target.actor, tUid: target.lifecycleUid },
-      caller, nonce,
-    });
     const fullArgs = { serveEndpoint: "manager", serveInstanceId: MGR_INST, serveEpoch: SERVE_EPOCH, ...args };
-    const requestId = randomUUID().replace(/-/g, "");
-    let settle: (v: { ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply") => void;
-    const got = new Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string } | "no-reply">((res) => { settle = res; });
-    const sub = nc.subscribe(epCallerReplyFilter(space, caller), {
-      callback: (_err, msg) => {
-        const parsed = parseEpSubject(msg.subject);
-        if (!parsed || parsed.plane !== "reply" || parsed.endpoint !== AUTH_ENDPOINT || parsed.nonce !== nonce) return;
-        let body: { ok: boolean; id?: unknown; data?: Record<string, unknown>; error?: string };
-        try { body = JSON.parse(new TextDecoder().decode(msg.data)) as typeof body; } catch { return; }
-        if (body.id !== requestId) return;
-        settle(body);
-      },
+    const service = await resolveService(nc, space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000 });
+    const attributed = await invokeCommand(nc, space, service, EP_CMD_RETIRE_LIFECYCLE, fullArgs, {
+      target: { mode: "exact", owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid },
+      deadlineMs: 8_000,
     });
-    const timer = setTimeout(() => settle("no-reply"), 8000);
-    nc.publish(subject, new TextEncoder().encode(JSON.stringify({ id: requestId, op: "retireLifecycle", args: fullArgs })));
-    const out = await got;
-    clearTimeout(timer);
-    try { sub.unsubscribe(); } catch { /* down */ }
-    return out;
+    const r = attributed.reply;
+    return { ok: r.ok, ...(r.data !== undefined ? { data: r.data as Record<string, unknown> } : {}), ...(r.error ? { error: r.error.message } : {}) };
   } catch (e) {
-    if (/timeout|no responders|permission/i.test((e as Error).message)) return "no-reply";
+    if (/timeout|no responders|permission|deadline-exceeded|unavailable/i.test((e as Error).message)) return "no-reply";
     throw e;
   } finally {
     await nc.close().catch(() => {});
@@ -309,6 +293,13 @@ try {
       !lines2.some((l) => l.includes(wedge.op)), lines2.filter((l) => l.includes(wedge.op)));
     // Keep ONE plane open from here: the rail's trigger needs a live serving plane, and staging
     // wedge B with no plane open would let the NEXT boot's resume (trigger A) consume it first.
+    // The FIRST boot above (`plane`) must close before its slot is reassigned - a leaked prior
+    // instance keeps its class-rail queue subscription live and can steal a request meant for
+    // the current epoch, answering at its own stale epoch (a real requester using the generic
+    // client's currency bind then refuses failed-precondition, never a fabricated body's silent
+    // drop - the rail request now goes through resolveService/invokeCommand like every other
+    // caller, so this pre-existing leak is now reachable).
+    await plane!.close().catch(() => {});
     plane = await bootPlane({ evictor: okEvictor([]) });
   }
 

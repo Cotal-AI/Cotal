@@ -322,8 +322,11 @@ export function compileHandleGrants(
 
 /** The command-mode lattice `self < owner < any`; `child`/`ledger`/`handle` are grantable in a
  *  child ONLY where the parent names the SAME mode (they are distinct validator-primary rails,
- *  never a widening of `owner`). */
-const MODE_RANK: Record<EpAuthzMode, number> = { self: 0, owner: 1, child: 1, ledger: 1, handle: 1, any: 2 };
+ *  never a widening of `owner`). `exact` never appears via {@link modeOf} (it is minted only
+ *  through its owning profile, never redemption-shaped into a delegable handle artifact), so its
+ *  rank is unreachable; it is pinned alongside `handle` only so this table stays total over
+ *  {@link EpAuthzMode}. */
+const MODE_RANK: Record<EpAuthzMode, number> = { self: 0, owner: 1, child: 1, ledger: 1, handle: 1, exact: 1, any: 2 };
 
 function modeOf(cmd: HandleGrantCommand): EpAuthzMode {
   if (cmd.targetOwner === undefined) return "self"; // no-target ~ self/untargeted floor

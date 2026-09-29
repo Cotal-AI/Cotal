@@ -91,9 +91,14 @@ if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
 
 // A wide harness writer: store ensure + direct KV manipulation (claim steal / corruption).
 const wide = await openAuthorityClient({ server: SERVERS, space, dataAccount, label: `harness:${space}`, grants: (id) => (void id, { publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: quiet });
-const { ensureAuthorityStores } = await import("@cotal-ai/core");
+const { ensureAuthorityStores, createEndpointStreams } = await import("@cotal-ai/core");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 await ensureAuthorityStores(await jetstreamManager(wide.nc), new Kvm(wide.nc), space);
+// The plane's own boot only ensures the AUTHORITY stores; the CONTRACT store (`EPC_<space>`,
+// created by `createEndpointStreams`) is created by production space setup (`up`'s `postStart`)
+// before the plane opens. Section H opens the real plane on this space, so this fixture stands
+// in for that setup step, once, before the first `openAuthAuthorityPlane(` call below.
+await createEndpointStreams(await jetstreamManager(wide.nc), new Kvm(wide.nc), space);
 const wideKv = await new Kvm(wide.nc).open(epAuthBucket(space));
 
 const openCands = async () => ({
