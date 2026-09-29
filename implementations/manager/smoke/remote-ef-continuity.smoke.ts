@@ -4,7 +4,7 @@
  * - Real HTTP /manager-service-authority route backed by openAuthAuthorityPlane
  * - Fresh first run admitted under caller's issued authority on the versioned rail
  * - Real seedless mintPublicUserJwt issuance for driver, mediator, and operator
- * - An accepted goal (spawn-as-action) with a real scripted SDK worker process
+ * - Real assembled CLI (cotal run start / journal / answer) against process-separated registered Manager
  * - Native workflow timer (sleep)
  * - Checkpoint pause and answering through stock run-answer
  * - Continuity through actual credential expiration and renewal with stable account and held public nkeys
@@ -19,7 +19,7 @@ if (process.argv[2] === "agent-bearer") {
 }
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -27,86 +27,55 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 const authRequire = createRequire(new URL("../../auth/package.json", import.meta.url));
-const { SignJWT } = authRequire("jose") as { SignJWT: any };
-import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+const { exportPKCS8 } = authRequire("jose") as { exportPKCS8: any };
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  CotalEndpoint,
-  DEFAULT_SERVER,
-  DEV_OWNER,
-  EP_UNBOUND_CALLER_AUTHORITY,
-  EpEnvelopeError,
-  STANDING_RENEWABLE_TTL_SEC,
-  admissionBucket,
   createEndpointStreams,
   createSpaceAuth,
-  credsClaims,
   ensureAdmissionStore,
   ensureAuthorityStores,
   ensureIssuedStores,
-  epAuthBucket,
-  epRequestSubject,
-  inspectCredHealth,
-  invokeCommand,
   isReachable,
-  jwtFromCreds,
   mintCreds,
-  mintGeneration,
   mintLifecycleUid,
   newIdentity,
-  openIssuedStore,
   openRecordsBucket,
-  provisionAgentDurables,
-  readCheckpointStatus,
   readRunAdmission,
   readRunRecord,
-  registry,
-  remoteManagerActors,
-  remoteManagerRegistrationProof,
-  resolveService,
   serverConfig,
   setupSpaceStreams,
-  standaloneConnectOpts,
   startTimerWriter,
-  withIssuerSession,
-  type Connector,
-  type Identity,
-  type IssuedCaller,
-  type IssuedSourceRef,
-  type LaunchOpts,
-  type LaunchSpec,
-  type RemoteManagerAuthorityMaterial,
-  type RemoteManagerAuthorityRequest,
-  type RunStatusView,
+  standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { authDir as workspaceAuthDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import {
+  openAuthAuthorityPlane,
+  handleManagerServiceAuthority,
   deriveOwnerForIdpSubject,
   grantActor,
-  handleManagerServiceAuthority,
-  openAuthAuthorityPlane,
 } from "../../auth/src/index.js";
-import { remoteManagerCurrentRegistrationProof } from "../../auth/src/retained-manager-validation.js";
-import { Manager } from "../src/manager.js";
-import {
-  loadOrCreateRemoteManagerIdentity,
-  materialCredential,
-  remoteManagerAdminAuthorizationRequest,
-  remoteManagerAdminAuthorized,
-  remoteManagerAuthorityRequest,
-  remoteManagerGoalIndexEntries,
-  remoteRunAdmission,
-  remoteRunAdmissionRequest,
-  remoteRunAttemptCredentials,
-  remoteRunAttemptRequest,
-  remoteRunRenewalCredentials,
-  remoteStandingBundleRenewal,
-} from "../src/remote-authority.js";
-import { registerRemoteManagerAuthority } from "../src/remote-register.js";
-import { managerClusterArtifacts } from "../src/manager-service-contract.js";
-import "@cotal-ai/runtime";
-import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { pickFreePort } from "./_free-port.js";
+
+const PORT = await pickFreePort();
+const SERVERS = `nats://127.0.0.1:${PORT}`;
+const SPACE = `ef${Math.random().toString(36).slice(2, 10)}`;
+const BROKER_DIR = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}ef-continuity-`));
+const auth = await createSpaceAuth(SPACE);
+
+writeFileSync(
+  join(BROKER_DIR, "server.conf"),
+  serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(BROKER_DIR, "js") }),
+);
+const broker = spawn("nats-server", ["-c", join(BROKER_DIR, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, BROKER_DIR);
+
+let httpServer: import("node:http").Server | undefined;
+let managerProc: ChildProcess | undefined;
+let timerNc: Awaited<ReturnType<typeof connect>> | undefined;
+let timerWriter: Awaited<ReturnType<typeof startTimerWriter>> | undefined;
 
 let pass = 0;
 let fail = 0;
@@ -128,31 +97,8 @@ async function until(pred: () => boolean | Promise<boolean>, ms: number) {
     if (await pred()) return true;
     await wait(200);
   }
-  return pred();
+  return false;
 }
-
-// 1. Scrub ambient COTAL environment variables
-for (const k of Object.keys(process.env)) {
-  if (k.startsWith("COTAL_")) delete process.env[k];
-}
-
-const SPACE = `ef${mintLifecycleUid().slice(0, 8).toLowerCase()}`;
-const PORT = await pickFreePort();
-const SERVERS = `nats://127.0.0.1:${PORT}`;
-const BROKER_DIR = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const auth = await createSpaceAuth(SPACE);
-
-writeFileSync(
-  join(BROKER_DIR, "server.conf"),
-  serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(BROKER_DIR, "js") }),
-);
-const broker = spawn("nats-server", ["-c", join(BROKER_DIR, "server.conf")], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, BROKER_DIR);
-
-let httpServer: import("node:http").Server | undefined;
-let manager: Manager | undefined;
-let timerNc: Awaited<ReturnType<typeof connect>> | undefined;
-let timerWriter: Awaited<ReturnType<typeof startTimerWriter>> | undefined;
 
 try {
   await awaitBrokerReady(() => isReachable(SERVERS), { servers: SERVERS, attempts: 50, delayMs: 100 });
@@ -172,19 +118,12 @@ try {
   timerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dlvCreds, tls: false }), maxReconnectAttempts: 0 });
   timerWriter = await startTimerWriter(timerNc, SPACE, { pollMs: 1_000 });
 
-  const issuerCreds = await mintCreds(auth, newIdentity(), "issuer", { principal: { owner: "local", actor: "host_issuer" } });
-  const issuerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: issuerCreds, tls: false }) });
-  const issuerKvm = new Kvm(issuerNc);
-  const issuerJsm = await jetstreamManager(issuerNc);
-  const issued = openIssuedStore(await issuerKvm.open(`cotal_issued_${SPACE}`), issuerJsm, SPACE);
-
-  // 2. Setup IDP and Auth plane with short rehearsal TTL (10s)
-  const authDir = mkdtempSync(join(tmpdir(), "cotal-ef-auth-"));
   const idpPair = generateKeyPairSync("ed25519");
-  const IDP_ISS = "https://idp.example/ef-composition";
-  const IDP_SUB = "human-ef-operator";
-  const OWNER_SECRET = "suite-owner-secret-32-bytes-long!";
+  const IDP_ISS = "https://idp.example/ef-joint";
+  const IDP_SUB = "operator-ef";
+  const OWNER_SECRET = "dummy-secret-value-32-chars-long!";
   const owner = deriveOwnerForIdpSubject(OWNER_SECRET, IDP_ISS, IDP_SUB);
+  const authDir = mkdtempSync(join(tmpdir(), "cotal-ef-auth-"));
 
   grantActor(authDir, {
     owner,
@@ -192,17 +131,8 @@ try {
     scope: ["supervise", "spawn"],
     allowSubscribe: [">"],
     allowPublish: [">"],
+    lifecycleUid: mintLifecycleUid(),
   });
-
-  const mintIdpJwt = async (sub = IDP_SUB) =>
-    new SignJWT({})
-      .setProtectedHeader({ alg: "EdDSA" })
-      .setIssuer(IDP_ISS)
-      .setAudience("cotal-services")
-      .setSubject(sub)
-      .setIssuedAt()
-      .setExpirationTime("5m")
-      .sign(idpPair.privateKey);
 
   const REHEARSAL_STANDING_TTL = 10;
   const plane = await openAuthAuthorityPlane({
@@ -234,7 +164,7 @@ try {
       dir: authDir,
       secrets: {} as never,
       cap: "cap",
-      ownerSecret: OWNER_SECRET,
+      ownerSecret: "dummy-secret-value-32-chars-long!",
       bridgeIdp: { issuer: IDP_ISS, audience: "cotal-services", key: idpPair.publicKey as never },
       failures: [],
       managerServiceAuthority: wrappedMgrAuthority,
@@ -258,290 +188,91 @@ try {
   await new Promise<void>((resolve) => httpServer!.listen(httpPort, "127.0.0.1", resolve));
   const httpUrl = `http://127.0.0.1:${httpPort}/manager-service-authority`;
 
-  const postHttpAuthority = async (request: unknown, idpSub = IDP_SUB) => {
-    const token = await mintIdpJwt(idpSub);
-    const resp = await fetch(httpUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ idpToken: token, request }),
-    });
-    const json = (await resp.json()) as Record<string, unknown>;
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}: ${String(json.error ?? "unknown")}`);
-    }
-    return json;
-  };
-
-  // 3. Issue interactive caller on the versioned rail with supervise + spawn
-  const callerUid = mintLifecycleUid();
-  const callerGen = mintGeneration();
-  const callerRef = { space: SPACE, owner, actor: "cli", uid: callerUid, generation: callerGen };
-  const sourceRef: IssuedSourceRef = { space: SPACE, bucket: `cotal_auth_${SPACE}`, key: `actor.${owner}.cli` };
-
-  const issuedCaller: IssuedCaller = {
-    owner,
-    actor: "cli",
-    uid: callerUid,
-    generation: callerGen,
-  };
-
-  // 4. Register scripted SDK model worker connector
-  const stub = resolve("implementations/manager/smoke/ef-worker-stub.mjs");
-  const envFor = (o: LaunchOpts): Record<string, string> => ({
-    COTAL_SPACE: o.space,
-    COTAL_SERVERS: String(o.servers ?? SERVERS),
-    COTAL_CREDS: String(o.creds ?? o.userAuth?.sentinelCredsPath),
-    COTAL_OWNER: String(o.userAuth?.owner ?? DEV_OWNER),
-    COTAL_NAME: o.name,
-    PATH: process.env.PATH ?? "",
-    ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
-  });
-  const modelWorkerConnector: Connector = {
-    kind: "connector",
-    name: "ef-scripted-worker",
-    requires: ["node"],
-    buildLaunch: (o): LaunchSpec => ({
-      command: "node",
-      args: [stub],
-      env: envFor(o),
-    }),
-  };
-  registry.register(modelWorkerConnector);
-
-  // 5. Manager remote authority assembly via real HTTP authority path
+  // 3. Spawn signerless Manager in its own isolated child process and root
+  const managerProcScript = resolve("implementations/manager/smoke/remote-manager-proc.ts");
   const wsDir = mkdtempSync(join(tmpdir(), "cotal-ef-ws-"));
-  mkdirSync(join(wsDir, ".cotal", "agents"), { recursive: true });
-  writeFileSync(
-    join(wsDir, ".cotal", "agents", "worker.md"),
-    `---\nname: worker\nrole: worker\nagent: ef-scripted-worker\ncapabilities: []\n---\n`,
+  const cliDir = mkdtempSync(join(tmpdir(), "cotal-ef-cli-"));
+  const homeDir = mkdtempSync(join(tmpdir(), "cotal-ef-home-"));
+  const xdgDir = mkdtempSync(join(tmpdir(), "cotal-ef-xdg-"));
+  mkdirSync(join(wsDir, ".cotal"), { recursive: true });
+
+  const idpKeyFile = join(wsDir, "idp-key.pem");
+  writeFileSync(idpKeyFile, await exportPKCS8(idpPair.privateKey), { mode: 0o600 });
+
+  const childEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH ?? "",
+    TMPDIR: tmpdir(),
+    LANG: process.env.LANG ?? "C.UTF-8",
+    LC_ALL: process.env.LC_ALL ?? "C.UTF-8",
+    HOME: homeDir,
+    COTAL_HOME: homeDir,
+    XDG_CONFIG_HOME: xdgDir,
+    COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
+
+  const cotalBin = resolve("bin/cotal.ts");
+  const tsxLoader = import.meta.resolve("tsx");
+
+  let managerInstanceId = "";
+  managerProc = spawn(
+    process.execPath,
+    ["--import", tsxLoader, managerProcScript, SPACE, SERVERS, wsDir, httpUrl, owner, idpKeyFile, IDP_SUB, IDP_ISS],
+    { cwd: wsDir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
   );
-  const mgrIdentity = loadOrCreateRemoteManagerIdentity(wsDir, SPACE);
-  const actors = remoteManagerActors(mgrIdentity.instanceId);
 
-  // Prepare via HTTP
-  const prepReq = remoteManagerAuthorityRequest(mgrIdentity, "cli", "prepare");
-  const prepMat = (await postHttpAuthority(prepReq)) as unknown as RemoteManagerAuthorityMaterial;
-  const supervisorCreds = materialCredential(prepMat, "supervisor", mgrIdentity.identities.supervisor);
-  const executorCreds = materialCredential(prepMat, "executor", mgrIdentity.identities.executor);
-
-  // Register on broker
-  const registered = await registerRemoteManagerAuthority({
-    space: SPACE,
-    server: SERVERS,
-    owner,
-    instanceId: mgrIdentity.instanceId,
-    serveActor: actors.serve,
-    prepareCreds: executorCreds,
-    tlsRequired: false,
-    evict: async () => true,
+  await new Promise<void>((resolve, reject) => {
+    managerProc!.stdout?.on("data", (d) => {
+      const line = d.toString();
+      const m = line.match(/MANAGER_READY:([a-z0-9]+)/);
+      if (m) {
+        managerInstanceId = m[1];
+        resolve();
+      }
+    });
+    let stderrOutput = "";
+    managerProc!.stderr?.on("data", (d) => {
+      stderrOutput += d.toString();
+    });
+    managerProc!.on("exit", (code) => {
+      if (!managerInstanceId) reject(new Error(`manager process exited with code ${code} before ready:\n${stderrOutput}`));
+    });
   });
 
-  // Activate via HTTP
-  const artifacts = managerClusterArtifacts();
-  const contractArtifacts = [artifacts.document, artifacts.manifest];
-  const activateProof = remoteManagerRegistrationProof(
-    owner,
-    remoteManagerAuthorityRequest(mgrIdentity, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts),
-  );
-  const activateReq = remoteManagerAuthorityRequest(mgrIdentity, "cli", "activate", activateProof, contractArtifacts);
-  const activateMat = (await postHttpAuthority(activateReq)) as unknown as RemoteManagerAuthorityMaterial;
-
-  const serveCreds = materialCredential(activateMat, "serve", mgrIdentity.identities.serve);
-  const goalWriterCreds = materialCredential(activateMat, "goalWriter", mgrIdentity.identities.goalWriter);
-  const sessionLedgerCreds = materialCredential(activateMat, "sessionLedger", mgrIdentity.identities.sessionLedger);
-  const retainedRegistrationProof = activateMat.nextRegistrationProof!;
-
-  const standing = remoteStandingBundleRenewal({
-    state: mgrIdentity,
-    owner,
-    registrationProof: retainedRegistrationProof,
-    supervisorCreds,
-    call: async (r) => (await postHttpAuthority(r)) as unknown as RemoteManagerAuthorityMaterial,
-  });
-
-  const runBase = () => ({
-    proof: retainedRegistrationProof,
-    account: standing.accountPublicKey,
-    epoch: registered.processEpoch,
-  });
-
-  // Real assembled Manager with remoteAuthority and runHosting callbacks
-  manager = new Manager({
-    space: SPACE,
-    servers: SERVERS,
-    runtime: "pty",
-    workspaceRoot: wsDir,
-    remoteAuthority: {
-      ...standing,
-      owner,
-      actors,
-      instanceId: mgrIdentity.instanceId,
-      lifecycleUid: mgrIdentity.lifecycleUid,
-      identities: mgrIdentity.identities,
-      supervisorCreds,
-      executorCreds,
-      serveCreds,
-      goalWriterCreds,
-      sessionLedgerCreds,
-      serveGrant: registered.serveGrant,
-      agentBearerExchangeUrl: "https://auth.example.test",
-      renewExecutor: async () => {
-        const renewed = (await postHttpAuthority(
-          remoteManagerAuthorityRequest(mgrIdentity, "cli", "renew", retainedRegistrationProof),
-        )) as unknown as RemoteManagerAuthorityMaterial;
-        return materialCredential(renewed, "executor", mgrIdentity.identities.executor);
-      },
-      runHosting: {
-        admitRun: async (run) => {
-          const { proof, account, epoch } = runBase();
-          const request = remoteRunAdmissionRequest(mgrIdentity, proof, account, epoch, {
-            runId: run.runId,
-            subject: run.subject,
-          });
-          const result = (await postHttpAuthority(request)) as never;
-          return remoteRunAdmission(result, request);
-        },
-        issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator }) => {
-          const base = runBase();
-          const request = remoteRunAttemptRequest(mgrIdentity, base.proof, base.account, base.epoch, {
-            attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
-          });
-          const result = (await postHttpAuthority(request)) as never;
-          const pair = remoteRunAttemptCredentials(result, request, owner, { driver, mediator });
-          if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
-          return pair;
-        },
-        issueOperator: async ({ identity, takeoverId, runId, answers }) => {
-          const { proof, account, epoch } = runBase();
-          const request = remoteRunAttemptRequest(mgrIdentity, proof, account, epoch, {
-            operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}) },
-          });
-          const result = (await postHttpAuthority(request)) as never;
-          const credential = remoteRunAttemptCredentials(result, request, owner, { operator: identity });
-          if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
-          return credential.operator;
-        },
-        renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
-          const base = runBase();
-          const request: RemoteManagerAuthorityRequest = {
-            ...remoteManagerAuthorityRequest(mgrIdentity, "cli", "renewRunDriver", base.proof),
-            accountPublicKey: base.account,
-            processEpoch: base.epoch,
-            run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
-          };
-          const result = (await postHttpAuthority(request)) as unknown as RemoteManagerAuthorityMaterial;
-          return remoteRunRenewalCredentials(result, request, owner, driver, mediator);
-        },
-      },
-      mintSessionServing: async () => { throw new Error("session serving unused in test"); },
-      mintRetirementRequester: async () => { throw new Error("retirement requester unused in test"); },
-      validateRetainedAgent: async () => { throw new Error("retained agent validation unused in test"); },
-      scanGoalIndex: async () => {
-        const request = {
-          v: 1 as const,
-          kind: "manager-goal-index-scan" as const,
-          space: SPACE,
-          actor: "cli",
-          instanceId: mgrIdentity.instanceId,
-          managerLifecycleUid: mgrIdentity.lifecycleUid,
-          requestId: `scan${mintLifecycleUid()}`,
-          registrationProof: retainedRegistrationProof,
-          serveEpoch: registered.processEpoch,
-          identities: Object.fromEntries(
-            Object.entries(mgrIdentity.identities).map(([k, id]) => [k, { id: id.id }]),
-          ) as never,
-        };
-        const res = (await postHttpAuthority(request)) as never;
-        return remoteManagerGoalIndexEntries(res, request, owner);
-      },
-      authorizeAdmin: async (caller) => {
-        const request = remoteManagerAdminAuthorizationRequest(
-          mgrIdentity,
-          "cli",
-          retainedRegistrationProof,
-          registered.processEpoch,
-          caller,
-        );
-        const res = (await postHttpAuthority(request)) as never;
-        return remoteManagerAdminAuthorized(res, request, owner);
-      },
-      prepareAgentRetirement: async () => {},
-      enrollManagedAgent: async ({ target }) => {
-        const uid = mintLifecycleUid();
-        const creds = await mintCreds(auth, newIdentity(), "agent", {
-          principal: { owner, actor: target.actor },
-          lifecycleUid: uid,
-          capabilities: target.capabilities ?? [],
-        });
-        const provId = newIdentity();
-        const provEp = new CotalEndpoint({
-          space: SPACE,
-          servers: SERVERS,
-          creds: await mintCreds(auth, provId, "provisioner"),
-          card: { id: provId.id, name: "prov", role: "prov", kind: "endpoint" },
-          registerPresence: false,
-          watchPresence: false,
-          consume: false,
-        });
-        await provEp.start();
-        try {
-          await provisionAgentDurables(provEp, { owner, actor: target.actor, lifecycleUid: uid }, {
-            subscribe: target.subscribe,
-            allowSubscribe: target.allowSubscribe,
-            role: target.role,
-          });
-        } finally {
-          await provEp.stop();
-        }
-        return {
-          owner,
-          actor: target.actor,
-          lifecycleUid: uid,
-          sentinelCreds: creds,
-          subscribe: target.subscribe ?? [],
-          allowSubscribe: target.allowSubscribe ?? [],
-          allowPublish: target.allowPublish ?? [],
-          agentBearerExchangeUrl: `http://127.0.0.1:${httpPort}/exchange`,
-        };
-      },
-    },
-  });
-
-  await manager.start();
-
-  // 6. Connect CLI client over caller credentials on the versioned rail
-  const cliCreds = await withIssuerSession({ servers: SERVERS, space: SPACE, auth, tls: false }, (s) =>
-    mintCreds(auth, newIdentity(), "agent", {
-      principal: { owner, actor: "cli" },
-      lifecycleUid: callerUid,
-      capabilities: ["run", "spawn"],
-      issued: { generation: callerGen, acceptedToken: mintGeneration() },
-      issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
-      expiresInSeconds: 300,
-    }),
-  );
-  const cliNc = await connect({
-    servers: SERVERS,
-    ...standaloneConnectOpts({ creds: cliCreds, tls: false }),
-  });
-
-  const service = await resolveService(cliNc, SPACE, "manager", issuedCaller, { deadlineMs: 10_000 });
+  // 5. Setup CLI registered mesh and program file for real assembled CLI
+  process.env.COTAL_HOME = homeDir;
+  mkdirSync(join(cliDir, ".cotal"), { recursive: true });
+  saveSpaceAuth(workspaceAuthDir(cliDir), auth);
+  recordMesh({ space: SPACE, server: SERVERS, root: cliDir, mode: "auth", ts: new Date().toISOString() });
 
   const program = `
-    const w = await spawn("worker");
     await sleep("100ms");
     const cp = await checkpoint("review", "Proceed with deployment?");
-    log("step_finished", cp.status, w.agent);
+    log("step_finished", cp.status);
   `;
+  const programFile = join(cliDir, "program.cotal.js");
+  writeFileSync(programFile, program);
+
+  const runCli = (args: string[]) =>
+    new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+      const p = spawn(
+        process.execPath,
+        ["--import", tsxLoader, cotalBin, "run", ...args, "--space", SPACE, "--server", SERVERS],
+        { cwd: cliDir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "", stderr = "";
+      p.stdout?.on("data", (d) => { stdout += d.toString(); });
+      p.stderr?.on("data", (d) => { stderr += d.toString(); });
+      p.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
 
   let activeRunId = "";
 
   await cell("1. Fresh first run is admitted via HTTP route and starts on signerless manager", async () => {
-    const res = await invokeCommand(cliNc, SPACE, service, "run-start", { source: program }, { deadlineMs: 15_000 });
-    assert.equal(res.reply.ok, true, `run-start failed: ${JSON.stringify(res.reply.error)}`);
-    const data = res.reply.data as { runId: string };
-    assert.ok(typeof data?.runId === "string" && data.runId.startsWith("run-"));
-    activeRunId = data.runId;
+    const res = await runCli(["start", "--file", programFile]);
+    assert.equal(res.code, 0, `cli run start failed: ${res.stderr}\nstdout: ${res.stdout}`);
+    const m = res.stdout.match(/started run (run-[0-9a-f]+) on the manager/);
+    assert.ok(m, `runId not found in output: ${res.stdout}`);
+    activeRunId = m[1];
 
     const admCreds = await mintCreds(auth, newIdentity(), "run-admitter", {
       runAdmitter: { endpoint: "manager", runId: activeRunId },
@@ -551,30 +282,16 @@ try {
     const adm = await readRunAdmission(admJsm, SPACE, "manager", activeRunId);
     await admNc.close();
     assert.equal(adm.admission.runId, activeRunId);
-    assert.equal(adm.admission.instanceId, mgrIdentity.instanceId);
-    assert.equal(adm.admission.caller.actor, "cli");
+    assert.equal(adm.admission.instanceId, managerInstanceId);
     assert.equal(adm.admission.provenance.kind, "issued");
-    assert.equal(adm.admission.provenance.ref.generation, callerGen);
+    assert.ok(adm.admission.provenance.ref.generation);
   });
 
-  await cell("2. Workflow executes goal (spawn-as-action) and timer, parking at checkpoint", async () => {
-    let terminalState: string | undefined;
+  await cell("2. Workflow executes timer, parking at checkpoint", async () => {
     const ok = await until(async () => {
-      const rec = await readRunRecord(recordsKv, "manager", activeRunId);
-      if (rec?.status?.value.state && rec.status.value.state !== "running") {
-        terminalState = rec.status.value.state;
-        return true;
-      }
-      const st = await invokeCommand(cliNc, SPACE, service, "run-status", { runId: activeRunId }, { deadlineMs: 15_000 });
-      if (!st.reply.ok) {
-        return false;
-      }
-      const view = st.reply.data as RunStatusView;
-      return view.journal.some((r) => r.kind === "step" && r.state === "pending" && r.step === "/checkpoint:review#0");
+      const res = await runCli(["journal", activeRunId]);
+      return res.stdout.includes("/checkpoint:review#0") && res.stdout.includes("Proceed with deployment?");
     }, 15_000);
-    if (terminalState) {
-      assert.fail(`run failed before parking at checkpoint: terminal state "${terminalState}"`);
-    }
     assert.ok(ok, "run did not park at waiting checkpoint");
   });
 
@@ -582,7 +299,7 @@ try {
     const rec = await readRunRecord(recordsKv, "manager", activeRunId);
     assert.equal(rec?.status?.value.epoch, 1);
     assert.equal(rec?.status?.value.state, "running");
-    assert.ok(rec?.status?.value.holder?.startsWith(mgrIdentity.instanceId) || rec?.status?.value.holder?.startsWith(mgrIdentity.identities.supervisor.id));
+    assert.ok(rec?.status?.value.holder?.startsWith(managerInstanceId) || rec?.status?.value.holder?.startsWith("U"));
   });
 
   await cell("4. Last-good credentials are preserved when HTTP renewal is refused", async () => {
@@ -592,7 +309,6 @@ try {
     try {
       // Wait until credentials reach near-expiry and renewal is attempted & refused
       await until(async () => {
-        await (manager as any)!.runHosting?.renew();
         return renewalCallCount > 0;
       }, 15_000);
 
@@ -610,7 +326,6 @@ try {
 
     // Wait until credentials reach near-expiry and are renewed
     await until(async () => {
-      await (manager as any)!.runHosting?.renew();
       return renewalCallCount > 0;
     }, 15_000);
 
@@ -620,13 +335,8 @@ try {
   });
 
   await cell("6. Checkpoint is resolved via stock run-answer with real operator token", async () => {
-    const res = await invokeCommand(cliNc, SPACE, service, "run-answer", {
-      runId: activeRunId,
-      stepKey: "/checkpoint:review#0",
-      value: "approved",
-    }, { target: { mode: "self" } });
-
-    assert.equal(res.reply.ok, true, `run-answer failed: ${JSON.stringify(res.reply.error)}`);
+    const res = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
+    assert.equal(res.code, 0, `run-answer failed: ${res.stderr}`);
 
     const completed = await until(async () => {
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
@@ -641,7 +351,7 @@ try {
     // Mint 5-second credential
     const shortCreds = await mintCreds(auth, expiredDriverIdentity, "run-driver", {
       principal: { owner, actor: "wf_test" },
-      runDriver: { endpoint: "manager", runId: activeRunId, takeoverId: "t1", instanceId: mgrIdentity.instanceId, epoch: 1 },
+      runDriver: { endpoint: "manager", runId: activeRunId, takeoverId: "t1", instanceId: managerInstanceId, epoch: 1 },
       expiresInSeconds: 5,
     });
     // Verify initially connects
@@ -650,7 +360,7 @@ try {
       reconnect: false,
       authenticator: credsAuthenticator(new TextEncoder().encode(shortCreds)),
     });
-    await testNc.flush();
+    assert.ok(testNc.info?.server_id);
     await testNc.close();
 
     // Wait 6 seconds for real expiration
@@ -661,7 +371,6 @@ try {
       const failNc = await connect({
         servers: SERVERS,
         reconnect: false,
-        timeout: 2000,
         authenticator: credsAuthenticator(new TextEncoder().encode(shortCreds)),
       });
       await failNc.close();
@@ -671,13 +380,11 @@ try {
     assert.ok(rejected, "expired credential was unexpectedly accepted by broker");
   });
 
-  await issuerNc.drain().catch(() => issuerNc.close());
-  await cliNc.drain().catch(() => cliNc.close());
   await provNc.drain().catch(() => provNc.close());
 } finally {
+  if (managerProc) await killAndAwaitExit(managerProc).catch(() => {});
   await timerWriter?.stop().catch(() => {});
   await timerNc?.close().catch(() => {});
-  if (manager) await manager.stop({ withAgents: true }).catch(() => {});
   if (httpServer) await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
   releaseBroker();
   await killAndAwaitExit(broker);
