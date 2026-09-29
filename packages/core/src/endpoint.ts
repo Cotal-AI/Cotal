@@ -250,6 +250,12 @@ export interface EndpointOptions {
   sentinelCreds?: string;
   /** Require a TLS connection to the server. */
   tls?: boolean;
+  /** Native NATS PING interval for this endpoint's resident connection, in milliseconds.
+   *  Omitted uses the transport's default. Pair with transportMaxPingOut. No probe connection. */
+  transportPingIntervalMs?: number;
+  /** Unanswered native PING count before the resident transport becomes stale. Omitted uses
+   *  the transport's default. Pair with transportPingIntervalMs for bounded silent loss. */
+  transportMaxPingOut?: number;
   /** Channels to subscribe to; the first concrete one is the default broadcast target. Omitted or
    *  empty ⇒ NO channels: the endpoint joins nothing, and {@link CotalEndpoint.multicast} refuses
    *  a call with no explicit channel rather than picking one. */
@@ -430,6 +436,8 @@ export class CotalEndpoint extends EventEmitter {
   private authExpiryReconnectTimer?: NodeJS.Timeout;
   private readonly sentinelCreds?: string;
   private readonly tls: boolean;
+  private readonly transportPingIntervalMs?: number;
+  private readonly transportMaxPingOut?: number;
   private readonly heartbeatMs: number;
   private readonly ttlMs: number;
   private readonly doRegister: boolean;
@@ -799,6 +807,14 @@ export class CotalEndpoint extends EventEmitter {
     this.user = opts.user;
     this.pass = opts.pass;
     this.tls = opts.tls ?? false;
+    for (const [label, value] of [["transportPingIntervalMs", opts.transportPingIntervalMs], ["transportMaxPingOut", opts.transportMaxPingOut]] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+        throw new Error(`EndpointOptions.${label} must be a positive safe integer`);
+    }
+    if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
+      throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
+    this.transportPingIntervalMs = opts.transportPingIntervalMs;
+    this.transportMaxPingOut = opts.transportMaxPingOut;
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
@@ -1308,6 +1324,8 @@ export class CotalEndpoint extends EventEmitter {
       // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
       // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
       inboxPrefix: `_INBOX_${this.connId}`,
+      ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
+      ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
       // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
       // attempt, so internal reconnects present whatever refreshBearer last fetched.
       // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
