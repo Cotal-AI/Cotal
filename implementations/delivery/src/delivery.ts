@@ -28,7 +28,7 @@ import {
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writeIdentityPin, type MeshTarget } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
@@ -307,9 +307,8 @@ export function recordDeliveryPid(root: string, space: string): () => void {
   reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx);
   const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx);
   const mine = String(process.pid);
-  writeFileSync(pidPath, mine);
-  // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
-  writeIdentityPin(pidPath, process.pid);
+  // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
+  writePidPair(pidPath, process.pid);
   return () => {
     try {
       if (readFileSync(pidPath, "utf8").trim() !== mine) return; // a successor's record: not ours to remove

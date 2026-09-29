@@ -387,7 +387,9 @@ const SEAMS: Seam[] = [
   // in packages/core/smoke/artifact-store-no-reserve.smoke.ts. All state `tls: false`.
   // 196/152 -> 197/152: `cotal deliver pending` (#417) adds one typechecked call, the inspection
   // read's own connection in implementations/delivery/src/pending.ts. States `tls` explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 197, untypecheckedSites: 152 },
+  // 197/152 -> 198/152: the broker-version check (#2233) adds one typechecked call in
+  // implementations/cli/src/commands/up.ts. States `tls: false` explicitly.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 198, untypecheckedSites: 152 },
 ];
 
 /**

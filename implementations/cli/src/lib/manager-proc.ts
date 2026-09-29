@@ -10,7 +10,7 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 /** The `--max-sessions` value a live `cotal supervise` argv is actually serving.
  *
@@ -242,11 +242,10 @@ export function startManagerDetached(
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx(space));
-  writeFileSync(pidPath, String(child.pid));
-  // #969: pin the pid to the start of the process behind it, so a later teardown can refuse a pid
-  // that was reused by an unrelated process. Sibling of the pidfile (marker pattern); absent on a
-  // platform that cannot produce a start token, which reads as a legacy record to every reader.
-  writeIdentityPin(pidPath, child.pid ?? 0);
+  if (!child.pid) throw new Error("manager spawned with no pid");
+  // #969/#1238: publish the pair by rename (pidfile + sibling start-token pin), so a crash never
+  // leaves a torn pairing; a platform that cannot produce a start token still gets the legacy shape.
+  writePidPair(pidPath, child.pid);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
   writeFileSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
