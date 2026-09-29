@@ -19,6 +19,7 @@ import {
   materialCredential,
   remoteManagerAdminAuthorizationRequest,
   remoteManagerAdminAuthorized,
+  remoteManagedAgentEnrollmentMaterial,
   remoteManagedAgentEnrollmentRequest,
   remoteManagerAuthorityRequest,
   remoteManagerGoalIndexEntries,
@@ -167,6 +168,16 @@ const manager = new Manager({
       );
       const res = (await postHttp(request)) as never;
       return remoteManagerAdminAuthorized(res, request, owner);
+    },
+    // FIXTURE: the manager's enrollment callback targets the labelled fixture host interception path.
+    enrollManagedAgent: async ({ target }) => {
+      const { proof, epoch } = runBase();
+      const request = remoteManagedAgentEnrollmentRequest(mgrIdentity, "cli", proof, epoch, target);
+      const url = httpUrl.replace("/manager-service-authority", "/fixture-host/manager-service-authority");
+      const resp = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: bearerToken, request }) });
+      const json = (await resp.json()) as Record<string, unknown>;
+      if (!resp.ok) throw new Error(`fixture host HTTP ${resp.status}: ${String(json.error ?? "unknown")}`);
+      return remoteManagedAgentEnrollmentMaterial(json as never, request);
     },
     runHosting: {
       admitRun: async (run) => {
