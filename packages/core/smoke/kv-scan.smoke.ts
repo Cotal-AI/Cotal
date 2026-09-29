@@ -21,6 +21,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, connect as tcpConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -28,8 +29,9 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { pickFreePort } from "./_free-port.js";
 
-const PORT = 14771;
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 let pass = 0;
@@ -333,7 +335,7 @@ try {
     for (let i = 0; i < 5; i++) await k.put(`rot.${i}`, enc(`val.${i}`));
     const base = (await jsm.streams.info(stream)).state.consumer_count;
 
-    // Interpose to simulate an ordered consumer reset/rotation during iteration
+    // Controlled reset interposition over a real broker consumer, not a naturally observed rotation.
     const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
     const victim = Object.create(k) as typeof k;
     let rotatedName: string | undefined;
@@ -513,18 +515,50 @@ try {
     await walkKvEntries({ history: async () => [] } as never, ">").catch((e) => { walkRefused = e; });
     check("the walk refuses a non-Bucket handle loudly too", walkRefused instanceof Error && /Bucket/.test(String((walkRefused as Error).message)), String(walkRefused));
 
-    // Verify scan with signal aborted during bind throws even if expected count is 0
-    const abortEmptyKv = await kvm.create("abort_empty", { history: 1 });
+  }
+
+  // Withhold the broker's real empty-consumer info response. Abort only after it reaches the
+  // proxy, before allowing the bind to finish. An immediate abort after starting the scan can
+  // win before consumer creation and never exercise the empty-result boundary.
+  {
+    await kvm.create("abort_empty_bind", { history: 1 });
     const ac = new AbortController();
-    const scanPromise = liveKvEntries(abortEmptyKv, { signal: ac.signal });
-    ac.abort(new Error("aborted-during-empty-scan"));
-    let abortThrown = false;
+    let intercepted = 0;
+    const proxy = createServer((client) => {
+      const upstream = tcpConnect({ host: "127.0.0.1", port: PORT });
+      client.on("data", (data) => upstream.write(data));
+      upstream.on("data", (data) => {
+        const text = data.toString("utf8");
+        if (text.includes("KV_abort_empty_bind") && text.includes("num_pending") && text.includes("0")) {
+          intercepted++;
+          ac.abort(new Error("aborted-while-bind-pending"));
+          setTimeout(() => { if (!client.destroyed) client.write(data); }, 40);
+        } else client.write(data);
+      });
+      upstream.on("close", () => client.end());
+      client.on("close", () => upstream.destroy());
+      upstream.on("error", () => client.destroy());
+      client.on("error", () => upstream.destroy());
+    });
+    let scanConn: Awaited<ReturnType<typeof connect>> | undefined;
     try {
-      await scanPromise;
-    } catch (e: any) {
-      if (e?.message === "aborted-during-empty-scan") abortThrown = true;
+      await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+      const address = proxy.address();
+      if (!address || typeof address === "string") throw new Error("proxy has no TCP port");
+      scanConn = await connect({ servers: `nats://127.0.0.1:${address.port}`, maxReconnectAttempts: 0 });
+      const bucket = await new Kvm(scanConn).open("abort_empty_bind");
+      let result: unknown;
+      try { result = await liveKvEntries(bucket, { signal: ac.signal }); }
+      catch (error) { result = error; }
+      check("empty bind: real consumer-info response was intercepted once", intercepted === 1, intercepted);
+      check("aborted during empty scan throws instead of returning empty array",
+        ac.signal.aborted && (result as Error)?.message === "aborted-while-bind-pending", String(result));
+      const count = (await (await jetstreamManager(nc)).streams.info("KV_abort_empty_bind")).state.consumer_count;
+      check("empty bind: aborted scan leaves zero owned consumers", count === 0, count);
+    } finally {
+      await scanConn?.close();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
     }
-    check("aborted during empty scan throws instead of returning empty array", abortThrown);
   }
 
   await nc.close();
