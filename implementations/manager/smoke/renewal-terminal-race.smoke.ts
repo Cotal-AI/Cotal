@@ -17,7 +17,7 @@ import {
   standaloneConnectOpts, registry, DEV_OWNER, setupSpaceStreams, recordsBucket, epAuthBucket,
   parseLedgerRow, credRowKey, type AgentHandle, type AttachSession,
   type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
-  type EvictionResult, type LifecycleStateTransport, type SecretStore,
+  type EvictionResult, type LifecycleStateTransport, type SecretStore, type ControlReply,
 } from "@cotal-ai/core";
 import { agentSecretKeyForFile, putSpaceAuth } from "@cotal-ai/workspace";
 import {
@@ -256,14 +256,14 @@ async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTr
 try {
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   await mgr.start();
-  const origRequestDeliveryAdmin = mgr.ep.requestDeliveryAdmin.bind(mgr.ep);
-  (mgr as unknown as { ep: { requestDeliveryAdmin: (op: string, args?: unknown, t?: number) => Promise<ControlReply> } }).ep.requestDeliveryAdmin =
-    async (op: string, args?: unknown, t?: number) => {
-      if (op === "lifecycleMemberships") {
-        return requestDeliveryAdminZeroMemberships(op, args);
-      }
-      return origRequestDeliveryAdmin(op, args as Record<string, unknown>, t);
-    };
+  const mgrEp = (mgr as unknown as { ep: { requestDeliveryAdmin: (op: string, args?: unknown, t?: number) => Promise<ControlReply> } }).ep;
+  const origRequestDeliveryAdmin = mgrEp.requestDeliveryAdmin.bind(mgrEp);
+  mgrEp.requestDeliveryAdmin = async (op: string, args?: unknown, t?: number) => {
+    if (op === "lifecycleMemberships") {
+      return requestDeliveryAdminZeroMemberships(op, args);
+    }
+    return origRequestDeliveryAdmin(op, args, t);
+  };
   (mgr as unknown as { awaitReadiness(): Promise<{ ok: true }> }).awaitReadiness = async () => ({ ok: true });
 
   for (const scenario of SCENARIOS) {

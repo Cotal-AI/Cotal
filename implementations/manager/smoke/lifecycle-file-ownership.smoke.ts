@@ -42,6 +42,7 @@ import {
   type LaunchSpec,
   type AgentHandle,
   type Presence,
+  type EvictionResult,
 } from "@cotal-ai/core";
 import { agentCredsDir, agentCredsKey, agentSecretFilePaths, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
