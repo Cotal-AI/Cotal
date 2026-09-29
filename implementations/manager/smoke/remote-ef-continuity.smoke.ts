@@ -110,14 +110,14 @@ try {
   const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space: SPACE, creds: provCreds });
 
-  const provNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provCreds, tls: false }) });
+  let provNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provCreds, tls: false }) });
   const jsm = await jetstreamManager(provNc);
   const kvm = new Kvm(provNc);
   await ensureAuthorityStores(jsm, kvm, SPACE);
   await ensureAdmissionStore(jsm, kvm, SPACE);
   await ensureIssuedStores(jsm, kvm, SPACE);
   await createEndpointStreams(jsm, kvm, SPACE);
-  const recordsKv = await openRecordsBucket(provNc, SPACE);
+  let recordsKv = await openRecordsBucket(provNc, SPACE);
 
   const dlvCreds = await mintCreds(auth, newIdentity(), "delivery");
   timerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: dlvCreds, tls: false }), maxReconnectAttempts: 0 });
@@ -278,6 +278,7 @@ try {
   // Fixture-only probe of the child's ACTUAL held run credentials (non-secret metadata only).
   const probeWaiters: ((r: any) => void)[] = [];
   const serveRedials: number[] = [];
+  const enrollWaiters: ((r: any) => void)[] = [];
   let probeBuf = "";
   managerProc.stdout?.on("data", (d) => {
     probeBuf += d.toString();
@@ -287,6 +288,8 @@ try {
       probeBuf = probeBuf.slice(i + 1);
       const m = line.match(/^PROBE_RESULT:(.*)$/);
       if (m) probeWaiters.shift()?.(JSON.parse(m[1]!));
+      const e = line.match(/^ENROLL_RESULT:(.*)$/);
+      if (e) enrollWaiters.shift()?.(JSON.parse(e[1]!));
     }
   });
   const probeHeld = (runId: string) =>
@@ -350,6 +353,35 @@ try {
   let activeRunId = "";
   let activeAdmission: any;
 
+  // EF_EXECUTOR_SOAK=1: zero-agent real-wall-time soak across the ORIGINAL held executor's native
+  // five-minute lifetime (no clock trick, no TTL knob). Cell 1's run start is then the first real
+  // manager operation after that expiry.
+  if (process.env.EF_EXECUTOR_SOAK === "1") {
+    await cell("0. Executor soak: held executor re-adopted across its ORIGINAL 5-minute expiry (same nkey/account), broker-accepted after it", async () => {
+      const start = await probeHeld("none");
+      const orig = start.standing.executor;
+      const t0 = Math.floor(Date.now() / 1000);
+      console.log(`    evidence: soak start=${t0} originalExecutorExp=${orig.exp} lifetime~${orig.exp - t0}s sub=${orig.sub.slice(0, 6)}..`);
+      assert.ok(orig.exp - t0 >= 240, "held executor lifetime is not the native five-minute class");
+      let samples = 0;
+      while (Date.now() / 1000 <= orig.exp + 2) { await wait(15_000); samples++; }
+      const end = await probeHeld("none");
+      const t1 = Math.floor(Date.now() / 1000);
+      const ex = end.standing.executor;
+      console.log(`    evidence: soak end=${t1} (> originalExp ${orig.exp}: ${t1 > orig.exp}) heldExecutorExp=${ex?.exp} sub=${ex?.sub?.slice(0, 6)}.. account=${ex?.account === auth.account.pub} live=${ex?.live} executorDialRefused=${end.executorDialRefused} samples=${samples} standingDebt=${JSON.stringify(end.standing.debt)}`);
+      assert.ok(t1 > orig.exp, "soak did not cross the original executor expiry");
+      assert.ok(ex.exp > orig.exp, "held executor was not re-adopted past its original expiry");
+      assert.equal(ex.sub, orig.sub, "executor public nkey changed");
+      assert.equal(ex.account, auth.account.pub, "executor account changed");
+      assert.equal(end.executorDialRefused, false, "broker refused the held executor after the original expiry");
+    });
+    // FIXTURE setup only: the test's own one-shot provisioner reader (5-minute class) expired during
+    // the soak; re-open the fixture's records reader with a fresh provisioner. No product credential.
+    await provNc.close().catch(() => {});
+    provNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }) });
+    recordsKv = await openRecordsBucket(provNc, SPACE);
+  }
+
   await cell("1. Fresh first run is admitted via HTTP route and starts on signerless manager", async () => {
     assert.equal(existsSync(join(wsDir, "idp-key.pem")), false, "IdP private key must not exist in manager root");
     assert.equal(existsSync(join(wsDir, ".cotal", "auth")), false, "manager root must not contain local auth directory");
@@ -375,8 +407,8 @@ try {
 
   await cell("1b. Standing duties are re-adopted before their ORIGINAL expiry (actual held objects, same nkeys/account)", async () => {
     const start = (await probeHeld(activeRunId)).standing;
-    const names = ["supervisor", "serve", "goalWriter", "sessionLedger"] as const;
-    const origExp = Math.min(...names.map((k) => start[k].exp as number));
+    const names = ["supervisor", "serve", "goalWriter", "sessionLedger", "executor"] as const;
+    const origExp = Math.min(...names.filter((k) => k !== "executor").map((k) => start[k].exp as number));
     // Poll only until just before the earliest original expiry: adoption must beat it.
     const adopted = await until(async () => {
       const p = (await probeHeld(activeRunId)).standing;
@@ -553,6 +585,18 @@ try {
     }, 15_000);
     assert.ok(completed, "workflow did not complete after checkpoint answer");
   });
+  // GAP REPRODUCTION (not a pass for accepted-goal): the stock authority route refuses managed-agent
+  // enrollment and requires host-platform interception; a pooled spawn goal cannot be accepted
+  // through stock callbacks. Recorded, not counted.
+  {
+    const r = await new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("enroll probe timed out")), 10_000);
+      enrollWaiters.push((x) => { clearTimeout(t); resolve(x); });
+      managerProc!.stdin!.write("ENROLL_PROBE\n");
+    }).catch((e) => ({ status: -1, error: (e as Error).message }));
+    console.log(`  ? GAP (accepted-goal): stock managed-agent enrollment via authority route -> status=${r.status} error=${r.error}`);
+  }
+
   await cell("7. Broker control: fail-closed verification after real broker credential expiration", async () => {
     const expiredDriverIdentity = newIdentity();
     // Mint 5-second credential

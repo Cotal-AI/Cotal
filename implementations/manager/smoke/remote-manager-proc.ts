@@ -19,6 +19,7 @@ import {
   materialCredential,
   remoteManagerAdminAuthorizationRequest,
   remoteManagerAdminAuthorized,
+  remoteManagedAgentEnrollmentRequest,
   remoteManagerAuthorityRequest,
   remoteManagerGoalIndexEntries,
   remoteRunAdmission,
@@ -225,6 +226,7 @@ process.stdin.on("data", (chunk: string) => {
     stdinBuf = stdinBuf.slice(i + 1);
     const m = line.match(/^PROBE (\S+)$/);
     if (m) void probe(m[1]!);
+    if (line === "ENROLL_PROBE") void enrollProbe();
   }
 });
 async function probe(runId: string) {
@@ -234,6 +236,17 @@ async function probe(runId: string) {
     const c = credsClaims(creds);
     return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account };
   };
+  let executorDialRefused: boolean | null = null;
+  const execCreds = (manager as any).remoteExecutorCreds;
+  if (typeof execCreds === "string") {
+    try {
+      const nc = await connect({ servers, reconnect: false, authenticator: credsAuthenticator(new TextEncoder().encode(execCreds)) });
+      await nc.close();
+      executorDialRefused = false;
+    } catch {
+      executorDialRefused = true;
+    }
+  }
   let dialRefused: boolean | null = null;
   if (typeof run?.creds === "string") {
     try {
@@ -254,8 +267,9 @@ async function probe(runId: string) {
         driverConnClosed: run.nc ? run.nc.isClosed() : null,
         dialRefused,
         standing: standingMeta(),
+        executorDialRefused,
       }
-    : { runId, held: false, standing: standingMeta() };
+    : { runId, held: false, standing: standingMeta(), executorDialRefused };
   console.log(`PROBE_RESULT:${JSON.stringify(out)}`);
 }
 /** Standing duty metadata from the manager's ACTUAL held fields (fixture-only; public data only). */
@@ -282,3 +296,15 @@ process.on("SIGTERM", async () => {
   await manager.stop().catch(() => {});
   process.exit(0);
 });
+
+// FIXTURE-ONLY: send one real managed-agent enrollment request (token DIGEST only) through the
+// same public authority route the manager's callbacks use, and report status/error text only.
+async function enrollProbe() {
+  const { proof, epoch } = runBase();
+  const request = remoteManagedAgentEnrollmentRequest(mgrIdentity, "cli", proof, epoch, {
+    actor: "sdk-fixture", tokenHash: "0".repeat(64), allowSubscribe: [">"],
+  });
+  const resp = await fetch(httpUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: bearerToken, request }) });
+  const json = (await resp.json().catch(() => ({}))) as { error?: unknown };
+  console.log(`ENROLL_RESULT:${JSON.stringify({ status: resp.status, error: String(json.error ?? "").slice(0, 200) })}`);
+}
