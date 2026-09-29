@@ -58,7 +58,6 @@ import {
   membersBucket,
   aclBucket,
   aclKey,
-  memberKey,
   assertLifecycleToken,
   type DeprovisionTarget,
   membershipBucket,
@@ -2531,10 +2530,6 @@ function deprovisionerPermissions(space: string, pr: MintPrincipal, deprovisionT
         // `$KV.<aclBucket>.<key>`.
         `$JS.API.STREAM.INFO.KV_${aclBucket(space)}`,
         `$KV.${aclBucket(space)}.${aclKey(target.key, t.lifecycleUid)}`,
-        // Purge the target lifecycle's durable membership rows, one exact key per named concrete
-        // channel. The key embeds the uid, so a successor's row is unreachable by name.
-        ...(t.memberChannels.length > 0 ? [`$JS.API.STREAM.INFO.KV_${membersBucket(space)}`] : []),
-        ...t.memberChannels.map((ch) => `$KV.${membersBucket(space)}.${memberKey(ch, target.key, t.lifecycleUid)}`),
       ],
     },
     // Replies only: the CONSUMER.DELETE PubAcks + KV purge ack land on the per-connection inbox. NO chat/DM/ctl

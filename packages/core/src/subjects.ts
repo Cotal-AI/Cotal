@@ -290,21 +290,13 @@ export interface DeprovisionTarget {
   principal: string;
   /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
   lifecycleUid: string;
-  /** Concrete channels whose durable membership rows (`memberKey(channel, principal, uid)`) this
-   *  teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
-  memberChannels?: readonly string[];
 }
 
 /** Resolve a deprovision target to its `(owner, actor, lifecycleUid)` triple. Shared by the
  *  deprovisioner permission pin and the teardown helper so they can't diverge. */
-export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string; memberChannels: string[] } {
+export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string } {
   const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
-  const memberChannels = [...new Set(target.memberChannels ?? [])].map((ch) => {
-    assertValidChannel(ch);
-    if (!isConcreteChannel(ch)) throw new Error(`deprovision target: member channel "${ch}" must be concrete (membership rows are per concrete channel)`);
-    return ch;
-  });
-  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
+  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid) };
 }
 
 export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
