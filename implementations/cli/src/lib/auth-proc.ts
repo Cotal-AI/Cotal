@@ -8,11 +8,11 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -168,15 +168,12 @@ function startAuthServiceDetached(space: string, server: string, command: string
     });
     closeSync(fd);
     child.unref();
-    // Replace the launcher pid with the daemon child's pid through the exclusively-created fd,
-    // never a re-open (truncate first: the fd position sits past the launcher pid).
-    ftruncateSync(slot.fd, 0);
-    writeSync(slot.fd, String(child.pid), 0);
-    // #969: pin the daemon child's pid to its process start. Written AFTER the pid content is the
-    // final one, so a torn pairing (pin names a different pid) is the crash window, never a launch
-    // state - and the verify below refuses a torn pairing loud.
-    writeIdentityPin(PID_PATH(space), child.pid ?? 0);
-    return child.pid ?? 0;
+    // Replace the launcher pid with the daemon child's pid: the pair is published by rename over
+    // the claimed name (#969/#1238), so a crash never leaves a torn pairing - the verify below
+    // refuses a torn pairing loud regardless.
+    if (!child.pid) throw new Error("auth service spawned with no pid");
+    writePidPair(PID_PATH(space), child.pid);
+    return child.pid;
   } finally {
     closeSync(slot.fd);
   }
