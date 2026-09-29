@@ -41,7 +41,10 @@ const refused = (candidate: RemoteRunAttemptResult, pattern: RegExp) =>
   assert.throws(() => remoteRunAttemptCredentials(candidate, request, owner, { driver, mediator }), pattern);
 
 let count = 0;
-const check = (name: string, test: () => void) => { test(); count++; console.log(`  ✓ ${name}`); };
+const check = (name: string, test: () => void) => {
+  try { test(); count++; console.log(`  ✓ ${name}`); }
+  catch (error) { console.error(`  ✗ FAIL: ${name}`); throw error; }
+};
 const admissionRequest = remoteRunAdmissionRequest(state, proof, auth.account.pub, 3, { runId, subject: "subject-from-served-context" });
 const admissionUid = mintLifecycleUid();
 const admission: RunAdmission = {

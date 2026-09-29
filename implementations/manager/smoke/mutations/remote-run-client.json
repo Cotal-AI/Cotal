@@ -17,9 +17,9 @@
       "name": "run response accepts a missing mediator",
       "file": "implementations/manager/src/remote-authority.ts",
       "find": "const credentials = exactKeys(result.credentials, attempt ? [\"driver\", \"mediator\"] : [\"operator\"], \"manager run credentials\");",
-      "replace": "const credentials = exactKeys(result.credentials, attempt ? [\"driver\"] : [\"operator\"], \"manager run credentials\");",
-      "expectRed": "first attempt supplies exactly the held pair",
-      "cell": "first attempt supplies exactly the held pair",
+      "replace": "const credentials = result.credentials as Record<string, unknown>;",
+      "expectRed": "partial, widened, and wrong-operation response sets refuse",
+      "cell": "partial, widened, and wrong-operation response sets refuse",
       "afterRestore": "pnpm --dir packages/core build"
     },
     {
