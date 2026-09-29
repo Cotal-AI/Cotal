@@ -1,6 +1,7 @@
 ---
 "@cotal-ai/core": patch
+"@cotal-ai/auth": patch
 "@cotal-ai/manager": patch
 ---
 
-The deprovision teardown now purges a retired lifecycle's durable membership rows on its concrete read channels, through one exact-key grant per channel on the target-pinned deprovisioner credential. Authoritative membership inventory derives channels from validated exact keys so undecodable or malformed rows cannot be omitted from retirement. Rows on wildcard-covered or unnamed channels, same-alias successors and other principals are retained.
+Retire a lifecycle's durable membership rows through target-pinned exact-key grants. Complete inventory derives channels from validated native keys, including wildcard-covered and unnamed channels, so unreadable values cannot hide rows from cleanup. An unavailable inventory retains undiscovered rows and holds retirement pending retry. Other principals and successor lifecycles remain untouched. Retirement fixtures now use complete zero-row responses only for empty synthetic inventories, and the user-mode test verifies held retirement until genuine delivery returns.
