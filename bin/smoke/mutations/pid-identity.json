@@ -75,6 +75,39 @@
       "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
       "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
       "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M5 writePidPair never unlinks the old pin (the #1238 unlink-old-pin step removed)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    rmSync(pinPath, { force: true });\n    onStep(\"unlink-old-pin\");\n",
+      "replace": "    onStep(\"unlink-old-pin\");\n",
+      "expectRed": "G2 a crash after `unlink-old-pin` leaves the OLD pid with no pin (legacy, never torn)",
+      "cell": "G2 a crash after `unlink-old-pin` leaves the OLD pid with no pin (legacy, never torn)",
+      "note": "Hand-confirmed: the crash injected right where the deleted rmSync ran leaves the OLD target's own pin on disk, so G2's legacy check reads match instead - not G3, since G2's own onStep injection fires first and the old pin (never removed) still names the old target.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M6 the pin is published before the pid (#1238 publish order swapped)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    renameSync(pidTemp, pidfilePath);\n    onStep(\"publish-pid\");\n    if (pinTemp !== undefined) {\n      renameSync(pinTemp, pinPath);\n      onStep(\"publish-pin\");\n    }",
+      "replace": "    if (pinTemp !== undefined) {\n      renameSync(pinTemp, pinPath);\n      onStep(\"publish-pin\");\n    }\n    renameSync(pidTemp, pidfilePath);\n    onStep(\"publish-pid\");",
+      "expectRed": "G3 a crash after `publish-pid` leaves the NEW pid with no pin (legacy, never torn-pairing)",
+      "cell": "G3 a crash after `publish-pid` leaves the NEW pid with no pin (legacy, never torn-pairing)",
+      "note": "Hand-confirmed: with the rename order swapped, G3's onStep(\"publish-pid\") injection now fires AFTER the new pin has already been renamed into place, so both halves of the NEW record are on disk by the time it throws - match instead of legacy.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M7 the pidfile is written in place during temporaries, never to a temporary (#1238)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    writeFileSync(pidTemp, String(pid));\n",
+      "replace": "    writeFileSync(pidfilePath, String(pid));\n",
+      "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
+      "cell": "G0 a first publish with no injection leaves a complete, matching record",
+      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then renameSync(pidTemp, pidfilePath) throws ENOENT since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }
