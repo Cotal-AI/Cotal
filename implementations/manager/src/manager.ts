@@ -4097,16 +4097,7 @@ export class Manager {
         return { complete: false, channels: [], reason: r.ok ? "malformed inventory reply" : (r.error ?? "refused") };
       return { complete: true, channels: data.channels as string[] };
     } catch (e) {
-      const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) {
-        try {
-          const absent = await this.absentByLeaseRow();
-          if (absent === "absent") return { complete: true, channels: [] };
-        } catch {
-          // If absentByLeaseRow throws, a holder is named or read failed: genuine outage, incomplete.
-        }
-      }
-      return { complete: false, channels: [], reason: msg };
+      return { complete: false, channels: [], reason: (e as Error).message };
     }
   }
 
