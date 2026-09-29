@@ -27,13 +27,13 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  defaultStartToken, formatRecord, identityPinPath, identityStartToken, parseRecord,
-  parseWin32CreationToken, verifyIdentityPin, writeIdentityPin,
+  defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
+  parseWin32CreationToken, verifyIdentityPin, writeIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 
 const prevCwd = process.cwd();
